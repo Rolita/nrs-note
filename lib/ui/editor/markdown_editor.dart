@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart'
     show kDoubleTapTimeout, kSecondaryMouseButton, kTouchSlop;
@@ -259,6 +260,46 @@ List<InlineSpan> _underlineComposing(
   return out;
 }
 
+/// Keeps the caret **inside its table cell** when a Backspace (or Delete) would
+/// otherwise leave it.
+///
+/// Implemented as an input formatter rather than a key handler for one reason:
+/// a deletion can arrive three different ways — a key event on desktop, a
+/// `ReplaceTextIntent` from the platform shortcut map, or an engine
+/// `updateEditingValue` write — and only the formatter sees all three.
+/// Rejected edits simply return the old value, exactly like
+/// `LengthLimitingTextInputFormatter`, so a blocked Backspace is a no-op
+/// instead of a caret jump.
+///
+/// The predicate lives in [tableCellBarrier] with the rest of the table rules.
+class TableCellBarrierFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    // Only a **collapsed caret losing exactly one character** counts. Anything
+    // looser would also catch IME commits and selection replacements, and
+    // blocking those would make the cell feel dead.
+    if (oldValue.composing.isValid || newValue.composing.isValid) {
+      return newValue;
+    }
+    if (!oldValue.selection.isCollapsed) return newValue;
+    if (newValue.text.length != oldValue.text.length - 1) return newValue;
+    final int p = newValue.selection.isCollapsed
+        ? newValue.selection.baseOffset
+        : -1;
+    if (p < 0 || p >= oldValue.text.length) return newValue;
+    // The character that went away sits exactly where the caret landed.
+    if (newValue.text !=
+        oldValue.text.substring(0, p) + oldValue.text.substring(p + 1)) {
+      return newValue;
+    }
+    if (!tableCellBarrier(oldValue.text, p)) return newValue;
+    return oldValue;
+  }
+}
+
 /// Keeps list bullets alive when the user presses Enter, and ends the list on an
 /// empty item. Implemented as an input formatter so it sits directly in the
 /// native newline path instead of fighting the text input system.
@@ -305,6 +346,20 @@ class ListContinuationFormatter extends TextInputFormatter {
     // continuation only ever worked on the last line of a document.
     final int lineStart = lineStartOf(oldValue.text, at);
     final int lineEnd = lineEndOf(oldValue.text, at);
+
+    // Enter in a table adds a row; it never breaks the row. A bare newline here
+    // would slice `| a | b |` into two lines, and the renderer — which only
+    // knows about lines that start with a pipe — would drop half the table on
+    // the floor mid-keystroke. Asked *before* the end-of-line guard so Enter
+    // mid-cell grows the table too, instead of falling through to a line break.
+    final TextEditingValue? row = tableRowBelow(
+      TextEditingValue(
+        text: oldValue.text,
+        selection: TextSelection.collapsed(offset: at),
+      ),
+    );
+    if (row != null) return row;
+
     if (at != lineEnd) return newValue;
     final String line = oldValue.text.substring(lineStart, at);
 
@@ -383,6 +438,24 @@ class ListContinuationFormatter extends TextInputFormatter {
 class _IndentIntent extends Intent {
   const _IndentIntent(this.outdent);
   final bool outdent;
+}
+
+/// Ctrl+C on the body.
+///
+/// Only interesting because of tables: a selection that spans cells has to copy
+/// the **cells** — the editor's wash already snaps out to whole cells, so
+/// handing the raw range to the clipboard would hand back the pipes and the
+/// `| --- | --- |` divider the user never selected. Everywhere else this copies
+/// exactly what the field would have copied.
+class _CopyIntent extends Intent {
+  const _CopyIntent();
+}
+
+/// Ctrl+V on the body — the same insert as the context menu's paste, so a
+/// pasted table gets the blank line that keeps it apart from the table above it.
+/// See [padTablePaste].
+class _PasteIntent extends Intent {
+  const _PasteIntent();
 }
 
 /// The single source of truth for the editor's body typography.
@@ -591,10 +664,180 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     );
   }
 
+  // ---------------------------------------------------------- table chrome
+  //
+  // The grips and the plus buttons a live table paints around itself are
+  // *painted*, not widgets (see `_RenderTableRow`), so they are found the same
+  // way the checkbox shells are: by walking the field's element tree for the
+  // render objects and asking them where they drew what. A `Listener` never
+  // joins the gesture arena, so the field's own "a click places the caret"
+  // still runs — the caret is simply put back afterwards.
+
+  /// Every rendered table row currently on screen.
+  List<TableRowChrome> _tableRows() {
+    final BuildContext? root = _fieldKey.currentContext;
+    if (root == null) return const <TableRowChrome>[];
+    final List<TableRowChrome> rows = <TableRowChrome>[];
+    void visit(Element element) {
+      final RenderObject? ro = element.renderObject;
+      // The cast is not redundant: `TableRowChrome` is an unrelated interface,
+      // so `is` cannot promote a `RenderObject?` into it.
+      if (ro is TableRowChrome) rows.add(ro as TableRowChrome);
+      element.visitChildElements(visit);
+    }
+
+    root.visitChildElements(visit);
+    return rows;
+  }
+
+  /// The grip or plus button under [globalPosition], with the row that painted
+  /// it.
+  ///
+  /// The slop is the same one the paint uses, on purpose: a control is only
+  /// *drawn* once the pointer is that close, so hit testing must not be any
+  /// stricter — otherwise an icon you can see would refuse the click.
+  (TableRowChrome, TableChromeTarget)? _chromeAt(
+    Offset globalPosition, {
+    double slop = kTableChromeSlop,
+  }) {
+    for (final TableRowChrome row in _tableRows()) {
+      for (final TableChromeTarget t in row.chromeTargets()) {
+        if (t.rect.inflate(slop).contains(globalPosition)) return (row, t);
+      }
+    }
+    return null;
+  }
+
+  /// Which row / column a drop at [globalPosition] would land on.
+  int _dropIndex(TableRowChrome grabbed, bool column, Offset globalPosition) {
+    final List<TableRowChrome> rows = _tableRows()
+        .where((TableRowChrome r) => r.chromeTableId == grabbed.chromeTableId)
+        .toList()
+      ..sort(
+        (TableRowChrome a, TableRowChrome b) =>
+            a.chromeRowIndex.compareTo(b.chromeRowIndex),
+      );
+    if (rows.isEmpty) return 0;
+    if (column) {
+      final List<Rect> cells = grabbed.chromeCells();
+      for (int i = 0; i < cells.length; i++) {
+        if (globalPosition.dx < cells[i].right) return i;
+      }
+      return cells.isEmpty ? 0 : cells.length - 1;
+    }
+    for (final TableRowChrome r in rows) {
+      if (globalPosition.dy < r.chromeBounds().bottom) return r.chromeRowIndex;
+    }
+    return rows.last.chromeRowIndex;
+  }
+
+  /// The grip being dragged, if any: `null` when the pointer is not on one.
+  TableRowChrome? _grabbedRow;
+  TableChromeTarget? _grabbed;
+
+  /// Where the drag would drop right now.
+  int _dropAt = 0;
+
+  /// The caret the field is about to steal — restored on release, so grabbing a
+  /// grip never moves the insertion point.
+  TextSelection? _caretBeforeChromeTap;
+
+  /// What the pointer looks like over the chrome: `grab` on a grip, `grabbing`
+  /// while one is held, `click` on a `+`.
+  ///
+  /// A plain `MouseCursor`, not a `MouseRegion.cursor` computed inline: the
+  /// region has to be rebuilt for the cursor to change, and rebuilding the
+  /// editor on every mouse move is exactly what the painted chrome exists to
+  /// avoid. It only changes when the *kind* of thing under the pointer changes.
+  MouseCursor _chromeCursor = MouseCursor.defer;
+
+  MouseCursor _cursorAt(Offset? position) {
+    if (position == null) return MouseCursor.defer;
+    final (TableRowChrome, TableChromeTarget)? hit = _chromeAt(position);
+    if (hit == null) return MouseCursor.defer;
+    return switch (hit.$2.kind) {
+      TableChromeKind.rowHandle ||
+      TableChromeKind.columnHandle => SystemMouseCursors.grab,
+      TableChromeKind.addRow ||
+      TableChromeKind.addColumn => SystemMouseCursors.click,
+    };
+  }
+
+  void _setCursor(MouseCursor next) {
+    if (next == _chromeCursor) return;
+    setState(() => _chromeCursor = next);
+  }
+
+  /// The whole point of the chrome's visibility: nothing is drawn unless the
+  /// pointer is at the table's edge, so the editor has to tell the render
+  /// objects where the pointer is.
+  void _onPointerHover(PointerHoverEvent event) {
+    tablePointerPosition.value = event.position;
+    if (_grabbedRow != null) return; // a drag owns the cursor until release
+    _setCursor(_cursorAt(event.position));
+  }
+
+  void _onPointerExit(PointerExitEvent event) {
+    if (_grabbedRow != null) return;
+    tablePointerPosition.value = null;
+    _setCursor(MouseCursor.defer);
+  }
+
+  /// Runs whatever the chrome control meant.
+  void _applyChrome(TableRowChrome row, TableChromeTarget target, bool moved) {
+    final TextEditingValue v = widget.controller.value;
+    final TextEditingValue? next = switch (target.kind) {
+      TableChromeKind.addRow => editTableAt(
+        v,
+        row.chromeSourceStart,
+        TableEdit.rowBelow,
+      ),
+      TableChromeKind.addColumn => editTableAt(
+        v,
+        row.chromeSourceStart,
+        TableEdit.columnRight,
+      ),
+      TableChromeKind.rowHandle => moved
+          ? moveTableRow(v, row.chromeSourceStart, target.index, _dropAt)
+          : null,
+      TableChromeKind.columnHandle => moved
+          ? moveTableColumn(v, row.chromeSourceStart, target.index, _dropAt)
+          : null,
+    };
+    if (next == null) return;
+    widget.controller.value = next;
+    widget.onChanged?.call(next.text);
+  }
+
   /// Recorded on *down*: the field moves the caret on pointer-down, so reading
   /// the selection on up would already be too late.
   void _onPointerDown(PointerDownEvent event) {
     final bool secondary = event.buttons & kSecondaryMouseButton != 0;
+    if (!secondary) {
+      final (TableRowChrome, TableChromeTarget)? hit = _chromeAt(event.position);
+      if (hit != null) {
+        _grabbedRow = hit.$1;
+        _grabbed = hit.$2;
+        _dropAt = hit.$2.index < 0 ? 0 : hit.$2.index;
+        _caretBeforeChromeTap = widget.controller.selection;
+        _downPosition = event.position;
+        _gestureMoved = false;
+        final bool grip = hit.$2.kind == TableChromeKind.rowHandle ||
+            hit.$2.kind == TableChromeKind.columnHandle;
+        if (grip) {
+          // Pressing a grip lights up the row / column it would move, before a
+          // single pixel of movement: the drop preview doubles as the "picked
+          // up" state, and the grip itself turns accent.
+          tableDragPreview.value = TableDragPreview(
+            tableId: hit.$1.chromeTableId,
+            column: hit.$2.kind == TableChromeKind.columnHandle,
+            index: hit.$2.index,
+          );
+          _setCursor(SystemMouseCursors.grabbing);
+        }
+        return;
+      }
+    }
     _caretBeforeCheckboxTap = _checkboxAt(event.position) == null
         ? null
         : widget.controller.selection;
@@ -638,6 +881,25 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   }
 
   void _onPointerMove(PointerMoveEvent event) {
+    final TableRowChrome? grabbed = _grabbedRow;
+    final TableChromeTarget? target = _grabbed;
+    if (grabbed != null && target != null) {
+      final bool column = target.kind == TableChromeKind.columnHandle;
+      final bool rowDrag = target.kind == TableChromeKind.rowHandle;
+      if (!column && !rowDrag) return; // the plus buttons are clicks, not drags
+      if ((event.position - (_downPosition ?? event.position)).distance >
+          kTouchSlop) {
+        _gestureMoved = true;
+      }
+      if (!_gestureMoved) return;
+      _dropAt = _dropIndex(grabbed, column, event.position);
+      tableDragPreview.value = TableDragPreview(
+        tableId: grabbed.chromeTableId,
+        column: column,
+        index: _dropAt,
+      );
+      return;
+    }
     final Offset? from = _downPosition;
     if (from == null || _gestureMoved) return;
     if ((event.position - from).distance <= kTouchSlop) return;
@@ -649,6 +911,32 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   }
 
   void _onPointerUp(PointerUpEvent event) {
+    final TableRowChrome? grabbed = _grabbedRow;
+    final TableChromeTarget? target = _grabbed;
+    if (grabbed != null && target != null) {
+      final TextSelection? caret = _caretBeforeChromeTap;
+      final bool moved = _gestureMoved;
+      _grabbedRow = null;
+      _grabbed = null;
+      _caretBeforeChromeTap = null;
+      _downPosition = null;
+      _gestureMoved = false;
+      tableDragPreview.value = null;
+      _setCursor(_cursorAt(tablePointerPosition.value));
+      _applyChrome(grabbed, target, moved);
+      // A grip is not a caret: the field put the insertion point where the grip
+      // was (the far end of the row), and that has to be undone. The two `+`
+      // buttons are the opposite — the edit lands the selection in the cell it
+      // just created, which is exactly where the user wants to type next.
+      final bool grip = target.kind == TableChromeKind.rowHandle ||
+          target.kind == TableChromeKind.columnHandle;
+      if (grip && caret != null && caret.end <= widget.controller.text.length) {
+        scheduleMicrotask(() {
+          if (mounted) widget.controller.selection = caret;
+        });
+      }
+      return;
+    }
     final TextSelection? saved = _caretBeforeCheckboxTap;
     final bool secondary = _secondaryGesture;
     _caretBeforeCheckboxTap = null;
@@ -691,6 +979,11 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   }
 
   void _onPointerCancel(PointerCancelEvent event) {
+    _grabbedRow = null;
+    _grabbed = null;
+    _caretBeforeChromeTap = null;
+    tableDragPreview.value = null;
+    _setCursor(_cursorAt(tablePointerPosition.value));
     _endGesture();
     _downPosition = null;
     _gestureMoved = false;
@@ -705,6 +998,17 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     }
   }
 
+  /// Ctrl+V: read the clipboard and insert it through [pasteValue], so the
+  /// table padding rule reaches the keyboard exactly as it reaches the menu.
+  Future<void> _pasteFromClipboard() async {
+    final ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
+    final String? text = data?.text;
+    if (text == null || text.isEmpty) return;
+    final TextEditingValue next = pasteValue(widget.controller.value, text);
+    widget.controller.value = next;
+    widget.onChanged?.call(next.text);
+  }
+
   @override
   void dispose() {
     // The click guard deliberately outlives the pointer — the platform's word
@@ -712,6 +1016,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     // outlive the editor.
     final TextEditingController c = widget.controller;
     if (c is MarkdownSourceController) c.disarmClickGuard();
+    if (tablePointerPosition.value != null) tablePointerPosition.value = null;
     super.dispose();
   }
 
@@ -729,24 +1034,74 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
         ),
         const SingleActivator(LogicalKeyboardKey.tab, shift: true):
             const _IndentIntent(true),
+        const SingleActivator(LogicalKeyboardKey.keyC, control: true):
+            const _CopyIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyV, control: true):
+            const _PasteIntent(),
+        const SingleActivator(
+          LogicalKeyboardKey.keyV,
+          control: true,
+          shift: true,
+        ): const _PasteIntent(),
       },
       child: Actions(
         actions: <Type, Action<Intent>>{
           _IndentIntent: CallbackAction<_IndentIntent>(
             onInvoke: (_IndentIntent intent) {
-              final TextEditingValue next = indentLines(
+              // Inside a table, Tab is *cell navigation*, not indentation —
+              // the same key every spreadsheet and Obsidian use. Only when the
+              // caret is not in a table does it fall through to the list
+              // indent it has always been.
+              final TextEditingValue? cell = tableCellStep(
                 widget.controller.value,
-                outdent: intent.outdent,
+                forward: !intent.outdent,
               );
+              final TextEditingValue next =
+                  cell ??
+                  indentLines(widget.controller.value, outdent: intent.outdent);
               widget.controller.value = next;
               widget.onChanged?.call(next.text);
               return null;
             },
           ),
+          _CopyIntent: CallbackAction<_CopyIntent>(
+            onInvoke: (_CopyIntent intent) {
+              final TextEditingValue v = widget.controller.value;
+              final String out =
+                  tableSelectionMarkdown(v.text, v.selection) ??
+                  v.selection.textInside(v.text);
+              if (out.isNotEmpty) {
+                Clipboard.setData(ClipboardData(text: out));
+              }
+              return null;
+            },
+          ),
+          _PasteIntent: CallbackAction<_PasteIntent>(
+            onInvoke: (_PasteIntent intent) {
+              unawaited(_pasteFromClipboard());
+              return null;
+            },
+          ),
         },
-        child: SingleChildScrollView(
-          controller: widget.scrollController,
-          padding: widget.padding,
+        // The `Listener` wraps the whole scroll view, not the field, and it is
+        // **opaque**: a table's grips and plus buttons hang *outside* the
+        // field's box (left of the table, above it, below its last line), and a
+        // `deferToChild` listener only hears about pointers that hit the field
+        // itself. That is why a click on the grip did nothing at first.
+        child: MouseRegion(
+          cursor: _chromeCursor,
+          onHover: _onPointerHover,
+          onExit: _onPointerExit,
+          child: Listener(
+          key: _fieldKey,
+          behavior: HitTestBehavior.opaque,
+          onPointerDown: _onPointerDown,
+          onPointerMove: _onPointerMove,
+          onPointerUp: _onPointerUp,
+          onPointerCancel: _onPointerCancel,
+          child: SingleChildScrollView(
+            controller: widget.scrollController,
+            padding: widget.padding,
           child: Center(
             child: ConstrainedBox(
               constraints: BoxConstraints(maxWidth: widget.maxWidth),
@@ -759,13 +1114,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                   if (ctrl is MarkdownSourceController) {
                     ctrl.contentWidth = c.maxWidth;
                   }
-                  return Listener(
-                    key: _fieldKey,
-                    onPointerDown: _onPointerDown,
-                    onPointerMove: _onPointerMove,
-                    onPointerUp: _onPointerUp,
-                    onPointerCancel: _onPointerCancel,
-                    child: TextField(
+                  return TextField(
                       key: const Key('nrs-editor-field'),
                       controller: widget.controller,
                       focusNode: widget.focusNode,
@@ -781,8 +1130,34 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                       textInputAction: TextInputAction.newline,
                       inputFormatters: <TextInputFormatter>[
                         ListContinuationFormatter(),
+                        // Last, so it sees the text every other formatter has
+                        // already agreed on: a Backspace must never leave the
+                        // cell the caret is in.
+                        TableCellBarrierFormatter(),
                       ],
                       style: style,
+                      // Flutter's desktop default is `BoxWidthStyle.max`, which
+                      // paints every fully selected line as a band running to
+                      // the right edge of the column — a highlighted *block*,
+                      // not highlighted *text*. Obsidian (and every desktop
+                      // editor) hugs the glyphs, so `tight` it is.
+                      //
+                      // ⛔ Do not drop these two lines "because the default is
+                      // fine": `max` is what turned a Ctrl+A into full-width
+                      // stripes, and the height style is what keeps a multi-line
+                      // selection tiling without seams and **on the line** (see
+                      // `snapLineHeight`).
+                      //
+                      // `includeLineSpacingMiddle` looks equally seamless but is
+                      // shifted ~3px down inside the line: the band then starts
+                      // below the first line's top and hangs past the last one.
+                      // On prose nobody notices; on a table, whose wash is
+                      // painted to the same box, it left a strip of the
+                      // paragraph's own highlight peeking out under the table's
+                      // rounded bottom edge. `…Top` puts the band exactly on the
+                      // line box, and still tiles.
+                      selectionWidthStyle: ui.BoxWidthStyle.tight,
+                      selectionHeightStyle: ui.BoxHeightStyle.includeLineSpacingTop,
                       // No forced strut: headings are allowed to be taller than
                       // body text, and a hidden marker must collapse fully.
                       strutStyle: null,
@@ -818,14 +1193,15 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                               onDismiss: state.hideToolbar,
                             );
                           },
-                    ),
-                  );
+                    );
                 },
               ),
             ),
           ),
         ),
-      ),
+          ),
+        ),
+        ),
     );
   }
 }

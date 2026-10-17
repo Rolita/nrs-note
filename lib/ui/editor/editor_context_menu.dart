@@ -129,6 +129,31 @@ List<MenuNode> buildEditorMenu({
   final BlockStyle current = blockStyleOf(markerAt(value));
   final bool hasSelection = value.selection.isValid && !value.selection.isCollapsed;
 
+  // The caret's own line decides whether the table rows apply. Offsets are read
+  // through the same `lineStartOf` / `lineEndOf` pair as everything else, so a
+  // menu that disagrees with the editor about "which line" cannot happen.
+  final int caret = value.selection.isValid ? value.selection.start : value.text.length;
+  final String caretLine = value.text.substring(
+    lineStartOf(value.text, caret),
+    lineEndOf(value.text, caret),
+  );
+  final bool inTable =
+      isTableLine(caretLine) && !isInsideFence(value.text, caret);
+  final int columns = tableCellsOf(caretLine).length;
+
+  MenuAction tableRow(String label, IconData icon, TableEdit op, {bool enabled = true}) {
+    return MenuAction(
+      label: label,
+      icon: icon,
+      // A table edit that does not apply leaves the value untouched rather than
+      // throwing mid-gesture; the row is greyed out, so it should not be
+      // reachable by pointer anyway.
+      onPressed: enabled
+          ? () => onApply((TextEditingValue v) => editTable(v, op) ?? v)
+          : null,
+    );
+  }
+
   MenuAction style(String label, IconData icon, BlockStyle block, {String? shortcut}) {
     return MenuAction(
       label: label,
@@ -178,6 +203,30 @@ List<MenuNode> buildEditorMenu({
           icon: Icons.brush_rounded,
           onPressed: () => onApply(wrapSelection('==', '==', placeholder: '高亮')),
         ),
+        const MenuSeparator(),
+        MenuAction(
+          label: '代码',
+          icon: Icons.code_rounded,
+          shortcut: 'Ctrl+E',
+          onPressed: () => onApply(wrapSelection('`', '`', placeholder: '代码')),
+        ),
+        MenuAction(
+          label: '数学',
+          icon: Icons.functions_rounded,
+          onPressed: () => onApply(wrapSelection(r'$', r'$', placeholder: '公式')),
+        ),
+        // Obsidian's comment syntax, so a note stays portable between the two.
+        MenuAction(
+          label: '注释',
+          icon: Icons.percent_rounded,
+          onPressed: () => onApply(wrapSelection('%%', '%%', placeholder: '注释')),
+        ),
+        const MenuSeparator(),
+        MenuAction(
+          label: '清除格式',
+          icon: Icons.format_clear_rounded,
+          onPressed: () => onApply(clearFormatting()),
+        ),
       ],
     ),
     MenuSubmenu(
@@ -189,9 +238,6 @@ List<MenuNode> buildEditorMenu({
         style('有序列表', Icons.format_list_numbered_rounded, BlockStyle.ordered,
             shortcut: 'Ctrl+Shift+7'),
         style('任务列表', Icons.checklist_rounded, BlockStyle.task),
-        // Not in the reference menu, but NRS has it and the old ribbon had it:
-        // dropping it would quietly delete a capability.
-        style('有序任务列表', Icons.checklist_rtl_rounded, BlockStyle.orderedTask),
         const MenuSeparator(),
         for (int level = 1; level <= 6; level++)
           MenuAction(
@@ -224,9 +270,44 @@ List<MenuNode> buildEditorMenu({
           shortcut: 'Ctrl+Shift+E',
           onPressed: () => onApply(codeBlock()),
         ),
+        MenuAction(
+          label: '表格',
+          icon: Icons.grid_on_rounded,
+          onPressed: () => onApply(insertTable()),
+        ),
       ],
     ),
     const MenuSeparator(),
+    if (inTable) ...<MenuNode>[
+      MenuSubmenu(
+        label: '表格工具',
+        icon: Icons.table_rows_rounded,
+        children: <MenuNode>[
+          tableRow('上方插入行', Icons.vertical_align_top_rounded, TableEdit.rowAbove),
+          tableRow('下方插入行', Icons.vertical_align_bottom_rounded, TableEdit.rowBelow),
+          const MenuSeparator(),
+          tableRow('左侧插入列', Icons.keyboard_tab_rounded, TableEdit.columnLeft),
+          tableRow('右侧插入列', Icons.keyboard_tab_rounded, TableEdit.columnRight),
+          const MenuSeparator(),
+          // The divider is the table's own skeleton: deleting it would turn the
+          // grid back into a plain run of pipes, so it cannot be removed.
+          tableRow(
+            '删除本行',
+            Icons.delete_outline_rounded,
+            TableEdit.deleteRow,
+            enabled: !isTableDivider(caretLine),
+          ),
+          // Never the last column: a table with no cells is not a table.
+          tableRow(
+            '删除本列',
+            Icons.delete_sweep_outlined,
+            TableEdit.deleteColumn,
+            enabled: columns > 1,
+          ),
+        ],
+      ),
+      const MenuSeparator(),
+    ],
     MenuAction(
       label: '剪切',
       icon: Icons.content_cut_rounded,
@@ -240,7 +321,7 @@ List<MenuNode> buildEditorMenu({
       icon: Icons.content_copy_rounded,
       shortcut: 'Ctrl+C',
       onPressed: hasSelection
-          ? () => state.copySelection(SelectionChangedCause.toolbar)
+          ? () => copySelectionCells(state, SelectionChangedCause.toolbar)
           : null,
     ),
     MenuAction(
@@ -274,30 +355,39 @@ List<MenuNode> buildEditorMenu({
 /// the field's idea of whether a paste is allowed. On a plain-Markdown surface
 /// the two land the same text today — keeping the second one explicit rather
 /// than aliasing it is what keeps that true if the route above ever changes.
-Future<void> pasteIntoEditor(EditableTextState state, {required bool plain}) async {
-  if (!plain) {
-    await state.pasteText(SelectionChangedCause.toolbar);
+/// Copy, but a table selection copies the **table its cells make** rather than
+/// the characters between them — see [tableSelectionMarkdown]. Everything else
+/// is the field's own copy, so an ordinary text selection is untouched.
+void copySelectionCells(EditableTextState state, SelectionChangedCause cause) {
+  final TextEditingValue value = state.textEditingValue;
+  final String? table = tableSelectionMarkdown(value.text, value.selection);
+  if (table == null) {
+    state.copySelection(cause);
     return;
   }
+  unawaited(Clipboard.setData(ClipboardData(text: table)));
+}
 
+/// Paste, with the blank line a table needs to stay a table of its own.
+///
+/// ⛔ Neither route hands the characters to the field any more. `pasteText`
+/// writes them in verbatim, so a copied block dropped on the line under a table
+/// became four more rows of that table with an empty right-hand column — user:
+/// 「如果是在表格的下一行粘贴的话，会把两个表格连在一起」. Both variants read
+/// the clipboard here and go through [pasteValue], which is the only place that
+/// rule can be applied and the only way Ctrl+V and this menu can agree.
+Future<void> pasteIntoEditor(
+  EditableTextState state, {
+  // Kept so the two menu entries stay distinct at the call site — a
+  // format-aware paste would hang its behaviour here.
+  required bool plain,
+}) async {
   final ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
   final String? text = data?.text;
   if (text == null || text.isEmpty) return;
 
-  final TextEditingValue value = state.textEditingValue;
-  final String source = value.text;
-  final TextSelection selection = value.selection;
-  final int a = (selection.start < 0 ? source.length : selection.start).clamp(0, source.length);
-  final int b = (selection.end < 0 ? source.length : selection.end).clamp(0, source.length);
-  final int from = math.min(a, b);
-  final int to = math.max(a, b);
-  final String next = source.replaceRange(from, to, text);
-
   state.userUpdateTextEditingValue(
-    TextEditingValue(
-      text: next,
-      selection: TextSelection.collapsed(offset: from + text.length),
-    ),
+    pasteValue(state.textEditingValue, text),
     SelectionChangedCause.toolbar,
   );
 }

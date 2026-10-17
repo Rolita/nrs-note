@@ -46,3 +46,4 @@ app.*.map.json
 
 # WorkBuddy agent workspace (memory / tool state)
 .workbuddy/
+.workbuddy-ai/

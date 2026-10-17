@@ -21,7 +21,7 @@ void main() {
         favorite: true,
         createdAt: DateTime(2026, 1, 2, 9, 30),
         updatedAt: DateTime(2026, 1, 3, 10, 0),
-        fileName: '写作计划-abc123.md',
+        fileName: '写作计划.md',
       );
 
       final Note parsed = Note.fromMarkdown(
@@ -65,21 +65,37 @@ void main() {
       expect(Note.fromMarkdown(raw, 'x.md', DateTime(2026)).body, raw);
     });
 
-    test('falls back to the first heading when there is no front matter', () {
+    test('the title is the file name, not the front matter or a heading', () {
+      // One name in two places: renaming the file renames the note, so a file
+      // called `周报.md` must not claim another title just because its
+      // metadata — or its first heading — says so.
       final Note parsed = Note.fromMarkdown(
-        '# 我的第一篇\n\n内容',
-        'whatever.md',
+        '---\ntitle: 旧标题\n---\n\n# 另一个标题\n\n内容',
+        '周报.md',
         DateTime(2026, 3, 4),
       );
-      expect(parsed.title, '我的第一篇');
+      expect(parsed.title, '周报');
       expect(parsed.tags, isEmpty);
       expect(parsed.createdAt, DateTime(2026, 3, 4));
+
+      // A file with no metadata at all still gets a usable title…
+      expect(
+        Note.fromMarkdown('# 我的第一篇\n\n内容', '我的第一篇.md', DateTime(2026))
+            .title,
+        '我的第一篇',
+      );
+      // …and the untitled placeholder reads as its file name, too.
+      expect(Note.fromMarkdown('', '未命名.md', DateTime(2026)).title, '未命名');
     });
 
     test('slugify keeps CJK and strips filesystem-hostile characters', () {
       expect(Note.slugify('我的笔记 / 2026: 计划?'), '我的笔记 2026 计划');
       expect(Note.slugify('   '), '');
-      expect(Note.buildFileName('', 'abcdef'), 'abcdef.md');
+      // The file name is the title: no id suffix, and an empty title lands in
+      // 「未命名」 rather than in a hash.
+      expect(Note.buildFileName('写作计划'), '写作计划.md');
+      expect(Note.buildFileName(''), '未命名.md');
+      expect(Note.buildFileName('   '), '未命名.md');
     });
 
     test('counts CJK characters and latin words together', () {
@@ -194,6 +210,33 @@ Setext 标题
     test('formats the word under the caret when nothing is selected', () {
       final TextEditingValue out = wrapSelection('*', '*')(value('say hi', 5));
       expect(out.text, 'say *hi*');
+    });
+
+    test('清除格式 strips every inline marker, and leaves the blocks alone', () {
+      final MarkdownEditFn clear = clearFormatting();
+
+      expect(
+        clear(value('**粗**、*斜*、~~删~~、==亮==、`码`', 0, 28)).text,
+        '粗、斜、删、亮、码',
+      );
+      // Links keep their text, wikilinks keep their target, comments their note.
+      expect(
+        clear(value('[标题](https://a.b) 与 [[笔记]] 与 %%旁注%%', 0, 35)).text,
+        '标题 与 笔记 与 旁注',
+      );
+      // Structure is not inline formatting: bullets, boxes and headings stay.
+      expect(clear(value('- [ ] 事', 0, 7)).text, '- [ ] 事');
+      expect(clear(value('## 标题', 0, 5)).text, '## 标题');
+      // Nothing to do: text and selection come back exactly as they went in.
+      final TextEditingValue untouched = clear(value('普通正文', 0, 4));
+      expect(untouched.text, '普通正文');
+      expect(untouched.selection, const TextSelection(baseOffset: 0, extentOffset: 4));
+    });
+
+    test('清除格式 with no selection cleans the line under the caret', () {
+      const String text = '上文\n**加粗** 与 `代码`\n下文';
+      final TextEditingValue out = clearFormatting()(value(text, 12));
+      expect(out.text, '上文\n加粗 与 代码\n下文');
     });
 
     test('reads the caret line without slicing past the start of the text', () {
@@ -357,6 +400,262 @@ Setext 标题
       expect(insertDivider()(value('上文\n', 3)).text, '上文\n---\n');
       // A selected range is replaced, not appended to.
       expect(insertDivider()(value('上文', 0, 2)).text, '---\n');
+    });
+
+    test('inserts a well formed table and lands in its first cell', () {
+      const String expected = '|  |  |\n| --- | --- |\n|  |  |\n';
+      final TextEditingValue empty = insertTable()(value('', 0));
+      expect(empty.text, expected);
+      // The caret goes into the first cell, so typing starts in the table
+      // rather than after it.
+      expect(empty.selection.baseOffset, 2);
+
+      // Mid-paragraph: a newline is added first, so the header row is not
+      // glued to the sentence above it.
+      final TextEditingValue mid = insertTable()(value('上文', 2));
+      expect(mid.text, '上文\n$expected');
+      expect(mid.selection.baseOffset, 5);
+
+      // The table must be one the renderer will actually recognise: header,
+      // divider, body — and every row the same width.
+      final List<String> rows = empty.text.split('\n')..removeLast();
+      expect(rows, hasLength(3));
+      for (final String row in rows) {
+        expect(row.split('|').length - 2, 2, reason: 'row is not 2 cells: $row');
+      }
+    });
+
+    test('Tab walks the cells, then grows the table', () {
+      const String table = '| a | b |\n| --- | --- |\n| c | d |\n';
+      // From the first cell, Tab selects the second cell's content — so typing
+      // replaces it instead of appending to it.
+      final TextEditingValue second = tableCellStep(
+        value(table, 1),
+        forward: true,
+      )!;
+      expect(
+        table.substring(second.selection.start, second.selection.end),
+        'b',
+      );
+      // …and Shift+Tab comes back.
+      final TextEditingValue back = tableCellStep(
+        second,
+        forward: false,
+      )!;
+      expect(table.substring(back.selection.start, back.selection.end), 'a');
+      // Tab off the end of a row crosses the divider into the next row.
+      final TextEditingValue nextRow = tableCellStep(
+        value(table, table.indexOf('b')),
+        forward: true,
+      )!;
+      expect(
+        nextRow.text.substring(nextRow.selection.start, nextRow.selection.end),
+        'c',
+      );
+      // Tab off the very last cell appends a row of the same width.
+      final TextEditingValue grown = tableCellStep(
+        value(table, table.indexOf('d')),
+        forward: true,
+      )!;
+      expect(grown.text, '$table|  |  |\n');
+      expect(grown.selection.isCollapsed, isFalse, reason: '新行第一格被选中');
+      expect(
+        grown.text.substring(grown.selection.start, grown.selection.end),
+        '  ',
+      );
+    });
+
+    test('Tab outside a table is still indentation', () {
+      expect(tableCellStep(value('- 一', 2), forward: true), isNull);
+      expect(tableCellStep(value('正文', 1), forward: true), isNull);
+      expect(tableRowBelow(value('正文', 1)), isNull);
+      // A paragraph directly under a table must not be sucked into the grid,
+      // and a pipe-led line inside a fence is code, not a row.
+      const String below = '| a | b |\n| --- | --- |\n正文';
+      expect(tableCellStep(value(below, below.length), forward: true), isNull);
+      const String fence = '```\n| a | b |\n```';
+      expect(tableCellStep(value(fence, 8), forward: true), isNull);
+    });
+
+    test('Enter in a table adds a row in the same column', () {
+      const String table = '| a | b |\n| --- | --- |\n| c | d |\n';
+      final TextEditingValue next = tableRowBelow(value(table, table.indexOf('d')))!;
+      expect(next.text, '$table|  |  |\n');
+      // The caret lands in the second column of the new row, not its first.
+      final String row = next.text.substring(next.text.lastIndexOf('\n|'));
+      expect(
+        next.selection.start - next.text.lastIndexOf('\n|'),
+        inInclusiveRange(row.indexOf('|') + 3, row.length),
+      );
+    });
+
+    test('a part of a row is still one cell list', () {
+      // The renderer and Tab share one parser, so a row whose trailing pipe
+      // was never typed must be read the same way by both.
+      expect(tableCellsOf('| a | b |').length, 2);
+      expect(tableCellsOf('| a | b').length, 2);
+      // Text before the first pipe is not a cell — that line is not a table.
+      expect(isTableLine('a | b'), isFalse);
+      expect(tableCellsOf('no pipes here'), isEmpty);
+    });
+
+    test('a Backspace may not delete out of its cell', () {
+      // `| 区域 | 你能在这里 |` — editing a cell happens in place, so the caret
+      // can sit right before `你`; one Backspace too many used to eat the pipe
+      // (and, once the cell was empty, the text of the cell to its left).
+      const String table = '| 区域 | 你能在这里 |';
+      final int start = table.indexOf('你');
+      expect(tableCellBarrier(table, start), isFalse, reason: '这里删的是内容');
+      // The padding space in front of the cell belongs to the table.
+      expect(tableCellBarrier(table, start - 1), isTrue, reason: '首格内边距');
+      // …and the pipe is the wall itself.
+      expect(tableCellBarrier(table, start - 2), isTrue, reason: '管道');
+      // Deleting inside the cell is never restricted.
+      expect(tableCellBarrier(table, table.indexOf('能')), isFalse);
+
+      // An empty cell blocks everything: there is nothing left in it to delete.
+      const String empty = '| 区域 |  |';
+      expect(tableCellBarrier(empty, empty.indexOf('|  |') + 3), isTrue);
+
+      // Prose has no barrier at all.
+      expect(tableCellBarrier('你能在这里', 3), isFalse);
+      // …and neither does the newline before a row, so lines still join.
+      const String two = '上文\n| a | b |';
+      expect(tableCellBarrier(two, 2), isFalse);
+    });
+
+    test('a row can be dragged to another slot in its block', () {
+      const String table = '| h | H |\n| --- | --- |\n| a | A |\n| b | B |\n| c | C |';
+      final TextEditingValue v = value(table, table.indexOf('b'));
+      // The divider is not a row: `a`,`b`,`c` are 0,1,2 and the header is 0 too.
+      // Dragging `b` above `a` puts it directly under the divider…
+      final String up = moveTableRow(v, v.selection.start, 2, 1)!.text;
+      expect(up, '| h | H |\n| --- | --- |\n| b | B |\n| a | A |\n| c | C |');
+      // …and dragging `b` to the very top makes *it* the header, with the
+      // divider following it. The old header stays a body row.
+      final String top = moveTableRow(v, v.selection.start, 2, 0)!.text;
+      expect(top, '| b | B |\n| --- | --- |\n| h | H |\n| a | A |\n| c | C |');
+      // The caret rides along with its text.
+      final TextEditingValue moved = moveTableRow(v, v.selection.start, 2, 1)!;
+      expect(moved.selection.baseOffset, moved.text.indexOf('b'));
+      // A no-op stays a no-op, and prose is untouched.
+      expect(moveTableRow(v, v.selection.start, 2, 2), isNull);
+      expect(moveTableRow(value('正文', 1), 1, 0, 1), isNull);
+    });
+
+    test('a column can be dragged to another slot in its table', () {
+      const String table =
+          '| h | H | x |\n| --- | --- | --- |\n| a | A | y |';
+      final TextEditingValue v = value(table, table.indexOf('A'));
+      final String left = moveTableColumn(v, v.selection.start, 1, 0)!.text;
+      expect(left, '| H | h | x |\n| --- | --- | --- |\n| A | a | y |');
+      // …and the caret stays on the character it was on, in its new column.
+      final TextEditingValue moved = moveTableColumn(v, v.selection.start, 1, 0)!;
+      expect(moved.text.substring(moved.selection.start), startsWith('A'));
+      // A divider with alignment markers moves with its column.
+      const String aligned = '| a | b |\n| :-- | --: |\n| c | d |';
+      final String swapped = moveTableColumn(
+        value(aligned, aligned.indexOf('b')),
+        aligned.indexOf('b'),
+        1,
+        0,
+      )!.text;
+      expect(swapped, '| b | a |\n| --: | :-- |\n| d | c |');
+      expect(moveTableColumn(v, v.selection.start, 1, 1), isNull);
+    });
+
+    test('the divider is a row without cells', () {
+      expect(isTableDivider('| --- | --- |'), isTrue);
+      expect(isTableDivider('| :--- | :-: | ---: |'), isTrue);
+      expect(isTableDivider('| a | b |'), isFalse);
+      expect(isTableDivider('| --- | date |'), isFalse);
+      // Tab steps over it rather than selecting the dashes.
+      const String table = '| a | b |\n| --- | --- |\n| c | d |\n';
+      final TextEditingValue down = tableCellStep(
+        value(table, table.indexOf('b')),
+        forward: true,
+      )!;
+      expect(
+        down.text.substring(down.selection.start, down.selection.end),
+        'c',
+      );
+      // A caret parked on the hidden divider still moves into the table.
+      final TextEditingValue off = tableCellStep(
+        value(table, table.indexOf('---') + 1),
+        forward: true,
+      )!;
+      expect(
+        off.text.substring(off.selection.start, off.selection.end),
+        'c',
+      );
+    });
+
+    test('a column is added to every row, divider included', () {
+      const String table = '| a | b |\n| --- | --- |\n| c | d |';
+      final TextEditingValue right = editTable(
+        value(table, table.indexOf('b')),
+        TableEdit.columnRight,
+      )!;
+      expect(right.text, '| a | b |  |\n| --- | --- | --- |\n| c | d |  |');
+      // The caret stays on 'b' — adding a column must not move the user's work.
+      expect(right.selection.start, right.text.indexOf('b'));
+
+      final TextEditingValue left = editTable(
+        value(table, table.indexOf('b')),
+        TableEdit.columnLeft,
+      )!;
+      expect(left.text, '| a |  | b |\n| --- | --- | --- |\n| c |  | d |');
+      expect(left.selection.start, left.text.indexOf('b'));
+    });
+
+    test('a deleted column leaves no empty pipe behind', () {
+      const String table = '| a | b |\n| --- | --- |\n| c | d |';
+      expect(
+        editTable(value(table, table.indexOf('b')), TableEdit.deleteColumn)!.text,
+        '| a |\n| --- |\n| c |',
+      );
+      // Deleting the first column keeps a leading pipe, so it is still a table.
+      expect(
+        editTable(value(table, table.indexOf('a')), TableEdit.deleteColumn)!.text,
+        '| b |\n| --- |\n| d |',
+      );
+    });
+
+    test('rows are added above and removed, keeping the divider', () {
+      const String table = '| a | b |\n| --- | --- |\n| c | d |';
+      final TextEditingValue above = editTable(
+        value(table, table.indexOf('b')),
+        TableEdit.rowAbove,
+      )!;
+      expect(above.text, '|  |  |\n$table');
+      expect(
+        above.text.substring(above.selection.start, above.selection.end),
+        '  ',
+        reason: '新行里选中的是光标所在那一列',
+      );
+
+      final TextEditingValue gone = editTable(
+        value(table, table.indexOf('d')),
+        TableEdit.deleteRow,
+      )!;
+      expect(gone.text, '| a | b |\n| --- | --- |');
+      // The divider is the table's skeleton and cannot be deleted.
+      expect(
+        editTable(value(table, table.indexOf('---')), TableEdit.deleteRow),
+        isNull,
+      );
+      // Neither can the last remaining column.
+      const String single = '| only |\n| --- |';
+      expect(
+        editTable(value(single, 3), TableEdit.deleteColumn),
+        isNull,
+      );
+    });
+
+    test('table edits are refused outside a table and inside a fence', () {
+      expect(editTable(value('正文', 1), TableEdit.columnRight), isNull);
+      const String fence = '```\n| a | b |\n```';
+      expect(editTable(value(fence, 8), TableEdit.columnRight), isNull);
     });
 
     test('continues and then ends a list on Enter', () {
@@ -882,15 +1181,33 @@ final x = 1;
       }
     });
 
-    test('keeps nested list indentation and swaps the bullet glyph', () {
+    test('nests by a fixed step and draws a rail per ancestor level', () {
+      // Two typed spaces are worth ~9px at this font size, which made nesting
+      // invisible: the child marker barely moved and nothing said which parent
+      // the row belonged to. A level is now worth one whole marker column, and
+      // the row carries a rail at its parent's marker centre.
       const String text = '- 一\n  - 二\n    - 三\n';
       final List<InlineSpan> spans = render(text);
       expectFaithful(text, spans, 'nested list');
-      expect(spans.whereType<WidgetSpan>().length, 3);
+
+      // Three bullets, plus one indent guide on each of the two nested rows.
+      expect(spans.whereType<WidgetSpan>().length, 5);
+      final List<MarkdownIndentGuides> guides = spans
+          .whereType<WidgetSpan>()
+          .map((WidgetSpan s) => s.child)
+          .whereType<MarkdownIndentGuides>()
+          .toList();
+      expect(guides.map((MarkdownIndentGuides g) => g.levels), <int>[1, 2]);
+
+      // The typed spaces are still in the tree — they are just worth nothing
+      // now, because the widget in front of them already carries the width.
       expect(
-        spans.whereType<TextSpan>().where((TextSpan s) => s.text == '    '),
-        isNotEmpty,
-        reason: 'the deepest indent must survive as real whitespace',
+        spans
+            .whereType<TextSpan>()
+            .where((TextSpan s) => s.text == '   ')
+            .isNotEmpty,
+        isTrue,
+        reason: 'the deepest indent must survive as real characters',
       );
     });
 
@@ -965,8 +1282,31 @@ final x = 1;
       expect(divider.style!.color, Colors.transparent);
       expect(
         divider.style!.fontSize,
-        base.fontSize,
-        reason: 'invisible, but the row keeps its height',
+        0,
+        reason: 'zero height, or the divider would hold a whole line open '
+            'between the header and the first body row',
+      );
+    });
+
+    test('the header sits flush on the first body row', () {
+      // The divider's line break is a source character like any other, so it
+      // cannot simply be dropped — it is replaced by a zero-size widget. The
+      // tree must still be exactly as long as the source, and the divider must
+      // not introduce a line of its own.
+      const String text = '| 区域 | 事 |\n| --- | --- |\n| 侧栏 | 记 |\n';
+      final List<InlineSpan> spans = render(text);
+      expectFaithful(text, spans, 'table');
+      bool hasSoftBreak = false;
+      for (final InlineSpan s in spans) {
+        if (s is WidgetSpan && s.child is SizedBox) {
+          final SizedBox box = s.child as SizedBox;
+          if (box.width == 0 && box.height == 0) hasSoftBreak = true;
+        }
+      }
+      expect(
+        hasSoftBreak,
+        isTrue,
+        reason: 'the newline before the divider must be a zero-size box',
       );
     });
 
@@ -1114,6 +1454,26 @@ final x = 1;
       );
       expect(fmt.formatEditUpdate(old, next).text, '\n 甲');
     });
+
+    test('Enter in a table adds a row instead of slicing the row', () {
+      // A bare newline inside `| c | d |` splits it into two lines, only one of
+      // which still starts with a pipe — half the table would vanish mid-keystroke.
+      const String table = '| a | b |\n| --- | --- |\n| c | d |';
+      final TextEditingValue out = enter(table, table.length);
+      expect(out.text, '$table\n|  |  |');
+      expect(
+        out.text.substring(out.selection.start, out.selection.end),
+        '  ',
+        reason: '新行里选中的是第一格的内容',
+      );
+      // Mid-cell Enter grows the table too, rather than breaking the line.
+      expect(enter(table, table.indexOf('c') + 1).text, '$table\n|  |  |');
+    });
+
+    test('Enter in a fenced block is still a line break', () {
+      // Pipes inside ``` are code samples, not a table.
+      expect(enter('```\n| a | b |\n```', 13).text, '```\n| a | b |\n\n```');
+    });
   });
 
   group('Line height', () {
@@ -1228,26 +1588,28 @@ final x = 1;
       expect(t.width, lessThanOrEqualTo(679));
     });
 
-    test('a caret in the table knocks the row back to source', () {
-      int at = 0;
-      for (final String line in doc.split('\n').take(1)) {
-        at += line.length;
-      }
+    test('a caret in a cell leaves the table rendered', () {
+      // Obsidian never turns a table back into `| 侧栏 | 全部笔记 |` because the
+      // caret is inside it — you type in the cell and the grid stays a grid.
+      // The skeleton under each row puts every character where its glyph is
+      // painted, so nothing has to be revealed for the caret to be honest.
       final List<InlineSpan> spans = buildLiveSpans(
         text: doc,
         base: base,
         p: palette,
-        selection: TextSelection.collapsed(offset: 2),
+        selection: const TextSelection.collapsed(offset: 2),
         contentWidth: 680,
       );
-      // Rendered rows paint a `_TableRowView`; a revealed row paints text.
       int rowViews = 0;
       int pipes = 0;
       void walk(InlineSpan s) {
         if (s is WidgetSpan && s.child.runtimeType.toString() == '_TableRowView') {
           rowViews++;
         }
-        if (s is TextSpan && s.text != null && s.text!.contains('|')) {
+        if (s is TextSpan &&
+            s.text != null &&
+            s.text!.contains('|') &&
+            s.style?.fontSize != 0) {
           pipes += s.text!.split('|').length - 1;
         }
         for (final InlineSpan c in (s is TextSpan ? s.children : null) ?? const <InlineSpan>[]) {
@@ -1258,9 +1620,8 @@ final x = 1;
       for (final InlineSpan s in spans) {
         walk(s);
       }
-      expect(pipes, greaterThan(0), reason: 'the caret row shows its pipes');
-      expect(rowViews, 1, reason: 'the other rows stay rendered');
-      expect(at, greaterThan(0));
+      expect(pipes, 0, reason: 'no row may fall back to its source');
+      expect(rowViews, 2, reason: 'every row of the table stays rendered');
     });
 
     test('a selection across cells leaves the table rendered', () {
@@ -1289,6 +1650,250 @@ final x = 1;
         walk(s);
       }
       expect(rowViews, 2, reason: 'both rows stay rendered under a range');
+    });
+
+    // ------------------------------------------------------- what copy takes
+    //
+    // A table is selected by the cell, so what leaves the table for the
+    // clipboard is the **cells**, not the characters between them. Dragging
+    // from `收藏` down to `展开` used to copy the pipes, the divider row and the
+    // `| 侧栏 |` prefix of every row in between — user:
+    // 「在表格里是选中格子，选中文字只能选中同一格的文字」.
+    const String note =
+        '| 区域 | 能做的事 |\n'
+        '| --- | --- |\n'
+        '| 笔记列表 | 搜索、置顶、收藏 |\n'
+        '| 侧栏 | 按标签筛选 |\n'
+        '| 编辑器 | 右侧展开大纲 |\n';
+
+    int at(String needle) => note.indexOf(needle);
+
+    test('a drag across one column copies that column as a table', () {
+      final String? out = tableSelectionMarkdown(
+        note,
+        TextSelection(baseOffset: at('收藏'), extentOffset: at('展开') + 2),
+      );
+      // ⛔ No pipes of the *original* rows and no `| --- | --- |` divider from
+      // the source: what comes out is a table of its own, whose header is the
+      // first row the drag touched.
+      expect(
+        out,
+        '| 搜索、置顶、收藏 |\n'
+        '| --- |\n'
+        '| 按标签筛选 |\n'
+        '| 右侧展开大纲 |',
+      );
+    });
+
+    test('a block of cells copies as a table with both columns', () {
+      final String? both = tableSelectionMarkdown(
+        note,
+        TextSelection(baseOffset: at('笔记列表'), extentOffset: at('展开') + 2),
+      );
+      expect(
+        both,
+        '| 笔记列表 | 搜索、置顶、收藏 |\n'
+        '| --- | --- |\n'
+        '| 侧栏 | 按标签筛选 |\n'
+        '| 编辑器 | 右侧展开大纲 |',
+      );
+    });
+
+    test('a drag inside one cell is ordinary text selection', () {
+      // ⛔ Not a cell selection: copying part of a cell has to copy exactly the
+      // characters under the pointer, or selecting a word would grab the cell.
+      expect(
+        tableSelectionMarkdown(
+          note,
+          TextSelection(baseOffset: at('搜索'), extentOffset: at('搜索') + 2),
+        ),
+        isNull,
+      );
+    });
+
+    test('a range that starts in prose or leaves the table is prose', () {
+      const String withProse = '开场白，写一点东西。\n\n$note';
+      expect(
+        tableSelectionMarkdown(
+          withProse,
+          TextSelection(
+            baseOffset: withProse.indexOf('写一点'),
+            extentOffset: withProse.indexOf('收藏') + 2,
+          ),
+        ),
+        isNull,
+        reason: 'starts outside the table, so there is no block to hand back',
+      );
+      expect(
+        tableSelectionMarkdown(
+          note,
+          TextSelection(baseOffset: at('收藏'), extentOffset: note.length),
+        ),
+        isNull,
+        reason: 'runs out of the last cell, so it is no longer a block',
+      );
+      expect(
+        tableSelectionMarkdown(note, const TextSelection.collapsed(offset: 4)),
+        isNull,
+        reason: 'a caret selects nothing',
+      );
+    });
+
+    // ------------------------------------------------------ pasting a block
+    //
+    // Markdown has no end-of-table token, so a block pasted on the line under a
+    // table used to become four more rows of it — user:
+    // 「如果是在表格的下一行粘贴的话，会把两个表格连在一起」.
+    const String block = '| 区域 |\n| --- |\n| 笔记列表 |';
+
+    test('a table pasted under a table gets a blank line first', () {
+      // The caret sits on the empty line right below the table — the case the
+      // user hit: the pasted block would otherwise read as four more rows.
+      final TextEditingValue v = pasteValue(
+        const TextEditingValue(
+          text: note,
+          selection: TextSelection.collapsed(offset: note.length),
+        ),
+        block,
+      );
+      expect(v.text, '$note\n$block');
+      expect(v.selection.baseOffset, v.text.length);
+    });
+
+    test('a table pasted on a fresh line needs no padding', () {
+      final TextEditingValue v = pasteValue(
+        const TextEditingValue(
+          text: '正文\n\n',
+          selection: TextSelection.collapsed(offset: 4),
+        ),
+        block,
+      );
+      expect(v.text, '正文\n\n$block');
+    });
+
+    test('a table pasted above a table gets a blank line after it', () {
+      final TextEditingValue v = pasteValue(
+        const TextEditingValue(
+          text: note,
+          selection: TextSelection.collapsed(offset: 0),
+        ),
+        block,
+      );
+      expect(v.text, '$block\n\n$note');
+    });
+
+    test('prose pasted under a table is left alone', () {
+      final TextEditingValue v = pasteValue(
+        const TextEditingValue(
+          text: note,
+          selection: TextSelection.collapsed(offset: note.length),
+        ),
+        '随便一句话',
+      );
+      expect(v.text, '$note随便一句话');
+    });
+
+    test('a table pasted into an empty row replaces the row', () {
+      // The row `Enter` leaves behind at the end of a table. Pouring the block
+      // into its first cell used to append the pasted header and every pasted
+      // row as more rows of the table above — user:
+      // 「我在输入光标这个位置粘贴…变成了这样，这是错误的」.
+      const String withEmptyRow = '$note|  |  |  |';
+      final TextEditingValue v = pasteValue(
+        const TextEditingValue(
+          text: withEmptyRow,
+          selection: TextSelection.collapsed(offset: withEmptyRow.length - 2),
+        ),
+        block,
+      );
+      expect(v.text, '$note\n$block');
+      expect(v.selection.baseOffset, v.text.length);
+    });
+
+    test('an empty row in the middle keeps a blank line on both sides', () {
+      const String withEmptyRow = '$note|  |  |  |\n尾巴\n';
+      final TextEditingValue v = pasteValue(
+        const TextEditingValue(
+          text: withEmptyRow,
+          selection: TextSelection.collapsed(offset: note.length + 3),
+        ),
+        block,
+      );
+      expect(v.text, '$note\n$block\n\n尾巴\n');
+    });
+
+    test('a row that already holds text is left alone', () {
+      // ⛔ No reading of "paste a table here" can both keep the row and keep the
+      // table, so this one stays a plain insert rather than eating the row.
+      final TextEditingValue v = pasteValue(
+        TextEditingValue(
+          text: note,
+          selection: TextSelection.collapsed(offset: at('侧栏') + 1),
+        ),
+        block,
+      );
+      expect(v.text, note.replaceRange(at('侧栏') + 1, at('侧栏') + 1, block));
+    });
+
+    // ------------------------------------------------------- joining a table
+    //
+    // A copy of the same table pasted under it is how rows get duplicated, and
+    // what comes out is **one** table: the copy's header cannot survive, because
+    // markdown has exactly one header and a second would land as a data row —
+    // user: 「还是两个表格啊？应该连在一起变成一个表格」.
+    const String sheet =
+        '| 功能 | 快捷键 | 写法 |\n'
+        '| --- | --- | --- |\n'
+        '| 加粗 | Ctrl + B | **文字** |\n'
+        '| 斜体 | Ctrl + I | *文字* |\n';
+    const String sheetCopy =
+        '| 功能 | 快捷键 | 写法 |\n'
+        '| --- | --- | --- |\n'
+        '| 加粗 | Ctrl + B | **文字** |\n'
+        '| 斜体 | Ctrl + I | *文字* |';
+    const String sheetTail =
+        '| 加粗 | Ctrl + B | **文字** |\n'
+        '| 斜体 | Ctrl + I | *文字* |';
+
+    test('a block of the same width joins the empty row it lands in', () {
+      final TextEditingValue v = pasteValue(
+        TextEditingValue(
+          text: '$sheet|  |  |  |',
+          selection: TextSelection.collapsed(offset: sheet.length + 4),
+        ),
+        sheetCopy,
+      );
+      expect(v.text, '$sheet$sheetTail');
+      expect(
+        RegExp(r'^\| --- \| --- \| --- \|$', multiLine: true).allMatches(v.text),
+        hasLength(1),
+        reason: '一张表只能有一条分隔行',
+      );
+      expect(v.selection.baseOffset, v.text.length);
+    });
+
+    test('a block pasted on the line under a table joins it', () {
+      final TextEditingValue v = pasteValue(
+        const TextEditingValue(
+          text: sheet,
+          selection: TextSelection.collapsed(offset: sheet.length),
+        ),
+        sheetCopy,
+      );
+      expect(v.text, '$sheet$sheetTail');
+    });
+
+    test('a narrower block stays a table of its own', () {
+      // ⛔ Three columns cannot take a one-column row: joining would shear the
+      // grid, so the block is kept apart instead.
+      final TextEditingValue v = pasteValue(
+        TextEditingValue(
+          text: '$sheet|  |  |  |',
+          selection: TextSelection.collapsed(offset: sheet.length + 4),
+        ),
+        block,
+      );
+      expect(v.text, '$sheet\n$block');
     });
   });
 }

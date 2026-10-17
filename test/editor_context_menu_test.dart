@@ -137,7 +137,7 @@ void main() {
     expect(find.text('代码块'), findsNothing);
   });
 
-  testWidgets('插入 offers the divider and the code block, and nothing else', (
+  testWidgets('插入 offers the divider, the code block and the table, and nothing else', (
     WidgetTester tester,
   ) async {
     await pump(tester, '你好\n');
@@ -146,9 +146,9 @@ void main() {
 
     expect(find.text('分割线'), findsOneWidget);
     expect(find.text('代码块'), findsOneWidget);
+    expect(find.text('表格'), findsOneWidget);
     for (final String unwanted in <String>[
       '脚注',
-      '表格',
       '标注',
       '数学块',
       '新建数据库',
@@ -236,6 +236,21 @@ void main() {
     expect(controller.text, '## 标题\n');
   });
 
+  testWidgets('段落设置 offers three list styles, and no ordered task list', (
+    WidgetTester tester,
+  ) async {
+    await pump(tester, '正文\n');
+    await openMenu(tester, glyph(tester, 0).center);
+    await openSubmenu(tester, '段落设置');
+
+    for (final String label in <String>['无序列表', '有序列表', '任务列表']) {
+      expect(find.text(label), findsOneWidget, reason: 'missing row: $label');
+    }
+    // Removed on request. `1. [ ] 事` is still parsed and still what you get
+    // when 任务列表 is applied to a numbered line — it is just not a menu row.
+    expect(find.text('有序任务列表'), findsNothing);
+  });
+
   testWidgets('段落设置 ticks the block the caret is already in', (
     WidgetTester tester,
   ) async {
@@ -258,6 +273,52 @@ void main() {
     await openMenu(tester, glyph(tester, 1).center);
     await openSubmenu(tester, '段落设置');
     expect(tickedRow(tester), '3 级标题');
+  });
+
+  testWidgets('文本格式 offers the inline formats, the maths, the comment and 清除格式', (
+    WidgetTester tester,
+  ) async {
+    await pump(tester, '你好世界\n');
+    await openMenu(tester, glyph(tester, 0).center);
+    await openSubmenu(tester, '文本格式');
+
+    for (final String label in <String>[
+      '加粗',
+      '倾斜',
+      '删除线',
+      '高亮',
+      '代码',
+      '数学',
+      '注释',
+      '清除格式',
+    ]) {
+      expect(find.text(label), findsOneWidget, reason: 'missing row: $label');
+    }
+  });
+
+  testWidgets('文本格式 ▸ 代码 wraps in backticks and 清除格式 takes them off', (
+    WidgetTester tester,
+  ) async {
+    final MarkdownSourceController controller = await pump(tester, '你好世界\n');
+    controller.selection = const TextSelection(baseOffset: 0, extentOffset: 2);
+    await tester.pump();
+
+    await tester.tapAt(glyph(tester, 0).center, buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+    await openSubmenu(tester, '文本格式');
+    await tester.tap(find.text('代码'));
+    await tester.pumpAndSettle();
+    expect(controller.text, '`你好`世界\n');
+
+    // …and back off again, through 清除格式 on the same selection.
+    await tester.tapAt(glyph(tester, 1).center, buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+    controller.selection = const TextSelection(baseOffset: 0, extentOffset: 4);
+    await tester.pump();
+    await openSubmenu(tester, '文本格式');
+    await tester.tap(find.text('清除格式'));
+    await tester.pumpAndSettle();
+    expect(controller.text, '你好世界\n');
   });
 
   testWidgets('文本格式 ▸ 加粗 wraps the selection and keeps it selected', (
@@ -396,5 +457,37 @@ void main() {
     await openSubmenu(tester, '插入');
     expect(find.text('代码块'), findsNothing);
     expect(find.text('新增链接'), findsOneWidget);
+  });
+
+  testWidgets('表格工具 is offered on a table row and nowhere else', (
+    WidgetTester tester,
+  ) async {
+    await pump(tester, '正文\n');
+    await openMenu(tester, glyph(tester, 0).center);
+    expect(
+      find.text('表格工具'),
+      findsNothing,
+      reason: '表格外的菜单不该有表格行操作',
+    );
+  });
+
+  testWidgets('表格工具 ▸ 右侧插入列 rewrites every row of the table', (
+    WidgetTester tester,
+  ) async {
+    const String table = '| a | b |\n| --- | --- |\n| c | d |';
+    final MarkdownSourceController controller = await pump(tester, table);
+
+    // Right-clicking the second cell is also a caret click: the row under the
+    // pointer is the one the table rows act on, so the expectation below is
+    // "one column to the right of `b`", not of the first cell.
+    await openMenu(tester, glyph(tester, table.indexOf('b')).center);
+    await openSubmenu(tester, '表格工具');
+    await openSubmenu(tester, '右侧插入列');
+
+    expect(
+      controller.text,
+      '| a | b |  |\n| --- | --- | --- |\n| c | d |  |',
+      reason: '列要加到每一行上，分隔行也要跟着长',
+    );
   });
 }

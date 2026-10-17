@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -112,14 +113,20 @@ class EditorPaneState extends State<EditorPane> {
     _cursorLine = 0;
     _cursorColumn = 1;
     _binding = false;
-    // A brand-new note should let the user start typing a title right away.
+    // A brand-new note should let the user start typing a title right away —
+    // and since a new note *is* named 未命名 (the file is `未命名.md`), the
+    // placeholder is selected so the first keystroke replaces it instead of
+    // being appended to it.
     final bool fresh =
-        note.body.isEmpty &&
-        note.title.isEmpty &&
-        DateTime.now().difference(note.createdAt).inSeconds < 4;
+        note.body.isEmpty && DateTime.now().difference(note.createdAt).inSeconds < 4;
     if (fresh) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _titleFocus.requestFocus();
+        if (!mounted) return;
+        _titleFocus.requestFocus();
+        _title.selection = TextSelection(
+          baseOffset: 0,
+          extentOffset: _title.text.length,
+        );
       });
     }
   }
@@ -329,8 +336,11 @@ class EditorPaneState extends State<EditorPane> {
         onInvoke: (_EditIntent intent) {
           switch (intent.kind) {
             case _EditKind.save:
+              // A manual save is the *same* save as the automatic one, so it
+              // says nothing: the status bar already carries the state, and a
+              // toast on top of it is the second "已保存到磁盘" the user asked to
+              // stop showing.
               unawaited(notes.saveNow());
-              widget.onToast('已保存到磁盘');
             case _EditKind.bold:
               applyEdit(wrapSelection('**', '**'));
             case _EditKind.italic:
@@ -450,6 +460,9 @@ class EditorPaneState extends State<EditorPane> {
             onChanged: notes.updateTitle,
             cursorColor: p.accent,
             cursorWidth: 1.8,
+            // Same rule as the body: highlight the title's glyphs, not the
+            // whole field width (Flutter's desktop default is `max`).
+            selectionWidthStyle: ui.BoxWidthStyle.tight,
             style: TextStyle(
               fontSize: 21,
               height: 1.25,
@@ -464,7 +477,7 @@ class EditorPaneState extends State<EditorPane> {
               enabledBorder: InputBorder.none,
               focusedBorder: InputBorder.none,
               contentPadding: EdgeInsets.zero,
-              hintText: '无标题',
+              hintText: '未命名',
               hintStyle: TextStyle(
                 fontSize: 21,
                 height: 1.25,
@@ -575,9 +588,14 @@ class EditorPaneState extends State<EditorPane> {
     NotesController notes,
     SettingsController settings,
   ) {
+    // The status bar is the *only* place the save state is announced: saving is
+    // automatic, so a toast on every write would be a toast per sentence. Only
+    // "已保存" is allowed a colour — the other three are the resting state or the
+    // 300ms wait before the write, and painting that window orange made a
+    // warning banner out of simply typing.
     final (String label, Color color) = switch (notes.saveState) {
-      SaveState.saving => ('保存中…', p.warning),
-      SaveState.dirty => ('未保存', p.warning),
+      SaveState.saving => ('保存中…', p.textTertiary),
+      SaveState.dirty => ('未保存', p.textTertiary),
       SaveState.saved => ('已保存', p.success),
       SaveState.idle => ('已同步', p.textTertiary),
     };

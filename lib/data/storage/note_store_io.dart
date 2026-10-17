@@ -77,13 +77,46 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
       try {
         final String raw = await f.readAsString();
         final DateTime modified = await f.lastModified();
-        notes.add(Note.fromMarkdown(raw, _baseName(f.path), modified));
+        final String name = await _migrateLegacyName(_baseName(f.path), raw);
+        notes.add(Note.fromMarkdown(raw, name, modified));
       } on FileSystemException {
         // A file locked by another process should never take the app down.
         continue;
       }
     }
     return sortNotes(notes);
+  }
+
+  /// Renames a file written by the old `<title>-<id>.md` scheme to `<title>.md`.
+  ///
+  /// NRS used to hide a short id in the file name to keep names unique. The
+  /// file name is now the note's name, so that suffix is not just noise — it
+  /// would show up *in the title*. The migration is deliberately conservative:
+  /// it only fires when the stem is exactly `<slug>-<6 chars>` **and** the slug
+  /// is the slug of the note's own title, i.e. a file this app named itself.
+  /// Anything the user renamed by hand is left alone, as is any target that is
+  /// already taken.
+  Future<String> _migrateLegacyName(String fileName, String raw) async {
+    final String stem = fileName.replaceAll(
+      RegExp(r'\.md$', caseSensitive: false),
+      '',
+    );
+    final Match? m = RegExp(r'^(.+)-([0-9a-z]{6})$').firstMatch(stem);
+    if (m == null) return fileName;
+    final String title = Note.splitFrontMatter(raw).meta['title'] ?? '';
+    if (title.trim().isEmpty) return fileName;
+    final String slug = Note.slugify(title);
+    if (slug.isEmpty || slug != m.group(1)) return fileName;
+    final String target = '$slug.md';
+    if (await File(_pathFor(target)).exists()) return fileName;
+    try {
+      await File(_pathFor(fileName)).rename(_pathFor(target));
+      return target;
+    } on FileSystemException {
+      // Read-only folder, or the name is taken in another case. Keep the old
+      // name: it still opens, and the title simply carries the suffix.
+      return fileName;
+    }
   }
 
   @override
@@ -146,11 +179,27 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     final Note note = parsed.title.isEmpty
         ? parsed.copyWith(fileName: base, updatedAt: DateTime.now())
         : parsed.copyWith(
-            fileName: Note.buildFileName(parsed.title, parsed.id),
+            fileName: await _freeName(Note.buildFileName(parsed.title), base),
             updatedAt: DateTime.now(),
           );
     await save(note);
     return note;
+  }
+
+  /// [wanted], or ` 2`/` 3` … when that file already exists and is not
+  /// [excluding] itself (the file being rewritten).
+  Future<String> _freeName(String wanted, String excluding) async {
+    if (wanted.toLowerCase() == excluding.toLowerCase()) return wanted;
+    if (!await File(_pathFor(wanted)).exists()) return wanted;
+    final String stem = wanted.replaceAll(
+      RegExp(r'\.md$', caseSensitive: false),
+      '',
+    );
+    for (int i = 2; i < 1000; i++) {
+      final String next = '$stem $i.md';
+      if (!await File(_pathFor(next)).exists()) return next;
+    }
+    return wanted;
   }
 }
 

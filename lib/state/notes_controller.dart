@@ -26,7 +26,17 @@ class NotesController extends ChangeNotifier {
   NotesController({NoteStore? store}) : _store = store ?? createNoteStore();
 
   final NoteStore _store;
-  final Debouncer _autosave = Debouncer(delay: const Duration(milliseconds: 700));
+
+  /// Every edit is written to disk on its own; this only collapses a *burst* of
+  /// keystrokes into one write.
+  ///
+  /// 300ms is tuned to the pause between words rather than to the keystroke: any
+  /// longer and "我改了一个字,然后关掉窗口" loses the character, any shorter and a
+  /// fast typist rewrites the file several times a second for nothing. [saveNow]
+  /// (Ctrl+S, switching notes, closing a pane) cuts the wait entirely.
+  final Debouncer _autosave = Debouncer(
+    delay: const Duration(milliseconds: 300),
+  );
 
   List<Note> _notes = <Note>[];
   List<Note> _ordered = <Note>[];
@@ -248,7 +258,16 @@ class NotesController extends ChangeNotifier {
 
   Note createNote({String title = ''}) {
     _autosave.flush(() => _persistDraft());
-    final Note note = Note.blank(title: title);
+    // A note always has a name, because the file always has one: an untitled
+    // note is `未命名.md` and is titled 「未命名」. The editor selects that
+    // placeholder, so the first keystroke replaces it.
+    final String name = title.trim().isEmpty ? '未命名' : title;
+    final Note blank = Note.blank(title: name);
+    // `未命名.md` the first time, `未命名 2.md` after that — the file name has
+    // to stay free before anything is written to it.
+    final Note note = blank.copyWith(
+      fileName: _freeName(blank.fileName),
+    );
     _notes = <Note>[note, ..._notes];
     _ordered = <Note>[note, ..._ordered];
     _selectedId = note.id;
@@ -285,14 +304,15 @@ class NotesController extends ChangeNotifier {
   void duplicate(Note source) {
     final DateTime now = DateTime.now();
     final String id = Note.newId();
+    final String title = '${source.title.isEmpty ? '未命名' : source.title} 副本';
     final Note copy = Note(
       id: id,
-      title: '${source.title.isEmpty ? '未命名' : source.title} 副本',
+      title: title,
       body: source.body,
       tags: source.tags,
       createdAt: now,
       updatedAt: now,
-      fileName: Note.buildFileName(source.title, id),
+      fileName: _freeName(Note.buildFileName(title)),
     );
     _notes = <Note>[copy, ..._notes];
     _ordered = <Note>[copy, ..._ordered];
@@ -342,7 +362,38 @@ class NotesController extends ChangeNotifier {
   void updateTitle(String title) {
     final Note? current = _draft;
     if (current == null || current.title == title) return;
-    _applyDraft(current.copyWith(title: title, updatedAt: DateTime.now()));
+    // The title *is* the file name, so this rename has to move the file too —
+    // [Note.fileName] carries the new name and `_persistDraft` deletes the old
+    // file once the new one is written.
+    _applyDraft(
+      current.copyWith(
+        title: title,
+        fileName: _freeName(Note.buildFileName(title), exceptId: current.id),
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  /// [candidate] unless another note already owns that file name, in which case
+  /// ` 2`, ` 3` … is appended before `.md`.
+  ///
+  /// File names are compared case-insensitively because Windows and macOS file
+  /// systems are: `周报.md` and `周报.MD` are the same file.
+  String _freeName(String candidate, {String? exceptId}) {
+    final Set<String> taken = <String>{
+      for (final Note n in _notes)
+        if (n.id != exceptId) n.fileName.toLowerCase(),
+    };
+    if (!taken.contains(candidate.toLowerCase())) return candidate;
+    final String stem = candidate.replaceAll(
+      RegExp(r'\.md$', caseSensitive: false),
+      '',
+    );
+    for (int i = 2; i < 1000; i++) {
+      final String next = '$stem $i.md';
+      if (!taken.contains(next.toLowerCase())) return next;
+    }
+    return candidate;
   }
 
   void setTags(List<String> tags) {
@@ -399,9 +450,48 @@ class NotesController extends ChangeNotifier {
     await _persistDraft();
   }
 
-  Future<void> _persistDraft() async {
-    final Note? note = _draft;
-    if (note == null) return;
+  /// The tail of the write chain, and how many writes are on it.
+  Future<void> _writing = Future<void>.value();
+  int _writesQueued = 0;
+
+  /// Writes the draft, **one write at a time**.
+  ///
+  /// Auto-save fires on its own every few hundred milliseconds, so two writes
+  /// can overlap on a slow disk. That is not a cosmetic problem: each write
+  /// deletes the file name it believes it replaced, so an earlier write landing
+  /// *after* a later one leaves both files behind — one note on screen, two on
+  /// disk after the next start.
+  ///
+  /// With nothing in flight the write starts *now* rather than on a later
+  /// microtask, so "create a note" is on disk by the time the call returns. Only
+  /// a real overlap is queued, and a queued write always writes what the draft
+  /// says when it runs, not what it said when the timer fired.
+  Future<void> _persistDraft() {
+    final Future<void> task = _writesQueued == 0
+        ? _writeDraft()
+        : _writing.then((_) => _writeDraft());
+    _writesQueued++;
+    // A failed write must not poison the queue: [_writeDraft] already reports
+    // the error through [error], so the chain itself always completes.
+    _writing = task
+        .then<void>((_) {}, onError: (Object _) {})
+        .whenComplete(() => _writesQueued--);
+    return task;
+  }
+
+  Future<void> _writeDraft() async {
+    final Note? draft = _draft;
+    if (draft == null) return;
+    // Last line of defence: a file name is the note's name, so two notes must
+    // never end up sharing one. (Retitling two notes to the same thing in a
+    // row can land here before the list has settled.)
+    final Note note = draft.copyWith(
+      fileName: _freeName(draft.fileName, exceptId: draft.id),
+    );
+    if (note.fileName != draft.fileName) {
+      _draft = note;
+      _replace(note);
+    }
     _saveState = SaveState.saving;
     notifyListeners();
     final String? previous = _draftOriginalFileName;

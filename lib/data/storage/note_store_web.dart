@@ -103,11 +103,27 @@ class WebNoteStore with NoteStoreSupport implements NoteStore {
     if (!base.toLowerCase().endsWith('.md')) base = '$base.md';
     final Note parsed = Note.fromMarkdown(raw, base, DateTime.now());
     final Note note = parsed.copyWith(
-      fileName: Note.buildFileName(parsed.title, parsed.id),
+      fileName: _freeName(Note.buildFileName(parsed.title), base),
       updatedAt: DateTime.now(),
     );
     await save(note);
     return note;
+  }
+
+  /// [wanted], or ` 2`/` 3` … when the vault already has that name and it is
+  /// not [excluding] itself.
+  String _freeName(String wanted, String excluding) {
+    if (wanted.toLowerCase() == excluding.toLowerCase()) return wanted;
+    if (!_cache.containsKey(wanted)) return wanted;
+    final String stem = wanted.replaceAll(
+      RegExp(r'\.md$', caseSensitive: false),
+      '',
+    );
+    for (int i = 2; i < 1000; i++) {
+      final String next = '$stem $i.md';
+      if (!_cache.containsKey(next)) return next;
+    }
+    return wanted;
   }
 
   /// Exposed for the "export vault" action in the browser build.

@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -50,6 +52,66 @@ void main() {
   /// The render object the framework actually positions carets with.
   RenderEditable editable(WidgetTester tester) =>
       tester.allRenderObjects.whereType<RenderEditable>().first;
+
+  /// Renders [text] into its own [RepaintBoundary] and hands back the pixels, so
+  /// a test can assert on what was **painted** rather than on the widget tree.
+  ///
+  /// The paper lives *inside* the boundary: the boundary captures only its own
+  /// subtree, and every pixel outside it would read as transparent.
+  Future<_Pixels> shoot(
+    WidgetTester tester,
+    String text,
+    TextSelection selection, {
+    AppPalette palette = AppPalette.light,
+  }) async {
+    final MarkdownSourceController controller = MarkdownSourceController(
+      text: text,
+    );
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
+    final GlobalKey key = GlobalKey();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.build(palette),
+        home: Scaffold(
+          body: RepaintBoundary(
+            key: key,
+            child: ColoredBox(
+              color: palette.surface,
+              child: MarkdownEditor(
+                controller: controller,
+                focusNode: focus,
+                scrollController: ScrollController(),
+                fontSize: 15.5,
+                hintText: '',
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    focus.requestFocus();
+    await tester.pumpAndSettle();
+    controller.selection = selection;
+    await tester.pumpAndSettle();
+
+    final RenderRepaintBoundary boundary =
+        key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+    // ⛔ `toImage` rasterises on another thread: inside a widget test it has to
+    // run through `runAsync`, or it never completes and the test hangs.
+    late ByteData bytes;
+    late int width;
+    late int height;
+    await tester.runAsync(() async {
+      final ui.Image image = await boundary.toImage();
+      width = image.width;
+      height = image.height;
+      bytes = (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+      image.dispose();
+    });
+    return _Pixels(width, height, bytes, palette);
+  }
 
   int widgetCount(InlineSpan span) {
     if (span is WidgetSpan) return 1;
@@ -446,6 +508,41 @@ void main() {
     }
   });
 
+  /// Flutter's desktop default (`BoxWidthStyle.max`) paints every fully selected
+  /// line as a band running to the right edge of the column — a highlighted
+  /// *block*, not highlighted *text*. Obsidian, and every desktop editor worth
+  /// copying, hugs the glyphs instead.
+  testWidgets('the highlight hugs the text, not the column', (
+    WidgetTester tester,
+  ) async {
+    const String text = '短句\n\n另一句\n';
+    final MarkdownSourceController controller = await pump(tester, text);
+    controller.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: text.length,
+    );
+    await tester.pumpAndSettle();
+
+    final RenderEditable re = editable(tester);
+    expect(re.selectionWidthStyle, ui.BoxWidthStyle.tight);
+    // `includeLineSpacingMiddle` is shifted a few pixels down inside the line:
+    // fine on prose, but a table's wash is painted on the line box, so the two
+    // would peek out from under each other at the block's edges.
+    expect(re.selectionHeightStyle, ui.BoxHeightStyle.includeLineSpacingTop);
+    final List<TextBox> boxes = re.getBoxesForSelection(controller.selection);
+    final double widest = boxes
+        .map((TextBox b) => b.right)
+        .reduce((double a, double b) => a > b ? a : b);
+    expect(
+      widest,
+      lessThan(re.size.width / 2),
+      reason:
+          '选中「短句」却高亮到 '
+          '${widest.toStringAsFixed(0)}px（整列宽 ${re.size.width.toStringAsFixed(0)}px）'
+          '—— 又把整行铺满了',
+    );
+  });
+
   /// The rendered table paints over an invisible skeleton of the very same
   /// characters, so a click anywhere in a cell has to land on that cell's own
   /// source text — no custom hit testing involved.
@@ -543,4 +640,492 @@ void main() {
       debugDefaultTargetPlatformOverride = null;
     }
   });
+
+  testWidgets('a nested row steps one marker column and carries a rail', (
+    WidgetTester tester,
+  ) async {
+    // Two typed spaces are worth ~9px, so nesting used to be invisible. One
+    // level must be worth exactly one marker column (2 + 15 + 9), which is what
+    // makes a child's marker line up under its parent's text.
+    await pump(tester, '- [ ] 甲\n  - [ ] 乙\n    - [ ] 丙\n');
+
+    final List<Rect> boxes = <Rect>[
+      for (final Element e
+          in find.byType(MarkdownTodoCheckbox).evaluate())
+        tester.getRect(find.byWidget(e.widget)),
+    ];
+    expect(boxes.length, 3);
+    expect(boxes[1].left - boxes[0].left, 26);
+    expect(boxes[2].left - boxes[1].left, 26);
+
+    // The guide box *is* the indent, so it has to be as wide as the whole step
+    // count and no wider — anything else moves the marker.
+    final List<MarkdownIndentGuides> guides = tester
+        .widgetList<MarkdownIndentGuides>(find.byType(MarkdownIndentGuides))
+        .toList();
+    expect(guides.map((MarkdownIndentGuides g) => g.levels), <int>[1, 2]);
+    expect(
+      tester.getSize(find.byType(MarkdownIndentGuides).first).width,
+      26,
+    );
+    expect(
+      tester.getSize(find.byType(MarkdownIndentGuides).last).width,
+      52,
+    );
+  });
+
+  testWidgets('the rail is painted, and only from the first child down', (
+    WidgetTester tester,
+  ) async {
+    // The complaint was that there is no line at all, so this one checks the
+    // pixels: a 1px column of `outline` running unbroken from the first nested
+    // row to the last, and nothing above it on the parent's row.
+    const String text = '- [ ] 甲\n  - [ ] 乙\n  - [ ] 丙\n';
+    final MarkdownSourceController controller = MarkdownSourceController(
+      text: text,
+    );
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
+    final GlobalKey key = GlobalKey();
+    final AppPalette p = AppPalette.light;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.build(p),
+        home: Scaffold(
+          // ⛔ The boundary only captures *its own* subtree, so the paper has to
+          // live inside it or every pixel outside the text reads as transparent.
+          body: RepaintBoundary(
+            key: key,
+            child: ColoredBox(
+              color: p.surface,
+              child: MarkdownEditor(
+                controller: controller,
+                focusNode: focus,
+                scrollController: ScrollController(),
+                fontSize: 15.5,
+                hintText: '',
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    focus.requestFocus();
+    await tester.pumpAndSettle();
+
+    final RenderRepaintBoundary boundary = key.currentContext!.findRenderObject()!
+        as RenderRepaintBoundary;
+    // ⛔ `toImage` rasterises on another thread, so inside a widget test it has
+    // to run through `runAsync` — called directly it never completes and the
+    // test hangs until the harness kills it.
+    late ByteData bytes;
+    late int width;
+    late int height;
+    await tester.runAsync(() async {
+      final ui.Image image = await boundary.toImage();
+      width = image.width;
+      height = image.height;
+      bytes = (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+      image.dispose();
+    });
+    final int surface = p.surface.toARGB32();
+
+    bool isPaper(int x, int y) {
+      final int i = (y * width + x) * 4;
+      return (bytes.getUint8(i) - (surface >> 16 & 0xFF)).abs() <= 6 &&
+          (bytes.getUint8(i + 1) - (surface >> 8 & 0xFF)).abs() <= 6 &&
+          (bytes.getUint8(i + 2) - (surface & 0xFF)).abs() <= 6;
+    }
+
+    // The longest unbroken run of ink in each column. Glyphs are broken up by
+    // the gap between lines (Ahem fills the em box, not the line box), while the
+    // rail spans two rows end to end.
+    int bestRun = 0;
+    int bestX = -1;
+    int bestTop = -1;
+    for (int x = 0; x < width; x++) {
+      int run = 0;
+      for (int y = 0; y < height; y++) {
+        if (!isPaper(x, y)) {
+          run++;
+          if (run > bestRun) {
+            bestRun = run;
+            bestX = x;
+            bestTop = y - run + 1;
+          }
+        } else {
+          run = 0;
+        }
+      }
+    }
+
+    final RenderEditable re = editable(tester);
+    final double left = re.localToGlobal(Offset.zero).dx;
+    // 9.5 from the row start, minus the half-pixel nudge onto the pixel grid.
+    expect(
+      bestX.toDouble(),
+      closeTo(left + 9, 1.5),
+      reason: '竖线必须落在父级标记的中心',
+    );
+    expect(
+      bestRun,
+      greaterThan(40),
+      reason: '竖线要跨过整段子级、不能断成一段一段',
+    );
+    // …and it starts on the *second* line, not on the parent's.
+    expect(bestTop, greaterThan(20), reason: '父级自己那一行不该有竖线');
+  });
+
+  testWidgets('the table starts on the text column and stops at its content', (
+    WidgetTester tester,
+  ) async {
+    // Two complaints, one probe. The grid used to hang eight pixels to the left
+    // of every line of prose around it (`left = offset.dx - _kCellPad`), and it
+    // used to stretch all the way to the column's right edge however little it
+    // had to say. A table is as wide as its content and starts *on* the text
+    // column, the way Obsidian's does.
+    const String text =
+        '# 标题\n'
+        '| a | b |\n'
+        '| --- | --- |\n'
+        '| c | d |\n'
+        '| e | f |\n';
+    final MarkdownSourceController controller = MarkdownSourceController(
+      text: text,
+    );
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
+    final GlobalKey key = GlobalKey();
+    final AppPalette p = AppPalette.light;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.build(p),
+        home: Scaffold(
+          body: RepaintBoundary(
+            key: key,
+            child: ColoredBox(
+              color: p.surface,
+              child: MarkdownEditor(
+                controller: controller,
+                focusNode: focus,
+                scrollController: ScrollController(),
+                fontSize: 15.5,
+                hintText: '',
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    focus.requestFocus();
+    await tester.pumpAndSettle();
+
+    final RenderRepaintBoundary boundary = key.currentContext!.findRenderObject()!
+        as RenderRepaintBoundary;
+    late ByteData bytes;
+    late int width;
+    late int height;
+    await tester.runAsync(() async {
+      final ui.Image image = await boundary.toImage();
+      width = image.width;
+      height = image.height;
+      bytes = (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+      image.dispose();
+    });
+    final int surface = p.surface.toARGB32();
+
+    bool isPaper(int x, int y) {
+      final int i = (y * width + x) * 4;
+      return (bytes.getUint8(i) - (surface >> 16 & 0xFF)).abs() <= 6 &&
+          (bytes.getUint8(i + 1) - (surface >> 8 & 0xFF)).abs() <= 6 &&
+          (bytes.getUint8(i + 2) - (surface & 0xFF)).abs() <= 6;
+    }
+
+    /// Every column whose longest unbroken run of ink is at least 60px: the
+    /// table's vertical rules (three rows tall, ~84px) and nothing else — the
+    /// heading's glyphs are one line high.
+    final List<int> rules = <int>[];
+    for (int x = 0; x < width; x++) {
+      int run = 0;
+      int best = 0;
+      for (int y = 0; y < height; y++) {
+        if (!isPaper(x, y)) {
+          run++;
+          if (run > best) best = run;
+        } else {
+          run = 0;
+        }
+      }
+      if (best >= 60) rules.add(x);
+    }
+
+    final RenderEditable re = editable(tester);
+    final double columnLeft = re.localToGlobal(Offset.zero).dx;
+    final double columnWidth = re.size.width;
+
+    expect(rules, isNotEmpty, reason: '一条竖线都没画出来');
+    expect(
+      rules.first.toDouble(),
+      closeTo(columnLeft, 1.5),
+      reason: '表格左边缘要和正文左边缘对齐',
+    );
+    // Fit-content: the widest rule is the table's right edge, and it stops well
+    // short of the column.
+    expect(
+      rules.last - rules.first,
+      lessThan(columnWidth / 2),
+      reason: '两列表格不该铺满整行',
+    );
+  });
+
+  /// The selection used to be painted **cell by cell**: an opaque box per touched
+  /// cell plus an accent ring around each row's share. A selected table therefore
+  /// looked like a mosaic of purple tiles with the grid shouting through every
+  /// seam, and a Ctrl+A turned the whole thing into a ladder of borders.
+  ///
+  /// What Obsidian does — and what these two tests pin down — is one continuous
+  /// band per row, the table's full width, with **one** rounded outline around
+  /// the whole selected span.
+  testWidgets('a selected table is one washed block, not one ring per row', (
+    WidgetTester tester,
+  ) async {
+    const String text = '| a | b |\n| --- | --- |\n| c | d |\n| e | f |\n';
+    final _Pixels px = await shoot(
+      tester,
+      text,
+      const TextSelection(baseOffset: 0, extentOffset: 43),
+    );
+
+    // Horizontal runs of the accent colour, one per row that drew a border.
+    final List<List<int>> bands = px.bandsOf(px.palette.selectionEdge, 40);
+
+    expect(
+      bands.length,
+      2,
+      reason:
+          '整个表格选中后只该有上下两条外框，实际数到 ${bands.length} 条 '
+          '(${bands.map((List<int> b) => b.first).join(",")})：又是每行一圈',
+    );
+    // …and the two of them span the whole table: header + two body rows.
+    final int span = bands.last.first - bands.first.first;
+    expect(
+      span,
+      closeTo(3 * px.rowHeight, 2),
+      reason: '外框高度 ${span}px 应该正好是三行（每行 ${px.rowHeight}px）',
+    );
+
+    // No paper showing *inside* the band: the wash is one continuous shape, not
+    // per-cell boxes with grid-coloured gaps between them.
+    final int left = px.firstOf(px.palette.selectionEdge, bands.first.last + 4) + 3;
+    final int right = px.lastOf(px.palette.selectionEdge, bands.last.last - 4) - 3;
+    for (int y = bands.first.last + 4; y < bands.last.first - 3; y++) {
+      for (int x = left; x < right; x++) {
+        expect(
+          px.isSurface(x, y),
+          isFalse,
+          reason: 'band 内部 ($x,$y) 还是纸色：色带被网格线切开了',
+        );
+      }
+    }
+  });
+
+  testWidgets('the wash ends on the last selected row', (
+    WidgetTester tester,
+  ) async {
+    // Selecting the header plus the first body row has to close the outline
+    // after that row — not after the table, and not after every row.
+    const String text = '| a | b |\n| --- | --- |\n| c | d |\n| e | f |\n';
+    const String twoRows = '| a | b |\n| --- | --- |\n| c | d |';
+    final _Pixels px = await shoot(
+      tester,
+      text,
+      // Through the end of `| c | d |` — the newline after it is outside.
+      const TextSelection(baseOffset: 0, extentOffset: 33),
+    );
+    final List<List<int>> bands = px.bandsOf(px.palette.selectionEdge, 40);
+
+    expect(bands.length, 2, reason: '上下各一条，不能每行都封一次口');
+    expect(
+      bands.last.first - bands.first.first,
+      closeTo(2 * px.rowHeight, 2),
+      reason:
+          '选中的是两行（${twoRows.split("\n").length} 行源码，含分隔行），'
+          '外框却跨了 ${bands.last.first - bands.first.first}px',
+    );
+  });
+  testWidgets('a selection inside one table washes only the cells it covers', (
+    WidgetTester tester,
+  ) async {
+    // Part of a table must be selectable, and **by the cell**: the selection
+    // snaps out to whole cells, so touching `b` washes all of `b`'s cell.
+    // Washing whole *rows* (which is what this used to do) meant the only way
+    // to select part of a table was to select all of it — user:
+    // 「表格让我可以只选取其中一部分」. Cutting the wash at the glyph instead
+    // (what this did last) is the opposite mistake: it reads as text selected
+    // across a table, which is not a thing — user:
+    // 「这个选中就是按格子来选中啊，跨表格选中文字干什么？？？」
+    const String text = '| a | b |\n| --- | --- |\n| c | d |\n';
+    final _Pixels all = await shoot(
+      tester,
+      text,
+      const TextSelection(baseOffset: 0, extentOffset: 33),
+    );
+    final _Pixels part = await shoot(
+      tester,
+      text,
+      // From `b` through `d`: the right-hand column, both rows. A **block**,
+      // not a staircase — see the expectation below.
+      const TextSelection(baseOffset: 6, extentOffset: 31),
+    );
+
+    final List<List<int>> full = all.bandsOf(all.palette.selectionEdge, 40);
+    // 20, not 40: the whole point is that the band is narrower than the table.
+    final List<List<int>> cut = part.bandsOf(part.palette.selectionEdge, 20);
+    // Two horizontal edges — the top of `b`'s row and the bottom of `d`'s — and
+    // nothing in between. ⛔ Not three: a step at the row boundary would mean
+    // the wash followed the *text range* (`b`, then `c` and `d` on the way
+    // down), and that is the very thing this selection model exists to kill —
+    // dragging down one column would light up the left-hand cells of every row
+    // in between. user: 「我只选了右边三个表格，为什么会把左边那两个一起选中？？？」
+    //
+    // So the band is the intersection of the rows and the columns the two ends
+    // span: one rectangle, whichever way the drag went.
+    expect(cut.length, 2, reason: '按格子成块：只有上边和下边，中间不该有台阶');
+
+    // The band's top edge says exactly how wide it is — the outline is the one
+    // thing painted in the accent with no wash or glyph in the way. Both frames
+    // are the same document, so the table sits at the same y in both.
+    final int cutTop = full.first.first;
+    final int fullTop = full.first.first;
+    int run(_Pixels px, int y) {
+      int n = 0;
+      for (int x = 0; x < px.width; x++) {
+        if (px.isColor(px.palette.selectionEdge, x, y, tolerance: 24)) n++;
+      }
+      return n;
+    }
+
+    expect(
+      run(part, cutTop),
+      lessThan(run(all, fullTop) - 20),
+      reason: '选区的上边框和整个表格一样长：色带还是铺满了行',
+    );
+    final int left = part.firstOf(part.palette.selectionEdge, cutTop);
+    final int fullLeft = all.firstOf(all.palette.selectionEdge, fullTop);
+    expect(
+      left,
+      greaterThan(fullLeft + 60),
+      reason: '选区没有开始的那一列不该被染上颜色，色带却从 $left 就开始了',
+    );
+    // Everything left of it is still paper (bar the cell's own glyph), one line
+    // down, inside the band. Measured against the full-width selection, where
+    // that same stretch is wash from end to end.
+    final int y = cutTop + 12;
+    int painted(_Pixels px) {
+      int n = 0;
+      for (int x = fullLeft + 8; x < left - 6; x++) {
+        if (!px.isSurface(x, y)) n++;
+      }
+      return n;
+    }
+
+    expect(
+      painted(part),
+      lessThan(painted(all) ~/ 3),
+      reason: '选区左边那一列被涂了 ${painted(part)}px，整表选中时才 ${painted(all)}px',
+    );
+  });
+
+  testWidgets('an inline code band in a cell cannot cover the table border', (
+    WidgetTester tester,
+  ) async {
+    // The skeleton that gives the paragraph its caret positions shares the line
+    // with the row. A `code` span in a cell used to paint its band at the
+    // *paragraph's* metrics — a full 28px line — so the band hung below the row
+    // and swallowed the block's bottom border (and the caret's feet).
+    const String text = '| a | `code` |\n| --- | --- |\n| b | c |';
+    final _Pixels px = await shoot(
+      tester,
+      text,
+      TextSelection(baseOffset: 0, extentOffset: text.length),
+    );
+    final List<List<int>> bands = px.bandsOf(px.palette.selectionEdge, 120);
+    expect(bands.length, 2, reason: '只有外框上下的两条，代码本身不算');
+
+    final int left = px.firstOf(px.palette.selectionEdge, bands.first.last + 6) + 6;
+    final int right = px.lastOf(px.palette.selectionEdge, bands.first.last + 6) - 6;
+    for (int x = left; x < right; x++) {
+      expect(
+        px.isColor(px.palette.selectionEdge, x, bands.last.first, tolerance: 40),
+        isTrue,
+        reason: '底边框在 x=$x 处被格子里的代码色带盖掉了',
+      );
+    }
+  });
+}
+class _Pixels {
+  _Pixels(this.width, this.height, this.bytes, this.palette);
+
+  final int width;
+  final int height;
+  final ByteData bytes;
+  final AppPalette palette;
+
+  /// Height of one editor line at the test's font size. Everything vertical in
+  /// the table tests is expressed in rows, so hard-coding it here keeps the
+  /// assertions readable.
+  double get rowHeight => 28;
+
+  (int, int, int) at(int x, int y) {
+    final int i = (y * width + x) * 4;
+    return (bytes.getUint8(i), bytes.getUint8(i + 1), bytes.getUint8(i + 2));
+  }
+
+  bool isColor(Color color, int x, int y, {int tolerance = 10}) {
+    final int argb = color.toARGB32();
+    final (int, int, int) c = at(x, y);
+    return (c.$1 - (argb >> 16 & 0xFF)).abs() <= tolerance &&
+        (c.$2 - (argb >> 8 & 0xFF)).abs() <= tolerance &&
+        (c.$3 - (argb & 0xFF)).abs() <= tolerance;
+  }
+
+  bool isSurface(int x, int y) => isColor(palette.surface, x, y, tolerance: 6);
+
+  /// Horizontal runs where more than [minRun] pixels carry [color] — i.e. the
+  /// rows of a box outline, grouped into bands of consecutive lines.
+  List<List<int>> bandsOf(Color color, int minRun) {
+    final List<List<int>> bands = <List<int>>[];
+    int run = 0;
+    for (int y = 0; y < height; y++) {
+      int n = 0;
+      for (int x = 0; x < width; x++) {
+        if (isColor(color, x, y, tolerance: 24)) n++;
+      }
+      if (n >= minRun) {
+        if (run == 0 || bands.last.last != y - 1) {
+          bands.add(<int>[y]);
+        } else {
+          bands.last.add(y);
+        }
+        run++;
+      }
+    }
+    return bands;
+  }
+
+  int firstOf(Color color, int y) {
+    for (int x = 0; x < width; x++) {
+      if (isColor(color, x, y, tolerance: 24)) return x;
+    }
+    return -1;
+  }
+
+  int lastOf(Color color, int y) {
+    for (int x = width - 1; x >= 0; x--) {
+      if (isColor(color, x, y, tolerance: 24)) return x;
+    }
+    return -1;
+  }
 }

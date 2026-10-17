@@ -115,6 +115,155 @@ void main() {
 
     expect(opened.created, isTrue);
     expect(opened.note.title, '读书笔记');
-    expect(opened.note.fileName, startsWith('读书笔记-'));
+    expect(opened.note.fileName, '读书笔记.md');
   });
+
+  test('a new note is 未命名.md, and the second one picks a free name', () async {
+    final NotesController notes = await _open(_MemoryStore());
+
+    final Note first = notes.createNote();
+    // A note always has a name, because the file always has one.
+    expect(first.title, '未命名');
+    expect(first.fileName, '未命名.md');
+
+    final Note second = notes.createNote();
+    expect(second.fileName, '未命名 2.md', reason: '两个新笔记不能占同一个文件');
+    expect(first.fileName, '未命名.md', reason: '第一篇的名字不能被抢走');
+  });
+
+  test('retitling renames the file, and only the file it owns', () async {
+    final Note note = _note('旧标题', body: '正文');
+    final _MemoryStore store = _MemoryStore(<Note>[note]);
+    final NotesController notes = await _open(store);
+    expect(note.fileName, '旧标题.md');
+
+    notes.updateTitle('新标题');
+    expect(notes.draft?.title, '新标题');
+    expect(notes.draft?.fileName, '新标题.md');
+    await notes.saveNow();
+
+    expect(
+      store.notes.where((Note n) => n.fileName == '旧标题.md'),
+      isEmpty,
+      reason: '改名后旧文件必须消失,否则库里会多出一篇幽灵笔记',
+    );
+    expect(
+      store.notes.where((Note n) => n.fileName == '新标题.md'),
+      hasLength(1),
+    );
+  });
+
+  test('a title clash never writes over the other note', () async {
+    final Note first = _note('周报');
+    final Note second = _note('月报');
+    final _MemoryStore store = _MemoryStore(<Note>[first, second]);
+    final NotesController notes = await _open(store);
+
+    notes.select(second.id);
+    notes.updateTitle('周报');
+    expect(notes.draft?.fileName, '周报 2.md', reason: '撞名要加序号,不能覆盖');
+    await notes.saveNow();
+
+    expect(
+      store.notes.where((Note n) => n.fileName == '周报.md'),
+      hasLength(1),
+      reason: '原来那篇「周报」必须还在',
+    );
+    expect(store.notes, hasLength(2), reason: '两篇都得在,一篇都没被吃掉');
+  });
+
+  test('every edit is written without anyone pressing Ctrl+S', () async {
+    final _MemoryStore store = _MemoryStore(<Note>[_note('随笔', body: '第一行')]);
+    final NotesController notes = await _open(store);
+
+    notes.updateBody('第一行改过');
+    expect(notes.saveState, SaveState.dirty, reason: '先记账,再落盘');
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+
+    expect(
+      store.notes.single.body,
+      '第一行改过',
+      reason: '输入完就该自己写下去,不该等着谁按 Ctrl+S',
+    );
+    expect(notes.saveState, SaveState.saved);
+  });
+
+  test('Ctrl+S cuts the wait and writes at once', () async {
+    final _MemoryStore store = _MemoryStore(<Note>[_note('随笔', body: '第一行')]);
+    final NotesController notes = await _open(store);
+
+    notes.updateBody('不等那 300 毫秒');
+    await notes.saveNow();
+
+    expect(store.notes.single.body, '不等那 300 毫秒');
+    expect(notes.saveState, SaveState.saved);
+  });
+
+  test('a burst of keystrokes is one write, not one per character', () async {
+    // Auto-save has to be invisible *and* cheap: the debounce collapses a burst
+    // into the trailing edit, so a 30-character sentence is not 30 file writes.
+    int writes = 0;
+    final _CountingStore store = _CountingStore(() => writes++);
+    final NotesController notes = NotesController(store: store);
+    addTearDown(notes.dispose);
+    await notes.bootstrap();
+
+    for (int i = 1; i <= 10; i++) {
+      notes.updateBody('字' * i);
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+
+    expect(writes, 1, reason: '连续输入只该落一次盘');
+    expect(store.notes.single.body, '字' * 10);
+  });
+
+  test('two writes in flight still leave one file behind', () async {
+    // Each write deletes the name it thinks it replaced. Overlap them and an
+    // earlier write lands after a later one, leaving both files — one note on
+    // screen, two on disk at the next start.
+    final _SlowStore store = _SlowStore();
+    final NotesController notes = NotesController(store: store);
+    addTearDown(notes.dispose);
+    await notes.bootstrap();
+
+    notes.updateTitle('第一个名字');
+    final Future<void> first = notes.saveNow();
+    notes.updateTitle('第二个名字');
+    final Future<void> second = notes.saveNow();
+    await Future.wait(<Future<void>>[first, second]);
+
+    expect(store.maxInFlight, 1, reason: '写盘必须排队,不能同时进行');
+    expect(store.notes, hasLength(1), reason: '不能留下幽灵文件');
+    expect(store.notes.single.fileName, '第二个名字.md');
+  });
+}
+
+/// An in-memory vault whose writes take real time, so overlap is visible.
+class _SlowStore extends _MemoryStore {
+  _SlowStore() : super(<Note>[_note('随笔')]);
+
+  int _inFlight = 0;
+  int maxInFlight = 0;
+
+  @override
+  Future<void> save(Note note, {String? previousFileName}) async {
+    _inFlight++;
+    if (_inFlight > maxInFlight) maxInFlight = _inFlight;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    await super.save(note, previousFileName: previousFileName);
+    _inFlight--;
+  }
+}
+
+/// The in-memory vault, counting writes.
+class _CountingStore extends _MemoryStore {
+  _CountingStore(this._written) : super(<Note>[_note('随笔')]);
+
+  final void Function() _written;
+
+  @override
+  Future<void> save(Note note, {String? previousFileName}) {
+    _written();
+    return super.save(note, previousFileName: previousFileName);
+  }
 }

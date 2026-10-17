@@ -18,7 +18,7 @@ class Note {
     this.pinned = false,
     this.favorite = false,
     String? fileName,
-  }) : fileName = fileName ?? buildFileName(title, id);
+  }) : fileName = fileName ?? buildFileName(title);
 
   /// Stable identity. Survives renames so the UI can keep a selection.
   final String id;
@@ -236,9 +236,7 @@ class Note {
         : _idFromFileName(fileName);
     final DateTime created = _parseDate(meta['created'] ?? meta['date'], fileModified);
     final DateTime updated = _parseDate(meta['updated'], fileModified);
-    final String title = meta['title']?.isNotEmpty == true
-        ? _unquote(meta['title']!)
-        : _titleFromBody(parts.body, fileName);
+    final String title = _titleOf(fileName);
 
     return Note(
       id: id,
@@ -253,13 +251,19 @@ class Note {
     );
   }
 
-  static String _titleFromBody(String body, String fileName) {
-    for (final String line in body.split('\n')) {
-      final Match? m = RegExp(r'^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$').firstMatch(line);
-      if (m != null) return m.group(1)!.trim();
-      if (line.trim().isNotEmpty) break;
-    }
-    return fileName.replaceAll(RegExp(r'\.md$', caseSensitive: false), '');
+  /// The stem of [fileName], which *is* the note's title.
+  ///
+  /// One name, two places, never out of step: renaming the title renames the
+  /// file (see [buildFileName]), and renaming the file renames the note on the
+  /// next load. The front matter still carries a `title:` line for other
+  /// tools, but it is derived — never consulted, or the two could disagree.
+  ///
+  /// `未命名.md` therefore shows up as 「未命名」 with no metadata at all.
+  static String _titleOf(String fileName) {
+    final String stem = fileName
+        .replaceAll(RegExp(r'\.md$', caseSensitive: false), '')
+        .trim();
+    return stem.isEmpty ? '未命名' : stem;
   }
 
   static String _idFromFileName(String fileName) {
@@ -312,11 +316,16 @@ class Note {
     return '${ms.toRadixString(36)}${_rng.nextInt(1 << 20).toRadixString(36)}';
   }
 
-  /// Human-readable, shell-safe file name: slug + short id for uniqueness.
-  static String buildFileName(String title, String id) {
+  /// The file a title lives in: the title itself, made safe for a file system.
+  ///
+  /// ⛔ No id suffix. The name of the file *is* the name of the note — that is
+  /// the contract this app is built on. Two notes can therefore never be told
+  /// apart by their file names; a clash is resolved by whoever writes the file
+  /// appending ` 2`, ` 3` … (the way Obsidian does), never by hiding an id in
+  /// the name.
+  static String buildFileName(String title) {
     final String slug = slugify(title);
-    final String short = id.length >= 6 ? id.substring(id.length - 6) : id;
-    return slug.isEmpty ? '$short.md' : '$slug-$short.md';
+    return slug.isEmpty ? '未命名.md' : '$slug.md';
   }
 
   static String slugify(String input) {
@@ -340,7 +349,7 @@ class Note {
       body: '',
       createdAt: now,
       updatedAt: now,
-      fileName: buildFileName(title, id),
+      fileName: buildFileName(title),
     );
   }
 
@@ -361,7 +370,7 @@ class Note {
       pinned: true,
       createdAt: now,
       updatedAt: now,
-      fileName: buildFileName('欢迎使用 NRS', id),
+      fileName: buildFileName('欢迎使用 NRS'),
       body: '''
 # 欢迎使用 NRS
 

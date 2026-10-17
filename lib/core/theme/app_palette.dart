@@ -31,6 +31,7 @@ class AppPalette extends ThemeExtension<AppPalette> {
     required this.danger,
     required this.dangerSoft,
     required this.selection,
+    required this.selectionEdge,
     required this.shadow,
     required this.overlay,
   });
@@ -74,6 +75,13 @@ class AppPalette extends ThemeExtension<AppPalette> {
   /// Text selection highlight inside the editor.
   final Color selection;
 
+  /// The one-pixel edge around a selected **block** (a run of table cells).
+  ///
+  /// Deeper than [accent] on purpose: at 1px an `accent` line reads as a glow
+  /// rather than as an edge, which in a table turns into a bright box around
+  /// every row instead of one shape around the selection.
+  final Color selectionEdge;
+
   /// Ambient shadow colour (already alpha-composited).
   final Color shadow;
 
@@ -106,6 +114,7 @@ class AppPalette extends ThemeExtension<AppPalette> {
     danger: Color(0xFFC4473F),
     dangerSoft: Color(0xFFFBEAE8),
     selection: Color(0x336B5BD2),
+    selectionEdge: Color(0xFF6B5BD2),
     shadow: Color(0x14000000),
     overlay: Color(0x331B1A18),
   );
@@ -134,6 +143,7 @@ class AppPalette extends ThemeExtension<AppPalette> {
     danger: Color(0xFFE4796F),
     dangerSoft: Color(0xFF2E1C1A),
     selection: Color(0x449E90F7),
+    selectionEdge: Color(0xFF8A5CF5),
     shadow: Color(0x66000000),
     overlay: Color(0x99000000),
   );
@@ -165,6 +175,7 @@ class AppPalette extends ThemeExtension<AppPalette> {
     danger: danger,
     dangerSoft: dangerSoft,
     selection: selection,
+    selectionEdge: selectionEdge,
     shadow: shadow,
     overlay: overlay,
   );
@@ -196,6 +207,7 @@ class AppPalette extends ThemeExtension<AppPalette> {
       danger: mix(danger, other.danger),
       dangerSoft: mix(dangerSoft, other.dangerSoft),
       selection: mix(selection, other.selection),
+      selectionEdge: mix(selectionEdge, other.selectionEdge),
       shadow: mix(shadow, other.shadow),
       overlay: mix(overlay, other.overlay),
     );
