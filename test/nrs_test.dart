@@ -1,0 +1,1294 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:nrs/core/theme/app_palette.dart';
+import 'package:nrs/core/utils/markdown_actions.dart';
+import 'package:nrs/core/utils/markdown_outline.dart';
+import 'package:nrs/data/models/note.dart';
+import 'package:nrs/ui/editor/live_markdown.dart';
+import 'package:nrs/ui/editor/markdown_editor.dart';
+import 'package:nrs/ui/preview/code_palette.dart';
+import 'package:nrs/ui/preview/syntax_highlighter.dart';
+
+void main() {
+  group('Note front matter', () {
+    test('round-trips metadata and body', () {
+      final Note note = Note(
+        id: 'abc123',
+        title: '写作计划',
+        body: '# 标题\n\n正文内容。\n',
+        tags: const <String>['写作', '计划'],
+        pinned: true,
+        favorite: true,
+        createdAt: DateTime(2026, 1, 2, 9, 30),
+        updatedAt: DateTime(2026, 1, 3, 10, 0),
+        fileName: '写作计划-abc123.md',
+      );
+
+      final Note parsed = Note.fromMarkdown(
+        note.toMarkdown(),
+        note.fileName,
+        DateTime(2026, 5, 1),
+      );
+
+      expect(parsed.id, 'abc123');
+      expect(parsed.title, '写作计划');
+      expect(parsed.tags, <String>['写作', '计划']);
+      expect(parsed.pinned, isTrue);
+      expect(parsed.favorite, isTrue);
+      expect(parsed.body.trim(), '# 标题\n\n正文内容。');
+      expect(parsed.createdAt, note.createdAt);
+      expect(parsed.updatedAt, note.updatedAt);
+    });
+
+    test('the blank line after the front matter is a separator, not content', () {
+      // What actually sits on disk: `---`, the metadata, `---`, one blank line,
+      // then the prose. The blank line belongs to the *file format*, so the body
+      // must not start with a newline — otherwise every note opens with a
+      // phantom empty first line (and the caret at offset 0 lands on it).
+      const String raw = '---\nid: a\ntitle: 标题\n---\n\n# 标题\n\n正文\n';
+      final Note note = Note.fromMarkdown(raw, '标题-a.md', DateTime(2026));
+      expect(note.body, '# 标题\n\n正文\n');
+      expect(note.body.startsWith('\n'), isFalse);
+
+      // …and writing it back has to be a fixed point, or the file grows a blank
+      // line every time it is saved.
+      final Note again = Note.fromMarkdown(
+        note.toMarkdown(),
+        note.fileName,
+        DateTime(2026),
+      );
+      expect(again.body, note.body);
+    });
+
+    test('leaves a body with no front matter completely alone', () {
+      const String raw = '\n  # 缩进的标题\n';
+      expect(Note.fromMarkdown(raw, 'x.md', DateTime(2026)).body, raw);
+    });
+
+    test('falls back to the first heading when there is no front matter', () {
+      final Note parsed = Note.fromMarkdown(
+        '# 我的第一篇\n\n内容',
+        'whatever.md',
+        DateTime(2026, 3, 4),
+      );
+      expect(parsed.title, '我的第一篇');
+      expect(parsed.tags, isEmpty);
+      expect(parsed.createdAt, DateTime(2026, 3, 4));
+    });
+
+    test('slugify keeps CJK and strips filesystem-hostile characters', () {
+      expect(Note.slugify('我的笔记 / 2026: 计划?'), '我的笔记 2026 计划');
+      expect(Note.slugify('   '), '');
+      expect(Note.buildFileName('', 'abcdef'), 'abcdef.md');
+    });
+
+    test('counts CJK characters and latin words together', () {
+      final Note note = Note(
+        id: 'x',
+        title: 't',
+        body: '你好世界 hello world',
+        createdAt: DateTime(2026),
+        updatedAt: DateTime(2026),
+      );
+      expect(note.wordCount, 6);
+      // Whitespace is stripped before counting, including the space。
+      expect(note.characterCount, 14);
+    });
+
+    test('counts task list progress', () {
+      final Note note = Note(
+        id: 'x',
+        title: 't',
+        body: '- [x] done\n- [ ] todo\n- [X] also done\n',
+        createdAt: DateTime(2026),
+        updatedAt: DateTime(2026),
+      );
+      expect(note.taskTotal, 3);
+      expect(note.taskDone, 2);
+    });
+  });
+
+  group('Outline', () {
+    test('skips headings inside fenced code blocks', () {
+      const String source = '''
+# 一级标题
+
+```bash
+# 这不是标题
+```
+
+## 二级标题
+
+Setext 标题
+===
+''';
+      final List<Heading> headings = extractHeadings(source);
+      expect(headings.map((Heading h) => h.plainText).toList(), <String>[
+        '一级标题',
+        '二级标题',
+        'Setext 标题',
+      ]);
+      expect(headings.map((Heading h) => h.level).toList(), <int>[1, 2, 1]);
+    });
+
+    test('a run of dashes is a rule, never a setext heading', () {
+      // The renderer draws `---` as a horizontal rule, so the outline has to
+      // agree — otherwise a note "has" a heading that is nowhere on screen.
+      expect(extractHeadings('标题\n---\n'), isEmpty);
+    });
+
+    test('strips inline markup from outline labels', () {
+      final List<Heading> h = extractHeadings('## **加粗** 与 `代码` 与 [链接](u)');
+      expect(h.single.plainText, '加粗 与 代码 与 链接');
+    });
+  });
+
+  group('Task toggle', () {
+    test('flips a checkbox on the exact source line', () {
+      const String source = '- [ ] one\n- [ ] two\n';
+      final List<int> lines = taskLineNumbers(source);
+      expect(lines, <int>[0, 1]);
+
+      final String checked = toggleTaskOnLine(source, 1, true);
+      expect(checked, '- [ ] one\n- [x] two\n');
+      expect(toggleTaskOnLine(checked, 1, false), source);
+    });
+
+    test('ignores lines that are not tasks', () {
+      const String source = 'plain text\n';
+      expect(toggleTaskOnLine(source, 0, true), source);
+    });
+
+    test('toggles by offset, which is all the click handler knows', () {
+      const String source = '开头\n\n- [ ] 一二三\n- [ ] 四五六\n';
+      // The offset of the box on the second task line is somewhere inside it.
+      final int second = source.lastIndexOf('[');
+      expect(toggleTaskAt(source, second), '开头\n\n- [ ] 一二三\n- [x] 四五六\n');
+      // Toggling again flips it back — one character either way.
+      final String once = toggleTaskAt(source, second);
+      expect(toggleTaskAt(once, second), source);
+      // Offsets 0 and past-the-end must not throw or change anything.
+      expect(toggleTaskAt(source, 0), source);
+      expect(toggleTaskAt(source, source.length), source);
+    });
+  });
+
+  group('Editing actions', () {
+    TextEditingValue value(String text, int start, [int? end]) =>
+        TextEditingValue(
+          text: text,
+          selection: TextSelection(
+            baseOffset: start,
+            extentOffset: end ?? start,
+          ),
+        );
+
+    test('wraps and unwraps the selection', () {
+      final MarkdownEditFn bold = wrapSelection('**', '**');
+      final TextEditingValue wrapped = bold(value('hello', 0, 5));
+      expect(wrapped.text, '**hello**');
+      expect(wrapped.selection.textInside(wrapped.text), 'hello');
+      expect(bold(wrapped).text, 'hello');
+    });
+
+    test('formats the word under the caret when nothing is selected', () {
+      final TextEditingValue out = wrapSelection('*', '*')(value('say hi', 5));
+      expect(out.text, 'say *hi*');
+    });
+
+    test('reads the caret line without slicing past the start of the text', () {
+      // The crash that turned a freshly opened note into a red box: a body that
+      // begins with a blank line (what the front-matter split used to leave
+      // behind) put offset 0 on a "line" that started at 1 while it still ended
+      // at 0, and the toolbar sliced `substring(1, 0)`.
+      const String body = '\n# 标题\n\n- [ ] 事\n';
+      for (int caret = 0; caret <= body.length; caret++) {
+        expect(
+          () => markerAt(value(body, caret)),
+          returnsNormally,
+          reason: 'caret=$caret',
+        );
+      }
+      expect(markerAt(value(body, 0)).kind, LineMarkerKind.paragraph);
+      final LineMarker first = markerAt(value(body, 1));
+      expect(first.kind, LineMarkerKind.heading);
+      expect(first.level, 1);
+      // A caret parked *on* the trailing newline still belongs to the line that
+      // newline ends; only the empty line after it is a paragraph.
+      expect(markerAt(value(body, body.length - 1)).kind, LineMarkerKind.task);
+      expect(markerAt(value(body, body.length)).kind, LineMarkerKind.paragraph);
+    });
+
+    test('toggles a heading prefix on all touched lines', () {
+      final MarkdownEditFn h2 = applyBlockStyle(BlockStyle.h2);
+      final TextEditingValue one = h2(value('alpha\nbeta', 0, 10));
+      expect(one.text, '## alpha\n## beta');
+      expect(h2(one).text, 'alpha\nbeta');
+    });
+
+    test('numbers ordered lists', () {
+      final TextEditingValue out = applyBlockStyle(BlockStyle.ordered)(
+        value('a\nb\nc', 0, 5),
+      );
+      expect(out.text, '1. a\n2. b\n3. c');
+    });
+
+    // The marker a line already carries is stripped before the new one goes on.
+    // Without that, `# 标题` + "bullet list" produced `- # 标题` — the old `# `
+    // survived as literal text because nothing recognised it as a marker.
+    test('replaces the old block marker instead of stacking it', () {
+      expect(
+        applyBlockStyle(BlockStyle.bullet)(value('# 标题', 3)).text,
+        '- 标题',
+      );
+      expect(
+        applyBlockStyle(BlockStyle.h1)(value('- 项', 2)).text,
+        '# 项',
+      );
+      expect(
+        applyBlockStyle(BlockStyle.quote)(value('1. 项', 2)).text,
+        '> 项',
+      );
+      // A rule *is* its whole line, so replacing it takes the dashes with it.
+      expect(applyBlockStyle(BlockStyle.h1)(value('---', 2)).text, '# ');
+    });
+
+    // The EPUB Reader's note panel spells this out: turning a numbered list into
+    // a task list must not throw the number away.
+    test('keeps the number when a task list is applied', () {
+      expect(
+        applyBlockStyle(BlockStyle.task)(value('1. 事', 3)).text,
+        '1. [ ] 事',
+      );
+      // …and clicking again takes the box off, not the whole marker.
+      expect(
+        applyBlockStyle(BlockStyle.task)(value('1. [ ] 事', 5)).text,
+        '1. 事',
+      );
+      expect(
+        applyBlockStyle(BlockStyle.task)(value('- 事', 2)).text,
+        '- [ ] 事',
+      );
+      expect(
+        applyBlockStyle(BlockStyle.task)(value('- [ ] 事', 5)).text,
+        '- 事',
+      );
+    });
+
+    test('converts to an ordered task list from any block', () {
+      expect(
+        applyBlockStyle(BlockStyle.orderedTask)(value('事', 1)).text,
+        '1. [ ] 事',
+      );
+      expect(
+        applyBlockStyle(BlockStyle.orderedTask)(value('- [ ] 事', 5)).text,
+        '1. [ ] 事',
+      );
+      // Toggling off leaves the ordered list behind.
+      expect(
+        applyBlockStyle(BlockStyle.orderedTask)(value('1. [ ] 事', 5)).text,
+        '1. 事',
+      );
+      // Two lines numbered from the sequence, not from the old numbers.
+      expect(
+        applyBlockStyle(BlockStyle.orderedTask)(value('9. a\nb', 0, 6)).text,
+        '1. [ ] a\n2. [ ] b',
+      );
+    });
+
+    test('keeps nesting through a style change', () {
+      expect(
+        applyBlockStyle(BlockStyle.h1)(value('  - 项', 4)).text,
+        '  # 项',
+      );
+      expect(
+        applyBlockStyle(BlockStyle.bullet)(value('  - 项', 4)).text,
+        '  项',
+      );
+    });
+
+    test('turns a browser of paragraphs into one list without gaps', () {
+      final TextEditingValue out = applyBlockStyle(BlockStyle.bullet)(
+        value('a\n\nb', 0, 4),
+      );
+      // The blank line is left alone instead of sprouting an empty bullet.
+      expect(out.text, '- a\n\n- b');
+    });
+
+    test('leaves the caret after the marker, not before it', () {
+      final TextEditingValue out = applyBlockStyle(BlockStyle.h2)(
+        value('alpha\nbeta', 3),
+      );
+      expect(out.text, '## alpha\nbeta');
+      // End of the first line — the next keystroke has to land after `## `.
+      expect(out.selection.baseOffset, 8);
+      expect(out.selection.isCollapsed, isTrue);
+    });
+
+    test('does not touch the inside of a fenced code block', () {
+      const String doc = '```dart\nfinal x = 1;\n```\n正文';
+      final int inside = doc.indexOf('final') + 2;
+      expect(
+        applyBlockStyle(BlockStyle.bullet)(value(doc, inside)).text,
+        doc,
+        reason: 'a fence holds code, and prefixing `- ` would put it inside',
+      );
+      // …but a line outside the fence is fair game again.
+      expect(
+        applyBlockStyle(BlockStyle.bullet)(value(doc, doc.length)).text,
+        '```dart\nfinal x = 1;\n```\n- 正文',
+      );
+    });
+
+    test('selects the URL so it can be pasted straight in', () {
+      final TextEditingValue labelled = insertLink()(value('官网', 0, 2));
+      expect(labelled.text, '[官网](https://)');
+      expect(labelled.selection.textInside(labelled.text), 'https://');
+
+      // No selection: a placeholder label, and the URL still selected.
+      final TextEditingValue bare = insertLink()(value('', 0));
+      expect(bare.text, '[标题](https://)');
+      expect(bare.selection.textInside(bare.text), 'https://');
+    });
+
+    test('inserts a divider on a line of its own', () {
+      expect(insertDivider()(value('', 0)).text, '---\n');
+      expect(insertDivider()(value('上文', 2)).text, '上文\n---\n');
+      expect(insertDivider()(value('上文\n', 3)).text, '上文\n---\n');
+      // A selected range is replaced, not appended to.
+      expect(insertDivider()(value('上文', 0, 2)).text, '---\n');
+    });
+
+    test('continues and then ends a list on Enter', () {
+      final TextEditingValue next = continueListOnEnter(
+        value('- item', 6, 6),
+      )!;
+      expect(next.text, '- item\n- ');
+
+      final TextEditingValue ended = continueListOnEnter(
+        value('- item\n- ', 9, 9),
+      )!;
+      expect(ended.text, '- item\n');
+
+      expect(continueListOnEnter(value('普通文本', 4)), isNull);
+    });
+
+    test('keeps the caret inside an inserted code block', () {
+      final TextEditingValue out = codeBlock(language: 'dart')(
+        value('', 0),
+      );
+      expect(out.text.trim(), '```dart\n\n```');
+      expect(out.selection.baseOffset, greaterThan(0));
+      expect(out.selection.baseOffset, lessThan(out.text.length));
+    });
+
+    test('indents and outdents the selected lines', () {
+      final TextEditingValue indented = indentLines(
+        value('a\nb', 0, 3),
+        outdent: false,
+      );
+      expect(indented.text, '  a\n  b');
+      expect(indentLines(indented, outdent: true).text, 'a\nb');
+    });
+  });
+
+  group('Syntax highlighter', () {
+    test('classifies comments, strings, numbers and keywords', () {
+      final List<List<CodeToken>> lines = highlightCode(
+        '// note\nfinal x = "hi";\nvar n = 42;',
+        'dart',
+      );
+      expect(lines.length, 3);
+
+      final List<CodeToken> first = lines.first;
+      expect(first.single.kind, TokenKind.comment);
+
+      final Set<TokenKind> secondKinds = lines[1]
+          .map((CodeToken t) => t.kind)
+          .toSet();
+      expect(secondKinds, contains(TokenKind.keyword));
+      expect(secondKinds, contains(TokenKind.string));
+
+      expect(
+        lines[2].any(
+          (CodeToken t) => t.kind == TokenKind.number && t.text == '42',
+        ),
+        isTrue,
+      );
+    });
+
+    test('never loses characters, whatever the language', () {
+      const String code = 'a = "x\\ny" + `tpl` /* c */ # h\nend';
+      for (final String lang in <String>['dart', 'python', 'shell', '', 'zsh']) {
+        final List<List<CodeToken>> lines = highlightCode(code, lang);
+        final String rebuilt = lines
+            .map((List<CodeToken> l) => l.map((CodeToken t) => t.text).join())
+            .join('\n');
+        expect(rebuilt, code, reason: 'language "$lang" lost characters');
+      }
+    });
+
+    test('maps aliases onto real grammars', () {
+      expect(normaliseLanguage('ts'), 'javascript');
+      expect(normaliseLanguage('yml'), 'yaml');
+      expect(normaliseLanguage('未知语言'), '');
+    });
+  });
+
+  group('Live (Typora-style) rendering', () {
+    const AppPalette palette = AppPalette.light;
+    const TextStyle base = TextStyle(fontSize: 15.5, height: 1.78);
+
+    /// The text the paragraph actually lays out.
+    ///
+    /// A [WidgetSpan] contributes exactly one object-replacement character
+    /// (`\uFFFC`) — and *that* is the point: the painted tree has to be exactly
+    /// as long as the source, or every offset after the first decoration slides.
+    String painted(List<InlineSpan> spans) =>
+        spans.map((InlineSpan s) => s.toPlainText()).join();
+
+    /// Rebuilds the source from the painted tree, letting each decoration stand
+    /// in for the single character it replaced.
+    ///
+    /// If this reproduces the document byte for byte, then nothing was dropped,
+    /// duplicated *or shifted* — which is what the old "flatten" helper (it
+    /// skipped widgets entirely) failed to notice.
+    void expectFaithful(String text, List<InlineSpan> spans, String why) {
+      final String p = painted(spans);
+      expect(p.length, text.length, reason: '$why — tree length changed');
+      final StringBuffer b = StringBuffer();
+      for (int i = 0; i < p.length; i++) {
+        b.write(p[i] == '\uFFFC' ? text[i] : p[i]);
+      }
+      expect(b.toString(), text, reason: '$why — source was reshaped');
+    }
+
+    /// The widgets the decorations draw — a [WidgetSpan]'s child, unwrapped.
+    List<Widget> widgetsOf(List<InlineSpan> spans) => <Widget>[
+      for (final InlineSpan s in spans)
+        if (s is WidgetSpan) s.child,
+    ];
+
+    List<InlineSpan> render(String text, {int caretLine = -1, int? caret}) {
+      int offset = 0;
+      if (caret != null) {
+        offset = caret;
+      } else if (caretLine >= 0) {
+        final List<String> lines = text.split('\n');
+        offset = lines.take(caretLine).fold<int>(
+          0,
+          (int a, String l) => a + l.length + 1,
+        );
+      }
+      return buildLiveSpans(
+        text: text,
+        base: base,
+        p: palette,
+        selection: caretLine < 0 && caret == null
+            ? const TextSelection.collapsed(offset: -1)
+            : TextSelection.collapsed(offset: offset),
+        contentWidth: 680,
+      );
+    }
+
+    /// Every [GestureDetector] buried in a [WidgetSpan], so tests can prove a
+    /// pill is actually clickable rather than merely drawn.
+    List<GestureDetector> taps(List<InlineSpan> spans) {
+      final List<GestureDetector> out = <GestureDetector>[];
+      void walk(Widget node) {
+        if (node is GestureDetector) {
+          out.add(node);
+          return;
+        }
+        if (node is SingleChildRenderObjectWidget) {
+          final Widget? c = node.child;
+          if (c != null) walk(c);
+        }
+        if (node is Row) {
+          for (final Widget c in node.children) {
+            walk(c);
+          }
+        }
+      }
+
+      for (final InlineSpan s in spans) {
+        if (s is WidgetSpan) walk(s.child);
+      }
+      return out;
+    }
+
+    const String document = '''
+# 标题一
+
+一段普通文字,包含 **加粗**、*斜体*、~~删除线~~ 和 `行内代码`。
+
+## 标题二
+
+- 无序列表项
+  - 嵌套一层
+    - 再深一层
+- [x] 已完成的任务
+- [ ] 未完成的任务
+
+1. 第一项
+2. 第二项
+
+> 这是一段引用。
+> 引用还没结束。
+
+| 列一 | 列二 |
+| --- | --- |
+| a | b |
+
+```dart
+final x = 1;
+```
+
+---
+
+想法 #写作 与 [[会议记录]] 以及 [链接](https://x.test)。
+
+尾段。''';
+
+    test('the painted tree is exactly as long as the source', () {
+      // The caret sweeps every *character*, not just every line: the active
+      // block takes a completely different code path from the inactive ones,
+      // and a decoration that emits one character too many only shows up once
+      // something follows it.
+      for (int caret = -1; caret <= document.length; caret++) {
+        final List<InlineSpan> spans = caret < 0
+            ? render(document)
+            : render(document, caret: caret);
+        expectFaithful(document, spans, 'caret=$caret');
+      }
+    });
+
+    test('the first-run note renders without throwing', () {
+      // The welcome note is the first thing a user ever sees, so a throw here is
+      // a throw on launch — an empty pane with a red box in it. It also happens
+      // to be the densest paragraph of syntax in the whole app: a two-backtick
+      // span, `.md` inline code, a table, a fence and a rule.
+      //
+      // Note the route it takes: written to disk and read back, exactly as the
+      // vault does. The factory body alone would have hidden the bug this test
+      // was written for, because the *loader* was what put a leading blank line
+      // in front of the prose.
+      final String welcome = Note.fromMarkdown(
+        Note.welcome().toMarkdown(),
+        '欢迎使用 NRS-k15and.md',
+        DateTime(2026),
+      ).body;
+      expect(welcome.startsWith('\n'), isFalse);
+
+      for (int caret = -1; caret <= welcome.length; caret++) {
+        final List<InlineSpan> spans = caret < 0
+            ? render(welcome)
+            : render(welcome, caret: caret);
+        expectFaithful(welcome, spans, 'welcome caret=$caret');
+        // The toolbar asks the same question on every build; it used to throw
+        // for the caret at offset 0.
+        expect(
+          () => markerAt(
+            TextEditingValue(
+              text: welcome,
+              selection: TextSelection.collapsed(
+                offset: caret < 0 ? 0 : caret,
+              ),
+            ),
+          ),
+          returnsNormally,
+          reason: 'markerAt caret=$caret',
+        );
+      }
+    });
+
+    test('never loses or duplicates a character, line by line', () {
+      final int lineCount = document.split('\n').length;
+      for (int line = -1; line < lineCount; line++) {
+        expectFaithful(
+          document,
+          render(document, caretLine: line),
+          'caretLine=$line',
+        );
+      }
+    });
+
+    test('the very last character is never hidden', () {
+      // `RenderEditable` anchors the end-of-text caret on the last glyph's box
+      // and asserts it is non-empty; a hidden space has a zero-width box, so a
+      // note ending in `- ` used to lose (or misplace) the caret entirely.
+      for (final String tail in <String>['- ', '# ', '> ', '- [ ] ']) {
+        final List<InlineSpan> spans = render('一句话\n$tail', caret: 0);
+        final InlineSpan last = spans.last;
+        expect(last, isA<TextSpan>(), reason: 'tail "$tail"');
+        expect(
+          (last as TextSpan).style!.fontSize,
+          base.fontSize,
+          reason: 'tail "$tail" left a hidden glyph at the end',
+        );
+      }
+    });
+
+    test('collapses punctuation only outside the caret line', () {
+      const String heading = '# 标题一';
+      final List<InlineSpan> idle = render(heading);
+      final List<InlineSpan> active = render(heading, caretLine: 0);
+
+      TextSpan markerOf(List<InlineSpan> spans) {
+        for (final InlineSpan s in spans) {
+          if (s is TextSpan && s.text == '#' && s.style != null) return s;
+        }
+        return const TextSpan();
+      }
+
+      // Away from the caret the `#` is drawn at zero size, invisible.
+      expect(markerOf(idle).style!.fontSize, 0);
+      // On the caret's line it becomes readable again — and scaled with the
+      // heading, so `#` never looks like a speck next to 26px text.
+      expect(
+        markerOf(active).style!.fontSize,
+        greaterThanOrEqualTo(base.fontSize!),
+      );
+    });
+
+    test('scales headings but leaves body text at base size', () {
+      final List<InlineSpan> spans = render('# 大标题\n\n正文');
+      final List<TextSpan> texts = spans.whereType<TextSpan>().toList();
+
+      final TextSpan heading = texts.firstWhere((TextSpan s) => s.text == '大标题');
+      final TextSpan body = texts.firstWhere((TextSpan s) => s.text == '正文');
+
+      expect(heading.style!.fontSize, greaterThan(base.fontSize!));
+      expect(heading.style!.fontWeight, FontWeight.w700);
+      expect(body.style!.fontSize, base.fontSize);
+    });
+
+    test('collapses the fence but highlights the code inside it', () {
+      final List<InlineSpan> spans = render(document);
+      final List<TextSpan> texts = spans.whereType<TextSpan>().toList();
+
+      // The band widget stands in for the first backtick; the rest of the fence
+      // collapses behind it.
+      final TextSpan fence = texts.firstWhere(
+        (TextSpan s) => s.text == '``dart',
+      );
+      expect(fence.style!.fontSize, 0);
+      expect(
+        spans.whereType<WidgetSpan>(),
+        isNotEmpty,
+        reason: 'the fence is drawn as a sunken band',
+      );
+
+      // The code line is a single span carrying the recessed background, with
+      // the highlighted tokens as children.
+      final TextSpan code = texts.firstWhere(
+        (TextSpan s) =>
+            s.children != null &&
+            s.children!
+                    .whereType<TextSpan>()
+                    .map((TextSpan t) => t.text)
+                    .join() ==
+                'final x = 1;',
+      );
+      expect(code.style!.backgroundColor, palette.surfaceSunken);
+      expect(code.style!.fontFamily, isNot(base.fontFamily));
+      expect(
+        code.children!
+            .whereType<TextSpan>()
+            .any((TextSpan s) => s.style?.color == CodePalette.light.keyword),
+        isTrue,
+        reason: '`final` should be coloured as a keyword',
+      );
+    });
+
+    test('turns a horizontal rule into a real full-width line', () {
+      const String source = '---\n下一段';
+      final List<InlineSpan> spans = render(source);
+      expectFaithful(source, spans, 'rule');
+      expect(
+        widgetsOf(spans).whereType<MarkdownDividerLine>().length,
+        1,
+        reason: 'the rule itself is drawn by its own render object',
+      );
+      // The widget stands in for the first dash; the other two collapse.
+      final TextSpan rest = spans
+          .whereType<TextSpan>()
+          .firstWhere((TextSpan s) => s.text == '--');
+      expect(rest.style!.fontSize, 0);
+    });
+
+    test('a dash run under a paragraph is a rule, not a heading', () {
+      const String source = '标题\n---\n正文';
+      final List<InlineSpan> spans = render(source);
+      expectFaithful(source, spans, 'divider');
+      final TextSpan word = spans
+          .whereType<TextSpan>()
+          .firstWhere((TextSpan s) => s.text == '标题');
+      expect(
+        word.style!.fontSize,
+        base.fontSize,
+        reason: 'the paragraph must not be promoted to a heading',
+      );
+      expect(widgetsOf(spans).whereType<MarkdownDividerLine>().length, 1);
+    });
+
+    test('a run of = under a paragraph promotes it to a heading', () {
+      final List<InlineSpan> spans = render('大标题\n===\n');
+      final TextSpan heading = spans
+          .whereType<TextSpan>()
+          .firstWhere((TextSpan s) => s.text == '大标题');
+      expect(heading.style!.fontSize, greaterThan(base.fontSize!));
+    });
+
+    test('draws task boxes that report the offset they stand in for', () {
+      const String tasks = '- [x] 已完成\n- [ ] 待办\n';
+      final List<InlineSpan> spans = render(tasks);
+      expectFaithful(tasks, spans, 'tasks');
+
+      final List<int> offsets = spans
+          .whereType<WidgetSpan>()
+          .map((WidgetSpan s) => s.child)
+          .whereType<MarkdownTodoCheckbox>()
+          .map((MarkdownTodoCheckbox c) => c.sourceOffset)
+          .toList();
+      // Each box stands in for the `-` of its own line.
+      expect(offsets, <int>[0, tasks.indexOf('- [ ]')]);
+    });
+
+    test('draws an ordered task with its number kept in the marker column', () {
+      const String text = '1. [ ] 一件事\n2. [x] 另一件\n';
+      final List<InlineSpan> spans = render(text);
+      expectFaithful(text, spans, 'ordered tasks');
+
+      // Both items still draw a real box…
+      expect(
+        spans
+            .whereType<WidgetSpan>()
+            .map((WidgetSpan s) => s.child)
+            .whereType<MarkdownTodoCheckbox>()
+            .length,
+        2,
+      );
+      // …and the numbers stay visible: the box *follows* the number instead of
+      // replacing it (that is the whole difference from a `- [ ]` item).
+      final Iterable<String?> numbers = spans
+          .whereType<TextSpan>()
+          .where((TextSpan s) => s.style?.fontWeight == FontWeight.w600)
+          .map((TextSpan s) => s.text);
+      expect(numbers, containsAll(<String>['1.', '2.']));
+
+      // The box must point at the line it belongs to — that offset is what the
+      // tap handler feeds into toggleTaskAt, which only accepts a lead of `-`
+      // or `1.` *because* this test's regex and its own stay in step.
+      final List<int> offsets = spans
+          .whereType<WidgetSpan>()
+          .map((WidgetSpan s) => s.child)
+          .whereType<MarkdownTodoCheckbox>()
+          .map((MarkdownTodoCheckbox c) => c.sourceOffset)
+          .toList();
+      expect(offsets, <int>[text.indexOf('['), text.indexOf('[x]')]);
+
+      // And tapping that offset really does flip the box.
+      expect(
+        toggleTaskAt(text, offsets.first),
+        '1. [x] 一件事\n2. [x] 另一件\n',
+      );
+    });
+
+    test('strikes a ticked task through, number included', () {
+      // Two things the rule has to get right, both of which the eye notices
+      // long before any test does:
+      //
+      //  * a ticked *numbered* item is one struck-out sentence — the `1.` is
+      //    part of it, so the rule crosses the number too instead of stopping
+      //    politely in front of it (and the number stops being lit up in
+      //    accent while the words beside it are greyed out);
+      //  * the rule is painted in the colour of the text it crosses, and at
+      //    double the font's own hairline weight. A rule dimmer than its own
+      //    text is unreadable — that is the "删除线不够明显" report.
+      final List<InlineSpan> spans = render('1. [x] 一件事\n2. [ ] 另一件\n');
+
+      TextSpan span(String t) => spans
+          .whereType<TextSpan>()
+          .firstWhere((TextSpan s) => s.text == t);
+
+      final TextSpan struckNumber = span('1.');
+      expect(
+        struckNumber.style!.decoration,
+        TextDecoration.lineThrough,
+        reason: 'the number of a ticked item must be struck too',
+      );
+      expect(
+        struckNumber.style!.decorationColor,
+        struckNumber.style!.color,
+        reason: 'the rule is painted in the colour of the text it crosses',
+      );
+
+      // The other item is untouched: still accent, still no rule.
+      final TextSpan liveNumber = span('2.');
+      expect(liveNumber.style!.decoration, isNot(TextDecoration.lineThrough));
+      expect(liveNumber.style!.color, palette.accent);
+
+      // The rule reads the same on the body text as it does on the number.
+      final TextSpan body = span('一件事');
+      expect(body.style!.decoration, TextDecoration.lineThrough);
+      expect(body.style!.decorationThickness, 2);
+      expect(body.style!.decorationColor, body.style!.color);
+      expect(body.style!.color, palette.textSecondary);
+      expect(
+        struckNumber.style!.decorationThickness,
+        body.style!.decorationThickness,
+        reason: 'one deletion rule, everywhere',
+      );
+
+      // A plain `- [x]` bullet gets the same treatment.
+      final List<InlineSpan> bullet = render('- [x] 一件事\n');
+      final TextSpan bulletBody = bullet
+          .whereType<TextSpan>()
+          .firstWhere((TextSpan s) => s.text == '一件事');
+      expect(bulletBody.style!.decoration, TextDecoration.lineThrough);
+      expect(bulletBody.style!.decorationThickness, 2);
+
+      // And so does an inline `~~deletion~~`. It keeps the colour of the words
+      // around it, so the rule *matching* that colour is the only cue that it
+      // is struck at all — hence the explicit coloured base.
+      final List<InlineSpan> inline = buildLiveSpans(
+        text: '这是 ~~删掉~~ 的字\n',
+        base: base.copyWith(color: palette.textPrimary),
+        p: palette,
+        selection: const TextSelection.collapsed(offset: -1),
+        contentWidth: 680,
+      );
+      final TextSpan gone = inline
+          .whereType<TextSpan>()
+          .firstWhere((TextSpan s) => s.text == '删掉');
+      expect(gone.style!.decoration, TextDecoration.lineThrough);
+      expect(gone.style!.decorationThickness, 2);
+      expect(gone.style!.decorationColor, palette.textPrimary);
+    });
+
+    test('draws the list markers as markers even on the caret line', () {
+      // The user's rule: typing `-` then space has to *look* like a list right
+      // away, so a bullet is never swapped back to raw text.
+      const String text = '- 一项\n- [ ] 待办';
+      for (final int caret in <int>[0, 2, 6]) {
+        final List<InlineSpan> spans = render(text, caret: caret);
+        expectFaithful(text, spans, 'caret=$caret');
+        expect(
+          spans.whereType<WidgetSpan>().length,
+          2,
+          reason: 'caret=$caret lost a marker widget',
+        );
+      }
+    });
+
+    test('keeps nested list indentation and swaps the bullet glyph', () {
+      const String text = '- 一\n  - 二\n    - 三\n';
+      final List<InlineSpan> spans = render(text);
+      expectFaithful(text, spans, 'nested list');
+      expect(spans.whereType<WidgetSpan>().length, 3);
+      expect(
+        spans.whereType<TextSpan>().where((TextSpan s) => s.text == '    '),
+        isNotEmpty,
+        reason: 'the deepest indent must survive as real whitespace',
+      );
+    });
+
+    test('draws tags as pills that report their own name', () {
+      const String text = '想法 #写作 与 #灵感\n';
+      final List<String> tapped = <String>[];
+      final List<InlineSpan> spans = buildLiveSpans(
+        text: text,
+        base: base,
+        p: palette,
+        selection: const TextSelection.collapsed(offset: -1),
+        onTagTap: tapped.add,
+      );
+
+      expectFaithful(text, spans, 'tags');
+      final List<GestureDetector> hit = taps(spans);
+      expect(hit.length, 2);
+      hit.last.onTap!();
+      expect(tapped, <String>['灵感']);
+
+      // The tag the caret sits inside goes back to editable source text, and
+      // the others stay pills.
+      final List<InlineSpan> onLine = buildLiveSpans(
+        text: text,
+        base: base,
+        p: palette,
+        selection: const TextSelection.collapsed(offset: 4),
+        onTagTap: tapped.add,
+      );
+      expect(taps(onLine).length, 1);
+      expectFaithful(text, onLine, 'tags with caret');
+    });
+
+    test('draws wikilinks as tappable links', () {
+      const String text = 'see [[会议记录]] now\n';
+      final List<String> opened = <String>[];
+      final List<InlineSpan> spans = buildLiveSpans(
+        text: text,
+        base: base,
+        p: palette,
+        selection: const TextSelection.collapsed(offset: -1),
+        onWikilinkTap: opened.add,
+      );
+      expectFaithful(text, spans, 'wikilink');
+      final List<GestureDetector> hit = taps(spans);
+      expect(hit.length, 1);
+      hit.single.onTap!();
+      expect(opened, <String>['会议记录']);
+    });
+
+    test('does not mistake an issue number for a tag', () {
+      const String text = '修复 issue#12 与 #1 的问题\n';
+      final List<String> tapped = <String>[];
+      final List<InlineSpan> spans = buildLiveSpans(
+        text: text,
+        base: base,
+        p: palette,
+        selection: const TextSelection.collapsed(offset: -1),
+        onTagTap: tapped.add,
+      );
+      expect(taps(spans), isEmpty);
+      expectFaithful(text, spans, 'issue numbers');
+    });
+
+    test('collapses a table divider instead of shouting it', () {
+      const String text = '| a | b |\n| --- | --- |\n| 1 | 2 |\n';
+      final List<InlineSpan> spans = render(text);
+      expectFaithful(text, spans, 'table');
+      final TextSpan divider = spans
+          .whereType<TextSpan>()
+          .firstWhere((TextSpan s) => s.text == '| --- | --- |');
+      expect(divider.style!.color, Colors.transparent);
+      expect(
+        divider.style!.fontSize,
+        base.fontSize,
+        reason: 'invisible, but the row keeps its height',
+      );
+    });
+
+    test('an inline code span never swallows its own backticks', () {
+      const String text = 'a `x = 1` b';
+      expectFaithful(text, render(text), 'inline code');
+      expectFaithful(text, render(text, caret: 4), 'inline code, caret inside');
+    });
+
+    test('an image keeps its source characters behind the widget', () {
+      const String text = '![风景](https://x.test/a.png)';
+      final List<InlineSpan> spans = render(text);
+      expectFaithful(text, spans, 'image');
+      expect(spans.whereType<WidgetSpan>().length, 1);
+    });
+  });
+
+  /// Pressing Enter at the end of a list item has to keep the list going: a new
+  /// bullet for a bullet, the *next number* for an ordered item, a fresh empty
+  /// box for a task — and an empty item has to let the user *out*.
+  ///
+  /// The rule table here mirrors `EPUB Reader V7`'s `MarkdownListContinueFormatter`
+  /// (the reference the user pointed at), including the detail that a checked
+  /// box continues unchecked and that `1)` keeps its parenthesis.
+  group('List continuation on Enter', () {
+    final ListContinuationFormatter fmt = ListContinuationFormatter();
+
+    /// The exact old/new pair the platform hands a formatter for one Enter press:
+    /// one newline inserted at the caret, caret after it. Going through this
+    /// shape rather than calling a helper is the point — the formatter is only
+    /// allowed to act on this shape and has to stay inert for every other.
+    TextEditingValue enter(
+      String text,
+      int caret, {
+      TextRange composing = TextRange.empty,
+      int? extent,
+    }) {
+      final TextEditingValue old = TextEditingValue(
+        text: text,
+        selection: extent == null
+            ? TextSelection.collapsed(offset: caret)
+            : TextSelection(baseOffset: caret, extentOffset: extent),
+        composing: composing,
+      );
+      final TextEditingValue next = TextEditingValue(
+        text: '${text.substring(0, caret)}\n${text.substring(caret)}',
+        selection: TextSelection.collapsed(offset: caret + 1),
+      );
+      return fmt.formatEditUpdate(old, next);
+    }
+
+    test('a bullet continues with the bullet the user chose', () {
+      for (final String mark in <String>['-', '*', '+']) {
+        final TextEditingValue out = enter('$mark 甲', 3);
+        expect(out.text, '$mark 甲\n$mark ', reason: mark);
+        expect(
+          out.selection.baseOffset,
+          out.text.length,
+          reason: 'the caret belongs after the new marker',
+        );
+      }
+    });
+
+    test('an ordered item continues with the next number', () {
+      expect(enter('1. 甲', 4).text, '1. 甲\n2. ');
+      expect(enter('9. 甲', 4).text, '9. 甲\n10. ');
+      // The separator is the user's choice and survives: `3)` is not `3.`.
+      expect(enter('3) 甲', 4).text, '3) 甲\n4) ');
+    });
+
+    test('a task continues unchecked, however it was checked', () {
+      expect(enter('- [ ] 甲', 7).text, '- [ ] 甲\n- [ ] ');
+      expect(enter('- [x] 甲', 7).text, '- [x] 甲\n- [ ] ');
+      expect(enter('* [X] 甲', 7).text, '* [X] 甲\n* [ ] ');
+    });
+
+    test('an ordered task keeps both its numbering and its box', () {
+      expect(enter('6. [ ] 事', 8).text, '6. [ ] 事\n7. [ ] ');
+    });
+
+    test('a nested item keeps its indentation', () {
+      expect(enter('   - 甲', 6).text, '   - 甲\n   - ');
+      expect(enter('\t- 甲', 4).text, '\t- 甲\n\t- ');
+      expect(enter('  - [ ] 甲', 9).text, '  - [ ] 甲\n  - [ ] ');
+    });
+
+    test('an empty item ends the list instead of nesting deeper', () {
+      // The realistic shape: content above, an empty item under it. Enter there
+      // clears the marker out and leaves a plain blank line, so the next thing
+      // typed is a paragraph again.
+      expect(enter('- 甲\n- ', 6).text, '- 甲\n\n');
+      expect(enter('1. 甲\n2. ', 8).text, '1. 甲\n\n');
+      expect(enter('- [x] 甲\n- [ ] ', 14).text, '- [x] 甲\n\n');
+      // Standalone, the marker simply disappears and the caret rides along.
+      for (final String empty in <String>['- ', '* ', '1. ', '- [ ] ']) {
+        final TextEditingValue out = enter(empty, empty.length);
+        expect(out.text.trim(), isEmpty, reason: empty);
+        expect(out.selection.baseOffset, out.text.length, reason: empty);
+      }
+    });
+
+    test('an item continues even when more text follows it', () {
+      // The regression: the guard used to ask "does the rest of the text contain
+      // a newline", which is true for every line but the last — so continuation
+      // only ever worked at the very bottom of a document.
+      final TextEditingValue out = enter('- 甲\n乙\n丙', 3);
+      expect(out.text, '- 甲\n- \n乙\n丙');
+      expect(out.selection.baseOffset, 6);
+    });
+
+    test('Enter in the middle of an item is just a line break', () {
+      // The newline lands mid-line, not at the line's end: nothing to continue.
+      expect(enter('- 甲乙', 3).text, '- 甲\n乙');
+    });
+
+    test('an empty quote ends the quote', () {
+      expect(enter('> 引用\n> ', 7).text, '> 引用\n\n');
+    });
+
+    test('ordinary lines, headings, quotes and rules are left alone', () {
+      for (final String line in <String>['正文', '# 标题', '---', '> 引用', '-不是列表']) {
+        expect(enter(line, line.length).text, '$line\n', reason: line);
+      }
+    });
+
+    test('a newline committed by an IME continues nothing', () {
+      // While a composition is open, Enter is the IME's to consume — reacting to
+      // it would inject a bullet into text the user never finished typing.
+      final TextEditingValue out = enter(
+        '- 甲',
+        3,
+        composing: const TextRange(start: 0, end: 3),
+      );
+      expect(out.text, '- 甲\n');
+    });
+
+    test('an Enter that replaces a selection continues nothing', () {
+      final TextEditingValue old = const TextEditingValue(
+        text: '- 甲',
+        selection: TextSelection(baseOffset: 0, extentOffset: 2),
+      );
+      const TextEditingValue next = TextEditingValue(
+        text: '\n 甲',
+        selection: TextSelection.collapsed(offset: 1),
+      );
+      expect(fmt.formatEditUpdate(old, next).text, '\n 甲');
+    });
+  });
+
+  group('Line height', () {
+    // A paragraph steps by `(fontSize * height).round()` but paints a line's
+    // highlight box `fontSize * height` tall. Whatever fraction is left over
+    // comes out as a hairline of paper between the lines of a selection, so
+    // every ratio the renderer emits is snapped to a whole-pixel line height.
+    test('snapLineHeight leaves a whole number of pixels', () {
+      for (final double size in <double>[
+        12,
+        13,
+        14.5,
+        15.5,
+        16,
+        17.5,
+        20,
+        22,
+      ]) {
+        final double line = size * snapLineHeight(size, 1.78);
+        expect(
+          line,
+          closeTo(line.roundToDouble(), 1e-9),
+          reason: '$size px 的行高不是整数：$line',
+        );
+        expect(
+          (line - size * 1.78).abs(),
+          lessThanOrEqualTo(0.5),
+          reason: '$size px 的行高偏离设计值超过半个像素',
+        );
+      }
+    });
+
+    test('a zero or negative size is left alone', () {
+      expect(snapLineHeight(0, 1.78), 1.78);
+    });
+  });
+
+  group('Table', () {
+    const TextStyle base = TextStyle(fontSize: 15.5, height: 1.78);
+    const AppPalette palette = AppPalette.light;
+    // `| a | b |` forms; the divider makes the row above it the header.
+    const String doc = '| 想要 | 就写 |\n| --- | --- |\n| **加粗** | `Ctrl + B` |\n';
+    List<TableGeometry> measure(String text) {
+      final List<TableGeometry> tables = <TableGeometry>[];
+      buildLiveSpans(
+        text: text,
+        base: base,
+        p: palette,
+        selection: const TextSelection.collapsed(offset: -1),
+        contentWidth: 680,
+        tables: tables,
+      );
+      return tables;
+    }
+
+    test('a table block is measured once, with every row', () {
+      final List<TableGeometry> tables = measure(doc);
+      expect(tables, hasLength(1));
+      final TableGeometry t = tables.single;
+      // The divider line is not a row; header plus one body row are.
+      expect(t.rows, hasLength(2));
+      expect(t.rows.first.header, isTrue);
+      expect(t.rows.last.header, isFalse);
+      expect(t.rows.first.line, 0);
+      expect(t.rows.last.line, 2);
+    });
+
+    test('columns line up across rows', () {
+      final TableGeometry t = measure(doc).single;
+      for (int c = 0; c < 2; c++) {
+        final double x = t.rows.first.cells[c].x;
+        final double w = t.rows.first.cells[c].width;
+        for (final TableRowGeometry r in t.rows) {
+          expect(r.cells[c].x, x, reason: 'column $c is not aligned');
+          expect(r.cells[c].width, w, reason: 'column $c is not one width');
+        }
+      }
+      // Cells tile: no gap, no overlap, and the table is exactly as wide as
+      // its last cell is far.
+      expect(t.rows.first.cells.first.x, 0);
+      expect(
+        t.rows.first.cells[1].x,
+        t.rows.first.cells.first.width,
+      );
+      expect(
+        t.width,
+        t.rows.first.cells.last.x + t.rows.first.cells.last.width,
+      );
+      expect(t.width, lessThanOrEqualTo(679), reason: 'the row must not wrap');
+    });
+
+    test('a cell knows the source characters it holds', () {
+      final TableGeometry t = measure(doc).single;
+      final TableCellGeometry cell = t.rows.last.cells.first;
+      expect(
+        doc.substring(cell.start, cell.end),
+        ' **加粗** ',
+        reason: 'the cell range covers everything between the pipes',
+      );
+    });
+
+    test('a squeezed cell gets a letter spacing that fits its column', () {
+      // Three wide columns cannot fit 680px without shrinking.
+      const String wide =
+          '| 一列很长的文字内容 | 另一列也很长的文字内容 | 第三列照样长 |';
+      final TableGeometry t = measure('$wide\n| --- | --- | --- |\n').single;
+      for (final TableRowGeometry r in t.rows) {
+        for (final TableCellGeometry c in r.cells) {
+          expect(c.width, greaterThan(0));
+        }
+      }
+      expect(t.width, lessThanOrEqualTo(679));
+    });
+
+    test('a caret in the table knocks the row back to source', () {
+      int at = 0;
+      for (final String line in doc.split('\n').take(1)) {
+        at += line.length;
+      }
+      final List<InlineSpan> spans = buildLiveSpans(
+        text: doc,
+        base: base,
+        p: palette,
+        selection: TextSelection.collapsed(offset: 2),
+        contentWidth: 680,
+      );
+      // Rendered rows paint a `_TableRowView`; a revealed row paints text.
+      int rowViews = 0;
+      int pipes = 0;
+      void walk(InlineSpan s) {
+        if (s is WidgetSpan && s.child.runtimeType.toString() == '_TableRowView') {
+          rowViews++;
+        }
+        if (s is TextSpan && s.text != null && s.text!.contains('|')) {
+          pipes += s.text!.split('|').length - 1;
+        }
+        for (final InlineSpan c in (s is TextSpan ? s.children : null) ?? const <InlineSpan>[]) {
+          walk(c);
+        }
+      }
+
+      for (final InlineSpan s in spans) {
+        walk(s);
+      }
+      expect(pipes, greaterThan(0), reason: 'the caret row shows its pipes');
+      expect(rowViews, 1, reason: 'the other rows stay rendered');
+      expect(at, greaterThan(0));
+    });
+
+    test('a selection across cells leaves the table rendered', () {
+      final List<InlineSpan> spans = buildLiveSpans(
+        text: doc,
+        base: base,
+        p: palette,
+        selection: TextSelection(
+          baseOffset: 2,
+          extentOffset: doc.indexOf('加粗') + 2,
+        ),
+        contentWidth: 680,
+      );
+      int rowViews = 0;
+      void walk(InlineSpan s) {
+        if (s is WidgetSpan &&
+            s.child.runtimeType.toString() == '_TableRowView') {
+          rowViews++;
+        }
+        for (final InlineSpan c in (s is TextSpan ? s.children : null) ?? const <InlineSpan>[]) {
+          walk(c);
+        }
+      }
+
+      for (final InlineSpan s in spans) {
+        walk(s);
+      }
+      expect(rowViews, 2, reason: 'both rows stay rendered under a range');
+    });
+  });
+}
