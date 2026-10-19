@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide TableCell, TableRow;
 import 'package:flutter/services.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../core/utils/markdown_actions.dart';
+import '../../core/utils/table_model.dart';
+import '../../core/utils/table_selection.dart';
 
 // --------------------------------------------------------------- layout rules
 //
@@ -78,6 +80,14 @@ class MenuAction extends MenuNode {
   bool get enabled => onPressed != null;
 }
 
+/// A read-only line — the selection's statistics, shown without pretending to
+/// be clickable.
+class MenuInfo extends MenuNode {
+  const MenuInfo(this.label);
+
+  final String label;
+}
+
 /// A line that reveals [children] in a panel of its own, beside this one.
 class MenuSubmenu extends MenuNode {
   const MenuSubmenu({
@@ -109,9 +119,17 @@ Widget buildEditorContextMenu({
   required TextEditingValue value,
   required ValueChanged<MarkdownEditFn> onApply,
   required VoidCallback onDismiss,
+  TableRangeResolver? resolve,
+  VoidCallback? onEditCell,
 }) {
   return _EditorContextMenu(
-    entries: buildEditorMenu(value: value, onApply: onApply, state: state),
+    entries: buildEditorMenu(
+      value: value,
+      onApply: onApply,
+      state: state,
+      resolve: resolve,
+      onEditCell: onEditCell,
+    ),
     anchor: state.contextMenuAnchors.primaryAnchor,
     onDismiss: onDismiss,
   );
@@ -125,14 +143,19 @@ List<MenuNode> buildEditorMenu({
   required TextEditingValue value,
   required ValueChanged<MarkdownEditFn> onApply,
   required EditableTextState state,
+  TableRangeResolver? resolve,
+  VoidCallback? onEditCell,
 }) {
   final BlockStyle current = blockStyleOf(markerAt(value));
-  final bool hasSelection = value.selection.isValid && !value.selection.isCollapsed;
+  final bool hasSelection =
+      value.selection.isValid && !value.selection.isCollapsed;
 
   // The caret's own line decides whether the table rows apply. Offsets are read
   // through the same `lineStartOf` / `lineEndOf` pair as everything else, so a
   // menu that disagrees with the editor about "which line" cannot happen.
-  final int caret = value.selection.isValid ? value.selection.start : value.text.length;
+  final int caret = value.selection.isValid
+      ? value.selection.start
+      : value.text.length;
   final String caretLine = value.text.substring(
     lineStartOf(value.text, caret),
     lineEndOf(value.text, caret),
@@ -140,27 +163,111 @@ List<MenuNode> buildEditorMenu({
   final bool inTable =
       isTableLine(caretLine) && !isInsideFence(value.text, caret);
   final int columns = tableCellsOf(caretLine).length;
-
-  MenuAction tableRow(String label, IconData icon, TableEdit op, {bool enabled = true}) {
-    return MenuAction(
-      label: label,
-      icon: icon,
-      // A table edit that does not apply leaves the value untouched rather than
-      // throwing mid-gesture; the row is greyed out, so it should not be
-      // reachable by pointer anyway.
-      onPressed: enabled
-          ? () => onApply((TextEditingValue v) => editTable(v, op) ?? v)
-          : null,
-    );
+  final TableBlock? table = inTable
+      ? TableBlock.parse(value.text, caret)
+      : null;
+  final int tableRow = table == null ? -1 : table.rowAt(caret);
+  final int tableColumn = table == null || tableRow < 0
+      ? 0
+      : table.columnAt(tableRow, caret);
+  final int dataRows = table == null
+      ? 0
+      : table.bodyRows.length - (table.hasHeader ? 1 : 0);
+  final bool canSort = dataRows >= 2;
+  bool columnHasNumbers() {
+    if (table == null) return false;
+    final List<TableRow> body = table.bodyRows;
+    for (int r = table.hasHeader ? 1 : 0; r < body.length; r++) {
+      final List<TableCell> cells = body[r].cells;
+      if (tableColumn < cells.length &&
+          numberInCell(cells[tableColumn].text) != null) {
+        return true;
+      }
+    }
+    return false;
   }
 
-  MenuAction style(String label, IconData icon, BlockStyle block, {String? shortcut}) {
+  final bool numericColumn = columnHasNumbers();
+
+  // The selection decides *how many* rows / columns a command acts on. The
+  // resolver is what keeps a column-grip selection a column rather than a
+  // geometric cell block.
+  final TableRange? range = table == null
+      ? null
+      : tableRangeOf(value, resolve: resolve);
+  final ({TableBlock block, int row, int column, TableCell cell})? active =
+      table == null ? null : tableActiveCell(value, resolve: resolve);
+  final int rowFrom = range?.firstRow ?? tableRow;
+  final int rowTo = range?.lastRow ?? tableRow;
+  final int columnFrom = range?.firstColumn ?? tableColumn;
+  final int columnTo = range?.lastColumn ?? tableColumn;
+  // A column selection covers every row and a row sweep covers every column,
+  // but neither makes the *other* axis multi. The labels and the commands have
+  // to agree: 「删除 3 行」 must not appear while three columns are selected.
+  final int selectedRows = table == null
+      ? 0
+      : (range == null || range.isColumns ? 1 : range.rowCount);
+  final int selectedColumns = table == null
+      ? 0
+      : (range == null || range.isRows ? 1 : range.columnCount);
+  final bool multiRows = selectedRows > 1;
+  final bool multiColumns = selectedColumns > 1;
+  final List<TableAlign> selectedAligns = table == null
+      ? const <TableAlign>[]
+      : <TableAlign>[
+          for (int c = columnFrom; c <= columnTo; c++)
+            c >= 0 && c < table.aligns.length
+                ? table.aligns[c]
+                : TableAlign.none,
+        ];
+  final String? tsv = range?.tsv ?? active?.cell.text;
+  final bool canFillDown = table != null && (rowTo > rowFrom || rowFrom > 0);
+  final bool canFillRight =
+      table != null && (columnTo > columnFrom || columnFrom > 0);
+
+  MenuAction style(
+    String label,
+    IconData icon,
+    BlockStyle block, {
+    String? shortcut,
+  }) {
     return MenuAction(
       label: label,
       icon: icon,
       shortcut: shortcut,
       checked: current == block,
       onPressed: () => onApply(applyBlockStyle(block)),
+    );
+  }
+
+  MenuAction alignRow(String label, IconData icon, TableAlign align) {
+    return MenuAction(
+      label: label,
+      icon: icon,
+      checked:
+          selectedAligns.isNotEmpty &&
+          selectedAligns.every((TableAlign a) => a == align),
+      onPressed: () => onApply(
+        (TextEditingValue v) =>
+            setTableAlignRange(v, align, resolve: resolve) ?? v,
+      ),
+    );
+  }
+
+  MenuAction tableData(
+    String label,
+    IconData icon,
+    TextEditingValue? Function(TextEditingValue) edit, {
+    bool enabled = true,
+    String? shortcut,
+  }) {
+    return MenuAction(
+      label: label,
+      icon: icon,
+      shortcut: shortcut,
+      onPressed: enabled
+          ? () => onApply((TextEditingValue v) => edit(v) ?? v)
+          : null,
     );
   }
 
@@ -201,7 +308,8 @@ List<MenuNode> buildEditorMenu({
         MenuAction(
           label: '高亮',
           icon: Icons.brush_rounded,
-          onPressed: () => onApply(wrapSelection('==', '==', placeholder: '高亮')),
+          onPressed: () =>
+              onApply(wrapSelection('==', '==', placeholder: '高亮')),
         ),
         const MenuSeparator(),
         MenuAction(
@@ -213,13 +321,15 @@ List<MenuNode> buildEditorMenu({
         MenuAction(
           label: '数学',
           icon: Icons.functions_rounded,
-          onPressed: () => onApply(wrapSelection(r'$', r'$', placeholder: '公式')),
+          onPressed: () =>
+              onApply(wrapSelection(r'$', r'$', placeholder: '公式')),
         ),
         // Obsidian's comment syntax, so a note stays portable between the two.
         MenuAction(
           label: '注释',
           icon: Icons.percent_rounded,
-          onPressed: () => onApply(wrapSelection('%%', '%%', placeholder: '注释')),
+          onPressed: () =>
+              onApply(wrapSelection('%%', '%%', placeholder: '注释')),
         ),
         const MenuSeparator(),
         MenuAction(
@@ -233,10 +343,18 @@ List<MenuNode> buildEditorMenu({
       label: '段落设置',
       icon: Icons.subject_rounded,
       children: <MenuNode>[
-        style('无序列表', Icons.format_list_bulleted_rounded, BlockStyle.bullet,
-            shortcut: 'Ctrl+Shift+8'),
-        style('有序列表', Icons.format_list_numbered_rounded, BlockStyle.ordered,
-            shortcut: 'Ctrl+Shift+7'),
+        style(
+          '无序列表',
+          Icons.format_list_bulleted_rounded,
+          BlockStyle.bullet,
+          shortcut: 'Ctrl+Shift+8',
+        ),
+        style(
+          '有序列表',
+          Icons.format_list_numbered_rounded,
+          BlockStyle.ordered,
+          shortcut: 'Ctrl+Shift+7',
+        ),
         style('任务列表', Icons.checklist_rounded, BlockStyle.task),
         const MenuSeparator(),
         for (int level = 1; level <= 6; level++)
@@ -247,12 +365,24 @@ List<MenuNode> buildEditorMenu({
             shortcut: level <= 3 ? 'Ctrl+$level' : null,
             checked: current.headingLevel == level,
             onPressed: () => onApply(
-              applyBlockStyle(BlockStyle.values[BlockStyle.h1.index + level - 1]),
+              applyBlockStyle(
+                BlockStyle.values[BlockStyle.h1.index + level - 1],
+              ),
             ),
           ),
         const MenuSeparator(),
-        style('正文', Icons.format_clear_rounded, BlockStyle.paragraph, shortcut: 'Ctrl+0'),
-        style('引用', Icons.format_quote_rounded, BlockStyle.quote, shortcut: 'Ctrl+Shift+Q'),
+        style(
+          '正文',
+          Icons.format_clear_rounded,
+          BlockStyle.paragraph,
+          shortcut: 'Ctrl+0',
+        ),
+        style(
+          '引用',
+          Icons.format_quote_rounded,
+          BlockStyle.quote,
+          shortcut: 'Ctrl+Shift+Q',
+        ),
       ],
     ),
     MenuSubmenu(
@@ -281,29 +411,238 @@ List<MenuNode> buildEditorMenu({
     if (inTable) ...<MenuNode>[
       MenuSubmenu(
         label: '表格工具',
-        icon: Icons.table_rows_rounded,
+        icon: Icons.table_chart_rounded,
         children: <MenuNode>[
-          tableRow('上方插入行', Icons.vertical_align_top_rounded, TableEdit.rowAbove),
-          tableRow('下方插入行', Icons.vertical_align_bottom_rounded, TableEdit.rowBelow),
-          const MenuSeparator(),
-          tableRow('左侧插入列', Icons.keyboard_tab_rounded, TableEdit.columnLeft),
-          tableRow('右侧插入列', Icons.keyboard_tab_rounded, TableEdit.columnRight),
-          const MenuSeparator(),
-          // The divider is the table's own skeleton: deleting it would turn the
-          // grid back into a plain run of pipes, so it cannot be removed.
-          tableRow(
-            '删除本行',
-            Icons.delete_outline_rounded,
-            TableEdit.deleteRow,
-            enabled: !isTableDivider(caretLine),
+          MenuSubmenu(
+            label: '单元格',
+            icon: Icons.grid_view_rounded,
+            children: <MenuNode>[
+              MenuAction(
+                label: '编辑单元格',
+                icon: Icons.edit_rounded,
+                shortcut: 'F2',
+                onPressed: active == null ? null : onEditCell,
+              ),
+              MenuAction(
+                label: range == null ? '清空单元格' : '清空所选单元格',
+                icon: Icons.backspace_outlined,
+                shortcut: range == null ? null : 'Delete',
+                onPressed: active == null
+                    ? null
+                    : () => onApply(
+                        (TextEditingValue v) =>
+                            tableClearCells(v, resolve: resolve) ?? v,
+                      ),
+              ),
+              const MenuSeparator(),
+              tableData(
+                '向下填充',
+                Icons.south_rounded,
+                (TextEditingValue v) =>
+                    tableFill(v, down: true, resolve: resolve),
+                enabled: canFillDown,
+                shortcut: 'Ctrl+D',
+              ),
+              tableData(
+                '向右填充',
+                Icons.east_rounded,
+                (TextEditingValue v) =>
+                    tableFill(v, down: false, resolve: resolve),
+                enabled: canFillRight,
+                shortcut: 'Ctrl+R',
+              ),
+              const MenuSeparator(),
+              MenuAction(
+                label: '复制所选为制表符文本',
+                icon: Icons.grid_on_rounded,
+                shortcut: 'Ctrl+Shift+C',
+                onPressed: tsv == null
+                    ? null
+                    : () => unawaited(
+                        Clipboard.setData(ClipboardData(text: tsv)),
+                      ),
+              ),
+              if (range != null) ...<MenuNode>[
+                const MenuSeparator(),
+                MenuInfo(
+                  '${range.rowCount} 行 × ${range.columnCount} 列 · '
+                  '${range.stats.filled} 格非空',
+                ),
+                if (range.stats.hasNumbers)
+                  MenuInfo(
+                    '合计 ${formatNumber(range.stats.sum!)} · '
+                    '平均 ${formatNumber(range.stats.average!)}',
+                  ),
+              ],
+            ],
           ),
-          // Never the last column: a table with no cells is not a table.
-          tableRow(
-            '删除本列',
-            Icons.delete_sweep_outlined,
-            TableEdit.deleteColumn,
-            enabled: columns > 1,
+          MenuSubmenu(
+            label: '行',
+            icon: Icons.table_rows_rounded,
+            children: <MenuNode>[
+              tableData(
+                multiRows ? '上方插入 $selectedRows 行' : '上方插入行',
+                Icons.vertical_align_top_rounded,
+                (TextEditingValue v) =>
+                    tableInsertRows(v, above: true, resolve: resolve),
+              ),
+              tableData(
+                multiRows ? '下方插入 $selectedRows 行' : '下方插入行',
+                Icons.vertical_align_bottom_rounded,
+                (TextEditingValue v) =>
+                    tableInsertRows(v, above: false, resolve: resolve),
+              ),
+              tableData(
+                multiRows ? '上移 $selectedRows 行' : '上移本行',
+                Icons.arrow_upward_rounded,
+                (TextEditingValue v) =>
+                    tableMoveRows(v, delta: -1, resolve: resolve),
+                enabled: rowFrom > 0,
+              ),
+              tableData(
+                multiRows ? '下移 $selectedRows 行' : '下移本行',
+                Icons.arrow_downward_rounded,
+                (TextEditingValue v) =>
+                    tableMoveRows(v, delta: 1, resolve: resolve),
+                enabled:
+                    table != null &&
+                    rowTo >= 0 &&
+                    rowTo < table.bodyRows.length - 1,
+              ),
+              tableData(
+                multiRows ? '复制 $selectedRows 行到下方' : '复制本行到下方',
+                Icons.content_copy_rounded,
+                (TextEditingValue v) => tableDuplicateRows(v, resolve: resolve),
+                enabled: !isTableDivider(caretLine) || range != null,
+              ),
+              // The divider is the table's own skeleton: deleting it would turn
+              // the grid back into a plain run of pipes, so it cannot be
+              // removed.
+              tableData(
+                multiRows ? '删除 $selectedRows 行' : '删除本行',
+                Icons.delete_outline_rounded,
+                (TextEditingValue v) => tableDeleteRows(v, resolve: resolve),
+                enabled: !isTableDivider(caretLine) || range != null,
+              ),
+            ],
           ),
+          MenuSubmenu(
+            label: '列',
+            icon: Icons.view_column_rounded,
+            children: <MenuNode>[
+              tableData(
+                multiColumns ? '左侧插入 $selectedColumns 列' : '左侧插入列',
+                Icons.keyboard_tab_rounded,
+                (TextEditingValue v) =>
+                    tableInsertColumns(v, right: false, resolve: resolve),
+              ),
+              tableData(
+                multiColumns ? '右侧插入 $selectedColumns 列' : '右侧插入列',
+                Icons.keyboard_tab_rounded,
+                (TextEditingValue v) =>
+                    tableInsertColumns(v, right: true, resolve: resolve),
+              ),
+              tableData(
+                multiColumns ? '左移 $selectedColumns 列' : '左移本列',
+                Icons.arrow_back_rounded,
+                (TextEditingValue v) =>
+                    tableMoveColumns(v, delta: -1, resolve: resolve),
+                enabled: columnFrom > 0,
+              ),
+              tableData(
+                multiColumns ? '右移 $selectedColumns 列' : '右移本列',
+                Icons.arrow_forward_rounded,
+                (TextEditingValue v) =>
+                    tableMoveColumns(v, delta: 1, resolve: resolve),
+                enabled: columnTo >= 0 && columnTo < columns - 1,
+              ),
+              tableData(
+                multiColumns ? '复制 $selectedColumns 列到右侧' : '复制本列到右侧',
+                Icons.content_copy_rounded,
+                (TextEditingValue v) =>
+                    tableDuplicateColumns(v, resolve: resolve),
+              ),
+              // Never the last column: a table with no cells is not a table.
+              tableData(
+                multiColumns ? '删除 $selectedColumns 列' : '删除本列',
+                Icons.delete_sweep_outlined,
+                (TextEditingValue v) => tableDeleteColumns(v, resolve: resolve),
+                enabled: selectedColumns < columns,
+              ),
+            ],
+          ),
+          MenuSubmenu(
+            label: '对齐',
+            icon: Icons.format_align_left_rounded,
+            children: <MenuNode>[
+              alignRow('默认对齐', Icons.short_text_rounded, TableAlign.none),
+              alignRow('左对齐', Icons.format_align_left_rounded, TableAlign.left),
+              alignRow(
+                '居中',
+                Icons.format_align_center_rounded,
+                TableAlign.center,
+              ),
+              alignRow(
+                '右对齐',
+                Icons.format_align_right_rounded,
+                TableAlign.right,
+              ),
+            ],
+          ),
+          MenuSubmenu(
+            label: '数据',
+            icon: Icons.functions_rounded,
+            children: <MenuNode>[
+              tableData(
+                '按本列升序',
+                Icons.sort_rounded,
+                (TextEditingValue v) => sortTable(v, ascending: true),
+                enabled: canSort,
+              ),
+              tableData(
+                '按本列降序',
+                Icons.sort_rounded,
+                (TextEditingValue v) => sortTable(v, ascending: false),
+                enabled: canSort,
+              ),
+              const MenuSeparator(),
+              tableData('数字列自动右对齐', Icons.straighten_rounded, autoAlignTable),
+              tableData('转置表格', Icons.swap_horiz_rounded, transposeTable),
+              const MenuSeparator(),
+              tableData(
+                '追加合计行',
+                Icons.functions_rounded,
+                (TextEditingValue v) => summarizeTable(v, TableAggregate.sum),
+                enabled: numericColumn,
+              ),
+              tableData(
+                '追加平均值行',
+                Icons.balance_rounded,
+                (TextEditingValue v) =>
+                    summarizeTable(v, TableAggregate.average),
+                enabled: numericColumn,
+              ),
+              tableData(
+                '追加计数行',
+                Icons.numbers_rounded,
+                (TextEditingValue v) => summarizeTable(v, TableAggregate.count),
+              ),
+              tableData(
+                '追加最大值行',
+                Icons.arrow_upward_rounded,
+                (TextEditingValue v) => summarizeTable(v, TableAggregate.max),
+                enabled: numericColumn,
+              ),
+              tableData(
+                '追加最小值行',
+                Icons.arrow_downward_rounded,
+                (TextEditingValue v) => summarizeTable(v, TableAggregate.min),
+                enabled: numericColumn,
+              ),
+            ],
+          ),
+          const MenuSeparator(),
+          tableData('删除表格', Icons.delete_outline_rounded, deleteTableAt),
         ],
       ),
       const MenuSeparator(),
@@ -313,7 +652,11 @@ List<MenuNode> buildEditorMenu({
       icon: Icons.content_cut_rounded,
       shortcut: 'Ctrl+X',
       onPressed: hasSelection
-          ? () => state.cutSelection(SelectionChangedCause.toolbar)
+          ? () => cutSelectionCells(
+              state,
+              SelectionChangedCause.toolbar,
+              resolve: resolve,
+            )
           : null,
     ),
     MenuAction(
@@ -321,20 +664,26 @@ List<MenuNode> buildEditorMenu({
       icon: Icons.content_copy_rounded,
       shortcut: 'Ctrl+C',
       onPressed: hasSelection
-          ? () => copySelectionCells(state, SelectionChangedCause.toolbar)
+          ? () => copySelectionCells(
+              state,
+              SelectionChangedCause.toolbar,
+              resolve: resolve,
+            )
           : null,
     ),
     MenuAction(
       label: '粘贴',
       icon: Icons.content_paste_rounded,
       shortcut: 'Ctrl+V',
-      onPressed: () => unawaited(pasteIntoEditor(state, plain: false)),
+      onPressed: () =>
+          unawaited(pasteIntoEditor(state, plain: false, resolve: resolve)),
     ),
     MenuAction(
       label: '以纯文本形式粘贴',
       icon: Icons.content_paste_off_rounded,
       shortcut: 'Ctrl+Shift+V',
-      onPressed: () => unawaited(pasteIntoEditor(state, plain: true)),
+      onPressed: () =>
+          unawaited(pasteIntoEditor(state, plain: true, resolve: resolve)),
     ),
     const MenuSeparator(),
     MenuAction(
@@ -358,14 +707,64 @@ List<MenuNode> buildEditorMenu({
 /// Copy, but a table selection copies the **table its cells make** rather than
 /// the characters between them — see [tableSelectionMarkdown]. Everything else
 /// is the field's own copy, so an ordinary text selection is untouched.
-void copySelectionCells(EditableTextState state, SelectionChangedCause cause) {
+void copySelectionCells(
+  EditableTextState state,
+  SelectionChangedCause cause, {
+  TableRangeResolver? resolve,
+}) {
   final TextEditingValue value = state.textEditingValue;
-  final String? table = tableSelectionMarkdown(value.text, value.selection);
+  final String? table = tableSelectionMarkdown(
+    value.text,
+    value.selection,
+    resolve: resolve,
+  );
   if (table == null) {
     state.copySelection(cause);
     return;
   }
   unawaited(Clipboard.setData(ClipboardData(text: table)));
+}
+
+/// Cut, with the table rule on **both** sides: the cells go to the clipboard
+/// and the cells leave the document.
+///
+/// The field's own `cutSelection` removes the raw range, which begins and ends
+/// wherever the pointer did — a drag that started in the middle of 「链接」
+/// took only the characters after it, leaving 「链接」 and a stray row of pipes
+/// behind (user: 「为什么还有一行，而且链接两个字没有被删掉」). The cells go to
+/// the clipboard and the **same rectangle** leaves the document: cleared in
+/// place, or removed row-wise when the sweep covered every column.
+void cutSelectionCells(
+  EditableTextState state,
+  SelectionChangedCause cause, {
+  TableRangeResolver? resolve,
+}) {
+  final TextEditingValue value = state.textEditingValue;
+  if (value.selection.isCollapsed) return;
+  final TableRange? range = tableRangeOf(value, resolve: resolve);
+  unawaited(
+    Clipboard.setData(
+      ClipboardData(
+        text: range?.markdown ?? value.selection.textInside(value.text),
+      ),
+    ),
+  );
+  if (range != null) {
+    state.userUpdateTextEditingValue(tableRangeClear(range), cause);
+    return;
+  }
+  final String next =
+      value.selection.textBefore(value.text) +
+      value.selection.textAfter(value.text);
+  state.userUpdateTextEditingValue(
+    TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(
+        offset: value.selection.start.clamp(0, next.length),
+      ),
+    ),
+    cause,
+  );
 }
 
 /// Paste, with the blank line a table needs to stay a table of its own.
@@ -381,13 +780,14 @@ Future<void> pasteIntoEditor(
   // Kept so the two menu entries stay distinct at the call site — a
   // format-aware paste would hang its behaviour here.
   required bool plain,
+  TableRangeResolver? resolve,
 }) async {
   final ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
   final String? text = data?.text;
   if (text == null || text.isEmpty) return;
 
   state.userUpdateTextEditingValue(
-    pasteValue(state.textEditingValue, text),
+    pasteValue(state.textEditingValue, text, resolve: resolve),
     SelectionChangedCause.toolbar,
   );
 }
@@ -535,9 +935,14 @@ class _EditorContextMenuState extends State<_EditorContextMenu> {
         y = _clampTo(y, height, screen.height);
       } else {
         final _PanelLayout parent = out[level - 1];
-        final int row = _open[level - 1].clamp(0, math.max(0, parent.nodes.length - 1));
+        final int row = _open[level - 1].clamp(
+          0,
+          math.max(0, parent.nodes.length - 1),
+        );
         final double rowTop =
-            parent.rect.top + kMenuPanelPadding + _heightBefore(parent.nodes, row);
+            parent.rect.top +
+            kMenuPanelPadding +
+            _heightBefore(parent.nodes, row);
         final double right = parent.rect.right + kMenuPanelGap;
         final double left = parent.rect.left - kMenuPanelGap - width;
         // Right of the row, unless that runs off the window — then left of the
@@ -546,7 +951,9 @@ class _EditorContextMenuState extends State<_EditorContextMenu> {
         x = _clampTo(fits ? right : left, width, screen.width);
         y = _clampTo(rowTop, height, screen.height);
       }
-      out.add(_PanelLayout(rect: Rect.fromLTWH(x, y, width, height), nodes: nodes));
+      out.add(
+        _PanelLayout(rect: Rect.fromLTWH(x, y, width, height), nodes: nodes),
+      );
     }
     return out;
   }
@@ -565,7 +972,10 @@ class _EditorContextMenuState extends State<_EditorContextMenu> {
 /// The `math.max` matters when a panel is taller than the window: the lower
 /// bound would otherwise overtake the upper one and `clamp` would throw.
 double _clampTo(double v, double size, double extent) {
-  final double max = math.max(kMenuScreenMargin, extent - kMenuScreenMargin - size);
+  final double max = math.max(
+    kMenuScreenMargin,
+    extent - kMenuScreenMargin - size,
+  );
   return v.clamp(kMenuScreenMargin, math.max(kMenuScreenMargin, max));
 }
 
@@ -647,6 +1057,7 @@ class _MenuPanel extends StatelessWidget {
         ),
       ),
     ),
+    MenuInfo() => _MenuInfoRow(label: node.label),
     MenuSubmenu() => _MenuRow(
       label: node.label,
       icon: node.icon,
@@ -666,6 +1077,51 @@ class _MenuPanel extends StatelessWidget {
       onTap: () => onTap(level, index, node),
     ),
   };
+}
+
+/// A read-only row: no hover fill, no pointer cursor, low-contrast text. It
+/// shares the label column with the actions above and below it so the panel
+/// still reads as one list.
+class _MenuInfoRow extends StatelessWidget {
+  const _MenuInfoRow({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    return Container(
+      height: kMenuRowHeight,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: Row(
+        children: <Widget>[
+          SizedBox(
+            width: 22,
+            child: Center(
+              child: Icon(
+                Icons.functions_rounded,
+                size: 13,
+                color: p.textTertiary,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11.5,
+                color: p.textTertiary,
+                fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _MenuRow extends StatefulWidget {
@@ -712,7 +1168,9 @@ class _MenuRowState extends State<_MenuRow> {
         : p.textTertiary.withValues(alpha: 0.55);
 
     return MouseRegion(
-      cursor: widget.enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      cursor: widget.enabled
+          ? SystemMouseCursors.click
+          : SystemMouseCursors.basic,
       onEnter: (_) {
         setState(() => _hovered = true);
         widget.onHover?.call();
@@ -742,7 +1200,9 @@ class _MenuRowState extends State<_MenuRow> {
                             fontWeight: FontWeight.w700,
                             fontFamily: AppFonts.mono,
                             fontFamilyFallback: AppFonts.monoFallback,
-                            color: widget.enabled ? p.textSecondary : foreground,
+                            color: widget.enabled
+                                ? p.textSecondary
+                                : foreground,
                           ),
                         )
                       : Icon(
@@ -775,7 +1235,11 @@ class _MenuRowState extends State<_MenuRow> {
               ],
               if (widget.submenu) ...<Widget>[
                 const SizedBox(width: 6),
-                Icon(Icons.chevron_right_rounded, size: 15, color: p.textTertiary),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  size: 15,
+                  color: p.textTertiary,
+                ),
               ],
               if (widget.checked) ...<Widget>[
                 const SizedBox(width: 6),

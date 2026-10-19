@@ -6,6 +6,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/core/theme/app_tokens.dart';
 import 'package:nrs/core/theme/app_theme.dart';
+import 'package:nrs/core/utils/table_model.dart';
+import 'package:nrs/core/utils/table_selection.dart';
 import 'package:nrs/ui/editor/editor_context_menu.dart';
 import 'package:nrs/ui/editor/markdown_editor.dart';
 
@@ -15,7 +17,10 @@ import 'package:nrs/ui/editor/markdown_editor.dart';
 /// `contextMenuBuilder`, that the panels land beside each other instead of on
 /// top of each other, and that each row writes what it says it writes.
 void main() {
-  Future<MarkdownSourceController> pump(WidgetTester tester, String text) async {
+  Future<MarkdownSourceController> pump(
+    WidgetTester tester,
+    String text,
+  ) async {
     final MarkdownSourceController controller = MarkdownSourceController(
       text: text,
     );
@@ -137,25 +142,25 @@ void main() {
     expect(find.text('代码块'), findsNothing);
   });
 
-  testWidgets('插入 offers the divider, the code block and the table, and nothing else', (
-    WidgetTester tester,
-  ) async {
-    await pump(tester, '你好\n');
-    await openMenu(tester, glyph(tester, 0).center);
-    await openSubmenu(tester, '插入');
+  testWidgets(
+    '插入 offers the divider, the code block and the table, and nothing else',
+    (WidgetTester tester) async {
+      await pump(tester, '你好\n');
+      await openMenu(tester, glyph(tester, 0).center);
+      await openSubmenu(tester, '插入');
 
-    expect(find.text('分割线'), findsOneWidget);
-    expect(find.text('代码块'), findsOneWidget);
-    expect(find.text('表格'), findsOneWidget);
-    for (final String unwanted in <String>[
-      '脚注',
-      '标注',
-      '数学块',
-      '新建数据库',
-    ]) {
-      expect(find.text(unwanted), findsNothing, reason: 'unwanted row: $unwanted');
-    }
-  });
+      expect(find.text('分割线'), findsOneWidget);
+      expect(find.text('代码块'), findsOneWidget);
+      expect(find.text('表格'), findsOneWidget);
+      for (final String unwanted in <String>['脚注', '标注', '数学块', '新建数据库']) {
+        expect(
+          find.text(unwanted),
+          findsNothing,
+          reason: 'unwanted row: $unwanted',
+        );
+      }
+    },
+  );
 
   testWidgets('a submenu opens beside its row, not over the panel', (
     WidgetTester tester,
@@ -193,7 +198,10 @@ void main() {
 
     final Rect row = tester.getRect(find.text('插入'));
     final Rect child = tester.getRect(find.text('代码块'));
-    expect(child.left - row.left, closeTo(-(kMenuPanelWidth + kMenuPanelGap), 1));
+    expect(
+      child.left - row.left,
+      closeTo(-(kMenuPanelWidth + kMenuPanelGap), 1),
+    );
     expect(child.right, lessThanOrEqualTo(row.left + kMenuPanelWidth));
   });
 
@@ -275,26 +283,27 @@ void main() {
     expect(tickedRow(tester), '3 级标题');
   });
 
-  testWidgets('文本格式 offers the inline formats, the maths, the comment and 清除格式', (
-    WidgetTester tester,
-  ) async {
-    await pump(tester, '你好世界\n');
-    await openMenu(tester, glyph(tester, 0).center);
-    await openSubmenu(tester, '文本格式');
+  testWidgets(
+    '文本格式 offers the inline formats, the maths, the comment and 清除格式',
+    (WidgetTester tester) async {
+      await pump(tester, '你好世界\n');
+      await openMenu(tester, glyph(tester, 0).center);
+      await openSubmenu(tester, '文本格式');
 
-    for (final String label in <String>[
-      '加粗',
-      '倾斜',
-      '删除线',
-      '高亮',
-      '代码',
-      '数学',
-      '注释',
-      '清除格式',
-    ]) {
-      expect(find.text(label), findsOneWidget, reason: 'missing row: $label');
-    }
-  });
+      for (final String label in <String>[
+        '加粗',
+        '倾斜',
+        '删除线',
+        '高亮',
+        '代码',
+        '数学',
+        '注释',
+        '清除格式',
+      ]) {
+        expect(find.text(label), findsOneWidget, reason: 'missing row: $label');
+      }
+    },
+  );
 
   testWidgets('文本格式 ▸ 代码 wraps in backticks and 清除格式 takes them off', (
     WidgetTester tester,
@@ -376,7 +385,8 @@ void main() {
   ) async {
     final MarkdownSourceController controller = await pump(tester, '你好世界\n');
 
-    Color label(String text) => tester.widget<Text>(find.text(text)).style!.color!;
+    Color label(String text) =>
+        tester.widget<Text>(find.text(text)).style!.color!;
 
     await openMenu(tester, glyph(tester, 0).center);
     expect(label('复制'), isNot(label('粘贴')));
@@ -421,7 +431,9 @@ void main() {
 
   // ---------------------------------------------------------------- dismissal
 
-  testWidgets('a click outside dismisses the menu', (WidgetTester tester) async {
+  testWidgets('a click outside dismisses the menu', (
+    WidgetTester tester,
+  ) async {
     await pump(tester, '你好\n');
     await openMenu(tester, glyph(tester, 0).center);
 
@@ -464,11 +476,7 @@ void main() {
   ) async {
     await pump(tester, '正文\n');
     await openMenu(tester, glyph(tester, 0).center);
-    expect(
-      find.text('表格工具'),
-      findsNothing,
-      reason: '表格外的菜单不该有表格行操作',
-    );
+    expect(find.text('表格工具'), findsNothing, reason: '表格外的菜单不该有表格行操作');
   });
 
   testWidgets('表格工具 ▸ 右侧插入列 rewrites every row of the table', (
@@ -482,12 +490,158 @@ void main() {
     // "one column to the right of `b`", not of the first cell.
     await openMenu(tester, glyph(tester, table.indexOf('b')).center);
     await openSubmenu(tester, '表格工具');
+    await openSubmenu(tester, '列');
     await openSubmenu(tester, '右侧插入列');
 
     expect(
       controller.text,
       '| a | b |  |\n| --- | --- | --- |\n| c | d |  |',
       reason: '列要加到每一行上，分隔行也要跟着长',
+    );
+  });
+
+  testWidgets('表格工具 works on a table without a divider', (
+    WidgetTester tester,
+  ) async {
+    // The shape the welcome note actually had: no `| --- |` line. Its
+    // alignments were a fixed-length filler, so the column commands threw and
+    // the menu looked like it did nothing at all.
+    const String table =
+        '| 想要 | 就写 | 快捷键 |  |\n'
+        '| **加粗** | `**文字**` | `Ctrl + B` |  |\n'
+        '| *斜体* | `*文字*` | `Ctrl + I` |  |';
+    final MarkdownSourceController controller = await pump(tester, table);
+
+    await openMenu(tester, glyph(tester, table.indexOf('加粗')).center);
+    await openSubmenu(tester, '表格工具');
+    await openSubmenu(tester, '列');
+    await openSubmenu(tester, '右侧插入列');
+
+    expect(
+      TableBlock.parse(controller.text, 0)!
+          .bodyRows
+          .every((r) => r.cells.length == 5),
+      isTrue,
+      reason: '没有分隔行的表格也必须能加列',
+    );
+  });
+
+  testWidgets('对齐 on a table without a divider grows the divider it needs', (
+    WidgetTester tester,
+  ) async {
+    const String table =
+        '| 想要 | 就写 | 快捷键 |  |\n'
+        '| **加粗** | `**文字**` | `Ctrl + B` |  |\n'
+        '| *斜体* | `*文字*` | `Ctrl + I` |  |';
+    final MarkdownSourceController controller = await pump(tester, table);
+
+    await openMenu(tester, glyph(tester, table.indexOf('Ctrl + B')).center);
+    await openSubmenu(tester, '表格工具');
+    await openSubmenu(tester, '对齐');
+    await openSubmenu(tester, '右对齐');
+
+    expect(
+      controller.text.split('\n')[1],
+      '| --- | --- | ---: | --- |',
+      reason: '对齐只存在于分隔行；没有分隔行就必须补一行，否则命令看不到效果',
+    );
+  });
+
+  testWidgets(
+    '表格工具 counts selected rows but not a perpendicular column block',
+    (WidgetTester tester) async {
+      const String table =
+          '| h1 | h2 |\n'
+          '| --- | --- |\n'
+          '| a | b |\n'
+          '| c | d |\n'
+          '| e | f |';
+      final MarkdownSourceController controller = await pump(tester, table);
+      final TableRange rows = TableRange.rowsOf(
+        TableBlock.parse(table, 0)!,
+        1,
+        3,
+      );
+      controller
+        ..selection = rows.toTextSelection()
+        ..intendedRange = rows;
+      await tester.pumpAndSettle();
+
+      await openMenu(tester, glyph(tester, table.indexOf('c')).center);
+      await openSubmenu(tester, '表格工具');
+      await openSubmenu(tester, '行');
+      expect(find.text('上方插入 3 行'), findsOneWidget);
+      expect(find.text('删除 3 行'), findsOneWidget);
+      expect(find.text('复制 3 行到下方'), findsOneWidget);
+
+      // A row sweep spans every column without being a column selection.
+      await openSubmenu(tester, '列');
+      expect(find.text('右侧插入列'), findsOneWidget);
+      expect(find.text('删除本列'), findsOneWidget);
+    },
+  );
+
+  testWidgets('表格工具 ▸ 对齐 ticks the current column and writes the divider', (
+    WidgetTester tester,
+  ) async {
+    const String table = '| a | b |\n| --- | --- |\n| 1 | 2 |';
+    final MarkdownSourceController controller = await pump(tester, table);
+
+    await openMenu(tester, glyph(tester, table.indexOf('2')).center);
+    await openSubmenu(tester, '表格工具');
+    await openSubmenu(tester, '对齐');
+    expect(tickedRow(tester), '默认对齐');
+
+    await openSubmenu(tester, '右对齐');
+    expect(controller.text, '| a | b |\n| --- | ---: |\n| 1 | 2 |');
+  });
+
+  testWidgets('表格工具 ▸ 数据 sorts the rows under the header', (
+    WidgetTester tester,
+  ) async {
+    const String table =
+        '| 名称 | 数量 |\n'
+        '| --- | --- |\n'
+        '| 苹果 | 10 |\n'
+        '| 香蕉 | 2 |';
+    final MarkdownSourceController controller = await pump(tester, table);
+
+    await openMenu(tester, glyph(tester, table.indexOf('10')).center);
+    await openSubmenu(tester, '表格工具');
+    await openSubmenu(tester, '数据');
+    await openSubmenu(tester, '按本列升序');
+
+    expect(
+      controller.text,
+      '| 名称 | 数量 |\n'
+      '| --- | --- |\n'
+      '| 香蕉 | 2 |\n'
+      '| 苹果 | 10 |',
+    );
+  });
+
+  testWidgets('表格工具 ▸ 数据 appends a total for the caret column', (
+    WidgetTester tester,
+  ) async {
+    const String table =
+        '| 名称 | 数量 |\n'
+        '| --- | --- |\n'
+        '| 苹果 | 10 |\n'
+        '| 香蕉 | 2 |';
+    final MarkdownSourceController controller = await pump(tester, table);
+
+    await openMenu(tester, glyph(tester, table.indexOf('10')).center);
+    await openSubmenu(tester, '表格工具');
+    await openSubmenu(tester, '数据');
+    await openSubmenu(tester, '追加合计行');
+
+    expect(
+      controller.text,
+      '| 名称 | 数量 |\n'
+      '| --- | ---: |\n'
+      '| 苹果 | 10 |\n'
+      '| 香蕉 | 2 |\n'
+      '| 合计 | 12 |',
     );
   });
 }

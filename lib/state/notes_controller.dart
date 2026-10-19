@@ -7,6 +7,9 @@ import '../core/utils/debouncer.dart';
 import '../data/models/note.dart';
 import '../data/storage/note_store_factory.dart';
 
+/// A note that was removed, kept byte-for-byte so "撤销" can put it back.
+typedef DeletedNote = ({String raw, String fileName, String folderPath});
+
 /// A tag together with how many notes use it.
 class TagStat {
   const TagStat(this.name, this.count);
@@ -40,9 +43,11 @@ class NotesController extends ChangeNotifier {
 
   List<Note> _notes = <Note>[];
   List<Note> _ordered = <Note>[];
+  List<String> _folders = <String>[];
+  String _activeFolder = '';
   String? _selectedId;
   Note? _draft;
-  String? _draftOriginalFileName;
+  String? _draftOriginalPath;
   bool _loading = true;
   String? _error;
   SaveState _saveState = SaveState.idle;
@@ -50,7 +55,7 @@ class NotesController extends ChangeNotifier {
 
   // -------------------------------------------------------------- filter state
   String _query = '';
-  NoteScope _scope = NoteScope.all;
+  bool _caseSensitive = false;
   String? _activeTag;
 
   // ------------------------------------------------------------------ getters
@@ -64,9 +69,75 @@ class NotesController extends ChangeNotifier {
   SaveState get saveState => _saveState;
 
   String get query => _query;
-  NoteScope get scope => _scope;
+
+  /// Whether the query matches case for case. Off by default, because most
+  /// searches are for a word rather than for its capitalisation.
+  bool get caseSensitive => _caseSensitive;
   String? get activeTag => _activeTag;
-  bool get isFiltered => _query.isNotEmpty || _scope != NoteScope.all || _activeTag != null;
+  bool get isFiltered => _query.isNotEmpty || _activeTag != null;
+
+  /// Folder that receives the next new note. Empty means the vault root.
+  String get activeFolder => _activeFolder;
+
+  /// Every real directory in the vault, including empty ones.
+  List<String> get folders {
+    final List<String> list = _folderPaths().toList()
+      ..sort((String a, String b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return List<String>.unmodifiable(list);
+  }
+
+  /// Direct children of [parentPath], as full vault-relative paths.
+  List<String> childFoldersOf(String parentPath) {
+    final String parent = Note.normalizeFolderPath(parentPath);
+    final Set<String> children = <String>{};
+    for (final String path in _folderPaths()) {
+      if (parent.isEmpty) {
+        if (!path.contains('/')) {
+          children.add(path);
+        } else {
+          children.add(path.split('/').first);
+        }
+        continue;
+      }
+      final String prefix = '$parent/';
+      if (!path.startsWith(prefix)) continue;
+      final String rest = path.substring(prefix.length);
+      if (rest.isEmpty) continue;
+      children.add('$parent/${rest.split('/').first}');
+    }
+    final List<String> sorted = children.toList()
+      ..sort((String a, String b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return sorted;
+  }
+
+  /// Notes that sit directly in [folderPath], in the chosen order. Subfolders
+  /// own their own notes, so the tree draws them separately.
+  List<Note> notesInFolder(String folderPath) {
+    final String folder = Note.normalizeFolderPath(folderPath);
+    return _ordered
+        .where((Note n) => n.folderPath == folder)
+        .toList(growable: false);
+  }
+
+  Set<String> _folderPaths() {
+    final Set<String> paths = <String>{};
+    void addWithParents(String folderPath) {
+      String current = '';
+      for (final String part in Note.normalizeFolderPath(folderPath).split('/')) {
+        if (part.isEmpty) continue;
+        current = current.isEmpty ? part : '$current/$part';
+        paths.add(current);
+      }
+    }
+
+    for (final String folder in _folders) {
+      addWithParents(folder);
+    }
+    for (final Note note in _notes) {
+      if (note.folderPath.isNotEmpty) addWithParents(note.folderPath);
+    }
+    return paths;
+  }
 
   Note? get selectedNote {
     final String? id = _selectedId;
@@ -81,32 +152,16 @@ class NotesController extends ChangeNotifier {
   Note? get draft => _draft;
 
   List<Note> get visibleNotes {
-    final String q = _query.trim().toLowerCase();
-    final List<Note> filtered = _notes.where((Note n) {
-      switch (_scope) {
-        case NoteScope.pinned:
-          if (!n.pinned) return false;
-        case NoteScope.favorites:
-          if (!n.favorite) return false;
-        case NoteScope.tasks:
-          if (n.taskTotal == 0) return false;
-        case NoteScope.untagged:
-          if (n.tags.isNotEmpty) return false;
-        case NoteScope.all:
-          break;
-      }
+    final String raw = _query.trim();
+    final String q = _caseSensitive ? raw : raw.toLowerCase();
+    String fold(String text) => _caseSensitive ? text : text.toLowerCase();
+    return _ordered.where((Note n) {
       if (_activeTag != null && !n.tags.contains(_activeTag)) return false;
       if (q.isEmpty) return true;
-      return n.title.toLowerCase().contains(q) ||
-          n.body.toLowerCase().contains(q) ||
-          n.tags.any((String t) => t.toLowerCase().contains(q));
-    }).toList();
-
-    final List<String> order = _ordered.map((Note n) => n.id).toList();
-    filtered.sort(
-      (Note a, Note b) => order.indexOf(a.id).compareTo(order.indexOf(b.id)),
-    );
-    return filtered;
+      return fold(n.title).contains(q) ||
+          fold(n.body).contains(q) ||
+          n.tags.any((String t) => fold(t).contains(q));
+    }).toList(growable: false);
   }
 
   List<TagStat> get tags {
@@ -129,8 +184,6 @@ class NotesController extends ChangeNotifier {
   int get totalWords =>
       _notes.fold<int>(0, (int sum, Note n) => sum + n.wordCount);
 
-  int get totalFavorites => _notes.where((Note n) => n.favorite).length;
-
   // -------------------------------------------------------------------- load
 
   Future<void> bootstrap() async {
@@ -152,50 +205,59 @@ class NotesController extends ChangeNotifier {
   }
 
   Future<void> refresh({bool keepSelection = true}) async {
+    final List<Note> loaded;
+    final List<String> folders;
     try {
-      _notes = await _store.loadAll();
+      loaded = await _store.loadAll();
+      folders = await _store.listFolders();
     } catch (e) {
       _error = '读取笔记库失败:$e';
       notifyListeners();
       return;
     }
+    _notes = loaded;
+    _folders = folders;
+    if (_activeFolder.isNotEmpty && !_folderPaths().contains(_activeFolder)) {
+      _activeFolder = '';
+    }
     _resort();
     if (!keepSelection || selectedNote == null) {
       _selectedId = _ordered.isEmpty ? null : _ordered.first.id;
       _draft = selectedNote;
-      _draftOriginalFileName = _draft?.fileName;
+      _draftOriginalPath = _draft?.relativePath;
     } else {
       // Re-read the file that is currently open, but never clobber unsaved
       // edits: the draft stays authoritative while it is dirty.
       if (_saveState == SaveState.idle || _saveState == SaveState.saved) {
         _draft = selectedNote;
-        _draftOriginalFileName = _draft?.fileName;
+        _draftOriginalPath = _draft?.relativePath;
       }
     }
     notifyListeners();
   }
 
   void _resort() {
-    final SortMode mode = _lastSortMode;
-    _ordered = List<Note>.of(_notes);
-    switch (mode) {
-      case SortMode.titleAsc:
-        _ordered.sort(
-          (Note a, Note b) =>
-              a.title.toLowerCase().compareTo(b.title.toLowerCase()),
-        );
-      case SortMode.longestFirst:
-        _ordered.sort((Note a, Note b) => b.wordCount.compareTo(a.wordCount));
-      case SortMode.updatedDesc:
-        _ordered.sort((Note a, Note b) => b.updatedAt.compareTo(a.updatedAt));
-      case SortMode.createdDesc:
-        _ordered.sort((Note a, Note b) => b.createdAt.compareTo(a.createdAt));
-    }
-    // Pinned notes always float to the top, then keep the chosen order.
-    _ordered.sort((Note a, Note b) {
-      if (a.pinned == b.pinned) return 0;
-      return a.pinned ? -1 : 1;
-    });
+    _ordered = List<Note>.of(_notes)..sort(_compareNotes);
+  }
+
+  /// Sorting is the only thing that decides the order: the file name is the
+  /// tie-breaker, so two notes saved in the same second never swap places
+  /// between rebuilds.
+  int _compareNotes(Note a, Note b) {
+    final int primary = switch (_lastSortMode) {
+      SortMode.titleAsc => a.title.toLowerCase().compareTo(
+        b.title.toLowerCase(),
+      ),
+      SortMode.titleDesc => b.title.toLowerCase().compareTo(
+        a.title.toLowerCase(),
+      ),
+      SortMode.updatedDesc => b.updatedAt.compareTo(a.updatedAt),
+      SortMode.updatedAsc => a.updatedAt.compareTo(b.updatedAt),
+      SortMode.createdDesc => b.createdAt.compareTo(a.createdAt),
+      SortMode.createdAsc => a.createdAt.compareTo(b.createdAt),
+    };
+    if (primary != 0) return primary;
+    return a.relativePath.toLowerCase().compareTo(b.relativePath.toLowerCase());
   }
 
   /// Injected by the shell so the vault order follows the user's sort choice.
@@ -209,30 +271,80 @@ class NotesController extends ChangeNotifier {
 
   // --------------------------------------------------------------- filtering
 
+  /// The text in the field *is* the filter. Typing lets go of any tag that was
+  /// pinned before, so a query always looks at the whole vault instead of the
+  /// corner the last tag left it in.
   void setQuery(String value) {
-    if (_query == value) return;
+    if (_query == value && _activeTag == null) return;
     _query = value;
-    notifyListeners();
-  }
-
-  void setScope(NoteScope value) {
-    if (_scope == value) return;
-    _scope = value;
     _activeTag = null;
     notifyListeners();
   }
 
+  void setCaseSensitive(bool value) {
+    if (_caseSensitive == value) return;
+    _caseSensitive = value;
+    notifyListeners();
+  }
+
+  /// Picking a tag is a filter of its own: whatever text was in the field is
+  /// dropped, so the list shows that tag's notes and nothing else.
   void toggleTag(String tagName) {
+    _query = '';
     _activeTag = _activeTag == tagName ? null : tagName;
-    if (_activeTag != null) _scope = NoteScope.all;
     notifyListeners();
   }
 
   void clearFilters() {
     _query = '';
     _activeTag = null;
-    _scope = NoteScope.all;
     notifyListeners();
+  }
+
+  // ----------------------------------------------------------------- folders
+
+  void setActiveFolder(String folderPath) {
+    final String folder = Note.normalizeFolderPath(folderPath);
+    if (_activeFolder == folder) return;
+    _activeFolder = folder;
+    notifyListeners();
+  }
+
+  /// Creates a folder inside [activeFolder]. Returns its path, or null when the
+  /// name has no usable characters left.
+  Future<String?> createFolder(String name) async {
+    final String cleaned = Note.slugify(name);
+    if (cleaned.isEmpty) return null;
+    final String parent = _activeFolder;
+    final String freeName = _freeFolderName(parent, cleaned);
+    final String path = parent.isEmpty ? freeName : '$parent/$freeName';
+    try {
+      await _store.createFolder(path);
+      _folders = await _store.listFolders();
+      if (!_folders.any((String f) => f.toLowerCase() == path.toLowerCase())) {
+        _folders = <String>[..._folders, path];
+      }
+    } catch (e) {
+      _error = '创建文件夹失败:$e';
+      notifyListeners();
+      return null;
+    }
+    _activeFolder = path;
+    notifyListeners();
+    return path;
+  }
+
+  String _freeFolderName(String parent, String base) {
+    final Set<String> taken = <String>{
+      for (final String path in childFoldersOf(parent))
+        path.split('/').last.toLowerCase(),
+    };
+    if (!taken.contains(base.toLowerCase())) return base;
+    for (int i = 2; i < 1000; i++) {
+      final String next = '$base $i';
+      if (!taken.contains(next.toLowerCase())) return next;
+    }
+    return base;
   }
 
   // -------------------------------------------------------------- selection
@@ -242,7 +354,7 @@ class NotesController extends ChangeNotifier {
     _autosave.flush(() => _persistDraft());
     _selectedId = id;
     _draft = selectedNote;
-    _draftOriginalFileName = _draft?.fileName;
+    _draftOriginalPath = _draft?.relativePath;
     _saveState = SaveState.idle;
     notifyListeners();
   }
@@ -256,23 +368,27 @@ class NotesController extends ChangeNotifier {
 
   // ------------------------------------------------------------------- CRUD
 
-  Note createNote({String title = ''}) {
+  Note createNote({String title = '', String? folderPath}) {
     _autosave.flush(() => _persistDraft());
     // A note always has a name, because the file always has one: an untitled
-    // note is `未命名.md` and is titled 「未命名」. The editor selects that
-    // placeholder, so the first keystroke replaces it.
-    final String name = title.trim().isEmpty ? '未命名' : title;
-    final Note blank = Note.blank(title: name);
-    // `未命名.md` the first time, `未命名 2.md` after that — the file name has
-    // to stay free before anything is written to it.
+    // note is `未命名.md`, the next one in the same folder is `未命名 2.md`, and
+    // so on. The title is then read back *out* of that file name, so what the
+    // editor selects — the placeholder the first keystroke replaces — is the
+    // name the file actually carries.
+    final String folder = Note.normalizeFolderPath(
+      folderPath ?? _activeFolder,
+    );
+    final Note blank = Note.blank(title: title.trim(), folderPath: folder);
+    final String fileName = _freeName(blank.fileName, folderPath: folder);
     final Note note = blank.copyWith(
-      fileName: _freeName(blank.fileName),
+      title: Note.titleOfFileName(fileName),
+      fileName: fileName,
     );
     _notes = <Note>[note, ..._notes];
-    _ordered = <Note>[note, ..._ordered];
+    _resort();
     _selectedId = note.id;
     _draft = note;
-    _draftOriginalFileName = note.fileName;
+    _draftOriginalPath = note.relativePath;
     _saveState = SaveState.dirty;
     notifyListeners();
     unawaited(_persistDraft());
@@ -309,42 +425,221 @@ class NotesController extends ChangeNotifier {
       id: id,
       title: title,
       body: source.body,
-      tags: source.tags,
       createdAt: now,
       updatedAt: now,
-      fileName: _freeName(Note.buildFileName(title)),
+      folderPath: source.folderPath,
+      fileName: _freeName(
+        Note.buildFileName(title),
+        folderPath: source.folderPath,
+      ),
     );
     _notes = <Note>[copy, ..._notes];
-    _ordered = <Note>[copy, ..._ordered];
+    _resort();
     _selectedId = copy.id;
     _draft = copy;
-    _draftOriginalFileName = null;
+    _draftOriginalPath = null;
     _saveState = SaveState.dirty;
     notifyListeners();
     unawaited(_persistDraft());
   }
 
-  Future<void> deleteNote(Note note) async {
-    _notes = _notes.where((Note n) => n.id != note.id).toList();
-    _ordered = _ordered.where((Note n) => n.id != note.id).toList();
-    if (_selectedId == note.id) {
-      _selectedId = _ordered.isEmpty ? null : _ordered.first.id;
-      _draft = selectedNote;
-      _draftOriginalFileName = _draft?.fileName;
-    }
+  /// Renames any note in the vault, whether or not it is the open one — the
+  /// tree's inline rename and its F2 shortcut both work on a row you are not
+  /// editing.
+  ///
+  /// The file moves with the name, because the file name *is* the title; the
+  /// note keeps its id, which is what keeps the tree's selection on the row.
+  Future<void> renameNote(Note note, String title) async {
+    final String clean = title.trim();
+    if (clean.isEmpty || clean == note.title) return;
+    final Note updated = note.copyWith(
+      title: clean,
+      fileName: _freeName(
+        Note.buildFileName(clean),
+        exceptId: note.id,
+        folderPath: note.folderPath,
+      ),
+      updatedAt: DateTime.now(),
+    );
+    final bool isDraft = _selectedId == note.id || _draft?.id == note.id;
+    if (isDraft) _autosave.cancel();
+    _replace(updated);
+    if (isDraft) _draft = updated;
+    _resort();
     notifyListeners();
-    await _store.delete(note);
+    try {
+      await _writing;
+      await _store.save(updated, previousPath: note.relativePath);
+      if (isDraft) _draftOriginalPath = updated.relativePath;
+    } catch (e) {
+      _error = '重命名失败:$e';
+      notifyListeners();
+    }
   }
 
-  /// Puts a deleted note back on disk — powers the "撤销" affordance.
-  Future<void> restoreNote(String rawMarkdown, String fileName) async {
-    try {
-      final Note restored = await _store.writeNewMarkdown(
-        rawMarkdown,
-        fileName,
+  /// Moves [targets] into [targetFolder], keeping every name unique in it.
+  ///
+  /// Two notes called `未命名.md` dragged in together land as `未命名.md` and
+  /// `未命名 2.md`, because each name is resolved *after* the previous note is
+  /// already recorded in the destination folder.
+  Future<void> moveNotes(List<Note> targets, String targetFolder) async {
+    final String folder = Note.normalizeFolderPath(targetFolder);
+    final List<Note> movable = targets
+        .where((Note n) => n.folderPath != folder)
+        .toList(growable: false);
+    if (movable.isEmpty) return;
+
+    final List<({Note note, String previousPath})> writes =
+        <({Note note, String previousPath})>[];
+    for (final Note note in movable) {
+      final Note updated = note.copyWith(
+        folderPath: folder,
+        fileName: _freeName(
+          note.fileName,
+          exceptId: note.id,
+          folderPath: folder,
+        ),
+        updatedAt: DateTime.now(),
       );
+      writes.add((note: updated, previousPath: note.relativePath));
+      _replace(updated);
+    }
+    final Set<String> ids = <String>{for (final Note n in movable) n.id};
+    if (_draft != null && ids.contains(_draft!.id)) {
+      _autosave.cancel();
+      _draft = _notes.firstWhere((Note n) => n.id == _draft!.id);
+    }
+    notifyListeners();
+
+    try {
+      await _writing;
+      for (final ({Note note, String previousPath}) write in writes) {
+        await _store.save(write.note, previousPath: write.previousPath);
+      }
+      if (_draft != null) _draftOriginalPath = _draft!.relativePath;
+    } catch (e) {
+      _error = '移动失败:$e';
+      notifyListeners();
+    }
+    await refresh(keepSelection: true);
+  }
+
+  /// Renames a folder in place. Notes inside keep their ids — the id lives in
+  /// the front matter, not in the path — so the tree's selection survives.
+  ///
+  /// Returns the new path, or null when the name is unusable or the target is
+  /// already taken.
+  Future<String?> renameFolder(String folderPath, String newName) async {
+    final String from = Note.normalizeFolderPath(folderPath);
+    if (from.isEmpty) return null;
+    final String cleaned = Note.slugify(newName);
+    if (cleaned.isEmpty) return null;
+    if (cleaned.toLowerCase() == from.split('/').last.toLowerCase()) {
+      return from;
+    }
+    final String parent = _parentOf(from);
+    final String free = _freeFolderName(parent, cleaned);
+    return _relocateFolder(from, parent.isEmpty ? free : '$parent/$free');
+  }
+
+  /// Moves [folderPath] — and everything inside it — under [targetParent].
+  ///
+  /// Dragging a folder into another folder is the same directory move a rename
+  /// does, only with the destination given instead of the name. Dropping a
+  /// folder into itself or into one of its own sub-folders is refused: the
+  /// branch would come loose from the root.
+  Future<String?> moveFolder(String folderPath, String targetParent) async {
+    final String from = Note.normalizeFolderPath(folderPath);
+    if (from.isEmpty) return null;
+    final String parent = Note.normalizeFolderPath(targetParent);
+    if (parent == from || parent.startsWith('$from/')) return null;
+    if (_parentOf(from) == parent) return from;
+    final String free = _freeFolderName(parent, from.split('/').last);
+    return _relocateFolder(from, parent.isEmpty ? free : '$parent/$free');
+  }
+
+  Future<String?> _relocateFolder(String from, String to) async {
+    final String name = from.split('/').last;
+    try {
+      if (!await _store.renameFolder(from, to)) {
+        _error = '文件夹「$name」已经存在';
+        notifyListeners();
+        return null;
+      }
+    } catch (e) {
+      _error = '移动文件夹失败:$e';
+      notifyListeners();
+      return null;
+    }
+    // Follow the folder the tree is pointing at, and any note whose ancestors
+    // moved along with it.
+    if (_activeFolder == from || _activeFolder.startsWith('$from/')) {
+      _activeFolder = '$to${_activeFolder.substring(from.length)}';
+    }
+    await refresh(keepSelection: true);
+    return to;
+  }
+
+  static String _parentOf(String folder) =>
+      folder.contains('/')
+      ? folder.substring(0, folder.lastIndexOf('/'))
+      : '';
+
+  Future<void> deleteNote(Note note) => deleteNotes(<Note>[note]);
+
+  /// Removes every note in [targets] from the list and from disk.
+  ///
+  /// The shell may be showing a different note than the ones selected in the
+  /// tree, so the open draft only moves when it is one of the targets. A write
+  /// already in flight is awaited first: letting it land after the delete would
+  /// put the file back on disk, which looks like the delete silently failed.
+  Future<void> deleteNotes(List<Note> targets) async {
+    if (targets.isEmpty) return;
+    final Set<String> ids = <String>{for (final Note n in targets) n.id};
+    final String? openId = _selectedId ?? _draft?.id;
+    final bool removingOpen = openId != null && ids.contains(openId);
+    if (removingOpen) _autosave.cancel();
+
+    _notes = _notes.where((Note n) => !ids.contains(n.id)).toList();
+    _ordered = _ordered.where((Note n) => !ids.contains(n.id)).toList();
+    if (removingOpen || _selectedId == null) {
+      _selectedId = _ordered.isEmpty ? null : _ordered.first.id;
+      _draft = selectedNote;
+      _draftOriginalPath = _draft?.relativePath;
+      _saveState = SaveState.idle;
+    }
+    notifyListeners();
+
+    await _writing;
+    for (final Note note in targets) {
+      await _store.delete(note);
+    }
+  }
+
+  /// Puts deleted notes back on disk — powers the "撤销" affordance.
+  Future<void> restoreNote(
+    String rawMarkdown,
+    String fileName, {
+    String folderPath = '',
+  }) => restoreNotes(<DeletedNote>[
+    (raw: rawMarkdown, fileName: fileName, folderPath: folderPath),
+  ]);
+
+  Future<void> restoreNotes(List<DeletedNote> backups) async {
+    if (backups.isEmpty) return;
+    try {
+      final List<Note> restored = <Note>[];
+      for (final DeletedNote backup in backups) {
+        restored.add(
+          await _store.writeNewMarkdown(
+            backup.raw,
+            backup.fileName,
+            folderPath: backup.folderPath,
+          ),
+        );
+      }
       await refresh(keepSelection: false);
-      select(restored.id);
+      if (restored.isNotEmpty) select(restored.first.id);
     } catch (e) {
       _error = '恢复失败:$e';
       notifyListeners();
@@ -368,21 +663,35 @@ class NotesController extends ChangeNotifier {
     _applyDraft(
       current.copyWith(
         title: title,
-        fileName: _freeName(Note.buildFileName(title), exceptId: current.id),
+        fileName: _freeName(
+          Note.buildFileName(title),
+          exceptId: current.id,
+          folderPath: current.folderPath,
+        ),
         updatedAt: DateTime.now(),
       ),
     );
   }
 
-  /// [candidate] unless another note already owns that file name, in which case
-  /// ` 2`, ` 3` … is appended before `.md`.
+  /// [candidate] unless another note in the same folder already owns that file
+  /// name, in which case ` 2`, ` 3` … is appended before `.md`.
   ///
   /// File names are compared case-insensitively because Windows and macOS file
-  /// systems are: `周报.md` and `周报.MD` are the same file.
-  String _freeName(String candidate, {String? exceptId}) {
+  /// systems are: `周报.md` and `周报.MD` are the same file. Folders are scoped
+  /// separately: `工作/周报.md` and `随手/周报.md` are two perfectly good notes.
+  String _freeName(
+    String candidate, {
+    String? exceptId,
+    String? folderPath,
+  }) {
+    final String folder = Note.normalizeFolderPath(
+      folderPath ?? _activeFolder,
+    );
     final Set<String> taken = <String>{
       for (final Note n in _notes)
-        if (n.id != exceptId) n.fileName.toLowerCase(),
+        if (n.id != exceptId &&
+            n.folderPath.toLowerCase() == folder.toLowerCase())
+          n.fileName.toLowerCase(),
     };
     if (!taken.contains(candidate.toLowerCase())) return candidate;
     final String stem = candidate.replaceAll(
@@ -394,36 +703,6 @@ class NotesController extends ChangeNotifier {
       if (!taken.contains(next.toLowerCase())) return next;
     }
     return candidate;
-  }
-
-  void setTags(List<String> tags) {
-    final Note? current = _draft;
-    if (current == null) return;
-    _applyDraft(current.copyWith(tags: tags, updatedAt: DateTime.now()));
-    _autosave.run(_persistDraft);
-  }
-
-  void togglePinned(Note note) {
-    final Note updated = note.copyWith(
-      pinned: !note.pinned,
-      updatedAt: DateTime.now(),
-    );
-    _replace(updated);
-    if (_selectedId == note.id) _draft = updated;
-    _resort();
-    notifyListeners();
-    unawaited(_store.save(updated));
-  }
-
-  void toggleFavorite(Note note) {
-    final Note updated = note.copyWith(
-      favorite: !note.favorite,
-      updatedAt: DateTime.now(),
-    );
-    _replace(updated);
-    if (_selectedId == note.id) _draft = updated;
-    notifyListeners();
-    unawaited(_store.save(updated));
   }
 
   void _replace(Note updated) {
@@ -486,7 +765,11 @@ class NotesController extends ChangeNotifier {
     // never end up sharing one. (Retitling two notes to the same thing in a
     // row can land here before the list has settled.)
     final Note note = draft.copyWith(
-      fileName: _freeName(draft.fileName, exceptId: draft.id),
+      fileName: _freeName(
+        draft.fileName,
+        exceptId: draft.id,
+        folderPath: draft.folderPath,
+      ),
     );
     if (note.fileName != draft.fileName) {
       _draft = note;
@@ -494,10 +777,10 @@ class NotesController extends ChangeNotifier {
     }
     _saveState = SaveState.saving;
     notifyListeners();
-    final String? previous = _draftOriginalFileName;
+    final String? previous = _draftOriginalPath;
     try {
-      await _store.save(note, previousFileName: previous);
-      _draftOriginalFileName = note.fileName;
+      await _store.save(note, previousPath: previous);
+      _draftOriginalPath = note.relativePath;
       _saveState = SaveState.saved;
     } catch (e) {
       _saveState = SaveState.dirty;

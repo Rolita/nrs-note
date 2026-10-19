@@ -30,11 +30,28 @@ abstract class NoteStore {
   /// Reads every note in the vault, newest first.
   Future<List<Note>> loadAll();
 
-  /// Writes [note] to its [Note.fileName].
+  /// Every real folder in the vault, vault-relative and `/`-separated.
   ///
-  /// When [previousFileName] is supplied and differs, the old file is removed
-  /// so that renaming a note does not leave an orphan behind.
-  Future<void> save(Note note, {String? previousFileName});
+  /// Empty folders are included: they are real directories the user made, and a
+  /// file tree that hides them cannot explain where the next note will land.
+  Future<List<String>> listFolders() async => const <String>[];
+
+  /// Creates [folderPath] and its parents. Returns the normalized path.
+  Future<String> createFolder(String folderPath) async =>
+      Note.normalizeFolderPath(folderPath);
+
+  /// Renames [from] to [to], notes and sub-folders included.
+  ///
+  /// Returns false when the move is impossible — the source is missing, the
+  /// target already exists, or the platform cannot rename directories. Refusing
+  /// is deliberate: silently merging two folders would scatter the notes.
+  Future<bool> renameFolder(String from, String to) async => false;
+
+  /// Writes [note] to its [Note.relativePath].
+  ///
+  /// When [previousPath] is supplied and differs, the old file is removed so
+  /// that renaming a note does not leave an orphan behind.
+  Future<void> save(Note note, {String? previousPath});
 
   /// Removes the note's file from the vault.
   Future<void> delete(Note note);
@@ -43,11 +60,23 @@ abstract class NoteStore {
   Future<bool> reveal() async => false;
 
   /// Imports a stray `.md` file found outside the vault (used by drag & drop).
-  Future<Note?> importMarkdown(String raw, String preferredName) async => null;
+  Future<Note?> importMarkdown(
+    String raw,
+    String preferredName, {
+    String folderPath = '',
+  }) async => null;
 
   /// Persists an arbitrary raw `.md` string under a new file name.
-  Future<Note> writeNewMarkdown(String raw, String fileName) async =>
-      Note.fromMarkdown(raw, fileName, DateTime.now());
+  Future<Note> writeNewMarkdown(
+    String raw,
+    String fileName, {
+    String folderPath = '',
+  }) async => Note.fromMarkdown(
+    raw,
+    fileName,
+    DateTime.now(),
+    folderPath: folderPath,
+  );
 }
 
 /// Shared helpers for the concrete stores.

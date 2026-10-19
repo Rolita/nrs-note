@@ -7,6 +7,10 @@ import 'note_store.dart';
 
 /// Desktop implementation: one real `.md` file per note inside a vault folder
 /// the user can open in Explorer / Finder.
+///
+/// Folders in the tree are real directories, not a label stored in the file.
+/// Moving a note by hand therefore moves it in the app, and an empty directory
+/// the user made is still visible after a restart.
 class IoNoteStore with NoteStoreSupport implements NoteStore {
   IoNoteStore({this.folderName = 'NRS Notes', this.overrideRoot});
 
@@ -45,29 +49,96 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     final List<File> existing = await _mdFiles();
     if (existing.isEmpty) {
       final Note welcome = Note.welcome();
-      await File(_pathFor(welcome.fileName)).writeAsString(welcome.toMarkdown());
+      await File(_pathFor(welcome.relativePath)).writeAsString(
+        welcome.toMarkdown(),
+      );
     }
   }
 
   Future<List<File>> _mdFiles() async {
     final Directory dir = vault;
     try {
-      final List<FileSystemEntity> entries = await dir.list().toList();
+      final List<FileSystemEntity> entries = await dir
+          .list(recursive: true, followLinks: false)
+          .toList();
       return entries
           .whereType<File>()
-          .where(
-            (File f) => f.path.toLowerCase().endsWith('.md'),
-          )
+          .where((File f) => f.path.toLowerCase().endsWith('.md'))
           .toList(growable: false);
     } on FileSystemException {
       return const <File>[];
     }
   }
 
-  String _pathFor(String fileName) =>
-      '${vault.path}${Platform.pathSeparator}$fileName';
+  /// `/`-separated path below the vault root, the form [Note.relativePath] uses.
+  String _relativeOf(FileSystemEntity entity) => entity.path
+      .substring(vault.path.length)
+      .replaceAll('\\', '/')
+      .replaceFirst(RegExp(r'^/+'), '');
+
+  String _pathFor(String relativePath) {
+    final List<String> parts = relativePath
+        .split('/')
+        .where((String p) => p.isNotEmpty)
+        .toList();
+    return <String>[vault.path, ...parts].join(Platform.pathSeparator);
+  }
 
   String _baseName(String fileName) => fileName.split(RegExp(r'[\\/]')).last;
+
+  String _folderOf(String relativePath) {
+    final int slash = relativePath.lastIndexOf('/');
+    return slash < 0 ? '' : relativePath.substring(0, slash);
+  }
+
+  String _join(String folderPath, String fileName) {
+    final String folder = Note.normalizeFolderPath(folderPath);
+    return folder.isEmpty ? fileName : '$folder/$fileName';
+  }
+
+  @override
+  Future<List<String>> listFolders() async {
+    try {
+      final List<FileSystemEntity> entries = await vault
+          .list(recursive: true, followLinks: false)
+          .toList();
+      final List<String> folders = entries
+          .whereType<Directory>()
+          .map(_relativeOf)
+          .where((String p) => p.isNotEmpty)
+          .toList();
+      folders.sort((String a, String b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      return folders;
+    } on FileSystemException {
+      return const <String>[];
+    }
+  }
+
+  @override
+  Future<String> createFolder(String folderPath) async {
+    final String folder = Note.normalizeFolderPath(folderPath);
+    if (folder.isEmpty) return '';
+    await Directory(_pathFor(folder)).create(recursive: true);
+    return folder;
+  }
+
+  @override
+  Future<bool> renameFolder(String from, String to) async {
+    final String source = Note.normalizeFolderPath(from);
+    final String target = Note.normalizeFolderPath(to);
+    if (source.isEmpty || target.isEmpty || source == target) return false;
+    final Directory sourceDir = Directory(_pathFor(source));
+    if (!await sourceDir.exists()) return false;
+    if (await Directory(_pathFor(target)).exists()) return false;
+    try {
+      await sourceDir.rename(_pathFor(target));
+      return true;
+    } on FileSystemException {
+      // A folder in use, or a permission problem: report it rather than
+      // pretending the rename happened.
+      return false;
+    }
+  }
 
   @override
   Future<List<Note>> loadAll() async {
@@ -77,8 +148,23 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
       try {
         final String raw = await f.readAsString();
         final DateTime modified = await f.lastModified();
-        final String name = await _migrateLegacyName(_baseName(f.path), raw);
-        notes.add(Note.fromMarkdown(raw, name, modified));
+        final String relative = _relativeOf(f);
+        final String folder = _folderOf(relative);
+        final String name = _baseName(relative);
+        final String fileName = await _migrateLegacyName(
+          f,
+          name,
+          folder,
+          raw,
+        );
+        notes.add(
+          Note.fromMarkdown(
+            raw,
+            fileName,
+            modified,
+            folderPath: folder,
+          ),
+        );
       } on FileSystemException {
         // A file locked by another process should never take the app down.
         continue;
@@ -87,7 +173,8 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     return sortNotes(notes);
   }
 
-  /// Renames a file written by the old `<title>-<id>.md` scheme to `<title>.md`.
+  /// Renames a file written by the old `<title>-<id>.md` scheme to `<title>.md`,
+  /// inside its own folder.
   ///
   /// NRS used to hide a short id in the file name to keep names unique. The
   /// file name is now the note's name, so that suffix is not just noise — it
@@ -95,8 +182,13 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
   /// it only fires when the stem is exactly `<slug>-<6 chars>` **and** the slug
   /// is the slug of the note's own title, i.e. a file this app named itself.
   /// Anything the user renamed by hand is left alone, as is any target that is
-  /// already taken.
-  Future<String> _migrateLegacyName(String fileName, String raw) async {
+  /// already taken in that folder.
+  Future<String> _migrateLegacyName(
+    File file,
+    String fileName,
+    String folderPath,
+    String raw,
+  ) async {
     final String stem = fileName.replaceAll(
       RegExp(r'\.md$', caseSensitive: false),
       '',
@@ -108,9 +200,10 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     final String slug = Note.slugify(title);
     if (slug.isEmpty || slug != m.group(1)) return fileName;
     final String target = '$slug.md';
-    if (await File(_pathFor(target)).exists()) return fileName;
+    final String targetPath = _pathFor(_join(folderPath, target));
+    if (await File(targetPath).exists()) return fileName;
     try {
-      await File(_pathFor(fileName)).rename(_pathFor(target));
+      await file.rename(targetPath);
       return target;
     } on FileSystemException {
       // Read-only folder, or the name is taken in another case. Keep the old
@@ -120,25 +213,29 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
   }
 
   @override
-  Future<void> save(Note note, {String? previousFileName}) async {
-    final String target = _baseName(note.fileName);
-    await File(_pathFor(target)).writeAsString(
-      note.toMarkdown(),
-      flush: true,
-    );
-    if (previousFileName != null &&
-        _baseName(previousFileName) != target) {
-      await _deleteQuietly(_baseName(previousFileName));
+  Future<void> save(Note note, {String? previousPath}) async {
+    final String folder = Note.normalizeFolderPath(note.folderPath);
+    final String targetName = _baseName(note.fileName);
+    final String target = _join(folder, targetName);
+    final File targetFile = File(_pathFor(target));
+    await targetFile.parent.create(recursive: true);
+    await targetFile.writeAsString(note.toMarkdown(), flush: true);
+
+    if (previousPath == null) return;
+    final String previousRelative =
+        previousPath.replaceAll('\\', '/');
+    if (previousRelative.toLowerCase() != target.toLowerCase()) {
+      await _deleteQuietly(previousRelative);
     }
   }
 
   @override
   Future<void> delete(Note note) async {
-    await _deleteQuietly(_baseName(note.fileName));
+    await _deleteQuietly(note.relativePath);
   }
 
-  Future<void> _deleteQuietly(String fileName) async {
-    final File f = File(_pathFor(fileName));
+  Future<void> _deleteQuietly(String relativePath) async {
+    final File f = File(_pathFor(relativePath));
     try {
       if (await f.exists()) await f.delete();
     } on FileSystemException {
@@ -166,38 +263,60 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
   }
 
   @override
-  Future<Note?> importMarkdown(String raw, String preferredName) async {
-    final Note note = await writeNewMarkdown(raw, preferredName);
-    return note;
+  Future<Note?> importMarkdown(
+    String raw,
+    String preferredName, {
+    String folderPath = '',
+  }) async {
+    return writeNewMarkdown(raw, preferredName, folderPath: folderPath);
   }
 
   @override
-  Future<Note> writeNewMarkdown(String raw, String fileName) async {
-    String base = _baseName(fileName);
-    if (!base.toLowerCase().endsWith('.md')) base = '$base.md';
-    final Note parsed = Note.fromMarkdown(raw, base, DateTime.now());
-    final Note note = parsed.title.isEmpty
-        ? parsed.copyWith(fileName: base, updatedAt: DateTime.now())
-        : parsed.copyWith(
-            fileName: await _freeName(Note.buildFileName(parsed.title), base),
-            updatedAt: DateTime.now(),
-          );
+  Future<Note> writeNewMarkdown(
+    String raw,
+    String fileName, {
+    String folderPath = '',
+  }) async {
+    final String folder = Note.normalizeFolderPath(folderPath);
+    final String base = _baseName(fileName);
+    final String withExtension = base.toLowerCase().endsWith('.md')
+        ? base
+        : '$base.md';
+    final Note parsed = Note.fromMarkdown(
+      raw,
+      withExtension,
+      DateTime.now(),
+      folderPath: folder,
+    );
+    final Note note = parsed.copyWith(
+      fileName: await _freeName(
+        folder,
+        Note.buildFileName(parsed.title),
+        withExtension,
+      ),
+      updatedAt: DateTime.now(),
+    );
     await save(note);
     return note;
   }
 
-  /// [wanted], or ` 2`/` 3` … when that file already exists and is not
-  /// [excluding] itself (the file being rewritten).
-  Future<String> _freeName(String wanted, String excluding) async {
+  /// [wanted], or ` 2`/` 3` … when that file already exists in [folderPath] and
+  /// is not [excluding] itself (the file being rewritten).
+  Future<String> _freeName(
+    String folderPath,
+    String wanted,
+    String excluding,
+  ) async {
+    final String folder = Note.normalizeFolderPath(folderPath);
     if (wanted.toLowerCase() == excluding.toLowerCase()) return wanted;
-    if (!await File(_pathFor(wanted)).exists()) return wanted;
+    if (!await File(_pathFor(_join(folder, wanted))).exists()) return wanted;
     final String stem = wanted.replaceAll(
       RegExp(r'\.md$', caseSensitive: false),
       '',
     );
     for (int i = 2; i < 1000; i++) {
       final String next = '$stem $i.md';
-      if (!await File(_pathFor(next)).exists()) return next;
+      if (!await File(_pathFor(_join(folder, next))).exists()) return next;
     }
     return wanted;
   }

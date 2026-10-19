@@ -3,10 +3,12 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/core/theme/app_theme.dart';
 import 'package:nrs/data/models/note.dart';
+import 'package:nrs/ui/editor/selection_wash.dart';
 import 'package:nrs/ui/editor/live_markdown.dart';
 import 'package:nrs/ui/editor/markdown_editor.dart';
 
@@ -26,6 +28,7 @@ void main() {
     WidgetTester tester,
     String text, {
     void Function(String tag)? onTagTap,
+    FocusNode? focusNode,
   }) async {
     final MarkdownSourceController controller = MarkdownSourceController(
       text: text,
@@ -37,7 +40,7 @@ void main() {
         home: Scaffold(
           body: MarkdownEditor(
             controller: controller,
-            focusNode: FocusNode(),
+            focusNode: focusNode ?? FocusNode(),
             scrollController: ScrollController(),
             fontSize: 15.5,
             hintText: '',
@@ -63,6 +66,7 @@ void main() {
     String text,
     TextSelection selection, {
     AppPalette palette = AppPalette.light,
+    TextSelection? frozen,
   }) async {
     final MarkdownSourceController controller = MarkdownSourceController(
       text: text,
@@ -93,7 +97,11 @@ void main() {
     await tester.pumpAndSettle();
     focus.requestFocus();
     await tester.pumpAndSettle();
+    // A drag freezes the reveal at pointer-down while the selection keeps
+    // moving; `frozen` reproduces that frame without a gesture.
+    controller.revealAs = frozen;
     controller.selection = selection;
+    controller.repaint();
     await tester.pumpAndSettle();
 
     final RenderRepaintBoundary boundary =
@@ -227,6 +235,42 @@ void main() {
     await tester.pump();
     await tester.enterText(find.byKey(const Key('nrs-editor-field')), '# 标题');
     expect(controller.text, '# 标题');
+  });
+
+  testWidgets('Tab indents a list item without selecting its line', (
+    WidgetTester tester,
+  ) async {
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
+    final MarkdownSourceController controller = await pump(
+      tester,
+      '- item',
+      focusNode: focus,
+    );
+    focus.requestFocus();
+    await tester.pumpAndSettle();
+    controller.selection = const TextSelection.collapsed(offset: 6);
+    await tester.pump();
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pumpAndSettle();
+
+    expect(controller.text, '  - item');
+    expect(
+      controller.selection,
+      const TextSelection.collapsed(offset: 8),
+      reason: 'Tab 缩进后选中了整行，下一次输入会替换整行',
+    );
+
+    // The keystroke after Tab edits at the caret instead of replacing a line.
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '  - item!',
+        selection: TextSelection.collapsed(offset: 9),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(controller.text, '  - item!');
   });
 
   /// Pointing at a character and getting a different one back is the bug that
@@ -444,66 +488,93 @@ void main() {
     }
   });
 
-  testWidgets('the highlight of a selection tiles line to line', (
+  /// Every line of a selection leaves a strip of paper before the next one.
+  ///
+  /// The field's own boxes still tile (they are the line grid the table chrome
+  /// is measured from), but the wash is painted behind the field by
+  /// `EditorSelectionPainter`, which takes [kSelectionLineGap] out of every
+  /// line. This is the "一点点间隙" the reference screenshot shows: 22px of
+  /// wash on a 24px line in Obsidian, 26px of wash on NRS's 28px line.
+  testWidgets('every line of a selection leaves a seam before the next', (
     WidgetTester tester,
   ) async {
-    // A paragraph paints each line's highlight as its own rectangle, sized
-    // `fontSize * height`, but it *advances* by the rounded product. A ratio
-    // that leaves a fraction — `15.5 * 1.78 = 27.59` against a 28px step —
-    // makes every band 0.41px shorter than the gap to the next one, so a
-    // multi-line selection reads as a stack of stripes with the paper showing
-    // through between them (43% lighter at the seam, measured on the real
-    // widget). See `snapLineHeight`.
-    const String text =
-        '# 标题一\n'
-        '## 标题二\n'
-        '\n'
-        '普通段落，含 **粗体** 与 `代码`。\n'
-        '\n'
-        '带 #标签 和 [[双链]] 的一行\n'
-        '\n'
-        '- 无序项\n'
-        '- [ ] 待办事项\n'
-        '1. [x] 有序待办\n'
-        '\n'
-        '> 引用\n'
-        '\n'
-        '---\n'
-        '\n'
-        '```dart\n'
-        'final int a = 1;\n'
-        '```\n';
-    final MarkdownSourceController controller = await pump(tester, text);
-    controller.selection = TextSelection(
-      baseOffset: 0,
-      extentOffset: text.length,
-    );
-    await tester.pumpAndSettle();
-
-    // One line emits one box per run, so group them by their y-range to get a
-    // single band per line.
-    final Map<String, double> bands = <String, double>{};
-    for (final TextBox box in editable(
-      tester,
-    ).getBoxesForSelection(controller.selection)) {
-      if (box.top == box.bottom) continue;
-      bands.putIfAbsent(
-        box.top.toStringAsFixed(3),
-        () => double.parse(box.bottom.toStringAsFixed(3)),
+    const String text = '第一行文字\n第二行文字\n第三行文字';
+    for (final AppPalette palette in <AppPalette>[
+      AppPalette.light,
+      AppPalette.dark,
+    ]) {
+      final _Pixels px = await shoot(
+        tester,
+        text,
+        const TextSelection(baseOffset: 0, extentOffset: text.length),
+        palette: palette,
       );
-    }
-    final List<double> tops =
-        bands.keys.map(double.parse).toList()..sort();
-    expect(tops.length, greaterThan(10), reason: '没有测到足够的行');
-    for (int i = 1; i < tops.length; i++) {
-      final double gap = tops[i] - bands[tops[i - 1].toStringAsFixed(3)]!;
+      final RenderEditable re = editable(tester);
+      final List<TextBox> boxes = re
+          .getBoxesForSelection(
+            const TextSelection(baseOffset: 0, extentOffset: text.length),
+          )
+          .where((TextBox b) => b.right > b.left && b.bottom > b.top)
+          .toList();
+      boxes.sort((TextBox a, TextBox b) => a.top.compareTo(b.top));
+      expect(boxes.length, greaterThanOrEqualTo(3), reason: '没有测到三行');
+      final TextBox first = boxes.first;
+      final TextBox second = boxes.firstWhere(
+        (TextBox b) => b.top > first.top + 1,
+      );
+      // The seam is paint, not layout: the boxes still meet exactly, so a
+      // change of height style that leaves a real hole would fail here too.
       expect(
-        gap.abs(),
+        (second.top - first.bottom).abs(),
         lessThanOrEqualTo(0.05),
+        reason: '选区盒不再首尾相接；缝隙应该由画笔控制，而不是行距',
+      );
+
+      // The boxes are in the field's coordinates; the screenshot starts at the
+      // editor, and the field sits inside its padding, so convert before
+      // sampling a pixel.
+      Rect onPaper(TextBox b) => Rect.fromPoints(
+        re.localToGlobal(b.toRect().topLeft),
+        re.localToGlobal(b.toRect().bottomRight),
+      );
+      final Rect firstPaper = onPaper(first);
+      final Rect secondPaper = onPaper(second);
+      final int x =
+          (firstPaper.left > secondPaper.left
+                  ? firstPaper.left
+                  : secondPaper.left)
+              .ceil() +
+          2;
+      expect(
+        x < firstPaper.right && x < secondPaper.right,
+        isTrue,
+        reason: '采样列不在两行选区内',
+      );
+      final double seam = firstPaper.bottom;
+      final Color wash = Color.alphaBlend(
+        px.palette.selection,
+        px.palette.surface,
+      );
+      final int above = (seam - 3).round();
+      final int below = (seam + 3).round();
+      expect(
+        px.isColor(wash, x, above, tolerance: 4) &&
+            px.isColor(wash, x, below, tolerance: 4),
+        isTrue,
+        reason: '缝隙两侧没有选区色：上 ${px.at(x, above)}，下 ${px.at(x, below)}',
+      );
+      final int from = (seam - 1).ceil();
+      final int to = (seam + 1).floor();
+      final int paper = <int>[
+        for (int y = from; y <= to; y++)
+          if (px.isSurface(x, y)) y,
+      ].length;
+      expect(
+        paper,
+        inInclusiveRange(1, 3),
         reason:
-            '第 ${i + 1} 行的选区高亮和上一行之间有 '
-            '${gap.toStringAsFixed(3)}px 的缝（行高必须落在整数像素上，'
-            '见 live_markdown.dart 的 snapLineHeight）',
+            '两行之间只有 $paper 行纸色（$from..$to）——'
+            '选区又连成了一整块，或者缝开得太大',
       );
     }
   });
@@ -543,6 +614,120 @@ void main() {
     );
   });
 
+  /// An empty line contains no glyphs, so a tight selection gives it a box of
+  /// zero width and the field paints nothing there: a selection running across
+  /// a paragraph break looked cut in two. Typora leaves a narrow bar at the
+  /// start of every selected empty line; these tests hold that shape.
+  group('an empty line inside a selection', () {
+    test('is included only when the selection reaches into it', () {
+      const String text = '短句\n\n另一句\n';
+      expect(
+        selectedBlankLineStarts(
+          text,
+          const TextSelection(baseOffset: 0, extentOffset: text.length),
+        ),
+        <int>[3],
+      );
+      // Ending on the newline *before* the empty line — the caret is at the
+      // line's start but the line itself is not taken.
+      expect(
+        selectedBlankLineStarts(
+          text,
+          const TextSelection(baseOffset: 0, extentOffset: 3),
+        ),
+        isEmpty,
+      );
+      // Starting on the next paragraph leaves the line above it alone.
+      expect(
+        selectedBlankLineStarts(
+          text,
+          const TextSelection(baseOffset: 4, extentOffset: text.length),
+        ),
+        isEmpty,
+      );
+    });
+
+    test('a run of empty lines is included line by line', () {
+      const String text = 'a\n\n\nb';
+      expect(
+        selectedBlankLineStarts(
+          text,
+          const TextSelection(baseOffset: 0, extentOffset: text.length),
+        ),
+        <int>[2, 3],
+      );
+    });
+
+    test('a caret and a whitespace-only line are not empty lines', () {
+      expect(
+        selectedBlankLineStarts(
+          'a\n\nb',
+          const TextSelection.collapsed(offset: 2),
+        ),
+        isEmpty,
+      );
+      // Spaces already have glyph boxes of their own to be selected.
+      const String spaced = 'a\n  \nb';
+      expect(
+        selectedBlankLineStarts(
+          spaced,
+          const TextSelection(baseOffset: 0, extentOffset: spaced.length),
+        ),
+        isEmpty,
+      );
+    });
+
+    testWidgets('shows a slim bar at the line start, not a full stripe', (
+      WidgetTester tester,
+    ) async {
+      const String text = '短句\n\n另一句\n';
+      for (final AppPalette palette in <AppPalette>[
+        AppPalette.light,
+        AppPalette.dark,
+      ]) {
+        final _Pixels px = await shoot(
+          tester,
+          text,
+          const TextSelection(baseOffset: 0, extentOffset: text.length),
+          palette: palette,
+        );
+        final RenderEditable re = editable(tester);
+        final Rect local = re
+            .getBoxesForSelection(
+              const TextSelection(baseOffset: 3, extentOffset: 4),
+            )
+            .first
+            .toRect();
+        final Rect band = Rect.fromPoints(
+          re.localToGlobal(local.topLeft),
+          re.localToGlobal(local.bottomRight),
+        );
+        final Color wash = Color.alphaBlend(
+          px.palette.selection,
+          px.palette.surface,
+        );
+
+        final int y = band.center.dy.round();
+        final int x = band.left.ceil() + 1;
+        expect(
+          px.isColor(wash, x, y, tolerance: 4),
+          isTrue,
+          reason:
+              '空白行在 ($x, $y) 处没有选区色（实际 ${px.at(x, y)}，应为 $wash）——'
+              '空白行仍然什么都没画',
+        );
+        expect(
+          px.isSurface(
+            band.left.ceil() + kBlankLineSelectionWidth.round() + 8,
+            y,
+          ),
+          isTrue,
+          reason: '空白行被整行涂满了；应该只有线首的一条细带',
+        );
+      }
+    });
+  });
+
   /// The rendered table paints over an invisible skeleton of the very same
   /// characters, so a click anywhere in a cell has to land on that cell's own
   /// source text — no custom hit testing involved.
@@ -573,6 +758,140 @@ void main() {
       at,
       inInclusiveRange(cellStart, cellStart + 2),
       reason: '点击「侧栏」格中心，光标应落在这个格子里，实际落在 $at',
+    );
+  });
+
+  /// Clicking a cell is what puts **that cell** into edit mode: its Markdown
+  /// source appears (backticks and all) while the rest of the table keeps its
+  /// rendered look. A range is a selection gesture and must not open anything.
+  testWidgets('clicking a cell reveals its source and only its source', (
+    WidgetTester tester,
+  ) async {
+    const String body =
+        '上文\n\n| 前 `code` 后 | 另一个 `x` |\n| --- | --- |\n| a | b |\n';
+    final MarkdownSourceController controller = await pump(tester, body);
+    controller.selection = const TextSelection.collapsed(offset: 0);
+    await tester.pumpAndSettle();
+    final RenderEditable re = editable(tester);
+
+    Iterable<TextSpan> leaves(InlineSpan span) sync* {
+      if (span is! TextSpan) return;
+      if (span.text != null) yield span;
+      for (final InlineSpan child in span.children ?? const <InlineSpan>[]) {
+        yield* leaves(child);
+      }
+    }
+
+    // A rendered cell's backticks are collapsed to `fontSize: 0`; an open
+    // cell's are real glyphs. Counting both is enough to tell which cells the
+    // painter is showing as source.
+    int ticks({required bool visible}) => leaves(re.text!)
+        .where(
+          (TextSpan s) =>
+              s.text == '`' &&
+              ((s.style?.fontSize ?? 0) > 0) == visible,
+        )
+        .length;
+
+    expect(ticks(visible: true), 0);
+    expect(ticks(visible: false), 4, reason: '两颗格子里的代码都应先渲染成 chip');
+
+    final List<TableRowChrome> rows =
+        tester.allRenderObjects.whereType<TableRowChrome>().toList()
+          ..sort(
+            (TableRowChrome a, TableRowChrome b) =>
+                a.chromeRowIndex.compareTo(b.chromeRowIndex),
+          );
+    final List<List<Rect>> before = <List<Rect>>[
+      for (final TableRowChrome row in rows) row.chromeCells(),
+    ];
+
+    final int firstCell = body.indexOf('前');
+    final int secondCell = body.indexOf('另一个');
+    final Rect box = re
+        .getBoxesForSelection(
+          TextSelection(baseOffset: firstCell, extentOffset: firstCell + 1),
+        )
+        .first
+        .toRect();
+    await tester.tapAt(re.localToGlobal(box.center));
+    await tester.pumpAndSettle();
+
+    expect(controller.selection.isCollapsed, isTrue);
+    expect(
+      controller.selection.start,
+      inInclusiveRange(firstCell, body.indexOf('后') + 1),
+      reason: '点击后光标应落在这一格',
+    );
+    expect(
+      ticks(visible: true),
+      2,
+      reason: '点击的格子应展开源码：反引号要看得见',
+    );
+    expect(
+      ticks(visible: false),
+      2,
+      reason: '另一颗格子的代码仍应保持渲染态（chip）',
+    );
+
+    final List<List<Rect>> after = <List<Rect>>[
+      for (final TableRowChrome row in rows) row.chromeCells(),
+    ];
+    expect(after, before, reason: '展开一格不能把整张表重新排版');
+
+    // A range across cells is a selection, not an edit: everything renders.
+    // Disarm the click guard first — a real drag disarms it as soon as the
+    // pointer travels, and a programmatic range inside the 400ms window would
+    // otherwise be folded back to the click's caret on purpose.
+    controller.disarmClickGuard();
+    controller.selection = TextSelection(
+      baseOffset: firstCell,
+      extentOffset: secondCell + 3,
+    );
+    await tester.pumpAndSettle();
+    expect(ticks(visible: true), 0, reason: '范围选区不应把格子切回源码');
+    expect(ticks(visible: false), 4);
+    expect(
+      controller.selection.isCollapsed,
+      isFalse,
+      reason: 'click guard 不应吞掉拖出来的范围',
+    );
+  });
+
+  testWidgets('the caret maps onto a cell’s revealed source', (
+    WidgetTester tester,
+  ) async {
+    const String body = '上文\n\n| aa **bb** cc | zz |\n| --- | --- |\n| x | y |\n';
+    final MarkdownSourceController controller = await pump(tester, body);
+    controller.selection = const TextSelection.collapsed(offset: 0);
+    await tester.pumpAndSettle();
+    final RenderEditable re = editable(tester);
+
+    final int cellStart = body.indexOf('aa');
+    final Rect cellBox = re
+        .getBoxesForSelection(
+          TextSelection(baseOffset: cellStart, extentOffset: cellStart + 2),
+        )
+        .first
+        .toRect();
+    await tester.tapAt(re.localToGlobal(cellBox.center));
+    await tester.pumpAndSettle();
+
+    // The click above revealed `**bb**`; the boxes below are the *revealed*
+    // ones, which is exactly what the pointer must map against.
+    final int cc = body.indexOf('cc', cellStart);
+    expect(cc, greaterThan(cellStart));
+    final Rect target = re
+        .getBoxesForSelection(TextSelection(baseOffset: cc, extentOffset: cc + 1))
+        .first
+        .toRect();
+    await tester.tapAt(re.localToGlobal(target.center));
+    await tester.pumpAndSettle();
+
+    expect(
+      controller.selection.start,
+      inInclusiveRange(cc, cc + 1),
+      reason: '展开源码后，点击「cc」应把光标放在这个字符上',
     );
   });
 
@@ -931,6 +1250,52 @@ void main() {
     }
   });
 
+  testWidgets('a drag keeps the table washed as one block with reveal frozen', (
+    WidgetTester tester,
+  ) async {
+    // Pointer-down freezes marker reveal for the whole gesture, and the table's
+    // bands used to be measured from that frozen caret. The field's selection
+    // painter followed the *live* range instead, so mid-drag the table showed
+    // one prose stripe per row — with the seam between rows and no block
+    // outline — and only snapped back on release. user: 「选中表格的效果不对，
+    // 不应该是一行行选，而是直接选中整个表格。」
+    const String text = '| a | b |\n| --- | --- |\n| c | d |\n| e | f |\n';
+    final _Pixels px = await shoot(
+      tester,
+      text,
+      const TextSelection(baseOffset: 0, extentOffset: 43),
+      // What was painted when the drag started: a bare caret at the anchor.
+      frozen: const TextSelection.collapsed(offset: 0),
+    );
+
+    final List<List<int>> bands = px.bandsOf(px.palette.selectionEdge, 40);
+    expect(
+      bands.length,
+      2,
+      reason:
+          '冻结揭示时表格被画成了一行行的正文色带（只数到 ${bands.length} 条外框）',
+    );
+    expect(
+      bands.last.first - bands.first.first,
+      closeTo(3 * px.rowHeight, 2),
+      reason: '冻结期间外框也该跨满三行表格',
+    );
+
+    // No paper seam between the rows: the opaque table wash has to sit on top of
+    // the prose stripes, not let them through line by line.
+    final int left = px.firstOf(px.palette.selectionEdge, bands.first.first) + 6;
+    final int right = px.lastOf(px.palette.selectionEdge, bands.first.first) - 6;
+    for (int y = bands.first.first + 3; y < bands.last.first - 3; y++) {
+      for (int x = left; x < right; x++) {
+        expect(
+          px.isSurface(x, y),
+          isFalse,
+          reason: '冻结期间表格内部 ($x,$y) 露出了纸色：又是按行选中',
+        );
+      }
+    }
+  });
+
   testWidgets('the wash ends on the last selected row', (
     WidgetTester tester,
   ) async {
@@ -1063,6 +1428,260 @@ void main() {
         reason: '底边框在 x=$x 处被格子里的代码色带盖掉了',
       );
     }
+  });
+
+  testWidgets('an inline code chip pads and rounds its own ends', (
+    WidgetTester tester,
+  ) async {
+    // Obsidian and Typora draw inline code as a padded, rounded chip. A
+    // TextStyle background is always a rectangle flush with the glyphs, so the
+    // two backticks stand in as padded end caps. This checks the painted
+    // result: one continuous band, wider than the code on both sides, with the
+    // corners cut.
+    const String text = '前 `code` 后';
+    final _Pixels px = await shoot(
+      tester,
+      text,
+      const TextSelection.collapsed(offset: 0),
+    );
+    final RenderEditable re = editable(tester);
+    final Offset origin = re.localToGlobal(Offset.zero);
+    final Rect code = re
+        .getBoxesForSelection(const TextSelection(baseOffset: 3, extentOffset: 7))
+        .first
+        .toRect()
+        .shift(origin);
+
+    bool fill(int x, int y) =>
+        px.isColor(px.palette.surfaceSunken, x, y, tolerance: 8);
+
+    // The rows above the glyphs show the band end to end. Take the widest one,
+    // so the measurement cannot land on the rounded top edge.
+    int bandY = -1;
+    int widest = 0;
+    for (int y = code.top.round() - 8; y < code.top.round(); y++) {
+      int n = 0;
+      for (int x = 0; x < px.width; x++) {
+        if (fill(x, y)) n++;
+      }
+      if (n > widest) {
+        widest = n;
+        bandY = y;
+      }
+    }
+    expect(bandY, greaterThanOrEqualTo(0), reason: '代码没有任何底色');
+
+    int leftAt(int y) {
+      for (int x = 0; x < px.width; x++) {
+        if (fill(x, y)) return x;
+      }
+      return -1;
+    }
+
+    int rightAt(int y) {
+      for (int x = px.width - 1; x >= 0; x--) {
+        if (fill(x, y)) return x;
+      }
+      return -1;
+    }
+
+    final int left = leftAt(bandY);
+    final int right = rightAt(bandY);
+    expect(left, greaterThanOrEqualTo(0));
+    expect(
+      left,
+      lessThanOrEqualTo(code.left.round() - 3),
+      reason: '代码左边没有内边距，色带仍然贴着字',
+    );
+    expect(
+      right,
+      greaterThanOrEqualTo(code.right.round() + 2),
+      reason: '代码右边没有内边距，色带仍然贴着字',
+    );
+
+    // The corner: at the band's top row the leftmost filled column is paper,
+    // while a few pixels in the fill is already there. A rectangle would keep
+    // both filled.
+    final int top = bandY - 1;
+    expect(fill(left, top), isFalse, reason: '圆角没有切出来：色带左上角还是实心的');
+    expect(
+      fill(left + 4, top),
+      isTrue,
+      reason: '圆角削掉了端部整整一行，色带的上沿不平',
+    );
+  });
+
+  testWidgets('inline code in a table cell is a padded, rounded chip', (
+    WidgetTester tester,
+  ) async {
+    // A cell is a TextPainter — it cannot host the prose chip's widget end
+    // caps. The row renderer has to paint the band itself, and the two
+    // collapsed backticks carry the padding as their advance. user:
+    // 「表格里的代码样式也要一起改一下」.
+    const String text = 'intro\n\n| 前 `code` 后 |\n| --- |\n| x |\n';
+    final _Pixels px = await shoot(
+      tester,
+      text,
+      const TextSelection.collapsed(offset: 0),
+    );
+    final RenderEditable re = editable(tester);
+    final Offset origin = re.localToGlobal(Offset.zero);
+    final int at = text.indexOf('`code`');
+    expect(at, greaterThan(0));
+
+    /// The union of the paragraph's boxes for a source range. A range comes
+    /// back in pieces (one per run) — `.first` saw nothing but the leading
+    /// backtick's padding, which made the scan window cut the band in half.
+    Rect box(int from, int to) {
+      final List<TextBox> boxes = re.getBoxesForSelection(
+        TextSelection(baseOffset: from, extentOffset: to),
+      );
+      expect(boxes, isNotEmpty);
+      double left = boxes.first.left;
+      double top = boxes.first.top;
+      double right = boxes.first.right;
+      double bottom = boxes.first.bottom;
+      for (final TextBox b in boxes) {
+        if (b.left < left) left = b.left;
+        if (b.top < top) top = b.top;
+        if (b.right > right) right = b.right;
+        if (b.bottom > bottom) bottom = b.bottom;
+      }
+      return Rect.fromLTRB(left, top, right, bottom).shift(origin);
+    }
+
+    final Rect token = box(at, at + 6);
+    final Rect inner = box(at + 1, at + 5);
+
+    // tolerance 4, not 24 or 8: the grid's `outlineSoft` sits within 8 of
+    // `surfaceSunken`, so a looser match reads the table's rules as chip fill.
+    bool fill(int x, int y) =>
+        px.isColor(px.palette.surfaceSunken, x, y, tolerance: 4);
+
+    final int left = (token.left - 4).round().clamp(0, px.width - 1);
+    final int right = (token.right + 4).round().clamp(0, px.width - 1);
+    int countAt(int y) {
+      int n = 0;
+      for (int x = left; x <= right; x++) {
+        if (fill(x, y)) n++;
+      }
+      return n;
+    }
+
+    int leftAt(int y) {
+      for (int x = left; x <= right; x++) {
+        if (fill(x, y)) return x;
+      }
+      return -1;
+    }
+
+    int rightAt(int y) {
+      for (int x = right; x >= left; x--) {
+        if (fill(x, y)) return x;
+      }
+      return -1;
+    }
+
+    // The chip's interior: the rows inside the token that carry a run of fill.
+    // Its first and last give the band's height.
+    int top = -1;
+    int bottom = -1;
+    for (int y = (token.top - 10).round(); y <= (token.bottom + 10).round(); y++) {
+      if (y < 0 || y >= px.height) continue;
+      if (countAt(y) >= 6) {
+        if (top < 0) top = y;
+        bottom = y;
+      }
+    }
+    expect(top, greaterThanOrEqualTo(0), reason: '表格里的代码没有底色');
+    expect(bottom - top, greaterThanOrEqualTo(16), reason: '代码底色只有一条细线');
+
+    final int mid = (top + bottom) ~/ 2;
+    final int bandLeft = leftAt(mid);
+    final int bandRight = rightAt(mid);
+    expect(
+      bandLeft,
+      lessThanOrEqualTo(inner.left.round() - 3),
+      reason: '代码左边没有内边距',
+    );
+    expect(
+      bandRight,
+      greaterThanOrEqualTo(inner.right.round() + 2),
+      reason: '代码右边没有内边距',
+    );
+
+    // The rounded corner: on the top row the fill begins further in than it
+    // does a few rows down. A rectangle would start on the same column.
+    final int topLeft = leftAt(top);
+    expect(
+      topLeft,
+      greaterThan(leftAt(top + 5)),
+      reason: '圆角没有切出来：色带左上角还是实心的',
+    );
+  });
+
+  testWidgets('a caret inside inline code tears the chip down to source', (
+    WidgetTester tester,
+  ) async {
+    // user: 「选中后没有恢复成编辑态」. The old chip kept its fill and accent
+    // while the caret was inside the token, so it still looked rendered. It
+    // has to drop the fill and show both backticks instead.
+    const String text = '前 `code` 后';
+    const int at = 5; // Inside the code.
+    final _Pixels px = await shoot(
+      tester,
+      text,
+      const TextSelection.collapsed(offset: at),
+    );
+    int fill = 0;
+    for (int y = 0; y < px.height; y++) {
+      for (int x = 0; x < px.width; x++) {
+        if (px.isColor(px.palette.surfaceSunken, x, y, tolerance: 8)) fill++;
+      }
+    }
+    expect(fill, 0, reason: '光标已经在代码里，底色却没有消失');
+
+    final InlineSpan? tree = editable(tester).text;
+    expect(tree, isNotNull);
+    expect(
+      tree!.toPlainText(),
+      isNot(contains('\uFFFC')),
+      reason: '编辑态还留着作为端帽的 widget，代码没有变回源码',
+    );
+    expect(tree.toPlainText(), contains('`code`'));
+  });
+
+  testWidgets('the caret is painted over a code block band', (
+    WidgetTester tester,
+  ) async {
+    // Windows paints the caret *under* the text, so an opaque run background
+    // covered it whole: 「行内代码挡住了输入光标」. The field's render object
+    // must paint the caret last, above whatever the spans draw. Inline code no
+    // longer paints a band under its own caret, but a fenced block still does.
+    EditableText.debugDeterministicCursor = true;
+    addTearDown(() => EditableText.debugDeterministicCursor = false);
+    const String text = '```\ncode\n```\n';
+    const int at = 5; // Inside the code line.
+    final _Pixels px = await shoot(
+      tester,
+      text,
+      const TextSelection.collapsed(offset: at),
+    );
+    final RenderEditable re = editable(tester);
+    final Rect caret = re
+        .getLocalRectForCaret(const TextPosition(offset: at))
+        .shift(re.localToGlobal(Offset.zero));
+    int visible = 0;
+    for (int y = caret.top.round(); y < caret.bottom.round(); y++) {
+      for (int x = caret.left.round() - 1; x <= caret.right.round(); x++) {
+        if (px.isColor(px.palette.accent, x, y, tolerance: 8)) visible++;
+      }
+    }
+    expect(
+      visible,
+      greaterThan((caret.height / 2).round()),
+      reason: '光标被代码块的底色盖住了：${caret.height.round()} 行里只有 $visible 个光标像素',
+    );
   });
 }
 class _Pixels {

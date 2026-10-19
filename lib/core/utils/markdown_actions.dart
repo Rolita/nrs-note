@@ -1,4 +1,9 @@
+import 'dart:math' as math;
+
 import 'package:flutter/services.dart';
+
+import 'table_model.dart';
+import 'table_selection.dart';
 
 /// Pure functions that transform a [TextEditingValue].
 ///
@@ -11,7 +16,10 @@ TextEditingValue _normalised(TextEditingValue v) {
   final int start = v.selection.start < 0 ? v.text.length : v.selection.start;
   final int end = v.selection.end < 0 ? v.text.length : v.selection.end;
   return v.copyWith(
-    selection: TextSelection(baseOffset: start.clamp(0, v.text.length), extentOffset: end.clamp(0, v.text.length)),
+    selection: TextSelection(
+      baseOffset: start.clamp(0, v.text.length),
+      extentOffset: end.clamp(0, v.text.length),
+    ),
   );
 }
 
@@ -38,11 +46,16 @@ MarkdownEditFn wrapSelection(
     if (_isWrapped(text, start, end, before, after)) {
       final String inner = text.substring(start, end);
       final String next =
-          text.substring(0, start - before.length) + inner + text.substring(end + after.length);
+          text.substring(0, start - before.length) +
+          inner +
+          text.substring(end + after.length);
       final int offset = start - before.length;
       return TextEditingValue(
         text: next,
-        selection: TextSelection(baseOffset: offset, extentOffset: offset + inner.length),
+        selection: TextSelection(
+          baseOffset: offset,
+          extentOffset: offset + inner.length,
+        ),
       );
     }
 
@@ -56,11 +69,15 @@ MarkdownEditFn wrapSelection(
 
     final String selected = text.substring(start, end);
     final String body = selected.isEmpty ? placeholder : selected;
-    final String next = text.substring(0, start) + before + body + after + text.substring(end);
+    final String next =
+        text.substring(0, start) + before + body + after + text.substring(end);
     final int bodyStart = start + before.length;
     return TextEditingValue(
       text: next,
-      selection: TextSelection(baseOffset: bodyStart, extentOffset: bodyStart + body.length),
+      selection: TextSelection(
+        baseOffset: bodyStart,
+        extentOffset: bodyStart + body.length,
+      ),
     );
   };
 }
@@ -408,7 +425,9 @@ MarkdownEditFn insertDivider() {
     final TextEditingValue v = _normalised(raw);
     final String text = v.text;
     final int at = v.selection.start;
-    final String lead = at > 0 && text.substring(at - 1, at) != '\n' ? '\n' : '';
+    final String lead = at > 0 && text.substring(at - 1, at) != '\n'
+        ? '\n'
+        : '';
     final String inserted = '$lead---\n';
     final String next = text.replaceRange(at, v.selection.end, inserted);
     return TextEditingValue(
@@ -420,60 +439,152 @@ MarkdownEditFn insertDivider() {
   };
 }
 
+// ------------------------------------------------------------------- tables
+//
+// The rules live in `table_model.dart`: a table is parsed into a grid, edited
+// as a grid, and rendered back. What is here is the editor's half — what a key
+// does, where the caret lands, and what a selection means.
+
+/// The cell a table **caret** belongs to, as `(row, column)` among the body
+/// rows.
+///
+/// Shared with the selection model in `table_selection.dart`, so the cell a
+/// menu command acts on and the cell a drag paints can never disagree.
+(int, int) _cellOf(TableBlock block, int offset) =>
+    tableCellAt(block, offset, extent: false);
+
+/// The selection that puts a cell under the user's fingers: its text, or the
+/// whole cell (padding included) when it holds nothing — so the first keystroke
+/// replaces the placeholder instead of landing next to it.
+TextSelection _cellSelection(TableCell cell) => cell.isEmpty
+    ? TextSelection(baseOffset: cell.start, extentOffset: cell.end)
+    : TextSelection(
+        baseOffset: cell.contentStart,
+        extentOffset: cell.contentEnd,
+      );
+
+TextEditingValue _valueOf(TableEditResult edit) =>
+    TextEditingValue(text: edit.text, selection: edit.selection);
+
+/// The rectangle a selection means, allowing a gesture to speak first.
+///
+/// Geometry alone cannot tell a column-grip selection from a cell rectangle
+/// that happens to cover one column, and §4.3 says the gesture decides. The
+/// editor keeps that intent on the controller; commands read it through this
+/// resolver and fall back to geometry for a plain drag.
+typedef TableRangeResolver =
+    TableRange? Function(String text, TextSelection selection);
+
+TableRange? tableRangeOf(
+  TextEditingValue value, {
+  TableRangeResolver? resolve,
+}) {
+  final TableRange? intended = resolve?.call(value.text, value.selection);
+  if (intended != null) return intended;
+  return TableRange.fromSelection(value.text, value.selection);
+}
+
+/// The active cell of [range] as source offsets, or `null` outside a table.
+///
+/// Used by the floating editor, which has to read the cell whole (escapes
+/// unescaped) and write it back in one command.
+({TableBlock block, int row, int column, TableCell cell})? tableActiveCell(
+  TextEditingValue value, {
+  TableRangeResolver? resolve,
+}) {
+  final TableBlock? block = TableBlock.parse(value.text, value.selection.start);
+  if (block == null || block.bodyRows.isEmpty) return null;
+  final TableRange? range = tableRangeOf(value, resolve: resolve);
+  final (int row, int column) = range != null
+      ? (range.anchorRow, range.anchorColumn)
+      : tableCellAt(block, value.selection.start, extent: false);
+  final List<TableRow> body = block.bodyRows;
+  final int r = row.clamp(0, body.length - 1);
+  final List<TableCell> cells = body[r].cells;
+  if (cells.isEmpty) return null;
+  final int c = column.clamp(0, cells.length - 1);
+  return (block: block, row: r, column: c, cell: cells[c]);
+}
+
+/// Writes [text] into one cell — the F2 overlay's commit.
+///
+/// Line breaks become `<br>` through [escapeCell] on the way out, so a
+/// multi-line cell stays one source line and the renderer's 「one row = one
+/// line」 invariant survives.
+TextEditingValue? setTableCellText(
+  TextEditingValue raw, {
+  required int tableStart,
+  required int row,
+  required int column,
+  required String text,
+}) {
+  final TableBlock? block = TableBlock.parse(
+    raw.text,
+    tableStart.clamp(0, raw.text.length),
+  );
+  if (block == null) return null;
+  final TableEditResult edited = TableCommands.writeRect(
+    block,
+    fromRow: row,
+    toRow: row,
+    fromColumn: column,
+    toColumn: column,
+    atRow: row,
+    atColumn: column,
+    values: <List<String>>[
+      <String>[text],
+    ],
+  );
+  return _valueOf(edited);
+}
+
 /// Inserts an empty table and drops the caret into its first cell.
 ///
-/// A table is the one block the renderer has to size as a whole, so the
-/// skeleton that gets inserted must already be well formed — a header row, the
-/// `| --- |` divider that turns it into a header, and a body row. Two columns
-/// by two rows is the smallest shape that shows all three parts at once, and
-/// the one the reference app drops in: the caret blinks in the first cell and
-/// the rest is one Tab away.
+/// Two columns by two rows is the smallest shape that shows a header, a divider
+/// and a body row at once; the caret blinks in the first cell and the rest is
+/// one Tab away.
 MarkdownEditFn insertTable() {
-  const String snippet = '|  |  |\n| --- | --- |\n|  |  |\n';
   return (TextEditingValue raw) {
     final TextEditingValue v = _normalised(raw);
     final String text = v.text;
     final int at = v.selection.start;
-    final String lead = at > 0 && text.substring(at - 1, at) != '\n' ? '\n' : '';
-    final String inserted = '$lead$snippet';
+    final String lead = at > 0 && text.substring(at - 1, at) != '\n'
+        ? '\n'
+        : '';
+    final String table = TableGrid(
+      rows: <List<String>>[
+        <String>['', ''],
+        <String>['', ''],
+      ],
+      aligns: <TableAlign>[TableAlign.none, TableAlign.none],
+      header: true,
+    ).render();
+    final String inserted = '$lead$table\n';
     final String next = text.replaceRange(at, v.selection.end, inserted);
-    // Two characters in: past the leading `| ` of the first header cell.
-    final int caret = at + lead.length + 2;
     return TextEditingValue(
       text: next,
       selection: TextSelection.collapsed(
-        offset: caret.clamp(0, next.length),
+        offset: (at + lead.length + 2).clamp(0, next.length),
       ),
     );
   };
 }
 
 /// The cells of a table line, as `[start, end)` ranges of **line-relative**
-/// offsets — the text between the pipes, padding spaces included.
+/// offsets — the text between the pipes, padding included.
 ///
 /// One parser for the whole app: the renderer measures its columns from these
-/// ranges and Tab walks them. A second copy would eventually disagree with the
-/// first about what a cell is.
-List<(int, int)> tableCellsOf(String line) {
-  final List<(int, int)> cells = <(int, int)>[];
-  int pipe = line.indexOf('|');
-  if (pipe < 0) return cells;
-  while (true) {
-    final int next = line.indexOf('|', pipe + 1);
-    final int from = pipe + 1;
-    if (next < 0) {
-      if (from < line.length) cells.add((from, line.length));
-      break;
-    }
-    cells.add((from, next));
-    pipe = next;
-  }
-  return cells;
-}
+/// ranges, Tab walks them and the model edits them. A second copy would
+/// eventually disagree with the first about what a cell is.
+List<(int, int)> tableCellsOf(String line) => cellsOfLine(line);
 
 /// Whether a line is a row of a table (the divider counts — it is part of the
 /// block, it just holds no cells).
-bool isTableLine(String line) => line.trimLeft().startsWith('|');
+bool isTableLine(String line) => isRowLine(line);
+
+/// `| --- | :-: |` — the row that says a table has begun and how its columns
+/// are aligned.
+bool isTableDivider(String line) => isDividerLine(line);
 
 /// Whether deleting the character at [removedAt] would take it **out of the
 /// cell that holds the caret** — the one edit a table cell must not allow.
@@ -481,10 +592,8 @@ bool isTableLine(String line) => line.trimLeft().startsWith('|');
 /// A cell is edited in place, so the caret sits between two pipes; one
 /// Backspace too many eats the pipe (or, once the cell is already empty, the
 /// last character of the cell to its left). The grid then loses a column and
-/// the row falls back to its raw source — the user reads that as 「跨表格把
-/// 区域两个字给删了」. Deleting *inside* the cell stays unlimited; only the
-/// cell's own boundary is a wall. Deleting the pipes is still possible from
-/// outside a cell (a selection, or a caret sitting on the row's edges).
+/// the row falls back to its raw source. Deleting *inside* the cell stays
+/// unlimited; only the cell's own boundary is a wall.
 bool tableCellBarrier(String text, int removedAt) {
   if (removedAt < 0 || removedAt >= text.length) return false;
   final int start = lineStartOf(text, removedAt);
@@ -497,8 +606,7 @@ bool tableCellBarrier(String text, int removedAt) {
     // one-character deletion lands the caret exactly where the character was.
     if (removedAt < start + a || removedAt > start + b) continue;
     // Only the cell's **content** may go. Its padding spaces belong to the
-    // table — eating one would slide the glyphs of the cell a space to the
-    // left — and `start + b` is the pipe itself, which ends the cell's range
+    // table, and `start + b` is the pipe itself, which ends the cell's range
     // and therefore never counts as content.
     int from = start + a;
     int to = start + b;
@@ -514,57 +622,152 @@ bool tableCellBarrier(String text, int removedAt) {
   return text[removedAt] == '|';
 }
 
-/// `| --- | :-: |` — the row that says a table has begun and how its columns
-/// are aligned.
+/// Where text typed at [at] has to go so that it lands **inside a cell**.
 ///
-/// The one judgement in the app: the renderer collapses this row, Tab steps
-/// over it, and neither may disagree about which row it is.
-bool isTableDivider(String line) => line.contains('-') && _dividerRe.hasMatch(line);
+/// The rendered row is not editable text: its line still carries the pipes and
+/// the padding, and native caret movement can park the caret on any of them.
+/// Typing there used to append a phantom cell after the closing pipe (`| a |x`)
+/// or a character before the leading one, which stops the line being a row at
+/// all. This is the formatter's last line of defence for the routes the table
+/// key handler never sees — Ctrl+End, PageDown, a word jump, an engine edit.
+///
+/// `null` means the insertion is already inside a cell's text (or outside a
+/// table, or on the divider, which is edited on purpose). Pipes, padding and
+/// the line ends resolve to the nearest cell's content edge.
+int? tableTypingAnchor(String text, int at) {
+  if (at < 0 || at > text.length) return null;
+  // Cheap pre-check: typing over prose must not parse the document.
+  final String line = text.substring(
+    lineStartOf(text, at),
+    lineEndOf(text, at),
+  );
+  if (!isRowLine(line)) return null;
+  final TableBlock? block = TableBlock.parse(text, at);
+  if (block == null || block.bodyRows.isEmpty) return null;
+  if (_onDivider(block, at)) return null;
+  final int r = block.rowAt(at);
+  if (r < 0) return null;
+  final List<TableCell> cells = block.bodyRows[r].cells;
+  if (cells.isEmpty) return null;
 
-final RegExp _dividerRe = RegExp(r'^[\s|:\-]+$');
-
-/// The lines of the table block that contains [caret], as absolute
-/// `[start, end)` ranges — divider line included, because a column has to be
-/// added to it as well or the table would lose its alignment row.
-List<(int, int)> _tableRowLines(String text, int caret) {
-  int start = lineStartOf(text, caret);
-  final int here = start;
-  while (start > 0) {
-    final int prev = lineStartOf(text, start - 1);
-    if (!isTableLine(text.substring(prev, lineEndOf(text, prev)))) break;
-    start = prev;
+  int anchor = cells.last.contentEnd;
+  for (final TableCell cell in cells) {
+    if (cell.isEmpty) {
+      if (at <= cell.end) {
+        anchor = cell.contentStart;
+        break;
+      }
+      continue;
+    }
+    if (at <= cell.contentStart) {
+      anchor = cell.contentStart;
+      break;
+    }
+    if (at <= cell.contentEnd) {
+      anchor = at;
+      break;
+    }
+    if (at <= cell.end) {
+      // Trailing padding or the pipe that closes the cell: append to the text,
+      // leaving the padding where the column alignment expects it.
+      anchor = cell.contentEnd;
+      break;
+    }
   }
-  int end = lineEndOf(text, here);
-  while (end < text.length) {
-    final int next = end + 1;
-    final int stop = lineEndOf(text, next);
-    if (!isTableLine(text.substring(next, stop))) break;
-    end = stop;
-  }
-  final List<(int, int)> rows = <(int, int)>[];
-  int at = start;
-  while (at <= end) {
-    final int stop = lineEndOf(text, at);
-    rows.add((at, stop));
-    at = stop + 1;
-    if (stop == end) break;
-  }
-  return rows;
+  return anchor == at ? null : anchor;
 }
 
-/// Every row of the table block that contains [caret], as absolute
-/// `[start, end)` cell ranges. Divider lines are skipped: there is nothing
-/// there to type into.
-List<List<(int, int)>> _tableBlock(String text, int caret) {
-  return <List<(int, int)>>[
-    for (final (int start, int stop) in _tableRowLines(text, caret))
-      if (!isTableDivider(text.substring(start, stop)))
-        if (tableCellsOf(text.substring(start, stop)).isNotEmpty)
-          <(int, int)>[
-            for (final (int a, int b) in tableCellsOf(text.substring(start, stop)))
-              (start + a, start + b),
-          ],
-  ];
+/// The table-safe value for a deletion that removed `[from, to)`, or `null`
+/// when the edit does not cut into a row's structure.
+///
+/// [tableCellBarrier] guards one character; a word delete (Ctrl+Backspace,
+/// Ctrl+Delete) removes a whole run in one engine update and used to walk
+/// straight through the closing pipe. The cell under the caret owns the edit:
+/// its text may go, its padding and pipes may not. A run that starts in the
+/// previous cell is cut at this cell's content edge rather than deleting
+/// structure.
+///
+/// Returning [oldValue] blocks a deletion that was entirely structural:
+/// applying it would change the table's shape, and letting it through to the
+/// engine would also move the caret as if something had been removed.
+TextEditingValue? tableClampDeletion(
+  TextEditingValue oldValue,
+  int from,
+  int to,
+) {
+  final String text = oldValue.text;
+  if (from < 0 || to > text.length || from >= to) return null;
+  // A selection is handled by the range model, which already refuses edits that
+  // leave the table. This rule is for the caret: the cell it stands in owns the
+  // word delete.
+  if (!oldValue.selection.isCollapsed) return null;
+  final int caret = oldValue.selection.start;
+  final TableBlock? block = TableBlock.parse(text, caret);
+  if (block == null || block.bodyRows.isEmpty) return null;
+  if (_onDivider(block, caret)) return null;
+  final (int row, int column) = tableCellAt(block, caret, extent: false);
+  final TableRow line = block.bodyRows[row];
+  if (line.cells.isEmpty) return null;
+  final TableCell cell = line.cells[column.clamp(0, line.cells.length - 1)];
+  if (from >= cell.contentStart && to <= cell.contentEnd) return null;
+
+  final int a = from.clamp(cell.contentStart, cell.contentEnd);
+  final int b = to.clamp(cell.contentStart, cell.contentEnd);
+  if (a >= b) return oldValue;
+  final String next = text.replaceRange(a, b, '');
+  return TextEditingValue(
+    text: next,
+    selection: TextSelection.collapsed(offset: a),
+  );
+}
+
+/// Whether [at] sits on a table's **divider row** — the `| --- |` line that
+/// holds no cells and is the table's skeleton.
+///
+/// The renderer collapses the line to nothing except while the caret is parked
+/// on it, which is exactly when a keystroke could rewrite the dashes and turn
+/// the grid back into loose pipes. Alignment is edited through the model (the
+/// menu writes the divider), never by typing into it.
+bool tableOnDivider(String text, int at) {
+  if (at < 0 || at > text.length) return false;
+  final TableBlock? block = TableBlock.parse(text, at);
+  return block != null && _onDivider(block, at);
+}
+
+/// Whether the raw edit `[from, to)` cuts the table's own **skeleton**: a
+/// divider row, or a newline that is one of a block's row boundaries.
+///
+/// The rectangle model sees every edit it can recognise first, and a caret
+/// delete inside a cell is clamped by [tableClampDeletion]. What is left is an
+/// engine write no command matched — a selection anchored on the hidden divider
+/// (it holds no cells, so it is no rectangle), or a native word delete that
+/// sweeps over a line break. Applying those would turn the block back into a
+/// run of loose pipes, and the source is not on screen to repair it.
+///
+/// Removing the block **whole** is not damage: a range that spans it end to end
+/// is the user deleting a table.
+bool tableSkeletonTouched(String text, int from, int to) {
+  if (from < 0 || to > text.length || from >= to) return false;
+  TableBlock? block;
+  for (final int at in <int>[from, to, to - 1]) {
+    block = TableBlock.parse(text, at);
+    if (block != null) break;
+  }
+  if (block == null) return false;
+  final int blockEnd = block.end < text.length ? block.end + 1 : block.end;
+  if (from <= block.start && to >= blockEnd) return false;
+
+  for (final TableRow row in block.rows) {
+    if (row.divider && from <= row.end && to > row.start) return true;
+  }
+  // The newline before the block, between its rows, and after its last row:
+  // removing one glues two rows — or a paragraph — into one malformed line.
+  final int first = math.max(block.start - 1, from);
+  final int last = math.min(blockEnd, to);
+  for (int i = first; i < last; i++) {
+    if (text.codeUnitAt(i) == 0x0A) return true;
+  }
+  return false;
 }
 
 /// The markdown a **table** selection puts on the clipboard: a table built out
@@ -572,123 +775,226 @@ List<List<(int, int)>> _tableBlock(String text, int caret) {
 ///
 /// A table is selected **by the cell** — the editor's wash snaps out to whole
 /// cells — so a drag that crosses a cell boundary is a selection of *cells*, not
-/// of the characters between them. Handing the raw range to the clipboard gave
-/// the user the pipes, the `| --- | --- |` divider and the leading `| 侧栏 |` of
-/// every row the drag passed through — user: 「在表格里是选中格子，选中文字只能
-/// 选中同一格的文字」.
+/// of characters. What comes back has to be a **table**, not a column of loose
+/// lines: the first selected row becomes the header, and a divider is emitted,
+/// because markdown only recognises a table when its second line is one.
 ///
-/// And what comes back has to be a **table**, not a column of loose lines: the
-/// point of copying a block is to paste a block. Markdown only recognises a
-/// table when the second line is a divider, so one is emitted, and the first
-/// selected row becomes the header — which is the real header whenever the drag
-/// started at the top of the table. user: 「如果我只选中左边一部分，复制的时候，
-/// 可以直接粘贴这部分表格」.
-///
-/// `null` means "not a cell selection", and the caller must fall back to the
-/// plain range: a drag inside **one** cell is ordinary text selection and has to
-/// copy exactly the characters under the pointer, and a range that starts in
-/// prose (or runs out of the table) is prose.
-String? tableSelectionMarkdown(String text, TextSelection selection) {
-  if (selection.isCollapsed || !selection.isValid) return null;
-  final int a = selection.start;
-  final int b = selection.end;
-  if (a < 0 || b > text.length) return null;
-  final List<List<(int, int)>> rows = _tableBlock(text, a);
-  if (rows.isEmpty) return null;
-  // ⛔ Both ends in the same block. `b` is exclusive, so the last selected
-  // character is `b - 1`: once the block ends before it, the selection has run
-  // out of the table and there are no cells to hand back.
-  if (b - 1 > rows.last.last.$2) return null;
-  final (int, int)? from = _cellAtOffset(rows, text, a);
-  final (int, int)? to = _cellAtOffset(rows, text, b - 1);
-  if (from == null || to == null) return null;
-  // One cell: this is text selection inside it, character for character.
-  if (from == to) return null;
+/// `null` when the selection is inside one cell (that is ordinary text) or
+/// leaves the block (that is prose).
+String? tableSelectionMarkdown(
+  String text,
+  TextSelection selection, {
+  TableRangeResolver? resolve,
+}) => tableRangeOf(
+  TextEditingValue(text: text, selection: selection),
+  resolve: resolve,
+)?.markdown;
 
-  final int r0 = from.$1 < to.$1 ? from.$1 : to.$1;
-  final int r1 = from.$1 < to.$1 ? to.$1 : from.$1;
-  final int c0 = from.$2 < to.$2 ? from.$2 : to.$2;
-  final int c1 = from.$2 < to.$2 ? to.$2 : from.$2;
-  final int cols = c1 - c0 + 1;
-  final List<String> lines = <String>[];
-  for (int r = r0; r <= r1; r++) {
-    final List<String> cells = <String>[];
-    for (int c = c0; c <= c0 + cols - 1; c++) {
-      if (c >= rows[r].length) {
-        // A short row still fills the grid, or the pasted table would come out
-        // with a ragged edge and the divider would not match its own header.
-        cells.add('');
-        continue;
-      }
-      final (int start, int stop) = rows[r][c];
-      // The padding spaces belong to the table, not to the cell: they line the
-      // columns up in the source and would only show up as ragged indentation
-      // once pasted somewhere else.
-      cells.add(text.substring(start, stop).trim());
-    }
-    lines.add('| ${cells.join(' | ')} |');
-    if (r == r0) {
-      lines.add('| ${List<String>.filled(cols, '---').join(' | ')} |');
-    }
+/// A table selection with its ends **snapped to cell edges**.
+///
+/// The editor paints a table selection by the **cell**: the wash covers whole
+/// cells even when the pointer stopped in the middle of one, so what the user
+/// sees is never the raw `TextSelection`. Copy works off the cells; delete and
+/// cut have to work off the same cells, or a drag that started inside 「链接」
+/// takes only the characters after it and leaves the word behind.
+///
+/// * a selection inside one cell is ordinary text selection and stays exact;
+/// * first cell → last cell is a **whole-row** selection: it starts at the line
+///   start and ends *past the newline*, so the rows disappear instead of
+///   collapsing into empty `|  |  |` ones;
+/// * anything narrower snaps to the cells' own text, padding excluded.
+TextSelection snapTableSelection(String text, TextSelection selection) =>
+    TableRange.fromSelection(text, selection)?.toTextSelection() ?? selection;
+
+/// The value after the washed rectangle is **emptied** — Delete, Backspace or
+/// a cut.
+///
+/// * a cell block is cleared in place: the rows stay, because the selection
+///   covered only some of their cells;
+/// * a whole-row sweep removes the rows, which is what 「删掉这一行」 means;
+/// * a whole-column sweep removes the columns.
+///
+/// A cleared block keeps its rectangle lit, so an accidental Delete is followed
+/// by typing back into the same cells rather than by a caret that has to be
+/// found again.
+TextEditingValue tableRangeClear(TableRange range) {
+  final TableBlock block = range.block;
+  switch (range.kind) {
+    case TableRangeKind.rows:
+      return _valueOf(
+        TableCommands.deleteRows(block, range.firstRow, range.lastRow),
+      );
+    case TableRangeKind.columns:
+      return _valueOf(
+        TableCommands.deleteColumns(
+          block,
+          from: range.firstColumn,
+          to: range.lastColumn,
+          row: range.anchorRow,
+        ),
+      );
+    case TableRangeKind.cells:
+      return _clearCells(range);
   }
-  return lines.join('\n');
 }
 
-/// Which cell of a table block an offset belongs to, as `(row, column)`.
+/// Clears a rectangle's **contents**, whatever the range's kind, and keeps the
+/// rectangle lit. The table keeps its shape; structure is only removed by the
+/// row/column commands (and by the keyboard's Delete on a whole-row sweep).
+TextEditingValue _clearCells(TableRange range) {
+  final TableBlock block = range.block;
+  final TableEditResult cleared = TableCommands.clearRect(
+    block,
+    fromRow: range.firstRow,
+    toRow: range.lastRow,
+    fromColumn: range.firstColumn,
+    toColumn: range.lastColumn,
+  );
+  final TableBlock? fresh = TableBlock.parse(
+    cleared.text,
+    block.start.clamp(0, cleared.text.length),
+  );
+  if (fresh == null) return _valueOf(cleared);
+  return TextEditingValue(
+    text: cleared.text,
+    selection: TableRange.rect(
+      fresh,
+      fromRow: range.firstRow,
+      toRow: range.lastRow,
+      fromColumn: range.firstColumn,
+      toColumn: range.lastColumn,
+      activeRow: range.anchorRow,
+      activeColumn: range.anchorColumn,
+    ).toTextSelection(),
+  );
+}
+
+/// The value after [inserted] is typed over the washed rectangle.
 ///
-/// An offset on a pipe — or on the newline that closes a row — belongs to the
-/// cell that **ends** there, so a drag that stops on the row boundary keeps the
-/// cell the pointer is sitting in instead of jumping into the next row.
-(int, int)? _cellAtOffset(
-  List<List<(int, int)>> rows,
-  String text,
-  int offset,
-) {
-  for (int r = 0; r < rows.length; r++) {
-    final List<(int, int)> row = rows[r];
-    if (row.isEmpty) continue;
-    if (offset <= row.last.$2) {
-      for (int c = 0; c < row.length; c++) {
-        if (offset <= row[c].$2) return (r, c);
-      }
-      return (r, row.length - 1);
-    }
-    if (offset == row.last.$2 + 1 &&
-        offset < text.length &&
-        text[offset] == '\n') {
-      return (r, row.length - 1);
-    }
+/// The text lands in the **active cell** and every other selected cell is
+/// cleared — the same rule as a spreadsheet, and the only one that does not
+/// silently throw away the cell the user started from.
+TextEditingValue tableRangeReplace(TableRange range, String inserted) =>
+    _valueOf(
+      TableCommands.writeRect(
+        range.block,
+        fromRow: range.firstRow,
+        toRow: range.lastRow,
+        fromColumn: range.firstColumn,
+        toColumn: range.lastColumn,
+        atRow: range.anchorRow,
+        atColumn: range.anchorColumn,
+        values: <List<String>>[
+          <String>[inserted],
+        ],
+      ),
+    );
+
+/// Empties the selection's cells — or the caret's own cell when there is no
+/// rectangle. The row / column structure never changes here; the menu's
+/// destructive row and column commands are separate on purpose. This is the
+/// menu's 清空, not the keyboard's Delete: one is named after what it does, the
+/// other is direct manipulation and takes whole rows with it.
+TextEditingValue? tableClearCells(
+  TextEditingValue raw, {
+  TableRangeResolver? resolve,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  final TableRange? range = tableRangeOf(v, resolve: resolve);
+  if (range != null) return _clearCells(range);
+  final ({TableBlock block, int row, int column, TableCell cell})? active =
+      tableActiveCell(v, resolve: resolve);
+  if (active == null) return null;
+  return _valueOf(
+    TableCommands.clearRect(
+      active.block,
+      fromRow: active.row,
+      toRow: active.row,
+      fromColumn: active.column,
+      toColumn: active.column,
+    ),
+  );
+}
+
+/// Interprets an edit that arrived over a **multi-cell** selection, or returns
+/// `null` when the selection is not a table block.
+///
+/// The platform's own replacement would splice the text across pipes: typing
+/// `x` over three selected cells would leave `| x |  |` with the source's
+/// pipes and a different number of columns. So the edit is read as "what was
+/// inserted over this rectangle" and replayed through the grid:
+///
+/// * the whole range disappeared → [tableRangeClear];
+/// * anything else → [tableRangeReplace] with the inserted run.
+///
+/// Only an edit that is exactly `before + inserted + after` is recognised, with
+/// the caret sitting immediately after the inserted run. Undo and redo also
+/// hand the formatter a newValue built from an *older* document, with the
+/// selection that document had; a kept rectangle there looks exactly like a
+/// replacement of the whole range, and replaying it wrote the restored document
+/// into a single cell — Ctrl+Z after a rectangle clear corrupted the table.
+/// The editor suspends this reading while it runs a history intent, and
+/// anything still unrecognised falls through untouched: blocking it would turn
+/// an undo from some other surface into a no-op.
+///
+/// A deletion needs no caret guard: restoring the original is `before +
+/// original + after`, never `before + after`, so only the original clear (or
+/// its redo) matches, and [tableRangeClear] is idempotent.
+TextEditingValue? tableSelectionEdit(
+  TextEditingValue oldValue,
+  TextEditingValue newValue, {
+  TableRangeResolver? resolve,
+}) {
+  final TableRange? range = tableRangeOf(oldValue, resolve: resolve);
+  if (range == null) return null;
+  if (newValue.text == oldValue.text) return newValue;
+
+  final TextSelection selection = oldValue.selection;
+  final String before = selection.textBefore(oldValue.text);
+  final String after = selection.textAfter(oldValue.text);
+  final String gone = before + after;
+  if (newValue.text == gone) return tableRangeClear(range);
+  if (newValue.text.length < before.length + after.length ||
+      !newValue.text.startsWith(before) ||
+      !newValue.text.endsWith(after)) {
+    return newValue;
   }
-  return null;
+  final String inserted = newValue.text.substring(
+    before.length,
+    newValue.text.length - after.length,
+  );
+  // The platform puts the caret at the end of what it inserted; a restored
+  // value carries the caret it was recorded with.
+  if (!newValue.selection.isCollapsed ||
+      newValue.selection.baseOffset != before.length + inserted.length) {
+    return newValue;
+  }
+  return tableRangeReplace(range, inserted);
 }
 
 /// [pasted] with the blank line a **table** needs to stay a table of its own.
 ///
 /// Markdown has no "end of table" token: two tables with nothing between them
-/// are one table. So a block pasted on the line under a table grew that table by
-/// four rows with an empty right-hand column, and the two tables became one —
-/// user: 「如果是在表格的下一行粘贴的话，会把两个表格连在一起」.
-///
-/// Only the boundaries the pasted block actually touches are padded: pasting a
-/// table into the middle of a paragraph is a paste, not a table.
+/// are one table. So a block pasted on the line under a table used to grow that
+/// table by its rows with an empty right-hand column, and the two tables became
+/// one — user: 「如果是在表格的下一行粘贴的话，会把两个表格连在一起」.
 String padTablePaste(String text, int at, String pasted) {
   if (pasted.isEmpty || !isTableLine(pasted.split('\n').first)) return pasted;
-  final int from = at.clamp(0, text.length);
-  final int lineStart = lineStartOf(text, from);
-  // ⛔ The caret has to own the start of its line. Mid-line, a blank line would
-  // split a paragraph in half instead of closing a table.
-  if (from != lineStart) return pasted;
   String out = pasted;
+  final int lineStart = lineStartOf(text, at);
   if (lineStart > 0) {
-    // The line above: a table row would swallow the pasted block as more of its
-    // own rows, so the block gets a blank line to stand on.
-    final String above = text.substring(lineStartOf(text, lineStart - 1), lineStart - 1);
+    final String above = text.substring(
+      lineStartOf(text, lineStart - 1),
+      lineStart - 1,
+    );
     if (isTableLine(above) && !out.startsWith('\n')) out = '\n$out';
   }
-  if (from < text.length) {
-    // …and the line below, which would otherwise read as the next row of the
-    // block we just pasted.
-    final String below = text.substring(from, lineEndOf(text, from));
+  final int lineEnd = lineEndOf(text, at);
+  if (lineEnd < text.length) {
+    final String below = text.substring(
+      lineEnd + 1,
+      lineEndOf(text, lineEnd + 1),
+    );
     if (isTableLine(below) && !out.endsWith('\n\n')) {
       out = out.endsWith('\n') ? '$out\n' : '$out\n\n';
     }
@@ -696,138 +1002,178 @@ String padTablePaste(String text, int at, String pasted) {
   return out;
 }
 
-/// Whether [line] is a row of pipes with nothing in it — the row `Enter` at the
-/// end of a table makes, and the only row a pasted block may replace.
-bool _blankRow(String line) {
-  if (!isTableLine(line)) return false;
-  for (final (int a, int b) in tableCellsOf(line)) {
-    if (line.substring(a, b).trim().isNotEmpty) return false;
-  }
-  return true;
-}
-
-/// The pasted block's rows, ready to be **added to the table it lands in** — its
-/// header and divider dropped, because that table already has both.
-///
-/// A copied block is a table of its own, but pasting it under a table is how
-/// rows get duplicated, and what comes out has to be **one** table, not two —
-/// user: 「还是两个表格啊？应该连在一起变成一个表格」. The copy's header cannot
-/// survive that: markdown has exactly one header, its first row, so a second
-/// header would land as a data row carrying the old column names (which is the
-/// mess in the user's screenshot).
-///
-/// `null` when the block cannot join, and the caller keeps the two tables apart
-/// instead: the caret is in a row that already holds text, the block is not the
-/// same width as the table, or there is no table at the caret at all. A
-/// one-column copy under a three-column table is the everyday example of the
-/// width rule — that one is meant to stay a table of its own.
-(int, int, String)? _joinTable(String text, int from, int to, String pasted) {
-  final int lineStart = lineStartOf(text, from);
-  final int lineEnd = lineEndOf(text, from);
-  if (to > lineEnd) return null;
-  final String line = text.substring(lineStart, lineEnd);
-
-  final int cols;
-  int start;
-  int end;
-  if (isTableLine(line)) {
-    // ⛔ Only an empty row — the one `Enter` leaves at the end of a table — is
-    // taken over. A row that holds text keeps it.
-    if (!_blankRow(line)) return null;
-    cols = tableCellsOf(line).length;
-    start = lineStart;
-    end = lineEnd;
-  } else {
-    // The line right under a table: the rows join it where they stand.
-    if (from != lineStart || lineStart == 0) return null;
-    final String above = text.substring(
-      lineStartOf(text, lineStart - 1),
-      lineStart - 1,
-    );
-    if (!isTableLine(above)) return null;
-    cols = tableCellsOf(above).length;
-    start = from;
-    end = to;
-  }
-
-  final List<String> rows = <String>[];
-  bool first = true;
-  for (final String row in pasted.split('\n')) {
-    if (!isTableLine(row)) return null;
-    if (isTableDivider(row)) continue;
-    final List<String> cells = <String>[
-      for (final (int a, int b) in tableCellsOf(row)) row.substring(a, b).trim(),
-    ];
-    if (cells.length != cols) return null;
-    if (first) {
-      // The copy's own header: the table it joins already has one.
-      first = false;
-      continue;
-    }
-    rows.add('| ${cells.join(' | ')} |');
-  }
-  if (rows.isEmpty) return null;
-  return (start, end, rows.join('\n'));
-}
-
-/// [v] with [pasted] dropped in at its selection — the one insert path every
-/// paste route goes through, so the table rules below can never be skipped.
-///
-/// Three of them, in order:
-///
-/// * the block **joins** the table at the caret, header dropped, when it is the
-///   same width ([_joinTable]) — that is how rows get duplicated;
-/// * inside an **empty row** that it cannot join, the row is replaced: the block
-///   becomes a table of its own rather than being poured into the row's first
-///   cell;
-/// * on a line of its own next to a table, a blank line is added, because
-///   markdown has no end-of-table token ([padTablePaste]).
-///
-/// A caret inside a row that already holds text is left alone: there is no
-/// reading of "paste a table here" that does not destroy something, and silently
-/// eating the row would be worse than the mess it makes.
-TextEditingValue pasteValue(TextEditingValue v, String pasted) {
-  final String text = v.text;
-  final int a = (v.selection.start < 0 ? text.length : v.selection.start)
-      .clamp(0, text.length);
-  final int b = (v.selection.end < 0 ? text.length : v.selection.end)
-      .clamp(0, text.length);
-  final int from = a < b ? a : b;
-  final int to = a < b ? b : a;
-
-  int start = from;
-  int end = to;
-  String insert = pasted;
-  if (pasted.isNotEmpty && isTableLine(pasted.split('\n').first)) {
-    final (int, int, String)? join = _joinTable(text, start, end, pasted);
-    if (join != null) {
-      start = join.$1;
-      end = join.$2;
-      insert = join.$3;
-    } else {
-      final int lineStart = lineStartOf(text, start);
-      final int lineEnd = lineEndOf(text, start);
-      if (end <= lineEnd && _blankRow(text.substring(lineStart, lineEnd))) {
-        start = lineStart;
-        end = lineEnd;
-        // The blank line above, and one below when something follows: the pasted
-        // block takes the row's place, it does not move into it.
-        final bool below = end + 1 < text.length;
-        insert = '\n$pasted${below ? '\n' : ''}';
-      } else {
-        insert = padTablePaste(text, start, pasted);
-      }
-    }
-  }
-  return TextEditingValue(
-    text: text.replaceRange(start, end, insert),
-    selection: TextSelection.collapsed(offset: start + insert.length),
+/// The pasted block as a grid: a Markdown table, or TSV from a spreadsheet.
+TableGrid? _pastedGrid(String pasted) {
+  if (isMarkdownTable(pasted)) return gridFromMarkdown(pasted.trim());
+  final List<List<String>>? tsv = gridFromTsv(pasted);
+  if (tsv == null) return null;
+  return TableGrid(
+    rows: tsv,
+    aligns: List<TableAlign>.filled(tsv.first.length, TableAlign.none),
+    header: true,
   );
 }
 
-/// A row of pipes with [columns] empty cells: `|  |  |`.
-String _emptyRow(int columns) => '|${'  |' * columns}';
+/// [v] with [pasted] dropped in at its selection.
+///
+/// The rules, in order:
+///
+/// * a paste **inside a table** joins that table when the widths match (the
+///   copy's header is dropped — a table has exactly one), and lands as a table
+///   of its own below it when they do not;
+/// * a paste on the line right under a table joins it the same way;
+/// * a paste **inside a cell** has its line breaks turned into `<br>`: one cell
+///   is one line, and a raw newline would slice the row in half;
+/// * anywhere else, a table is pasted with a blank line on the side that faces
+///   another table, so the two never fuse.
+TextEditingValue pasteValue(
+  TextEditingValue v,
+  String pasted, {
+  TableRangeResolver? resolve,
+}) {
+  final String text = v.text;
+  final int a = (v.selection.start < 0 ? text.length : v.selection.start).clamp(
+    0,
+    text.length,
+  );
+  final int b = (v.selection.end < 0 ? text.length : v.selection.end).clamp(
+    0,
+    text.length,
+  );
+  final int from = a < b ? a : b;
+  final int to = a < b ? b : a;
 
+  final TableGrid? grid = _pastedGrid(pasted);
+
+  // A selection that covers more than one cell is a **rectangle**: the paste
+  // fills it from the active cell and clears the rest. It must never reach the
+  // "join the table below" rules — those answer a caret, not a range, and they
+  // would append the clipboard under a table whose cells the user just lit.
+  // The resolver lets a column-grip selection paste **as a column**.
+  final TableRange? range = tableRangeOf(v, resolve: resolve);
+  if (range != null) {
+    return _valueOf(
+      TableCommands.writeRect(
+        range.block,
+        fromRow: range.firstRow,
+        toRow: range.lastRow,
+        fromColumn: range.firstColumn,
+        toColumn: range.lastColumn,
+        atRow: range.anchorRow,
+        atColumn: range.anchorColumn,
+        values:
+            grid?.rows ??
+            <List<String>>[
+              <String>[unescapeCell(pasted.replaceAll('\r\n', '\n'))],
+            ],
+      ),
+    );
+  }
+
+  if (grid == null) {
+    // Plain text. Inside a cell its newlines would break the row, and a raw
+    // `|` would end the cell outright; both are escaped the GFM way.
+    final TableBlock? cell = TableBlock.parse(text, from);
+    if (cell != null) {
+      final String flat = escapeCell(pasted.replaceAll('\r\n', '\n'));
+      return TextEditingValue(
+        text: text.replaceRange(from, to, flat),
+        selection: TextSelection.collapsed(offset: from + flat.length),
+      );
+    }
+    return TextEditingValue(
+      text: text.replaceRange(from, to, pasted),
+      selection: TextSelection.collapsed(offset: from + pasted.length),
+    );
+  }
+
+  final String block = grid.render();
+  // The host table: the one the caret is in, or the one directly above it.
+  TableBlock? host = TableBlock.parse(text, from);
+  if (host == null && from > 0) {
+    final TableBlock? above = TableBlock.parse(text, from - 1);
+    if (above != null && from == above.end + 1) host = above;
+  }
+  if (host != null) {
+    // A blank last row is a placeholder left by Enter or Tab, not data. Drop it
+    // first: that is what lets a block of a different width take the row's
+    // place instead of leaving an empty row between the two tables.
+    String base = text;
+    TableBlock target = host;
+    final TableRow last = host.bodyRows.last;
+    final bool blankTail = last.cells.every((TableCell c) => c.isEmpty);
+    if (blankTail && from >= last.start && from <= last.end) {
+      final int cut = last.start > 0 ? last.start - 1 : 0;
+      base = text.replaceRange(cut, last.end, '');
+      target = TableBlock.parse(base, host.start.clamp(0, base.length)) ?? host;
+    }
+
+    if (grid.columns == target.columns) {
+      // Join. The copy's header goes (a table has exactly one), and so does the
+      // newline that ended the table — the joined rows are its new end.
+      TableBlock joinedHost = target;
+      String joinBase = base;
+      if (joinedHost.end == joinBase.length - 1 && joinBase.endsWith('\n')) {
+        joinBase = joinBase.substring(0, joinBase.length - 1);
+        joinedHost =
+            TableBlock.parse(
+              joinBase,
+              joinedHost.start.clamp(0, joinBase.length),
+            ) ??
+            joinedHost;
+      }
+      final List<List<String>> rows = <List<String>>[...grid.rows];
+      if (grid.header) rows.removeAt(0);
+      final TableEditResult joined = TableCommands.appendRows(joinedHost, rows);
+      final TableBlock? fresh = TableBlock.parse(
+        joined.text,
+        joinedHost.start.clamp(0, joined.text.length),
+      );
+      return TextEditingValue(
+        text: joined.text,
+        selection: TextSelection.collapsed(
+          offset: (fresh?.end ?? joined.selection.start).clamp(
+            0,
+            joined.text.length,
+          ),
+        ),
+      );
+    }
+
+    // A different width cannot join: it becomes a table of its own, above the
+    // host when the caret is on the host's first line and below it otherwise —
+    // always with a blank line between, or the two render as one grid.
+    final bool before = from <= target.start;
+    final int at;
+    final String insert;
+    if (before) {
+      at = target.start;
+      insert = '$block\n\n';
+    } else if (target.end < base.length) {
+      // Insert after the table's own newline, otherwise the trailing newline
+      // ends up *after* the pasted block as an extra blank line.
+      at = target.end + 1;
+      insert = at < base.length ? '\n$block\n\n' : '\n$block';
+    } else {
+      at = target.end;
+      insert = '\n\n$block';
+    }
+    final String next = base.replaceRange(at, at, insert);
+    return TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(
+        offset: (at + insert.length).clamp(0, next.length),
+      ),
+    );
+  }
+
+  final String insert = padTablePaste(text, from, block);
+  final String next = text.replaceRange(from, to, insert);
+  return TextEditingValue(
+    text: next,
+    selection: TextSelection.collapsed(offset: from + insert.length),
+  );
+}
 
 /// Tab / Shift+Tab inside a table: step to the neighbouring cell, the way
 /// Obsidian and every spreadsheet do.
@@ -839,104 +1185,239 @@ String _emptyRow(int columns) => '|${'  |' * columns}';
 /// * Tab on the very last cell appends a row — a table you can never grow from
 ///   the keyboard is a table you have to hand-edit;
 /// * the cell you land in is **selected**, so typing replaces its content.
-TextEditingValue? tableCellStep(
-  TextEditingValue raw, {
-  required bool forward,
-}) {
+TextEditingValue? tableCellStep(TextEditingValue raw, {required bool forward}) {
   final TextEditingValue v = _normalised(raw);
-  final String text = v.text;
-  final int caret = v.selection.start;
-  // Tab is cell navigation only when the caret is *on* a table row: a paragraph
-  // directly under a table must still indent rather than jump into the grid.
-  // Inside a fence the pipes are code, so Tab is indentation there too.
-  final int lineStart = lineStartOf(text, caret);
-  if (!isTableLine(text.substring(lineStart, lineEndOf(text, caret)))) {
-    return null;
-  }
-  if (isInsideFence(text, caret)) return null;
-  final List<List<(int, int)>> rows = _tableBlock(text, caret);
-  if (rows.isEmpty) return null;
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null) return null;
+  final List<TableRow> body = block.bodyRows;
+  if (body.isEmpty) return null;
 
-  final List<(int, int)> flat = <(int, int)>[for (final List<(int, int)> r in rows) ...r];
-  int index = -1;
-  for (int i = 0; i < flat.length; i++) {
-    if (flat[i].$1 <= caret && caret <= flat[i].$2) {
-      index = i;
-      break;
-    }
-  }
-  if (index < 0) {
-    // The caret is on a line with no cells — the divider, which the editor
-    // hides. Step into the nearest row rather than falling out of the table.
-    if (!forward) {
-      return _selectCell(
-        text,
-        flat.lastWhere(
-          ((int, int) c) => c.$2 <= caret,
-          orElse: () => flat.first,
-        ),
+  // A caret parked on the hidden divider is still *in* the table: forward goes
+  // to the first row below it, backward to the last row above it — never into
+  // the dashes, which hold no cells.
+  final bool onDivider = block.rows.any(
+    (TableRow r) =>
+        r.divider && v.selection.start >= r.start && v.selection.start <= r.end,
+  );
+  if (onDivider) {
+    if (forward) {
+      final int r = body.indexWhere(
+        (TableRow x) => x.start > v.selection.start,
+      );
+      final TableRow target = body[r < 0 ? body.length - 1 : r];
+      return TextEditingValue(
+        text: v.text,
+        selection: _cellSelection(target.cells.first),
       );
     }
-    return _selectCell(
-      text,
-      flat.firstWhere(
-        ((int, int) c) => c.$1 >= caret,
-        orElse: () => flat.last,
-      ),
+    final int r = body.lastIndexWhere(
+      (TableRow x) => x.end < v.selection.start,
+    );
+    final TableRow target = body[r < 0 ? 0 : r];
+    return TextEditingValue(
+      text: v.text,
+      selection: _cellSelection(target.cells.last),
     );
   }
 
+  final (int row, int column) = _cellOf(block, v.selection.start);
+
   if (!forward) {
-    if (index == 0) return _selectCell(text, flat.first);
-    return _selectCell(text, flat[index - 1]);
+    if (column > 0) {
+      return TextEditingValue(
+        text: v.text,
+        selection: _cellSelection(body[row].cells[column - 1]),
+      );
+    }
+    if (row > 0) {
+      final List<TableCell> cells = body[row - 1].cells;
+      return TextEditingValue(
+        text: v.text,
+        selection: _cellSelection(cells[cells.length - 1]),
+      );
+    }
+    return TextEditingValue(
+      text: v.text,
+      selection: _cellSelection(body.first.cells.first),
+    );
   }
-  if (index + 1 < flat.length) return _selectCell(text, flat[index + 1]);
 
-  // Past the last cell: grow the table by one row, and select its first cell so
-  // typing lands inside it instead of after the padding spaces.
-  final int columns = rows.fold<int>(
+  if (column + 1 < body[row].cells.length) {
+    return TextEditingValue(
+      text: v.text,
+      selection: _cellSelection(body[row].cells[column + 1]),
+    );
+  }
+  if (row + 1 < body.length) {
+    return TextEditingValue(
+      text: v.text,
+      selection: _cellSelection(body[row + 1].cells.first),
+    );
+  }
+  // Past the last cell: grow the table by one row and land in its first cell.
+  final TableEditResult grown = TableCommands.insertRow(
+    block,
+    row: row,
+    above: false,
+  );
+  final TableBlock fresh =
+      TableBlock.parse(grown.text, block.start + 1) ?? block;
+  final TableRow last = fresh.bodyRows.last;
+  return TextEditingValue(
+    text: grown.text,
+    selection: last.cells.isEmpty
+        ? TextSelection.collapsed(offset: last.start)
+        : _cellSelection(last.cells.first),
+  );
+}
+
+/// The caret a keyboard move should leave behind: a plain collapse, or the
+/// same anchor with a new moving end when Shift is held.
+TextSelection _caretAt(TextSelection from, int at, bool extend) =>
+    extend && from.isValid
+    ? TextSelection(baseOffset: from.baseOffset, extentOffset: at)
+    : TextSelection.collapsed(offset: at);
+
+/// A caret on the collapsed divider line. The line is real only while the caret
+/// is on it — that is how the dashes are edited — so cell movement leaves it
+/// alone.
+bool _onDivider(TableBlock block, int offset) => block.rows.any(
+  (TableRow r) => r.divider && offset >= r.start && offset <= r.end,
+);
+
+/// Home / End inside a table: the line's edges are structural pixels, so the
+/// caret goes to the **cell's** text edges instead of the row's pipes.
+///
+/// Returns `null` outside a table (and on the divider), where the normal line
+/// behaviour applies.
+TextEditingValue? tableCaretToCellEdge(
+  TextEditingValue raw, {
+  required bool end,
+  bool extend = false,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  if (!v.selection.isValid) return null;
+  final int caret = extend
+      ? raw.selection.extentOffset.clamp(0, v.text.length)
+      : v.selection.start;
+  final TableBlock? block = TableBlock.parse(v.text, caret);
+  if (block == null || block.bodyRows.isEmpty) return null;
+  if (_onDivider(block, caret)) return null;
+  final (int row, int column) = tableCellAt(block, caret, extent: false);
+  final TableRow line = block.bodyRows[row];
+  if (line.cells.isEmpty) return null;
+  final TableCell cell = line.cells[column.clamp(0, line.cells.length - 1)];
+  final int at = end ? cell.contentEnd : cell.contentStart;
+  return TextEditingValue(
+    text: v.text,
+    selection: _caretAt(raw.selection, at, extend),
+  );
+}
+
+/// Arrow Left / Right at a cell boundary: step into the neighbouring cell
+/// rather than walking through the invisible padding and the pipe.
+///
+/// `null` means "the caret is inside the cell's text — let the field move it
+/// one character", and also "outside a table". At the table's first / last
+/// cell the key is consumed with no movement, which keeps the caret off the
+/// structural pixels at the row's ends.
+TextEditingValue? tableCaretStepCell(
+  TextEditingValue raw, {
+  required bool forward,
+  bool extend = false,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  if (!v.selection.isValid) return null;
+  if (!v.selection.isCollapsed && !extend) return null;
+  final int caret = extend
+      ? raw.selection.extentOffset.clamp(0, v.text.length)
+      : v.selection.start;
+  final TableBlock? block = TableBlock.parse(v.text, caret);
+  if (block == null || block.bodyRows.isEmpty) return null;
+  if (_onDivider(block, caret)) return null;
+  final (int row, int column) = tableCellAt(block, caret, extent: false);
+  final TableRow line = block.bodyRows[row];
+  if (line.cells.isEmpty) return null;
+  final int c = column.clamp(0, line.cells.length - 1);
+  final TableCell cell = line.cells[c];
+  final int from = cell.contentStart;
+  final int to = cell.contentEnd;
+
+  int target;
+  if (forward) {
+    if (caret < to) return null;
+    if (c + 1 < line.cells.length) {
+      target = line.cells[c + 1].contentStart;
+    } else if (row + 1 < block.bodyRows.length) {
+      target = block.bodyRows[row + 1].cells.isEmpty
+          ? block.bodyRows[row + 1].start
+          : block.bodyRows[row + 1].cells.first.contentStart;
+    } else {
+      target = to;
+    }
+  } else {
+    if (caret > from) return null;
+    if (c > 0) {
+      target = line.cells[c - 1].contentEnd;
+    } else if (row > 0) {
+      final List<TableCell> above = block.bodyRows[row - 1].cells;
+      target = above.isEmpty
+          ? block.bodyRows[row - 1].start
+          : above.last.contentEnd;
+    } else {
+      target = from;
+    }
+  }
+  return TextEditingValue(
+    text: v.text,
+    selection: _caretAt(raw.selection, target, extend),
+  );
+}
+
+/// Arrow Up / Down inside a table: the same column one body row above / below.
+///
+/// The divider is not a row the user can stand on — native line movement lands
+/// exactly there from the first body row, reveals `| --- | --- |` and lets the
+/// next keystroke edit the dashes. `null` means the move leaves the table, so
+/// the normal line movement still works above the header and below the last
+/// row.
+TextEditingValue? tableCaretVertical(
+  TextEditingValue raw, {
+  required bool down,
+  bool extend = false,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  if (!v.selection.isValid) return null;
+  if (!v.selection.isCollapsed && !extend) return null;
+  final int caret = extend
+      ? raw.selection.extentOffset.clamp(0, v.text.length)
+      : v.selection.start;
+  final TableBlock? block = TableBlock.parse(v.text, caret);
+  if (block == null || block.bodyRows.isEmpty) return null;
+  if (_onDivider(block, caret)) return null;
+  final (int row, int column) = tableCellAt(block, caret, extent: false);
+  final int targetRow = down ? row + 1 : row - 1;
+  if (targetRow < 0 || targetRow >= block.bodyRows.length) return null;
+  final TableRow line = block.bodyRows[row];
+  if (line.cells.isEmpty) return null;
+  final TableCell cell = line.cells[column.clamp(0, line.cells.length - 1)];
+  final TableRow targetLine = block.bodyRows[targetRow];
+  if (targetLine.cells.isEmpty) return null;
+  final TableCell targetCell =
+      targetLine.cells[column.clamp(0, targetLine.cells.length - 1)];
+  // Keep the position *inside the text*, not the absolute source offset: the
+  // column above may be wider, and the caret should stay near the same word.
+  final int within = (caret - cell.contentStart).clamp(
     0,
-    (int m, List<(int, int)> r) => m > r.length ? m : r.length,
+    cell.contentEnd - cell.contentStart,
   );
-  final int at = _afterTrailingPipe(text, flat.last.$2);
-  final String grown = text.replaceRange(at, at, '\n${_emptyRow(columns)}');
-  final (int, int) fresh = tableCellsOf(_emptyRow(columns)).first;
-  return TextEditingValue(
-    text: grown,
-    selection: TextSelection(
-      baseOffset: at + 1 + fresh.$1,
-      extentOffset: at + 1 + fresh.$2,
-    ),
+  final int at = (targetCell.contentStart + within).clamp(
+    targetCell.contentStart,
+    targetCell.contentEnd,
   );
-}
-
-/// The offset just past the `|` that closes the cell whose text ends at [end],
-/// or [end] itself when the row has no trailing pipe.
-int _afterTrailingPipe(String text, int end) {
-  final int stop = lineEndOf(text, end);
-  int at = end;
-  while (at < stop && (text[at] == ' ' || text[at] == '\t')) {
-    at++;
-  }
-  return at < stop && text[at] == '|' ? at + 1 : stop;
-}
-
-/// Selects a cell's content, minus the padding spaces that belong to the
-/// source, not to the text.
-TextEditingValue _selectCell(String text, (int, int) cell) {
-  int a = cell.$1;
-  int b = cell.$2;
-  while (a < b && (text[a] == ' ' || text[a] == '\t')) {
-    a++;
-  }
-  while (b > a && (text[b - 1] == ' ' || text[b - 1] == '\t')) {
-    b--;
-  }
   return TextEditingValue(
-    text: text,
-    selection: b > a
-        ? TextSelection(baseOffset: a, extentOffset: b)
-        : TextSelection.collapsed(offset: a),
+    text: v.text,
+    selection: _caretAt(raw.selection, at, extend),
   );
 }
 
@@ -949,31 +1430,31 @@ TextEditingValue _selectCell(String text, (int, int) cell) {
 /// the line and a bare newline at that point would slice the row in two.
 TextEditingValue? tableRowBelow(TextEditingValue raw) {
   final TextEditingValue v = _normalised(raw);
-  final String text = v.text;
-  final int caret = v.selection.start;
-  final int start = lineStartOf(text, caret);
-  final int stop = lineEndOf(text, caret);
-  final String line = text.substring(start, stop);
-  if (!isTableLine(line) || isInsideFence(text, caret)) return null;
-  final List<(int, int)> cells = tableCellsOf(line);
-  if (cells.isEmpty) return null;
-
-  final int inLine = caret - start;
-  final int column = cells.indexWhere(
-    ((int, int) c) => c.$1 <= inLine && inLine <= c.$2,
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null) return null;
+  final (int row, int column) = _cellOf(block, v.selection.start);
+  final TableEditResult grown = TableCommands.insertRow(
+    block,
+    row: row,
+    above: false,
+    column: column,
   );
-  final int at = _afterTrailingPipe(text, start + cells.last.$2);
-  final String fresh = _emptyRow(cells.length);
-  final String grown = text.replaceRange(at, at, '\n$fresh');
-  // Land in the same column, one row down — never back at the first cell, or
-  // typing would silently jump columns.
-  final List<(int, int)> spans = tableCellsOf(fresh);
-  final (int, int) cell = spans[(column < 0 ? 0 : column).clamp(0, spans.length - 1)];
+  // Land in the same column of the new row, with the whole cell selected so
+  // typing replaces the placeholder instead of sitting next to it.
+  final TableBlock fresh =
+      TableBlock.parse(grown.text, block.start + 1) ?? block;
+  final List<TableRow> body = fresh.bodyRows;
+  final TableRow target = body[(row + 1).clamp(0, body.length - 1)];
+  if (target.cells.isEmpty) {
+    return TextEditingValue(
+      text: grown.text,
+      selection: TextSelection.collapsed(offset: target.start),
+    );
+  }
   return TextEditingValue(
-    text: grown,
-    selection: TextSelection(
-      baseOffset: at + 1 + cell.$1,
-      extentOffset: at + 1 + cell.$2,
+    text: grown.text,
+    selection: _cellSelection(
+      target.cells[column.clamp(0, target.cells.length - 1)],
     ),
   );
 }
@@ -981,7 +1462,14 @@ TextEditingValue? tableRowBelow(TextEditingValue raw) {
 /// The table edits the menu offers — the ones a keyboard cannot do: every row
 /// has to change at once for a column, which is exactly the kind of edit nobody
 /// should be doing by hand.
-enum TableEdit { rowAbove, rowBelow, columnLeft, columnRight, deleteRow, deleteColumn }
+enum TableEdit {
+  rowAbove,
+  rowBelow,
+  columnLeft,
+  columnRight,
+  deleteRow,
+  deleteColumn,
+}
 
 /// Applies [op] to the table the caret is in, or returns `null` when the caret
 /// is not on a table row (or a pipe-led line inside a fence, which is code).
@@ -990,169 +1478,57 @@ enum TableEdit { rowAbove, rowBelow, columnLeft, columnRight, deleteRow, deleteC
 /// not silently move the user into a different one.
 TextEditingValue? editTable(TextEditingValue raw, TableEdit op) {
   final TextEditingValue v = _normalised(raw);
-  final String text = v.text;
-  final int caret = v.selection.start;
-  if (isInsideFence(text, caret)) return null;
-  final int lineStart = lineStartOf(text, caret);
-  final int lineStop = lineEndOf(text, caret);
-  final String here = text.substring(lineStart, lineStop);
-  if (!isTableLine(here)) return null;
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null) return null;
+  final (int row, int column0) = _cellOf(block, v.selection.start);
+  // The “+” that hangs off a table's right edge is clicked on the row's first
+  // character, not inside a cell: it means "after the last column".
+  final bool atRowStart = v.selection.start <= block.bodyRows[row].start;
+  final int column = op == TableEdit.columnRight && atRowStart
+      ? math.max(0, block.bodyRows[row].cells.length - 1)
+      : column0;
 
-  final List<(int, int)> rows = _tableRowLines(text, caret);
-  final List<(int, int)> cells = tableCellsOf(here);
-  final int column = cells.indexWhere(
-    ((int, int) c) => lineStart + c.$1 <= caret && caret <= lineStart + c.$2,
+  // The divider is the table's skeleton: deleting it would turn the grid back
+  // into a plain run of pipes.
+  final bool onDivider = block.rows.any(
+    (TableRow r) =>
+        r.divider && v.selection.start >= r.start && v.selection.start <= r.end,
   );
+  if (op == TableEdit.deleteRow && onDivider) return null;
 
-  switch (op) {
-    case TableEdit.rowBelow:
-      return tableRowBelow(raw);
-
-    case TableEdit.rowAbove:
-      final (int, int) row = rows.firstWhere(
-        ((int, int) r) => r.$1 == lineStart,
-        orElse: () => (lineStart, lineStop),
-      );
-      final String fresh = _emptyRow(cells.length);
-      final String grown = text.replaceRange(row.$1, row.$1, '$fresh\n');
-      final List<(int, int)> spans = tableCellsOf(fresh);
-      final (int, int) cell = spans[(column < 0 ? 0 : column).clamp(0, spans.length - 1)];
-      return TextEditingValue(
-        text: grown,
-        selection: TextSelection(
-          baseOffset: row.$1 + cell.$1,
-          extentOffset: row.$1 + cell.$2,
-        ),
-      );
-
-    case TableEdit.deleteRow:
-      // Keep the divider: a table with no alignment row is no longer a table.
-      if (isTableDivider(here)) return null;
-      final int stop = lineStop < text.length ? lineStop + 1 : lineStop;
-      final int from = lineStart == 0 ? 0 : lineStart - 1;
-      final String cut = text.replaceRange(from, stop, '');
-      return TextEditingValue(
-        text: cut,
-        selection: TextSelection.collapsed(
-          offset: from.clamp(0, cut.length),
-        ),
-      );
-
-    case TableEdit.columnLeft:
-    case TableEdit.columnRight:
-      return _addColumn(
-        text,
-        rows,
-        cells,
-        column,
-        caret,
-        after: op == TableEdit.columnRight,
-      );
-
-    case TableEdit.deleteColumn:
-      if (cells.length <= 1) return null;
-      return _dropColumn(text, rows, cells, column, caret);
-  }
-}
-
-/// Applies one structural edit to every row of a block, and keeps the caret
-/// where the user left it.
-///
-/// `edit` describes a single row as `(at, remove, insert)` — a splice, the same
-/// shape whether the row grows or shrinks. That is what lets one caret remap
-/// serve both: everything after a splice slides by `insert.length - remove`, and
-/// a caret that fell inside the removed range lands at the splice point, which
-/// is the cell the edit was about.
-TextEditingValue _rebuildRows(
-  String text,
-  List<(int, int)> rows,
-  int caret,
-  (int, int, String) Function(String line, int start) edit,
-) {
-  final StringBuffer out = StringBuffer();
-  int cursor = 0;
-  int shift = 0;
-  int moved = caret;
-  for (final (int start, int stop) in rows) {
-    final String line = text.substring(start, stop);
-    final (int at, int remove, String insert) = edit(line, start);
-    out
-      ..write(text.substring(cursor, start))
-      ..write(line.substring(0, at))
-      ..write(insert)
-      ..write(line.substring(at + remove));
-    final int delta = insert.length - remove;
-    final int atAbs = start + at;
-    if (caret >= atAbs + remove) {
-      moved += delta;
-    } else if (caret > atAbs) {
-      moved = atAbs + shift + insert.length;
-    }
-    shift += delta;
-    cursor = stop;
-  }
-  out.write(text.substring(cursor));
-  final String rebuilt = out.toString();
-  return TextEditingValue(
-    text: rebuilt,
-    selection: TextSelection.collapsed(
-      offset: moved.clamp(0, rebuilt.length),
+  final TableEditResult? result = switch (op) {
+    TableEdit.rowAbove => TableCommands.insertRow(
+      block,
+      row: row,
+      above: true,
+      column: column,
     ),
-  );
-}
-
-/// One more cell in every row — right of the caret's column when [after], left
-/// of it otherwise.
-///
-/// "Right of a cell" means just past the pipe that closes it. Inserting *before*
-/// that pipe would swallow the new cell into its neighbour; inserting after the
-/// previous pipe is what makes `| a | b |` become `| a |  | b |`.
-///
-/// The divider row gets `---`, not spaces: a divider of empty cells still reads
-/// as a plain row and the table would quietly lose its alignment.
-TextEditingValue? _addColumn(
-  String text,
-  List<(int, int)> rows,
-  List<(int, int)> hereCells,
-  int column,
-  int caret, {
-  required bool after,
-}) {
-  if (hereCells.isEmpty) return null;
-  final int target =
-      (column < 0 ? hereCells.length - 1 : column).clamp(0, hereCells.length - 1);
-  return _rebuildRows(text, rows, caret, (String line, int start) {
-    final List<(int, int)> cells = tableCellsOf(line);
-    if (cells.isEmpty) return (0, 0, '');
-    final int at = target.clamp(0, cells.length - 1);
-    final String filler = isTableDivider(line) ? ' --- |' : '  |';
-    if (!after) return (cells[at].$1, 0, filler);
-    // A row without a trailing pipe has nowhere to hang the new cell: close it
-    // first (`| a | b` → `| a | b |  |`), never leave a cell glued to its text.
-    final bool closed = cells[at].$2 < line.length;
-    return closed ? (cells[at].$2 + 1, 0, filler) : (line.length, 0, ' |$filler');
-  });
-}
-
-/// One cell fewer in every row. The range removed is "the pipe before the cell
-/// plus the cell itself", so the pipe that closed it becomes the new separator —
-/// no `| |` left behind, and the row still starts with a pipe.
-TextEditingValue? _dropColumn(
-  String text,
-  List<(int, int)> rows,
-  List<(int, int)> hereCells,
-  int column,
-  int caret,
-) {
-  if (hereCells.isEmpty) return null;
-  final int target =
-      (column < 0 ? hereCells.length - 1 : column).clamp(0, hereCells.length - 1);
-  return _rebuildRows(text, rows, caret, (String line, int start) {
-    final List<(int, int)> cells = tableCellsOf(line);
-    if (cells.isEmpty) return (0, 0, '');
-    final int at = target.clamp(0, cells.length - 1);
-    return (cells[at].$1 - 1, cells[at].$2 - cells[at].$1 + 1, '');
-  });
+    TableEdit.rowBelow => TableCommands.insertRow(
+      block,
+      row: row,
+      above: false,
+      column: column,
+    ),
+    TableEdit.columnLeft => TableCommands.insertColumn(
+      block,
+      row: row,
+      column: column,
+      right: false,
+    ),
+    TableEdit.columnRight => TableCommands.insertColumn(
+      block,
+      row: row,
+      column: column,
+      right: true,
+    ),
+    TableEdit.deleteRow => TableCommands.deleteRow(block, row),
+    TableEdit.deleteColumn => TableCommands.deleteColumn(
+      block,
+      row: row,
+      column: column,
+    ),
+  };
+  return result == null ? null : _valueOf(result);
 }
 
 /// Applies [op] to the table that contains [at] — the offset of any character
@@ -1180,132 +1556,477 @@ TextEditingValue? editTableAt(TextEditingValue raw, int at, TableEdit op) =>
 /// dragging the header down swaps the two roles, exactly as Obsidian does, and
 /// the table never loses its alignment row.
 TextEditingValue? moveTableRow(TextEditingValue raw, int at, int from, int to) {
-  final String text = raw.text;
-  if (isInsideFence(text, at)) return null;
-  final List<(int, int)> lines = _tableRowLines(text, at);
-  if (lines.length < 2) return null;
-  final List<String> rows = <String>[
-    for (final (int a, int b) in lines) text.substring(a, b),
-  ];
-  final int divider = rows.indexWhere(isTableDivider);
-  final List<int> body = <int>[
-    for (int i = 0; i < rows.length; i++)
-      if (i != divider) i,
-  ];
-  if (body.length < 2) return null;
-  if (from < 0 || from >= body.length || to < 0 || to >= body.length) {
-    return null;
-  }
-  if (from == to) return null;
-  final List<int> order = <int>[...body];
-  order.insert(to, order.removeAt(from));
-  // The divider always sits directly under the first row: that is the row the
-  // renderer will treat as the header, so the two can never disagree.
-  final List<int> out = divider < 0
-      ? order
-      : <int>[order.first, divider, ...order.skip(1)];
-  final String rebuilt = <String>[for (final int i in out) rows[i]].join('\n');
-  final String next = text.replaceRange(lines.first.$1, lines.last.$2, rebuilt);
-  // The caret stays on the **text** it was on, which has moved.
-  final int block = lines.first.$1;
-  int moved = raw.selection.start;
-  final int li = lines.indexWhere(
-    ((int, int) r) => raw.selection.start >= r.$1 && raw.selection.start <= r.$2,
+  final TableBlock? block = TableBlock.parse(raw.text, at);
+  if (block == null) return null;
+  final (int row, int column) = _cellOf(block, raw.selection.start);
+  final TableEditResult? moved = TableCommands.moveRow(
+    block,
+    from: from,
+    to: to,
+    column: column,
   );
-  final int ni = li < 0 ? -1 : out.indexOf(li);
-  if (ni >= 0) {
-    final List<String> fresh = <String>[for (final int i in out) rows[i]];
-    moved = block + _lineOffset(fresh, ni) + (raw.selection.start - lines[li].$1);
-  }
-  return TextEditingValue(
-    text: next,
-    selection: TextSelection.collapsed(offset: moved.clamp(0, next.length)),
-  );
+  return moved == null ? null : _valueOf(moved);
 }
 
-/// The absolute offset of line [i] in a block of lines that were split on `\n`
-/// and started at the block's first character.
-int _lineOffset(List<String> lines, int i) {
-  int at = 0;
-  for (int k = 0; k < i; k++) {
-    at += lines[k].length + 1;
-  }
-  return at;
-}
-
-/// Moves one column of the table at [at] from [from] to [to]. Every row is
-/// rewritten — the divider included, so `:-:` alignment stays with its column.
-///
-/// Rows that are too short to have the column keep their own shape: a malformed
-/// row must not be "repaired" into something the user did not write.
+/// Moves one column of the table at [at] from [from] to [to].
 TextEditingValue? moveTableColumn(
   TextEditingValue raw,
   int at,
   int from,
   int to,
 ) {
-  final String text = raw.text;
-  if (isInsideFence(text, at)) return null;
-  if (from == to || from < 0 || to < 0) return null;
-  final List<(int, int)> lines = _tableRowLines(text, at);
-  if (lines.length < 2) return null;
-  final StringBuffer out = StringBuffer();
-  int cursor = 0;
-  int shift = 0;
-  int caret = raw.selection.start;
-  for (final (int start, int stop) in lines) {
-    final String line = text.substring(start, stop);
-    out.write(text.substring(cursor, start));
-    final List<(int, int)> cells = tableCellsOf(line);
-    final int width = cells.length;
-    if (width < 2 ||
-        from < 0 ||
-        to < 0 ||
-        from >= width ||
-        to >= width ||
-        from == to) {
-      out.write(line);
-      cursor = stop;
-      continue;
-    }
-    final List<int> order = <int>[for (int i = 0; i < width; i++) i];
-    order.insert(to, order.removeAt(from));
-    final int indent = line.length - line.trimLeft().length;
-    final String joined = <String>[
-      for (final int i in order) line.substring(cells[i].$1, cells[i].$2),
-    ].join('|');
-    final String rebuilt = '${line.substring(0, indent)}|$joined|';
-    final int delta = rebuilt.length - line.length;
-    if (caret > stop) {
-      shift += delta;
-    } else if (caret >= start && caret <= stop) {
-      // Keep the caret on the character it was on: the cell it lives in has a
-      // new index, so the offset inside the cell is re-applied at its new place.
-      final int inLine = caret - start;
-      final int cell = cells.indexWhere(
-        ((int, int) c) => inLine >= c.$1 && inLine <= c.$2,
-      );
-      if (cell >= 0) {
-        final int target = cell < width ? order.indexOf(cell) : -1;
-        if (target >= 0) {
-          final List<(int, int)> fresh = tableCellsOf(rebuilt);
-          final int intoCell = (inLine - cells[cell].$1).clamp(
-            0,
-            fresh[target].$2 - fresh[target].$1,
-          );
-          caret = start + shift + fresh[target].$1 + intoCell;
-        }
-      }
-    }
-    out.write(rebuilt);
-    cursor = stop;
-  }
-  out.write(text.substring(cursor));
-  final String next = out.toString();
-  return TextEditingValue(
-    text: next,
-    selection: TextSelection.collapsed(offset: caret.clamp(0, next.length)),
+  final TableBlock? block = TableBlock.parse(raw.text, at);
+  if (block == null) return null;
+  final (int row, _) = _cellOf(block, raw.selection.start);
+  final TableEditResult? moved = TableCommands.moveColumn(
+    block,
+    from: from,
+    to: to,
+    row: row,
   );
+  return moved == null ? null : _valueOf(moved);
+}
+
+/// Sets the alignment of the caret's column — the edit the divider row used to
+/// make impossible to reach.
+TextEditingValue? setTableAlign(TextEditingValue raw, TableAlign align) {
+  final TableBlock? block = TableBlock.parse(raw.text, raw.selection.start);
+  if (block == null) return null;
+  final (int row, int column) = _cellOf(block, raw.selection.start);
+  return _valueOf(
+    TableCommands.setAlign(block, row: row, column: column, align: align),
+  );
+}
+
+/// Sets the alignment of every column the selection covers — 对齐 on a block of
+/// cells has to be one edit, not N menu trips.
+TextEditingValue? setTableAlignRange(
+  TextEditingValue raw,
+  TableAlign align, {
+  TableRangeResolver? resolve,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null) return null;
+  final TableRange? range = tableRangeOf(v, resolve: resolve);
+  if (range == null) return setTableAlign(v, align);
+  final (int row, int column) = _cellOf(block, v.selection.start);
+  return _valueOf(
+    TableCommands.setAlignRange(
+      block,
+      from: range.firstColumn,
+      to: range.lastColumn,
+      row: row,
+      column: column,
+      align: align,
+    ),
+  );
+}
+
+/// Removes the table the caret is in, newline included.
+TextEditingValue? deleteTableAt(TextEditingValue raw) {
+  final TableBlock? block = TableBlock.parse(raw.text, raw.selection.start);
+  if (block == null) return null;
+  return _valueOf(TableCommands.deleteTable(block));
+}
+
+/// Sorts the table at the caret by the column it sits in.
+TextEditingValue? sortTable(TextEditingValue raw, {required bool ascending}) {
+  final TableBlock? block = TableBlock.parse(raw.text, raw.selection.start);
+  if (block == null) return null;
+  final (int row, int column) = _cellOf(block, raw.selection.start);
+  final TableEditResult? sorted = TableCommands.sortRows(
+    block,
+    column: column,
+    ascending: ascending,
+    row: row,
+  );
+  return sorted == null ? null : _valueOf(sorted);
+}
+
+/// Copies the caret's row directly under itself.
+TextEditingValue? duplicateTableRow(TextEditingValue raw) {
+  final TableBlock? block = TableBlock.parse(raw.text, raw.selection.start);
+  if (block == null) return null;
+  final (int row, int column) = _cellOf(block, raw.selection.start);
+  return _valueOf(TableCommands.duplicateRow(block, row: row, column: column));
+}
+
+/// Copies the caret's column directly to its right.
+TextEditingValue? duplicateTableColumn(TextEditingValue raw) {
+  final TableBlock? block = TableBlock.parse(raw.text, raw.selection.start);
+  if (block == null) return null;
+  final (int row, int column) = _cellOf(block, raw.selection.start);
+  final TableEditResult? result = TableCommands.duplicateColumn(
+    block,
+    row: row,
+    column: column,
+  );
+  return result == null ? null : _valueOf(result);
+}
+
+/// Swaps the table's rows and columns.
+TextEditingValue? transposeTable(TextEditingValue raw) {
+  final TableBlock? block = TableBlock.parse(raw.text, raw.selection.start);
+  if (block == null) return null;
+  final (int row, int column) = _cellOf(block, raw.selection.start);
+  return _valueOf(TableCommands.transpose(block, row: row, column: column));
+}
+
+/// Aligns each column by its data: numeric columns right, the rest left.
+TextEditingValue? autoAlignTable(TextEditingValue raw) {
+  final TableBlock? block = TableBlock.parse(raw.text, raw.selection.start);
+  if (block == null) return null;
+  final (int row, int column) = _cellOf(block, raw.selection.start);
+  return _valueOf(TableCommands.autoAlign(block, row: row, column: column));
+}
+
+/// Appends a summary row for the caret's column.
+TextEditingValue? summarizeTable(
+  TextEditingValue raw,
+  TableAggregate aggregate,
+) {
+  final TableBlock? block = TableBlock.parse(raw.text, raw.selection.start);
+  if (block == null) return null;
+  final (_, int column) = _cellOf(block, raw.selection.start);
+  final TableEditResult? result = TableCommands.appendAggregate(
+    block,
+    column: column,
+    aggregate: aggregate,
+  );
+  return result == null ? null : _valueOf(result);
+}
+
+/// The selected cells as tab-separated values — the shape a spreadsheet
+/// understands. `null` when the selection is not a block of cells.
+String? tableSelectionTsv(
+  String text,
+  TextSelection selection, {
+  TableRangeResolver? resolve,
+}) => tableRangeOf(
+  TextEditingValue(text: text, selection: selection),
+  resolve: resolve,
+)?.tsv;
+
+/// Ctrl+D / Ctrl+R: copy the first row down, or the first column right.
+///
+/// A spreadsheet fill, not a drag-handle: the source is the selection's **first
+/// row/column** (or, for a one-row/one-column selection, the line just outside
+/// it), and the selection stays lit over the written rectangle. A collapsed
+/// caret copies the cell above/left — the smallest fill there is.
+///
+/// Returns `null` when there is nothing to fill from, or when the selection is
+/// a slice of one cell: that is ordinary text editing and the key must not
+/// rewrite the table under it.
+TextEditingValue? tableFill(
+  TextEditingValue raw, {
+  required bool down,
+  TableRangeResolver? resolve,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  final TableRange? range = tableRangeOf(v, resolve: resolve);
+  if (range != null) {
+    final List<List<String>>? values = down
+        ? _fillDownValues(range)
+        : _fillRightValues(range);
+    if (values == null) return null;
+    final TableEditResult written = TableCommands.writeRect(
+      range.block,
+      fromRow: range.firstRow,
+      toRow: range.lastRow,
+      fromColumn: range.firstColumn,
+      toColumn: range.lastColumn,
+      atRow: range.firstRow,
+      atColumn: range.firstColumn,
+      values: values,
+    );
+    final TableBlock? fresh = TableBlock.parse(
+      written.text,
+      range.block.start.clamp(0, written.text.length),
+    );
+    if (fresh == null) return _valueOf(written);
+    return TextEditingValue(
+      text: written.text,
+      selection: TableRange.rect(
+        fresh,
+        fromRow: range.firstRow,
+        toRow: range.lastRow,
+        fromColumn: range.firstColumn,
+        toColumn: range.lastColumn,
+        activeRow: range.anchorRow,
+        activeColumn: range.anchorColumn,
+      ).toTextSelection(),
+    );
+  }
+
+  if (!v.selection.isCollapsed) return null;
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null || block.bodyRows.isEmpty) return null;
+  final (int row, int column) = _cellOf(block, v.selection.start);
+  final int sourceRow = down ? row - 1 : row;
+  final int sourceColumn = down ? column : column - 1;
+  if (sourceRow < 0 || sourceColumn < 0) return null;
+  final List<TableRow> body = block.bodyRows;
+  if (sourceRow >= body.length) return null;
+  final List<TableCell> cells = body[sourceRow].cells;
+  if (cells.isEmpty) return null;
+  final String text = cells[sourceColumn.clamp(0, cells.length - 1)].text;
+  return _valueOf(
+    TableCommands.writeRect(
+      block,
+      fromRow: row,
+      toRow: row,
+      fromColumn: column,
+      toColumn: column,
+      atRow: row,
+      atColumn: column,
+      values: <List<String>>[
+        <String>[text],
+      ],
+    ),
+  );
+}
+
+/// Fill-down source values: the selection's first row, or the row above a
+/// one-row selection.
+List<List<String>>? _fillDownValues(TableRange range) {
+  if (range.lastRow > range.firstRow) {
+    final List<String> source = range.values.first;
+    return <List<String>>[
+      for (int r = range.firstRow; r <= range.lastRow; r++)
+        List<String>.of(source),
+    ];
+  }
+  if (range.firstRow == 0) return null;
+  final TableRow above = range.block.bodyRows[range.firstRow - 1];
+  return <List<String>>[
+    <String>[
+      for (int c = range.firstColumn; c <= range.lastColumn; c++)
+        c < above.cells.length ? above.cells[c].text : '',
+    ],
+  ];
+}
+
+/// Fill-right source values: each row's first selected cell, or the cell to the
+/// left of a one-column selection.
+List<List<String>>? _fillRightValues(TableRange range) {
+  if (range.lastColumn > range.firstColumn) {
+    return <List<String>>[
+      for (int r = range.firstRow; r <= range.lastRow; r++)
+        <String>[
+          for (int c = range.firstColumn; c <= range.lastColumn; c++)
+            range.textAt(r, range.firstColumn),
+        ],
+    ];
+  }
+  if (range.firstColumn == 0) return null;
+  return <List<String>>[
+    for (int r = range.firstRow; r <= range.lastRow; r++)
+      <String>[range.textAt(r, range.firstColumn - 1)],
+  ];
+}
+
+/// Inserts as many rows as the selection covers, above or below it.
+TextEditingValue? tableInsertRows(
+  TextEditingValue raw, {
+  required bool above,
+  TableRangeResolver? resolve,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null) return null;
+  final TableRange? range = tableRangeOf(v, resolve: resolve);
+  // A column selection spans every row, but it is not a row selection: insert
+  // one row, not one per row on screen.
+  final TableRange? rows = range != null && !range.isColumns ? range : null;
+  final (int row, int column) = _cellOf(block, v.selection.start);
+  final int from = rows?.firstRow ?? row;
+  final int to = rows?.lastRow ?? row;
+  return _valueOf(
+    TableCommands.insertRowsAt(
+      block,
+      at: above ? from : to + 1,
+      count: to - from + 1,
+      column: rows?.anchorColumn ?? column,
+    ),
+  );
+}
+
+/// Inserts as many columns as the selection covers, left or right of it.
+TextEditingValue? tableInsertColumns(
+  TextEditingValue raw, {
+  required bool right,
+  TableRangeResolver? resolve,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null) return null;
+  final TableRange? range = tableRangeOf(v, resolve: resolve);
+  // The mirror of the row rule: a row sweep covers every column without being
+  // a column selection.
+  final TableRange? columns = range != null && !range.isRows ? range : null;
+  final (int row, int column) = _cellOf(block, v.selection.start);
+  final int from = columns?.firstColumn ?? column;
+  final int to = columns?.lastColumn ?? column;
+  return _valueOf(
+    TableCommands.insertColumnsAt(
+      block,
+      at: right ? to + 1 : from,
+      count: to - from + 1,
+      row: row,
+    ),
+  );
+}
+
+/// Copies every row the selection covers, directly below it.
+TextEditingValue? tableDuplicateRows(
+  TextEditingValue raw, {
+  TableRangeResolver? resolve,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null) return null;
+  final (int row, int column) = _cellOf(block, v.selection.start);
+  final TableRange? range = tableRangeOf(v, resolve: resolve);
+  final TableRange? rows = range != null && !range.isColumns ? range : null;
+  final TableEditResult? result = rows == null
+      ? TableCommands.duplicateRow(block, row: row, column: column)
+      : TableCommands.duplicateRows(
+          block,
+          from: rows.firstRow,
+          to: rows.lastRow,
+          column: rows.anchorColumn,
+        );
+  return result == null ? null : _valueOf(result);
+}
+
+/// Copies every column the selection covers, directly to its right.
+TextEditingValue? tableDuplicateColumns(
+  TextEditingValue raw, {
+  TableRangeResolver? resolve,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null) return null;
+  final (int row, int column) = _cellOf(block, v.selection.start);
+  final TableRange? range = tableRangeOf(v, resolve: resolve);
+  final TableRange? columns = range != null && !range.isRows ? range : null;
+  final TableEditResult? result = columns == null
+      ? TableCommands.duplicateColumn(block, row: row, column: column)
+      : TableCommands.duplicateColumns(
+          block,
+          from: columns.firstColumn,
+          to: columns.lastColumn,
+          row: row,
+        );
+  return result == null ? null : _valueOf(result);
+}
+
+/// Moves the selected rows one slot up ([delta] -1) or down (+1).
+TextEditingValue? tableMoveRows(
+  TextEditingValue raw, {
+  required int delta,
+  TableRangeResolver? resolve,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null) return null;
+  final TableRange? range = tableRangeOf(v, resolve: resolve);
+  final TableRange? rows = range != null && !range.isColumns ? range : null;
+  final (int row, int column) = _cellOf(block, v.selection.start);
+  final TableEditResult? result = TableCommands.moveRows(
+    block,
+    from: rows?.firstRow ?? row,
+    to: rows?.lastRow ?? row,
+    delta: delta,
+    row: row,
+    column: column,
+  );
+  return result == null ? null : _valueOf(result);
+}
+
+/// Moves the selected columns one slot left ([delta] -1) or right (+1).
+TextEditingValue? tableMoveColumns(
+  TextEditingValue raw, {
+  required int delta,
+  TableRangeResolver? resolve,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null) return null;
+  final TableRange? range = tableRangeOf(v, resolve: resolve);
+  final TableRange? columns = range != null && !range.isRows ? range : null;
+  final (int row, int column) = _cellOf(block, v.selection.start);
+  final TableEditResult? result = TableCommands.moveColumns(
+    block,
+    from: columns?.firstColumn ?? column,
+    to: columns?.lastColumn ?? column,
+    delta: delta,
+    row: row,
+    column: column,
+  );
+  return result == null ? null : _valueOf(result);
+}
+
+/// Removes every row the selection covers. The divider is not a row.
+TextEditingValue? tableDeleteRows(
+  TextEditingValue raw, {
+  TableRangeResolver? resolve,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null) return null;
+  final TableRange? range = tableRangeOf(v, resolve: resolve);
+  final TableRange? rows = range != null && !range.isColumns ? range : null;
+  final bool onDivider = block.rows.any(
+    (TableRow r) =>
+        r.divider && v.selection.start >= r.start && v.selection.start <= r.end,
+  );
+  if (rows == null && onDivider) return null;
+  final (int row, _) = _cellOf(block, v.selection.start);
+  return _valueOf(
+    TableCommands.deleteRows(
+      block,
+      rows?.firstRow ?? row,
+      rows?.lastRow ?? row,
+    ),
+  );
+}
+
+/// Removes every column the selection covers. The last column cannot go: a
+/// table needs at least one cell.
+TextEditingValue? tableDeleteColumns(
+  TextEditingValue raw, {
+  TableRangeResolver? resolve,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null || block.columns <= 1) return null;
+  final TableRange? range = tableRangeOf(v, resolve: resolve);
+  final TableRange? columns = range != null && !range.isRows ? range : null;
+  final (int row, int column) = _cellOf(block, v.selection.start);
+  return _valueOf(
+    TableCommands.deleteColumns(
+      block,
+      from: columns?.firstColumn ?? column,
+      to: columns?.lastColumn ?? column,
+      row: row,
+    ),
+  );
+}
+
+/// The text a stats strip or menu row shows for [range].
+String tableStatsLabel(TableRange range) {
+  final TableStats stats = range.stats;
+  final List<String> parts = <String>[
+    '${range.rowCount}×${range.columnCount}',
+    '${stats.filled} 格非空',
+  ];
+  if (stats.hasNumbers) {
+    parts.add('合计 ${formatNumber(stats.sum!)}');
+    parts.add('平均 ${formatNumber(stats.average!)}');
+  }
+  return parts.join(' · ');
 }
 
 /// Inserts a link and leaves the **URL** selected.
@@ -1412,7 +2133,10 @@ MarkdownEditFn codeBlock({String language = ''}) {
     final String body = selection.isEmpty ? '' : selection;
     final String snippet = '```$language\n$body\n```\n';
     final String next =
-        text.substring(0, at) + lead + snippet + text.substring(v.selection.end);
+        text.substring(0, at) +
+        lead +
+        snippet +
+        text.substring(v.selection.end);
     final int caret = selection.isEmpty
         ? at + lead.length + 3 + language.length + 1
         : at + lead.length + snippet.length;
@@ -1439,8 +2163,9 @@ TextEditingValue? continueListOnEnter(TextEditingValue v) {
   final String text = v.text;
   final int lineStart = lineStartOf(text, sel.start);
   final String line = text.substring(lineStart, sel.start);
-  final Match? m = RegExp(r'^(\s{0,3})([-*+]|\d+[.)])\s+(\[[ xX]\]\s+)?(.*)$')
-      .firstMatch(line);
+  final Match? m = RegExp(
+    r'^(\s{0,3})([-*+]|\d+[.)])\s+(\[[ xX]\]\s+)?(.*)$',
+  ).firstMatch(line);
   if (m == null) return null;
 
   final String indent = m.group(1)!;
@@ -1463,7 +2188,8 @@ TextEditingValue? continueListOnEnter(TextEditingValue v) {
     final String dot = marker.endsWith(')') ? ')' : '.';
     nextMarker = '${n + 1}$dot';
   }
-  final String newItem = '\n$indent$nextMarker ${checkbox.isEmpty ? '' : '[ ] '}';
+  final String newItem =
+      '\n$indent$nextMarker ${checkbox.isEmpty ? '' : '[ ] '}';
   final String next = text.replaceRange(sel.start, sel.start, newItem);
   return TextEditingValue(
     text: next,
@@ -1482,7 +2208,9 @@ TextEditingValue indentLines(TextEditingValue v, {required bool outdent}) {
     final String line = lines[i];
     if (outdent) {
       out.write(
-        line.startsWith('  ') ? line.substring(2) : line.replaceFirst(RegExp(r'^\s'), ''),
+        line.startsWith('  ')
+            ? line.substring(2)
+            : line.replaceFirst(RegExp(r'^\s'), ''),
       );
     } else if (line.trim().isEmpty) {
       out.write(line);
@@ -1494,6 +2222,18 @@ TextEditingValue indentLines(TextEditingValue v, {required bool outdent}) {
   final String result =
       text.substring(0, firstLine) + out.toString() + text.substring(blockEnd);
   final int delta = result.length - text.length;
+  // Tab is an edit, not a selection. With a plain caret this used to select the
+  // whole line, so the next keystroke — or an IME composition — replaced the
+  // line instead of editing it. The caret follows its text by the indentation's
+  // own delta; only a real range keeps a block selection.
+  if (v.selection.isCollapsed) {
+    return TextEditingValue(
+      text: result,
+      selection: TextSelection.collapsed(
+        offset: (v.selection.start + delta).clamp(firstLine, result.length),
+      ),
+    );
+  }
   return TextEditingValue(
     text: result,
     selection: TextSelection(
@@ -1550,26 +2290,29 @@ MarkdownEditFn clearFormatting() {
   return (TextEditingValue raw) {
     final TextEditingValue v = _normalised(raw);
     final String text = v.text;
-    final bool hasRange =
-        v.selection.isValid && !v.selection.isCollapsed;
-    final int start = hasRange ? v.selection.start : lineStartOf(text, v.selection.start);
-    final int end = hasRange ? v.selection.end : lineEndOf(text, v.selection.start);
+    final bool hasRange = v.selection.isValid && !v.selection.isCollapsed;
+    final int start = hasRange
+        ? v.selection.start
+        : lineStartOf(text, v.selection.start);
+    final int end = hasRange
+        ? v.selection.end
+        : lineEndOf(text, v.selection.start);
     final String slice = text.substring(start, end);
     final String clean = _stripInline(slice);
     if (clean == slice) {
       return hasRange
           ? v
           : v.copyWith(
-              selection: TextSelection(
-                baseOffset: start,
-                extentOffset: end,
-              ),
+              selection: TextSelection(baseOffset: start, extentOffset: end),
             );
     }
     final String next = text.replaceRange(start, end, clean);
     return TextEditingValue(
       text: next,
-      selection: TextSelection(baseOffset: start, extentOffset: start + clean.length),
+      selection: TextSelection(
+        baseOffset: start,
+        extentOffset: start + clean.length,
+      ),
     );
   };
 }
@@ -1588,10 +2331,7 @@ String _stripInline(String source) {
         .replaceAllMapped(RegExp(r'%%(.+?)%%'), (Match m) => m[1]!)
         .replaceAllMapped(RegExp(r'`([^`]+)`'), (Match m) => m[1]!)
         .replaceAllMapped(RegExp(r'\[\[(.+?)\]\]'), (Match m) => m[1]!)
-        .replaceAllMapped(
-          RegExp(r'\[([^\]]*)\]\([^)]*\)'),
-          (Match m) => m[1]!,
-        )
+        .replaceAllMapped(RegExp(r'\[([^\]]*)\]\([^)]*\)'), (Match m) => m[1]!)
         .replaceAllMapped(
           // A lone `*pair*` — after `**` is gone, so bold never lands here.
           RegExp(r'([^*\w]|^)\*([^*]+)\*(?![\w*])'),

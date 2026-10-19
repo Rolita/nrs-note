@@ -79,13 +79,22 @@ abstract final class AppFonts {
   ];
 }
 
-/// Sizes used by the three-pane shell.
+/// Sizes used by the four-region shell.
 abstract final class AppLayout {
-  static const double sidebarWidth = 216;
-  static const double sidebarCollapsedWidth = 60;
+  /// Far-left icon rail: buttons only.
+  static const double railWidth = 52;
+
+  /// The switchable file / search / tags sidebar.
   static const double listMinWidth = 264;
   static const double listDefaultWidth = 316;
   static const double listMaxWidth = 460;
+
+  /// Far-right document outline.
+  static const double outlineWidth = 248;
+
+  /// Below this width the outline yields to the editor.
+  static const double outlineMinShellWidth = 980;
+
   static const double titleBarHeight = 40;
 
   /// Below this width the shell degrades gracefully to a single pane.

@@ -368,9 +368,7 @@ class _CommandPaletteState extends State<CommandPalette> {
             children: <Widget>[
               Icon(
                 row.note != null
-                    ? (row.note!.pinned
-                          ? Icons.push_pin_rounded
-                          : Icons.description_outlined)
+                    ? Icons.description_outlined
                     : row.action!.icon,
                 size: 15,
                 color: selected ? p.accent : p.textTertiary,

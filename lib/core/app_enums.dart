@@ -16,25 +16,27 @@ enum ThemePreference {
   };
 }
 
+/// File-tree order. Folders always come before files; the mode decides the order
+/// inside each folder.
 enum SortMode {
-  updatedDesc('最近修改'),
-  createdDesc('创建时间'),
-  titleAsc('标题 A→Z'),
-  longestFirst('字数最多');
+  titleAsc('文件名 (A-Z)'),
+  titleDesc('文件名 (Z-A)'),
+  updatedDesc('编辑时间（从新到旧）'),
+  updatedAsc('编辑时间（从旧到新）'),
+  createdDesc('创建时间（从新到旧）'),
+  createdAsc('创建时间（从旧到新）');
 
   const SortMode(this.label);
   final String label;
 }
 
-/// Which slice of the vault the list is showing.
-enum NoteScope {
-  all('全部笔记', Icons.folder_outlined),
-  pinned('置顶', Icons.push_pin_outlined),
-  favorites('收藏', Icons.star_outline_rounded),
-  tasks('含待办', Icons.check_box_outlined),
-  untagged('未加标签', Icons.label_off_outlined);
+/// Which pane the left sidebar is showing.
+enum SidebarView {
+  files('文件', Icons.folder_outlined),
+  search('搜索', Icons.search_rounded),
+  tags('标签', Icons.sell_outlined);
 
-  const NoteScope(this.label, this.icon);
+  const SidebarView(this.label, this.icon);
   final String label;
   final IconData icon;
 }

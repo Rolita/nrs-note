@@ -4,7 +4,8 @@ import 'dart:math';
 ///
 /// A note is the in-memory representation of exactly one `.md` file inside the
 /// vault. The Markdown body is stored *verbatim* — NRS never rewrites the prose
-/// a user typed — while the bookkeeping (tags, pin state, timestamps) lives in a
+/// a user typed — and it is also where a note's tags live, as `#标签` typed into
+/// the text itself. The remaining bookkeeping (timestamps, folder) lives in a
 /// small YAML front-matter block that is stripped before the body is handed to
 /// the editor and re-attached on save.
 class Note {
@@ -14,25 +15,40 @@ class Note {
     required this.body,
     required this.createdAt,
     required this.updatedAt,
-    this.tags = const <String>[],
-    this.pinned = false,
-    this.favorite = false,
+    this.folderPath = '',
     String? fileName,
-  }) : fileName = fileName ?? buildFileName(title);
+  }) : tags = tagsInBody(body),
+       fileName = fileName ?? buildFileName(title);
 
   /// Stable identity. Survives renames so the UI can keep a selection.
   final String id;
 
   final String title;
   final String body;
+
+  /// Every `#标签` in [body], in order of first appearance.
+  ///
+  /// Derived rather than stored, so a tag is added by typing it — in the note,
+  /// where the user can see what it applies to — and the sidebar follows along
+  /// as the text changes.
   final List<String> tags;
-  final bool pinned;
-  final bool favorite;
   final DateTime createdAt;
   final DateTime updatedAt;
 
-  /// File name inside the vault, e.g. `写作计划-a1b2c3.md`.
+  /// File name inside the vault, e.g. `写作计划.md`.
   final String fileName;
+
+  /// Folder relative to the vault root, using `/` as the separator. Empty for a
+  /// note that sits directly in the vault.
+  final String folderPath;
+
+  /// Vault-relative path of the file, always `/`-separated.
+  String get relativePath =>
+      folderPath.isEmpty ? fileName : '$folderPath/$fileName';
+
+  /// Last segment of [folderPath], for compact display.
+  String get folderName =>
+      folderPath.isEmpty ? '' : folderPath.split('/').last;
 
   bool get isEmpty =>
       body.trim().isEmpty && title.trim().isEmpty && tags.isEmpty;
@@ -40,21 +56,17 @@ class Note {
   Note copyWith({
     String? title,
     String? body,
-    List<String>? tags,
-    bool? pinned,
-    bool? favorite,
     DateTime? updatedAt,
     String? fileName,
+    String? folderPath,
   }) => Note(
     id: id,
     title: title ?? this.title,
     body: body ?? this.body,
-    tags: tags ?? this.tags,
-    pinned: pinned ?? this.pinned,
-    favorite: favorite ?? this.favorite,
     createdAt: createdAt,
     updatedAt: updatedAt ?? this.updatedAt,
     fileName: fileName ?? this.fileName,
+    folderPath: folderPath ?? this.folderPath,
   );
 
   /// What the list shows underneath the title.
@@ -207,19 +219,43 @@ class Note {
     return v;
   }
 
-  static List<String> _parseList(String? raw) {
-    if (raw == null || raw.isEmpty) return const <String>[];
-    final String cleaned = raw.trim().replaceAll(RegExp(r'^\[|\]$'), '');
-    if (cleaned.isEmpty) return const <String>[];
-    return cleaned
-        .split(',')
-        .map((String e) => _unquote(e.trim()))
-        .where((String e) => e.isNotEmpty)
-        .toList(growable: false);
+  /// The `#标签` a body carries, in order of first appearance.
+  ///
+  /// The rules match the ones the editor draws chips with: a tag has to start a
+  /// word (`C#`, `issue#1` are not tags) and may not be all digits (`#1` is an
+  /// issue reference). Fenced code blocks are skipped, so a shell comment inside
+  /// a snippet cannot mint one.
+  static List<String> tagsInBody(String body) {
+    final List<String> found = <String>[];
+    final Set<String> seen = <String>{};
+    bool fenced = false;
+    for (final String line in body.split('\n')) {
+      final String trimmed = line.trimLeft();
+      if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
+        fenced = !fenced;
+        continue;
+      }
+      if (fenced) continue;
+      for (final RegExpMatch m in _tagRe.allMatches(line)) {
+        final String tag = m.group(1)!;
+        if (m.start > 0 && !_tagBoundary.hasMatch(line[m.start - 1])) continue;
+        if (_allDigits.hasMatch(tag)) continue;
+        if (!seen.add(tag.toLowerCase())) continue;
+        found.add(tag);
+      }
+    }
+    return found;
   }
 
-  static bool _parseBool(String? raw) =>
-      raw != null && RegExp(r'^(true|yes|on|1)$', caseSensitive: false).hasMatch(raw.trim());
+  /// `#tag` — the same characters the editor accepts, minus the `#`.
+  static final RegExp _tagRe = RegExp(
+    r'#([A-Za-z0-9_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff\-/\.]*)',
+  );
+
+  /// A break a tag may follow: the start of the line, a space, an open bracket.
+  static final RegExp _tagBoundary = RegExp(r'[\s([{>（【「]');
+
+  static final RegExp _allDigits = RegExp(r'^[0-9]+$');
 
   static DateTime _parseDate(String? raw, DateTime fallback) {
     if (raw == null || raw.isEmpty) return fallback;
@@ -228,27 +264,46 @@ class Note {
 
   /// Parses a whole `.md` file, falling back to the file name when the note has
   /// no front matter or title (so hand-written Markdown still shows up nicely).
-  static Note fromMarkdown(String raw, String fileName, DateTime fileModified) {
+  static Note fromMarkdown(
+    String raw,
+    String fileName,
+    DateTime fileModified, {
+    String folderPath = '',
+  }) {
     final ({Map<String, String> meta, String body}) parts = splitFrontMatter(raw);
     final Map<String, String> meta = parts.meta;
+    final String folder = normalizeFolderPath(folderPath);
+    final String relative = folder.isEmpty ? fileName : '$folder/$fileName';
     final String id = meta['id']?.isNotEmpty == true
         ? _unquote(meta['id']!)
-        : _idFromFileName(fileName);
+        : _idFromFileName(relative);
     final DateTime created = _parseDate(meta['created'] ?? meta['date'], fileModified);
     final DateTime updated = _parseDate(meta['updated'], fileModified);
-    final String title = _titleOf(fileName);
+    final String title = titleOfFileName(fileName);
 
     return Note(
       id: id,
       title: title,
       body: parts.body,
-      tags: _parseList(meta['tags']),
-      pinned: _parseBool(meta['pinned']),
-      favorite: _parseBool(meta['favorite'] ?? meta['starred']),
       createdAt: created,
       updatedAt: updated.isBefore(created) ? created : updated,
       fileName: fileName,
+      folderPath: folder,
     );
+  }
+
+  /// Cleans a vault-relative folder path: one separator, no empty segments, no
+  /// `.` or `..`. A path that tries to climb out of the vault collapses to the
+  /// root instead of resolving outside it.
+  static String normalizeFolderPath(String raw) {
+    final List<String> parts = <String>[];
+    for (final String segment in raw.split(RegExp(r'[\\/]'))) {
+      final String s = segment.trim();
+      if (s.isEmpty || s == '.') continue;
+      if (s == '..') return '';
+      parts.add(s);
+    }
+    return parts.join('/');
   }
 
   /// The stem of [fileName], which *is* the note's title.
@@ -259,7 +314,10 @@ class Note {
   /// tools, but it is derived — never consulted, or the two could disagree.
   ///
   /// `未命名.md` therefore shows up as 「未命名」 with no metadata at all.
-  static String _titleOf(String fileName) {
+  ///
+  /// Public because a *new* note is handed a free file name before it exists —
+  /// `未命名 2.md` must show up as 「未命名 2」 from the first frame.
+  static String titleOfFileName(String fileName) {
     final String stem = fileName
         .replaceAll(RegExp(r'\.md$', caseSensitive: false), '')
         .trim();
@@ -289,8 +347,6 @@ class Note {
     b
       ..writeln('created: ${createdAt.toIso8601String()}')
       ..writeln('updated: ${updatedAt.toIso8601String()}');
-    if (pinned) b.writeln('pinned: true');
-    if (favorite) b.writeln('favorite: true');
     b
       ..writeln('---')
       ..writeln();
@@ -340,7 +396,7 @@ class Note {
   }
 
   /// A brand-new, empty note ready to be edited.
-  factory Note.blank({String title = ''}) {
+  factory Note.blank({String title = '', String folderPath = ''}) {
     final DateTime now = DateTime.now();
     final String id = newId();
     return Note(
@@ -350,6 +406,7 @@ class Note {
       createdAt: now,
       updatedAt: now,
       fileName: buildFileName(title),
+      folderPath: normalizeFolderPath(folderPath),
     );
   }
 
@@ -366,8 +423,6 @@ class Note {
     return Note(
       id: id,
       title: '欢迎使用 NRS',
-      tags: const <String>['入门'],
-      pinned: true,
       createdAt: now,
       updatedAt: now,
       fileName: buildFileName('欢迎使用 NRS'),
@@ -380,13 +435,17 @@ class Note {
 
 ## 一、认识界面
 
-NRS 从左到右只有三栏:
+NRS 从左到右分为四块:
 
 | 区域 | 你能在这里做的事 |
 | --- | --- |
-| 侧栏 | 按 **全部笔记 / 置顶 / 收藏 / 含待办 / 标签** 筛选 |
-| 笔记列表 | 搜索、置顶、收藏;拖中间的竖线可调整宽度 |
-| 编辑器 | 边写边成形;窗口够宽时右侧还会展开大纲 |
+| 功能栏 | 最左边的图标栏:切换文件 / 搜索 / 标签,或者收起侧边栏 |
+| 侧边栏 | 文件视图是一棵真实的文件夹树;搜索与标签各是一个独立视图 |
+| 编辑器 | 边写边成形;标题下方会显示这篇笔记在笔记库里的相对路径 |
+| 大纲 | 最右侧;点 `#` 标题即可跳转,窗口太窄时会自动让位给正文 |
+
+文件列表顶部可以新建笔记、新建文件夹、搜索、切换排序,以及全部展开 /
+全部收起。文件夹就是磁盘上的真实目录。
 
 ## 二、写下第一篇
 
@@ -436,15 +495,14 @@ void main() {
 
 ## 四、把笔记连起来
 
-- 点标题下方的「＋ 添加标签」就能给笔记打标签,标签会出现在左侧栏,点一下即可筛选
-- 正文里直接写 #入门 也会渲染成可点击的标签
+- 正文里直接写 #入门 就能给笔记打标签,标签会出现在左侧栏,点一下即可筛选
 - 用双方括号可以连到另一篇笔记,例如 [[我的新笔记]]
 
 ## 五、写得更安静
 
-- `Ctrl + Shift + F` 专注模式:藏起侧栏与列表,只剩正文
-- `Ctrl + Shift + O` 打开右侧大纲,`#` 标题就是目录
-- `Ctrl + \\` 收起或展开左侧栏
+- `Ctrl + Shift + F` 专注模式:藏起功能栏、侧边栏与大纲,只剩正文
+- `Ctrl + Shift + O` 打开最右侧的大纲,`#` 标题就是目录
+- `Ctrl + \\` 收起或展开侧边栏(最左边功能栏顶部的按钮也可以)
 - `Ctrl + ,` 打开设置:浅色 / 深色主题、正文字号、打字机模式
 
 ---

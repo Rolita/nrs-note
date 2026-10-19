@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/core/theme/app_palette.dart';
+import 'package:nrs/core/theme/app_tokens.dart';
 import 'package:nrs/core/utils/markdown_actions.dart';
 import 'package:nrs/core/utils/markdown_outline.dart';
 import 'package:nrs/data/models/note.dart';
@@ -15,10 +16,7 @@ void main() {
       final Note note = Note(
         id: 'abc123',
         title: '写作计划',
-        body: '# 标题\n\n正文内容。\n',
-        tags: const <String>['写作', '计划'],
-        pinned: true,
-        favorite: true,
+        body: '# 标题\n\n正文内容。\n\n#写作 #计划\n',
         createdAt: DateTime(2026, 1, 2, 9, 30),
         updatedAt: DateTime(2026, 1, 3, 10, 0),
         fileName: '写作计划.md',
@@ -33,11 +31,23 @@ void main() {
       expect(parsed.id, 'abc123');
       expect(parsed.title, '写作计划');
       expect(parsed.tags, <String>['写作', '计划']);
-      expect(parsed.pinned, isTrue);
-      expect(parsed.favorite, isTrue);
-      expect(parsed.body.trim(), '# 标题\n\n正文内容。');
+      expect(parsed.body.trim(), '# 标题\n\n正文内容。\n\n#写作 #计划');
       expect(parsed.createdAt, note.createdAt);
       expect(parsed.updatedAt, note.updatedAt);
+    });
+
+    test('tags are the #标签 typed in the body', () {
+      expect(
+        Note.tagsInBody('# 标题\n\n见 #写作/计划 和 #写作,还有 (入门)\n'),
+        <String>['写作/计划', '写作'],
+      );
+      // Issues, code blocks and other people's `#`: none of these are tags.
+      expect(
+        Note.tagsInBody(
+          'issue #1, C# 语言, 标题 #\n\n```sh\n# build the thing\n```\n',
+        ),
+        isEmpty,
+      );
     });
 
     test('the blank line after the front matter is a separator, not content', () {
@@ -80,8 +90,7 @@ void main() {
 
       // A file with no metadata at all still gets a usable title…
       expect(
-        Note.fromMarkdown('# 我的第一篇\n\n内容', '我的第一篇.md', DateTime(2026))
-            .title,
+        Note.fromMarkdown('# 我的第一篇\n\n内容', '我的第一篇.md', DateTime(2026)).title,
         '我的第一篇',
       );
       // …and the untitled placeholder reads as its file name, too.
@@ -230,7 +239,10 @@ Setext 标题
       // Nothing to do: text and selection come back exactly as they went in.
       final TextEditingValue untouched = clear(value('普通正文', 0, 4));
       expect(untouched.text, '普通正文');
-      expect(untouched.selection, const TextSelection(baseOffset: 0, extentOffset: 4));
+      expect(
+        untouched.selection,
+        const TextSelection(baseOffset: 0, extentOffset: 4),
+      );
     });
 
     test('清除格式 with no selection cleans the line under the caret', () {
@@ -280,18 +292,9 @@ Setext 标题
     // Without that, `# 标题` + "bullet list" produced `- # 标题` — the old `# `
     // survived as literal text because nothing recognised it as a marker.
     test('replaces the old block marker instead of stacking it', () {
-      expect(
-        applyBlockStyle(BlockStyle.bullet)(value('# 标题', 3)).text,
-        '- 标题',
-      );
-      expect(
-        applyBlockStyle(BlockStyle.h1)(value('- 项', 2)).text,
-        '# 项',
-      );
-      expect(
-        applyBlockStyle(BlockStyle.quote)(value('1. 项', 2)).text,
-        '> 项',
-      );
+      expect(applyBlockStyle(BlockStyle.bullet)(value('# 标题', 3)).text, '- 标题');
+      expect(applyBlockStyle(BlockStyle.h1)(value('- 项', 2)).text, '# 项');
+      expect(applyBlockStyle(BlockStyle.quote)(value('1. 项', 2)).text, '> 项');
       // A rule *is* its whole line, so replacing it takes the dashes with it.
       expect(applyBlockStyle(BlockStyle.h1)(value('---', 2)).text, '# ');
     });
@@ -308,14 +311,8 @@ Setext 标题
         applyBlockStyle(BlockStyle.task)(value('1. [ ] 事', 5)).text,
         '1. 事',
       );
-      expect(
-        applyBlockStyle(BlockStyle.task)(value('- 事', 2)).text,
-        '- [ ] 事',
-      );
-      expect(
-        applyBlockStyle(BlockStyle.task)(value('- [ ] 事', 5)).text,
-        '- 事',
-      );
+      expect(applyBlockStyle(BlockStyle.task)(value('- 事', 2)).text, '- [ ] 事');
+      expect(applyBlockStyle(BlockStyle.task)(value('- [ ] 事', 5)).text, '- 事');
     });
 
     test('converts to an ordered task list from any block', () {
@@ -340,14 +337,8 @@ Setext 标题
     });
 
     test('keeps nesting through a style change', () {
-      expect(
-        applyBlockStyle(BlockStyle.h1)(value('  - 项', 4)).text,
-        '  # 项',
-      );
-      expect(
-        applyBlockStyle(BlockStyle.bullet)(value('  - 项', 4)).text,
-        '  项',
-      );
+      expect(applyBlockStyle(BlockStyle.h1)(value('  - 项', 4)).text, '  # 项');
+      expect(applyBlockStyle(BlockStyle.bullet)(value('  - 项', 4)).text, '  项');
     });
 
     test('turns a browser of paragraphs into one list without gaps', () {
@@ -421,7 +412,11 @@ Setext 标题
       final List<String> rows = empty.text.split('\n')..removeLast();
       expect(rows, hasLength(3));
       for (final String row in rows) {
-        expect(row.split('|').length - 2, 2, reason: 'row is not 2 cells: $row');
+        expect(
+          row.split('|').length - 2,
+          2,
+          reason: 'row is not 2 cells: $row',
+        );
       }
     });
 
@@ -438,10 +433,7 @@ Setext 标题
         'b',
       );
       // …and Shift+Tab comes back.
-      final TextEditingValue back = tableCellStep(
-        second,
-        forward: false,
-      )!;
+      final TextEditingValue back = tableCellStep(second, forward: false)!;
       expect(table.substring(back.selection.start, back.selection.end), 'a');
       // Tab off the end of a row crosses the divider into the next row.
       final TextEditingValue nextRow = tableCellStep(
@@ -479,7 +471,9 @@ Setext 标题
 
     test('Enter in a table adds a row in the same column', () {
       const String table = '| a | b |\n| --- | --- |\n| c | d |\n';
-      final TextEditingValue next = tableRowBelow(value(table, table.indexOf('d')))!;
+      final TextEditingValue next = tableRowBelow(
+        value(table, table.indexOf('d')),
+      )!;
       expect(next.text, '$table|  |  |\n');
       // The caret lands in the second column of the new row, not its first.
       final String row = next.text.substring(next.text.lastIndexOf('\n|'));
@@ -525,7 +519,8 @@ Setext 标题
     });
 
     test('a row can be dragged to another slot in its block', () {
-      const String table = '| h | H |\n| --- | --- |\n| a | A |\n| b | B |\n| c | C |';
+      const String table =
+          '| h | H |\n| --- | --- |\n| a | A |\n| b | B |\n| c | C |';
       final TextEditingValue v = value(table, table.indexOf('b'));
       // The divider is not a row: `a`,`b`,`c` are 0,1,2 and the header is 0 too.
       // Dragging `b` above `a` puts it directly under the divider…
@@ -544,13 +539,17 @@ Setext 标题
     });
 
     test('a column can be dragged to another slot in its table', () {
-      const String table =
-          '| h | H | x |\n| --- | --- | --- |\n| a | A | y |';
+      const String table = '| h | H | x |\n| --- | --- | --- |\n| a | A | y |';
       final TextEditingValue v = value(table, table.indexOf('A'));
       final String left = moveTableColumn(v, v.selection.start, 1, 0)!.text;
       expect(left, '| H | h | x |\n| --- | --- | --- |\n| A | a | y |');
       // …and the caret stays on the character it was on, in its new column.
-      final TextEditingValue moved = moveTableColumn(v, v.selection.start, 1, 0)!;
+      final TextEditingValue moved = moveTableColumn(
+        v,
+        v.selection.start,
+        1,
+        0,
+      )!;
       expect(moved.text.substring(moved.selection.start), startsWith('A'));
       // A divider with alignment markers moves with its column.
       const String aligned = '| a | b |\n| :-- | --: |\n| c | d |';
@@ -560,7 +559,7 @@ Setext 标题
         1,
         0,
       )!.text;
-      expect(swapped, '| b | a |\n| --: | :-- |\n| d | c |');
+      expect(swapped, '| b | a |\n| ---: | :--- |\n| d | c |');
       expect(moveTableColumn(v, v.selection.start, 1, 1), isNull);
     });
 
@@ -584,10 +583,7 @@ Setext 标题
         value(table, table.indexOf('---') + 1),
         forward: true,
       )!;
-      expect(
-        off.text.substring(off.selection.start, off.selection.end),
-        'c',
-      );
+      expect(off.text.substring(off.selection.start, off.selection.end), 'c');
     });
 
     test('a column is added to every row, divider included', () {
@@ -611,12 +607,18 @@ Setext 标题
     test('a deleted column leaves no empty pipe behind', () {
       const String table = '| a | b |\n| --- | --- |\n| c | d |';
       expect(
-        editTable(value(table, table.indexOf('b')), TableEdit.deleteColumn)!.text,
+        editTable(
+          value(table, table.indexOf('b')),
+          TableEdit.deleteColumn,
+        )!.text,
         '| a |\n| --- |\n| c |',
       );
       // Deleting the first column keeps a leading pipe, so it is still a table.
       expect(
-        editTable(value(table, table.indexOf('a')), TableEdit.deleteColumn)!.text,
+        editTable(
+          value(table, table.indexOf('a')),
+          TableEdit.deleteColumn,
+        )!.text,
         '| b |\n| --- |\n| d |',
       );
     });
@@ -627,7 +629,7 @@ Setext 标题
         value(table, table.indexOf('b')),
         TableEdit.rowAbove,
       )!;
-      expect(above.text, '|  |  |\n$table');
+      expect(above.text, '|  |  |\n| --- | --- |\n| a | b |\n| c | d |');
       expect(
         above.text.substring(above.selection.start, above.selection.end),
         '  ',
@@ -646,10 +648,7 @@ Setext 标题
       );
       // Neither can the last remaining column.
       const String single = '| only |\n| --- |';
-      expect(
-        editTable(value(single, 3), TableEdit.deleteColumn),
-        isNull,
-      );
+      expect(editTable(value(single, 3), TableEdit.deleteColumn), isNull);
     });
 
     test('table edits are refused outside a table and inside a fence', () {
@@ -659,9 +658,7 @@ Setext 标题
     });
 
     test('continues and then ends a list on Enter', () {
-      final TextEditingValue next = continueListOnEnter(
-        value('- item', 6, 6),
-      )!;
+      final TextEditingValue next = continueListOnEnter(value('- item', 6, 6))!;
       expect(next.text, '- item\n- ');
 
       final TextEditingValue ended = continueListOnEnter(
@@ -673,9 +670,7 @@ Setext 标题
     });
 
     test('keeps the caret inside an inserted code block', () {
-      final TextEditingValue out = codeBlock(language: 'dart')(
-        value('', 0),
-      );
+      final TextEditingValue out = codeBlock(language: 'dart')(value('', 0));
       expect(out.text.trim(), '```dart\n\n```');
       expect(out.selection.baseOffset, greaterThan(0));
       expect(out.selection.baseOffset, lessThan(out.text.length));
@@ -688,6 +683,19 @@ Setext 标题
       );
       expect(indented.text, '  a\n  b');
       expect(indentLines(indented, outdent: true).text, 'a\nb');
+    });
+
+    test('a caret is not turned into a line selection', () {
+      final TextEditingValue indented = indentLines(
+        value('a\n- b', 5),
+        outdent: false,
+      );
+      expect(indented.text, 'a\n  - b');
+      expect(indented.selection, const TextSelection.collapsed(offset: 7));
+
+      final TextEditingValue outdented = indentLines(indented, outdent: true);
+      expect(outdented.text, 'a\n- b');
+      expect(outdented.selection, const TextSelection.collapsed(offset: 5));
     });
   });
 
@@ -718,7 +726,13 @@ Setext 标题
 
     test('never loses characters, whatever the language', () {
       const String code = 'a = "x\\ny" + `tpl` /* c */ # h\nend';
-      for (final String lang in <String>['dart', 'python', 'shell', '', 'zsh']) {
+      for (final String lang in <String>[
+        'dart',
+        'python',
+        'shell',
+        '',
+        'zsh',
+      ]) {
         final List<List<CodeToken>> lines = highlightCode(code, lang);
         final String rebuilt = lines
             .map((List<CodeToken> l) => l.map((CodeToken t) => t.text).join())
@@ -774,10 +788,9 @@ Setext 标题
         offset = caret;
       } else if (caretLine >= 0) {
         final List<String> lines = text.split('\n');
-        offset = lines.take(caretLine).fold<int>(
-          0,
-          (int a, String l) => a + l.length + 1,
-        );
+        offset = lines
+            .take(caretLine)
+            .fold<int>(0, (int a, String l) => a + l.length + 1);
       }
       return buildLiveSpans(
         text: text,
@@ -890,9 +903,7 @@ final x = 1;
           () => markerAt(
             TextEditingValue(
               text: welcome,
-              selection: TextSelection.collapsed(
-                offset: caret < 0 ? 0 : caret,
-              ),
+              selection: TextSelection.collapsed(offset: caret < 0 ? 0 : caret),
             ),
           ),
           returnsNormally,
@@ -954,7 +965,9 @@ final x = 1;
       final List<InlineSpan> spans = render('# 大标题\n\n正文');
       final List<TextSpan> texts = spans.whereType<TextSpan>().toList();
 
-      final TextSpan heading = texts.firstWhere((TextSpan s) => s.text == '大标题');
+      final TextSpan heading = texts.firstWhere(
+        (TextSpan s) => s.text == '大标题',
+      );
       final TextSpan body = texts.firstWhere((TextSpan s) => s.text == '正文');
 
       expect(heading.style!.fontSize, greaterThan(base.fontSize!));
@@ -992,9 +1005,9 @@ final x = 1;
       expect(code.style!.backgroundColor, palette.surfaceSunken);
       expect(code.style!.fontFamily, isNot(base.fontFamily));
       expect(
-        code.children!
-            .whereType<TextSpan>()
-            .any((TextSpan s) => s.style?.color == CodePalette.light.keyword),
+        code.children!.whereType<TextSpan>().any(
+          (TextSpan s) => s.style?.color == CodePalette.light.keyword,
+        ),
         isTrue,
         reason: '`final` should be coloured as a keyword',
       );
@@ -1010,9 +1023,9 @@ final x = 1;
         reason: 'the rule itself is drawn by its own render object',
       );
       // The widget stands in for the first dash; the other two collapse.
-      final TextSpan rest = spans
-          .whereType<TextSpan>()
-          .firstWhere((TextSpan s) => s.text == '--');
+      final TextSpan rest = spans.whereType<TextSpan>().firstWhere(
+        (TextSpan s) => s.text == '--',
+      );
       expect(rest.style!.fontSize, 0);
     });
 
@@ -1020,9 +1033,9 @@ final x = 1;
       const String source = '标题\n---\n正文';
       final List<InlineSpan> spans = render(source);
       expectFaithful(source, spans, 'divider');
-      final TextSpan word = spans
-          .whereType<TextSpan>()
-          .firstWhere((TextSpan s) => s.text == '标题');
+      final TextSpan word = spans.whereType<TextSpan>().firstWhere(
+        (TextSpan s) => s.text == '标题',
+      );
       expect(
         word.style!.fontSize,
         base.fontSize,
@@ -1033,9 +1046,9 @@ final x = 1;
 
     test('a run of = under a paragraph promotes it to a heading', () {
       final List<InlineSpan> spans = render('大标题\n===\n');
-      final TextSpan heading = spans
-          .whereType<TextSpan>()
-          .firstWhere((TextSpan s) => s.text == '大标题');
+      final TextSpan heading = spans.whereType<TextSpan>().firstWhere(
+        (TextSpan s) => s.text == '大标题',
+      );
       expect(heading.style!.fontSize, greaterThan(base.fontSize!));
     });
 
@@ -1088,10 +1101,7 @@ final x = 1;
       expect(offsets, <int>[text.indexOf('['), text.indexOf('[x]')]);
 
       // And tapping that offset really does flip the box.
-      expect(
-        toggleTaskAt(text, offsets.first),
-        '1. [x] 一件事\n2. [x] 另一件\n',
-      );
+      expect(toggleTaskAt(text, offsets.first), '1. [x] 一件事\n2. [x] 另一件\n');
     });
 
     test('strikes a ticked task through, number included', () {
@@ -1107,9 +1117,8 @@ final x = 1;
       //    text is unreadable — that is the "删除线不够明显" report.
       final List<InlineSpan> spans = render('1. [x] 一件事\n2. [ ] 另一件\n');
 
-      TextSpan span(String t) => spans
-          .whereType<TextSpan>()
-          .firstWhere((TextSpan s) => s.text == t);
+      TextSpan span(String t) =>
+          spans.whereType<TextSpan>().firstWhere((TextSpan s) => s.text == t);
 
       final TextSpan struckNumber = span('1.');
       expect(
@@ -1142,9 +1151,9 @@ final x = 1;
 
       // A plain `- [x]` bullet gets the same treatment.
       final List<InlineSpan> bullet = render('- [x] 一件事\n');
-      final TextSpan bulletBody = bullet
-          .whereType<TextSpan>()
-          .firstWhere((TextSpan s) => s.text == '一件事');
+      final TextSpan bulletBody = bullet.whereType<TextSpan>().firstWhere(
+        (TextSpan s) => s.text == '一件事',
+      );
       expect(bulletBody.style!.decoration, TextDecoration.lineThrough);
       expect(bulletBody.style!.decorationThickness, 2);
 
@@ -1158,9 +1167,9 @@ final x = 1;
         selection: const TextSelection.collapsed(offset: -1),
         contentWidth: 680,
       );
-      final TextSpan gone = inline
-          .whereType<TextSpan>()
-          .firstWhere((TextSpan s) => s.text == '删掉');
+      final TextSpan gone = inline.whereType<TextSpan>().firstWhere(
+        (TextSpan s) => s.text == '删掉',
+      );
       expect(gone.style!.decoration, TextDecoration.lineThrough);
       expect(gone.style!.decorationThickness, 2);
       expect(gone.style!.decorationColor, palette.textPrimary);
@@ -1276,14 +1285,15 @@ final x = 1;
       const String text = '| a | b |\n| --- | --- |\n| 1 | 2 |\n';
       final List<InlineSpan> spans = render(text);
       expectFaithful(text, spans, 'table');
-      final TextSpan divider = spans
-          .whereType<TextSpan>()
-          .firstWhere((TextSpan s) => s.text == '| --- | --- |');
+      final TextSpan divider = spans.whereType<TextSpan>().firstWhere(
+        (TextSpan s) => s.text == '| --- | --- |',
+      );
       expect(divider.style!.color, Colors.transparent);
       expect(
         divider.style!.fontSize,
         0,
-        reason: 'zero height, or the divider would hold a whole line open '
+        reason:
+            'zero height, or the divider would hold a whole line open '
             'between the header and the first body row',
       );
     });
@@ -1314,6 +1324,112 @@ final x = 1;
       const String text = 'a `x = 1` b';
       expectFaithful(text, render(text), 'inline code');
       expectFaithful(text, render(text, caret: 4), 'inline code, caret inside');
+    });
+
+    test('an inline code chip is carried by its two backtick ends', () {
+      const String text = 'a `x = 1` b';
+      final List<InlineSpan> spans = render(text);
+      expectFaithful(text, spans, 'inline code chip');
+      expect(
+        spans.whereType<TextSpan>().any(
+          (TextSpan s) => (s.text ?? '').contains('`'),
+        ),
+        isFalse,
+        reason: 'the backticks are drawn as the chip ends, not as text',
+      );
+      expect(
+        spans.whereType<WidgetSpan>().length,
+        2,
+        reason: 'one padded end per backtick',
+      );
+      final TextSpan run = spans
+          .whereType<TextSpan>()
+          .firstWhere((TextSpan s) => s.text == 'x = 1');
+      expect(
+        run.style!.backgroundColor,
+        palette.surfaceSunken,
+        reason: 'the run keeps its fill so the three pieces read as one band',
+      );
+      expect(
+        run.style!.color,
+        palette.textPrimary,
+        reason: 'code is text, not an accent colour',
+      );
+      expect(run.style!.fontFamily, AppFonts.mono);
+      expect(
+        run.style!.fontSize,
+        lessThan(15.5),
+        reason: 'the mono face is set a little smaller to sit in the line',
+      );
+    });
+
+    test('a caret inside inline code takes the chip down to the source', () {
+      const String text = 'a `x = 1` b';
+      final List<InlineSpan> spans = render(text, caret: 5);
+      expectFaithful(text, spans, 'inline code editing');
+      expect(
+        spans.whereType<WidgetSpan>(),
+        isEmpty,
+        reason: 'editing must not leave the padded ends on screen',
+      );
+      expect(
+        spans.whereType<TextSpan>().where((TextSpan s) => s.text == '`').length,
+        2,
+        reason: 'both backticks are visible while editing',
+      );
+      final TextSpan run = spans
+          .whereType<TextSpan>()
+          .firstWhere((TextSpan s) => s.text == 'x = 1');
+      expect(
+        run.style!.backgroundColor,
+        isNull,
+        reason: 'user: 「选中后没有恢复成编辑态」 — the fill has to go',
+      );
+    });
+
+    test('selecting inline code reveals the source as well', () {
+      const String text = 'a `x = 1` b';
+      final List<InlineSpan> spans = buildLiveSpans(
+        text: text,
+        base: base,
+        p: palette,
+        selection: const TextSelection(baseOffset: 0, extentOffset: text.length),
+        contentWidth: 680,
+      );
+      expectFaithful(text, spans, 'inline code selected');
+      expect(spans.whereType<WidgetSpan>(), isEmpty);
+      final TextSpan run = spans
+          .whereType<TextSpan>()
+          .firstWhere((TextSpan s) => s.text == 'x = 1');
+      expect(run.style!.backgroundColor, isNull);
+    });
+
+    test('a frozen drag tints the chip instead of dropping it', () {
+      // A pointer gesture freezes the reveal at pointer-down so the text cannot
+      // reflow under the finger, but the wash still has to be visible. A
+      // rendered chip paints its own opaque fill, so it mixes the selection in.
+      const String text = 'a `x = 1` b';
+      final List<InlineSpan> spans = buildLiveSpans(
+        text: text,
+        base: base,
+        p: palette,
+        selection: const TextSelection.collapsed(offset: 0),
+        liveSelection: const TextSelection(baseOffset: 0, extentOffset: 11),
+        contentWidth: 680,
+      );
+      expect(
+        spans.whereType<WidgetSpan>().length,
+        2,
+        reason: 'the chip has to stay rendered while the reveal is frozen',
+      );
+      final TextSpan run = spans
+          .whereType<TextSpan>()
+          .firstWhere((TextSpan s) => s.text == 'x = 1');
+      expect(
+        run.style!.backgroundColor,
+        Color.alphaBlend(palette.selection, palette.surfaceSunken),
+        reason: 'the chip must carry the selection wash itself',
+      );
     });
 
     test('an image keeps its source characters behind the widget', () {
@@ -1427,7 +1543,13 @@ final x = 1;
     });
 
     test('ordinary lines, headings, quotes and rules are left alone', () {
-      for (final String line in <String>['正文', '# 标题', '---', '> 引用', '-不是列表']) {
+      for (final String line in <String>[
+        '正文',
+        '# 标题',
+        '---',
+        '> 引用',
+        '-不是列表',
+      ]) {
         expect(enter(line, line.length).text, '$line\n', reason: line);
       }
     });
@@ -1554,10 +1676,7 @@ final x = 1;
       // Cells tile: no gap, no overlap, and the table is exactly as wide as
       // its last cell is far.
       expect(t.rows.first.cells.first.x, 0);
-      expect(
-        t.rows.first.cells[1].x,
-        t.rows.first.cells.first.width,
-      );
+      expect(t.rows.first.cells[1].x, t.rows.first.cells.first.width);
       expect(
         t.width,
         t.rows.first.cells.last.x + t.rows.first.cells.last.width,
@@ -1577,8 +1696,7 @@ final x = 1;
 
     test('a squeezed cell gets a letter spacing that fits its column', () {
       // Three wide columns cannot fit 680px without shrinking.
-      const String wide =
-          '| 一列很长的文字内容 | 另一列也很长的文字内容 | 第三列照样长 |';
+      const String wide = '| 一列很长的文字内容 | 另一列也很长的文字内容 | 第三列照样长 |';
       final TableGeometry t = measure('$wide\n| --- | --- | --- |\n').single;
       for (final TableRowGeometry r in t.rows) {
         for (final TableCellGeometry c in r.cells) {
@@ -1603,7 +1721,8 @@ final x = 1;
       int rowViews = 0;
       int pipes = 0;
       void walk(InlineSpan s) {
-        if (s is WidgetSpan && s.child.runtimeType.toString() == '_TableRowView') {
+        if (s is WidgetSpan &&
+            s.child.runtimeType.toString() == '_TableRowView') {
           rowViews++;
         }
         if (s is TextSpan &&
@@ -1612,7 +1731,8 @@ final x = 1;
             s.style?.fontSize != 0) {
           pipes += s.text!.split('|').length - 1;
         }
-        for (final InlineSpan c in (s is TextSpan ? s.children : null) ?? const <InlineSpan>[]) {
+        for (final InlineSpan c
+            in (s is TextSpan ? s.children : null) ?? const <InlineSpan>[]) {
           walk(c);
         }
       }
@@ -1641,7 +1761,8 @@ final x = 1;
             s.child.runtimeType.toString() == '_TableRowView') {
           rowViews++;
         }
-        for (final InlineSpan c in (s is TextSpan ? s.children : null) ?? const <InlineSpan>[]) {
+        for (final InlineSpan c
+            in (s is TextSpan ? s.children : null) ?? const <InlineSpan>[]) {
           walk(c);
         }
       }
@@ -1724,13 +1845,26 @@ final x = 1;
         isNull,
         reason: 'starts outside the table, so there is no block to hand back',
       );
+      // The block's final newline belongs to the last row: a drag that ends
+      // after it still covers the cells the wash shows. Anything past that is
+      // prose.
       expect(
         tableSelectionMarkdown(
           note,
           TextSelection(baseOffset: at('收藏'), extentOffset: note.length),
         ),
+        '| 搜索、置顶、收藏 |\n'
+        '| --- |\n'
+        '| 按标签筛选 |\n'
+        '| 右侧展开大纲 |',
+      );
+      expect(
+        tableSelectionMarkdown(
+          '$note尾巴',
+          TextSelection(baseOffset: at('收藏'), extentOffset: note.length + 2),
+        ),
         isNull,
-        reason: 'runs out of the last cell, so it is no longer a block',
+        reason: 'runs past the block, so it is no longer a block',
       );
       expect(
         tableSelectionMarkdown(note, const TextSelection.collapsed(offset: 4)),
@@ -1822,9 +1956,9 @@ final x = 1;
       expect(v.text, '$note\n$block\n\n尾巴\n');
     });
 
-    test('a row that already holds text is left alone', () {
-      // ⛔ No reading of "paste a table here" can both keep the row and keep the
-      // table, so this one stays a plain insert rather than eating the row.
+    test('a table pasted inside a filled cell moves below the table', () {
+      // A cell is one line; pouring a multi-line table into it can only shear
+      // the row. The pasted block becomes a table of its own under the host.
       final TextEditingValue v = pasteValue(
         TextEditingValue(
           text: note,
@@ -1832,7 +1966,7 @@ final x = 1;
         ),
         block,
       );
-      expect(v.text, note.replaceRange(at('侧栏') + 1, at('侧栏') + 1, block));
+      expect(v.text, '$note\n$block');
     });
 
     // ------------------------------------------------------- joining a table
@@ -1865,7 +1999,10 @@ final x = 1;
       );
       expect(v.text, '$sheet$sheetTail');
       expect(
-        RegExp(r'^\| --- \| --- \| --- \|$', multiLine: true).allMatches(v.text),
+        RegExp(
+          r'^\| --- \| --- \| --- \|$',
+          multiLine: true,
+        ).allMatches(v.text),
         hasLength(1),
         reason: '一张表只能有一条分隔行',
       );
@@ -1894,6 +2031,94 @@ final x = 1;
         block,
       );
       expect(v.text, '$sheet\n$block');
+    });
+  });
+
+  group('Table delete snaps to the cells the wash painted', () {
+    // The table from the report: the pointer went down **after** 「链接」 (in
+    // that cell's padding), so the raw selection started mid-cell while the
+    // wash covered the whole cell. Deleting the raw range left 「链接」 and a
+    // stray row of pipes behind.
+    const String row = '| 链接 | Ctrl + K | [标题](url) |';
+    const String grid =
+        '| 加粗 | Ctrl + B | **文字** |\n'
+        '| --- | --- | --- |\n'
+        '| 斜体 | Ctrl + I | *文字* |\n'
+        '| 功能 | 快捷键 | 写法 |\n'
+        '| 行内代码 | Ctrl + E | `code` |\n'
+        '$row\n'
+        '| 加粗 | Ctrl + B | **文字** |\n'
+        '| 斜体 | Ctrl + I | *文字* |\n'
+        '| 行内代码 | Ctrl + E | `code` |\n'
+        '$row\n';
+    final int first = grid.indexOf(row);
+    final int last = grid.indexOf(row, first + 1);
+
+    test('a drag from inside a cell to the end takes the whole rows', () {
+      final TextSelection snapped = snapTableSelection(
+        grid,
+        TextSelection(baseOffset: first + 4, extentOffset: grid.length),
+      );
+      expect(snapped.start, first, reason: 'the row start, not mid-cell');
+      expect(snapped.end, grid.length);
+
+      final String cut = snapped.textBefore(grid) + snapped.textAfter(grid);
+      expect(cut.contains('链接'), isFalse);
+      // No stray `|  |  |` row left at the bottom of the table.
+      expect(cut.endsWith('| 行内代码 | Ctrl + E | `code` |\n'), isTrue);
+      expect(
+        cut.split('\n').where((String l) => l.startsWith('|')),
+        hasLength(5),
+      );
+    });
+
+    test('a selection inside one cell is ordinary text selection', () {
+      final TextSelection sel = TextSelection(
+        baseOffset: first + 2,
+        extentOffset: first + 4,
+      );
+      expect(snapTableSelection(grid, sel), sel);
+    });
+
+    test('one whole row selected goes away as a row', () {
+      // Same rule one row up: a row picked end to end is a row, not a run of
+      // cells, so it cannot come back as `|  |  |`.
+      final TextSelection snapped = snapTableSelection(
+        grid,
+        TextSelection(baseOffset: first, extentOffset: first + row.length),
+      );
+      expect(snapped.start, first);
+      expect(
+        snapped.end,
+        first + row.length + 1,
+        reason: 'the newline goes too',
+      );
+    });
+
+    test('a middle column keeps its pipes', () {
+      final (int a, int b) = tableCellsOf(row)[1];
+      final TextSelection snapped = snapTableSelection(
+        grid,
+        TextSelection(baseOffset: first + a + 3, extentOffset: last + b - 2),
+      );
+      // Snapped to the cell's text, spaces and pipes excluded.
+      expect(grid.substring(snapped.start, snapped.start + 6), 'Ctrl +');
+      expect(grid.substring(snapped.end - 1, snapped.end), 'K');
+    });
+
+    test('a selection across two tables is left alone', () {
+      final String two = '$grid\n$grid';
+      final TextSelection sel = TextSelection(
+        baseOffset: first + 4,
+        extentOffset: two.length,
+      );
+      expect(snapTableSelection(two, sel), sel);
+    });
+
+    test('prose is never touched', () {
+      const String prose = '第一行\n第二行\n第三行\n';
+      const TextSelection sel = TextSelection(baseOffset: 2, extentOffset: 8);
+      expect(snapTableSelection(prose, sel), sel);
     });
   });
 }

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/app_enums.dart';
+import '../core/theme/app_tokens.dart';
 
 /// User preferences that survive restarts.
 ///
@@ -17,6 +18,7 @@ class SettingsController extends ChangeNotifier {
   static const String _kSidebar = 'nrs.sidebarCollapsed';
   static const String _kOutline = 'nrs.outlineVisible';
   static const String _kListWidth = 'nrs.listWidth';
+  static const String _kOutlineWidth = 'nrs.outlineWidth';
   static const String _kProseSize = 'nrs.proseSize';
   static const String _kFocus = 'nrs.focusMode';
   static const String _kTypewriter = 'nrs.typewriter';
@@ -102,6 +104,17 @@ class SettingsController extends ChangeNotifier {
     final double clamped = value.clamp(264, 460);
     if ((listWidth - clamped).abs() < 0.5) return;
     _prefs.setDouble(_kListWidth, clamped);
+    notifyListeners();
+  }
+
+  /// Width of the document outline column, dragged by its own handle.
+  double get outlineWidth =>
+      _prefs.getDouble(_kOutlineWidth) ?? AppLayout.outlineWidth;
+
+  set outlineWidth(double value) {
+    final double clamped = value.clamp(200, 420);
+    if ((outlineWidth - clamped).abs() < 0.5) return;
+    _prefs.setDouble(_kOutlineWidth, clamped);
     notifyListeners();
   }
 

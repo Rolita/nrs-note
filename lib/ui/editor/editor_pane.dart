@@ -9,22 +9,25 @@ import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../core/utils/debouncer.dart';
 import '../../core/utils/markdown_actions.dart';
-import '../../core/utils/markdown_outline.dart';
 import '../../data/models/note.dart';
 import '../../state/notes_controller.dart';
 import '../../state/settings_controller.dart';
 import '../common/app_widgets.dart';
 import 'markdown_editor.dart';
-import 'outline_panel.dart';
-import 'tag_editor.dart';
 
-/// The right-hand pane: note header, formatting ribbon, the live editor, the
-/// outline and a status bar.
+/// The centre pane: note header, the live editor and a status bar. The outline
+/// lives beside it as its own region, driven by the cursor line reported here.
 class EditorPane extends StatefulWidget {
-  const EditorPane({super.key, required this.onDelete, required this.onToast});
+  const EditorPane({
+    super.key,
+    required this.onDelete,
+    required this.onToast,
+    this.onCursorLineChanged,
+  });
 
   final void Function(Note note) onDelete;
   final void Function(String message) onToast;
+  final ValueChanged<int>? onCursorLineChanged;
 
   @override
   State<EditorPane> createState() => EditorPaneState();
@@ -34,7 +37,6 @@ class EditorPaneState extends State<EditorPane> {
   /// Matches the editor's own padding; the pane needs it to map a source line
   /// onto a scroll offset.
   static const EdgeInsets _editorPadding = EdgeInsets.fromLTRB(40, 28, 40, 200);
-  static const double _outlineWidth = 210;
 
   final TextEditingController _title = TextEditingController();
   late final MarkdownSourceController _body;
@@ -85,7 +87,10 @@ class EditorPaneState extends State<EditorPane> {
         _cursorLine = line;
         _cursorColumn = column;
       });
-      if (lineMoved) _maybeTypewriter(line);
+      if (lineMoved) {
+        widget.onCursorLineChanged?.call(line);
+        _maybeTypewriter(line);
+      }
     }
   }
 
@@ -110,9 +115,15 @@ class EditorPaneState extends State<EditorPane> {
     _title.text = note.title;
     _body.text = note.body;
     _body.selection = const TextSelection.collapsed(offset: 0);
+    final bool hadCursor = _cursorLine != 0;
     _cursorLine = 0;
     _cursorColumn = 1;
     _binding = false;
+    if (hadCursor) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onCursorLineChanged?.call(0);
+      });
+    }
     // A brand-new note should let the user start typing a title right away —
     // and since a new note *is* named 未命名 (the file is `未命名.md`), the
     // placeholder is selected so the first keystroke replaces it instead of
@@ -190,6 +201,13 @@ class EditorPaneState extends State<EditorPane> {
     unawaited(_scrollToLine(target, style: style, anchor: 0.12));
   }
 
+  /// Used by the far-right outline region, which lives outside this pane and so
+  /// cannot hand over the current prose style.
+  void goToHeading(int line) {
+    final SettingsController settings = context.read<SettingsController>();
+    _goToHeading(line, editorProseStyle(context.palette, settings.proseSize));
+  }
+
   void _maybeTypewriter(int line) {
     if (!mounted) return;
     if (!_bodyFocus.hasFocus) return;
@@ -253,9 +271,6 @@ class EditorPaneState extends State<EditorPane> {
     _body.onTagTap = _openTag;
     _body.onWikilinkTap = _openWikilink;
 
-    final List<Heading> headings = extractHeadings(note.body);
-    final TextStyle prose = editorProseStyle(p, settings.proseSize);
-
     return Shortcuts(
       shortcuts: _editorShortcuts(),
       child: Container(
@@ -270,14 +285,7 @@ class EditorPaneState extends State<EditorPane> {
             Expanded(
               child: LayoutBuilder(
                 builder: (BuildContext context, BoxConstraints c) {
-                  return _workspace(
-                    p,
-                    notes,
-                    settings,
-                    headings,
-                    prose,
-                    c.maxWidth,
-                  );
+                  return _workspace(notes, c.maxWidth);
                 },
               ),
             ),
@@ -395,21 +403,6 @@ class EditorPaneState extends State<EditorPane> {
       child: Row(
         children: <Widget>[
           const SizedBox(width: AppSpace.xs),
-          AppIconButton(
-            icon: note.pinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
-            tooltip: note.pinned ? '取消置顶' : '置顶',
-            active: note.pinned,
-            onPressed: () => notes.togglePinned(note),
-          ),
-          AppIconButton(
-            icon: note.favorite
-                ? Icons.star_rounded
-                : Icons.star_outline_rounded,
-            tooltip: note.favorite ? '取消收藏' : '收藏',
-            active: note.favorite,
-            activeColor: p.warning,
-            onPressed: () => notes.toggleFavorite(note),
-          ),
           const Spacer(),
           AppIconButton(
             icon: Icons.account_tree_outlined,
@@ -504,7 +497,7 @@ class EditorPaneState extends State<EditorPane> {
               Text('·', style: TextStyle(fontSize: 11, color: p.textTertiary)),
               const SizedBox(width: AppSpace.md),
               Text(
-                note.fileName,
+                note.relativePath,
                 style: TextStyle(
                   fontSize: 11,
                   fontFamily: AppFonts.mono,
@@ -514,12 +507,6 @@ class EditorPaneState extends State<EditorPane> {
               ),
             ],
           ),
-          const SizedBox(height: AppSpace.md),
-          TagEditor(
-            tags: note.tags,
-            suggestions: notes.tags.map((TagStat t) => t.name).toList(),
-            onChanged: notes.setTags,
-          ),
         ],
       ),
     );
@@ -527,55 +514,26 @@ class EditorPaneState extends State<EditorPane> {
 
   // -------------------------------------------------------------- workspace
 
-  Widget _workspace(
-    AppPalette p,
-    NotesController notes,
-    SettingsController settings,
-    List<Heading> headings,
-    TextStyle prose,
-    double availableWidth,
-  ) {
-    final bool showOutline =
-        settings.outlineVisible && headings.isNotEmpty &&
-        availableWidth > 820;
-    final double column = showOutline
-        ? availableWidth - _outlineWidth
-        : availableWidth;
+  Widget _workspace(NotesController notes, double availableWidth) {
     // Exactly the width the laid-out text gets, so the few spans that draw a
     // real widget (rules, images) can span the column without overflowing it.
-    final double contentWidth = (column - _editorPadding.horizontal).clamp(
-      60.0,
-      AppLayout.proseMaxWidth,
-    );
+    final double contentWidth = (availableWidth - _editorPadding.horizontal)
+        .clamp(60.0, AppLayout.proseMaxWidth);
     _contentWidth = contentWidth;
 
     return Actions(
       actions: _editorActions(notes),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          Expanded(
-            child: MarkdownEditor(
-              controller: _body,
-              focusNode: _bodyFocus,
-              scrollController: _editorScroll,
-              fontSize: settings.proseSize,
-              padding: _editorPadding,
-              hintText:
-                  '开始写下你的想法…\n\n'
-                  '直接输入 # 就会变成标题,输入 - 就会变成列表;\n'
-                  '把光标移到某一行,那一行的 Markdown 标记就会显现出来。',
-              onChanged: notes.updateBody,
-            ),
-          ),
-          if (showOutline)
-            OutlinePanel(
-              headings: headings,
-              currentLine: _cursorLine,
-              width: _outlineWidth,
-              onSelect: (int line) => _goToHeading(line, prose),
-            ),
-        ],
+      child: MarkdownEditor(
+        controller: _body,
+        focusNode: _bodyFocus,
+        scrollController: _editorScroll,
+        fontSize: context.read<SettingsController>().proseSize,
+        padding: _editorPadding,
+        hintText:
+            '开始写下你的想法…\n\n'
+            '直接输入 # 就会变成标题,输入 - 就会变成列表;\n'
+            '把光标移到某一行,那一行的 Markdown 标记就会显现出来。',
+        onChanged: notes.updateBody,
       ),
     );
   }

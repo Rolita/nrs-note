@@ -108,7 +108,7 @@ class _SettingsDialog extends StatelessWidget {
                           onChanged: (double v) => settings.proseSize = v,
                         ),
                         _SliderRow(
-                          label: '笔记列表宽度',
+                          label: '侧边栏宽度',
                           value: settings.listWidth,
                           min: AppLayout.listMinWidth,
                           max: AppLayout.listMaxWidth,
@@ -132,7 +132,7 @@ class _SettingsDialog extends StatelessWidget {
                         ),
                         _Row(
                           label: '专注模式',
-                          hint: '隐藏侧栏与列表,只留下文字',
+                          hint: '隐藏功能栏、侧边栏与大纲,只留下文字',
                           control: _Switch(
                             value: settings.focusMode,
                             label: settings.focusMode ? '开' : '关',
@@ -150,7 +150,7 @@ class _SettingsDialog extends StatelessWidget {
                         ),
                         _Row(
                           label: '默认排序',
-                          hint: '置顶的笔记始终排在最前',
+                          hint: '文件列表与搜索结果都按它排列',
                           control: _Dropdown<SortMode>(
                             value: settings.sort,
                             items: <SortMode, String>{
@@ -261,7 +261,8 @@ class _SettingsDialog extends StatelessWidget {
                             ('Ctrl + Shift + E', '代码块'),
                             ('Ctrl + 1…3 / 0', '标题级别 / 正文'),
                             ('Ctrl + Alt + ↑ ↓', '上一篇 / 下一篇'),
-                            ('Ctrl + \\\\', '收起或展开侧栏'),
+                            ('Ctrl + \\\\', '收起或展开侧边栏'),
+                            ('Ctrl + Shift + O', '显示 / 隐藏大纲'),
                             ('Ctrl + Shift + F', '专注模式'),
                             ('Ctrl + ,', '打开设置'),
                           ],

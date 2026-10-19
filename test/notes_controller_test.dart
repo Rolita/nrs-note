@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nrs/core/app_enums.dart';
 import 'package:nrs/data/models/note.dart';
 import 'package:nrs/data/storage/note_store.dart';
 import 'package:nrs/state/notes_controller.dart';
@@ -25,9 +26,13 @@ class _MemoryStore extends NoteStore {
   Future<List<Note>> loadAll() async => List<Note>.of(notes);
 
   @override
-  Future<void> save(Note note, {String? previousFileName}) async {
+  Future<void> save(Note note, {String? previousPath}) async {
     notes.removeWhere(
-      (Note n) => n.id == note.id || n.fileName == previousFileName,
+      (Note n) =>
+          n.id == note.id ||
+          (previousPath != null &&
+              n.relativePath.toLowerCase() ==
+                  previousPath.replaceAll('\\', '/').toLowerCase()),
     );
     notes.insert(0, note);
   }
@@ -129,6 +134,59 @@ void main() {
     final Note second = notes.createNote();
     expect(second.fileName, '未命名 2.md', reason: '两个新笔记不能占同一个文件');
     expect(first.fileName, '未命名.md', reason: '第一篇的名字不能被抢走');
+  });
+
+  test('the second new note is titled 未命名 2, like its file', () async {
+    final NotesController notes = await _open(_MemoryStore());
+
+    expect(notes.createNote().title, '未命名');
+    final Note second = notes.createNote();
+    expect(second.fileName, '未命名 2.md');
+    expect(
+      second.title,
+      '未命名 2',
+      reason: '编辑器里选中的占位名必须和磁盘上的文件名一致',
+    );
+  });
+
+  test('renameNote moves the file and leaves no orphan behind', () async {
+    final _MemoryStore store = _MemoryStore(<Note>[_note('写作计划')]);
+    final NotesController notes = await _open(store);
+    final Note original = notes.allNotes.single;
+
+    await notes.renameNote(original, '新的计划');
+
+    expect(notes.allNotes.single.title, '新的计划');
+    expect(notes.allNotes.single.fileName, '新的计划.md');
+    expect(
+      store.notes.single.relativePath,
+      '新的计划.md',
+      reason: '旧文件要被删掉,而不是留在库里当孤儿',
+    );
+  });
+
+  test('moveNotes never lets two 未命名.md collide in one folder', () async {
+    final _MemoryStore store = _MemoryStore();
+    final NotesController notes = await _open(store);
+    final Note first = notes.createNote(folderPath: '甲');
+    final Note second = notes.createNote(folderPath: '乙');
+    expect(first.fileName, '未命名.md');
+    expect(second.fileName, '未命名.md', reason: '不同文件夹可以各有一篇未命名');
+
+    await notes.moveNotes(<Note>[first, second], '合并');
+
+    final List<String> names =
+        notes.allNotes
+            .where((Note n) => n.folderPath == '合并')
+            .map((Note n) => n.fileName)
+            .toList()
+          ..sort();
+    expect(names, <String>['未命名 2.md', '未命名.md']);
+    expect(
+      store.notes.where((Note n) => n.folderPath == '合并').length,
+      2,
+      reason: '两篇都要真的落进新文件夹',
+    );
   });
 
   test('retitling renames the file, and only the file it owns', () async {
@@ -236,6 +294,131 @@ void main() {
     expect(store.notes, hasLength(1), reason: '不能留下幽灵文件');
     expect(store.notes.single.fileName, '第二个名字.md');
   });
+
+  test('all six sort modes order the vault as their labels promise', () async {
+    final Note alpha = Note(
+      id: 'alpha',
+      title: 'Alpha',
+      body: '',
+      createdAt: DateTime(2026, 1, 1),
+      updatedAt: DateTime(2026, 2, 1),
+    );
+    final Note beta = Note(
+      id: 'beta',
+      title: 'Beta',
+      body: '',
+      createdAt: DateTime(2026, 2, 1),
+      updatedAt: DateTime(2026, 1, 1),
+    );
+    final NotesController notes = await _open(
+      _MemoryStore(<Note>[alpha, beta]),
+    );
+    List<String> titles() => notes.allNotes.map((Note n) => n.title).toList();
+
+    notes.sortMode = SortMode.titleAsc;
+    expect(titles(), <String>['Alpha', 'Beta']);
+    notes.sortMode = SortMode.titleDesc;
+    expect(titles(), <String>['Beta', 'Alpha']);
+    notes.sortMode = SortMode.updatedDesc;
+    expect(titles(), <String>['Alpha', 'Beta']);
+    notes.sortMode = SortMode.updatedAsc;
+    expect(titles(), <String>['Beta', 'Alpha']);
+    notes.sortMode = SortMode.createdDesc;
+    expect(titles(), <String>['Beta', 'Alpha']);
+    notes.sortMode = SortMode.createdAsc;
+    expect(titles(), <String>['Alpha', 'Beta']);
+  });
+
+  test('a search sweeps the whole vault, folders included', () async {
+    final Note inFolder = Note(
+      id: 'b',
+      title: 'nrs开发进度',
+      body: '# nrs开发进度\n',
+      folderPath: '项目',
+      createdAt: DateTime(2026, 1, 1),
+      updatedAt: DateTime(2026, 1, 1),
+    );
+    final NotesController notes = await _open(
+      _MemoryStore(<Note>[_note('欢迎使用 NRS'), inFolder, _note('NRS 快速入门')]),
+    );
+
+    notes.setQuery('nrs');
+    expect(
+      notes.visibleNotes,
+      hasLength(3),
+      reason: '搜索要扫全库，不能只看顶层或当前文件夹',
+    );
+    expect(
+      notes.visibleNotes.map((Note n) => n.title),
+      contains('nrs开发进度'),
+    );
+  });
+
+  test('clearing the query drops the results, and any tag filter with it',
+      () async {
+    final NotesController notes = await _open(
+      _MemoryStore(<Note>[_note('NRS 快速入门'), _note('闲话', body: '# 杂')]),
+    );
+
+    notes.setQuery('nrs');
+    expect(notes.visibleNotes, hasLength(1));
+
+    notes.setQuery('');
+    expect(notes.isFiltered, isFalse);
+    expect(notes.visibleNotes, hasLength(2), reason: '清空后回到完整列表');
+  });
+
+  test('typing a query lets go of the tag filter, so search is vault-wide',
+      () async {
+    final NotesController notes = await _open(
+      _MemoryStore(<Note>[
+        _note('NRS 快速入门', body: '正文 #入门\n'),
+        _note('nrs开发进度'),
+        _note('闲话'),
+      ]),
+    );
+
+    notes.toggleTag('入门');
+    expect(notes.visibleNotes, hasLength(1), reason: '先只看这个标签');
+
+    notes.setQuery('nrs');
+    expect(notes.activeTag, isNull, reason: '一开始打字就不再受标签限制');
+    expect(notes.visibleNotes, hasLength(2), reason: '要搜到全库里所有 nrs');
+
+    notes.setQuery('');
+    expect(notes.isFiltered, isFalse, reason: '清空后不该留下上一轮的结果');
+  });
+
+  test('names are scoped to their folder, so 未命名.md can repeat', () async {
+    final NotesController notes = await _open(_MemoryStore());
+
+    notes.setActiveFolder('工作');
+    final Note work = notes.createNote();
+    notes.setActiveFolder('生活');
+    final Note life = notes.createNote();
+    notes.setActiveFolder('工作');
+    final Note workAgain = notes.createNote();
+
+    expect(work.fileName, '未命名.md');
+    expect(life.fileName, '未命名.md', reason: '不同文件夹可以各有一篇未命名');
+    expect(workAgain.fileName, '未命名 2.md', reason: '同一个文件夹内仍然要避让');
+    expect(notes.notesInFolder('工作'), hasLength(2));
+    expect(notes.notesInFolder('生活'), hasLength(1));
+  });
+
+  test('a new folder nests under the active folder', () async {
+    final NotesController notes = await _open(_MemoryStore());
+
+    final String? work = await notes.createFolder('工作');
+    expect(work, '工作');
+    notes.setActiveFolder(work!);
+
+    final String? weekly = await notes.createFolder('周报');
+    expect(weekly, '工作/周报');
+    expect(notes.activeFolder, '工作/周报');
+    expect(notes.childFoldersOf(''), contains('工作'));
+    expect(notes.childFoldersOf('工作'), contains('工作/周报'));
+  });
 }
 
 /// An in-memory vault whose writes take real time, so overlap is visible.
@@ -246,11 +429,11 @@ class _SlowStore extends _MemoryStore {
   int maxInFlight = 0;
 
   @override
-  Future<void> save(Note note, {String? previousFileName}) async {
+  Future<void> save(Note note, {String? previousPath}) async {
     _inFlight++;
     if (_inFlight > maxInFlight) maxInFlight = _inFlight;
     await Future<void>.delayed(const Duration(milliseconds: 20));
-    await super.save(note, previousFileName: previousFileName);
+    await super.save(note, previousPath: previousPath);
     _inFlight--;
   }
 }
@@ -262,8 +445,8 @@ class _CountingStore extends _MemoryStore {
   final void Function() _written;
 
   @override
-  Future<void> save(Note note, {String? previousFileName}) {
+  Future<void> save(Note note, {String? previousPath}) {
     _written();
-    return super.save(note, previousFileName: previousFileName);
+    return super.save(note, previousPath: previousPath);
   }
 }

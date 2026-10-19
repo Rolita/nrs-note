@@ -107,7 +107,10 @@ class _Ctx {
     required this.p,
     required this.caretA,
     required this.caretB,
+    required this.selA,
+    required this.selB,
     required this.contentWidth,
+    this.direction = TextDirection.ltr,
     this.textScaler = TextScaler.noScaling,
     this.plain = false,
     this.onTagTap,
@@ -117,7 +120,15 @@ class _Ctx {
   final AppPalette p;
   final int caretA;
   final int caretB;
+
+  /// The **live** selection, which the wash follows even while [caretA]/[caretB]
+  /// are frozen for a pointer gesture. A rendered chip cannot show the wash
+  /// painted behind the field, so it tints itself from this instead.
+  final int selA;
+  final int selB;
+
   final double contentWidth;
+  final TextDirection direction;
 
   /// The scale the paragraph will lay the text out at. A table column is sized
   /// from measured text, so the measurement has to be taken under the same
@@ -132,8 +143,11 @@ class _Ctx {
   final void Function(String tag)? onTagTap;
   final void Function(String target)? onWikilinkTap;
 
-  /// True when the caret (or the selection) overlaps `[a, b]`.
+  /// True when the caret (or the reveal selection) overlaps `[a, b]`.
   bool touched(int a, int b) => caretA >= 0 && caretB >= a && caretA <= b;
+
+  /// True when a **range** of the live selection intersects `[a, b]`.
+  bool selected(int a, int b) => selA >= 0 && selB > selA && selB > a && selA < b;
 }
 
 /// Builds the styled span tree for live mode.
@@ -141,11 +155,17 @@ class _Ctx {
 /// [tables] is filled with the geometry of every table block, so the pointer
 /// layer can map a press on a rendered table back to the cell under it. The
 /// renderer is the only thing that knows how wide a column came out.
+///
+/// [liveSelection] is the selection the wash follows when it differs from
+/// [selection]: a pointer gesture freezes [selection] to keep markers from
+/// reflowing text, but the bands — and a chip's selected tint — still have to
+/// follow the pointer.
 List<InlineSpan> buildLiveSpans({
   required String text,
   required TextStyle base,
   required AppPalette p,
   required TextSelection selection,
+  TextSelection? liveSelection,
   double contentWidth = 680,
   TextScaler textScaler = TextScaler.noScaling,
   TextDirection direction = TextDirection.ltr,
@@ -263,6 +283,7 @@ List<InlineSpan> buildLiveSpans({
       active.add(i);
     }
   }
+
   /// True when the selection is just a caret, which is the only case where a
   /// block collapsed to zero size (a table's divider row) may open a line of its
   /// own for editing — a range selection that merely *covers* it must not.
@@ -270,6 +291,19 @@ List<InlineSpan> buildLiveSpans({
   final Set<int> revealedFences = <int>{};
   for (final int i in active) {
     if (fences[i] >= 0) revealedFences.add(fences[i]);
+  }
+
+  /// Where the **wash** sits, as opposed to where the markers are revealed.
+  /// During a drag the reveal is frozen at pointer-down so markers cannot
+  /// reflow text under the pointer, but the wash still has to track the live
+  /// selection — measuring table bands from the frozen caret painted a strip of
+  /// *prose* rows (one full-width band per table row) for the whole gesture.
+  final TextSelection bandsSel = liveSelection ?? selection;
+  int bandA = -1;
+  int bandB = -1;
+  if (bandsSel.isValid && bandsSel.start >= 0) {
+    bandA = bandsSel.start.clamp(0, text.length);
+    bandB = bandsSel.end.clamp(0, text.length);
   }
 
   // --------------------------------------------------------------- the tables
@@ -283,7 +317,10 @@ List<InlineSpan> buildLiveSpans({
     p: p,
     caretA: caretA,
     caretB: caretB,
+    selA: bandA,
+    selB: bandB,
     contentWidth: contentWidth,
+    direction: direction,
     textScaler: textScaler,
     onTagTap: onTagTap,
     onWikilinkTap: onWikilinkTap,
@@ -292,21 +329,37 @@ List<InlineSpan> buildLiveSpans({
   /// The same context, but for text a render object will repaint (table
   /// cells): chips need a build context, so cells fall back to plain text.
   ///
-  /// `caretA: -1` disarms inline reveal inside a cell. A cell is painted by a
-  /// render object, so it has to look the same no matter where the caret is —
-  /// a `**` that expanded inside one cell would push every glyph after it out
-  /// of alignment with the skeleton, and the caret would drift off the
-  /// character it is supposedly sitting on.
+  /// `caretA: -1` keeps every cell rendered by default. The cell the caret
+  /// sits in is rebuilt with its source revealed (see [editAt]); that tree is
+  /// both painted and laid out invisibly as the skeleton, so the caret still
+  /// lands on the glyph under it. Revealing a cell would be fatal if the two
+  /// trees disagreed — a `**` that expanded in only one of them would push the
+  /// glyphs out of alignment with the caret.
   final _Ctx plainCtx = _Ctx(
     p: p,
     caretA: -1,
     caretB: -1,
+    selA: bandA,
+    selB: bandB,
     contentWidth: contentWidth,
+    direction: direction,
     textScaler: textScaler,
     plain: true,
     onTagTap: onTagTap,
     onWikilinkTap: onWikilinkTap,
   );
+
+  /// Absolute offset of the caret the **live** selection puts in a table, or
+  /// `-1` when the selection is a range.
+  ///
+  /// A rendered table is edited cell by cell: the cell under the caret opens
+  /// its Markdown source while every other cell stays rendered. A range is a
+  /// selection gesture — revealing source inside it would reflow glyphs under
+  /// the pointer and make the drag impossible to aim — so it keeps the whole
+  /// table rendered.
+  final int editAt = bandsSel.isValid && bandsSel.isCollapsed
+      ? bandsSel.start.clamp(0, text.length)
+      : -1;
 
   final List<int> tableOf = List<int>.filled(n, -1);
   final List<_Table> tableBlocks = <_Table>[];
@@ -331,6 +384,7 @@ List<InlineSpan> buildLiveSpans({
       divider: divider,
       base: base,
       ctx: plainCtx,
+      editAt: editAt,
       direction: direction,
     );
     for (int k = i; k <= last; k++) {
@@ -360,7 +414,7 @@ List<InlineSpan> buildLiveSpans({
   final Map<int, List<_RowBand?>> bandCache = <int, List<_RowBand?>>{};
   List<_RowBand?> bandsOf(int tableId) => bandCache.putIfAbsent(
     tableId,
-    () => _bandsOfTable(tableBlocks[tableId], caretA, caretB),
+    () => _bandsOfTable(tableBlocks[tableId], bandA, bandB),
   );
 
   // ---------------------------------------------------------------- pass two
@@ -444,9 +498,7 @@ List<InlineSpan> buildLiveSpans({
         out.add(
           TextSpan(
             text: m.group(2),
-            style: on
-                ? _markerVisible(h, p, accented: true)
-                : _collapsed(base),
+            style: on ? _markerVisible(h, p, accented: true) : _collapsed(base),
           ),
         );
         out.add(
@@ -532,8 +584,7 @@ List<InlineSpan> buildLiveSpans({
         final String lead = m.group(2)!;
         final int gap = m.group(3)!.length;
         out.addAll(_indentRun(m.group(1)!, base, p));
-        final String marker =
-            '$lead${m.group(3)}${m.group(4)}${m.group(5)}';
+        final String marker = '$lead${m.group(3)}${m.group(4)}${m.group(5)}';
         final TextStyle body = done
             // A ticked item steps *one* rung down the text ramp and stays
             // legible; the deletion is carried by the rule, not by fading the
@@ -572,7 +623,9 @@ List<InlineSpan> buildLiveSpans({
           // The gap keeps the space's width but paints nothing: dropping it to a
           // zero-size span would butt the box up against the number.
           out.add(TextSpan(text: m.group(3)!, style: _invisible(base)));
-          out.add(_taskBox(p, done, at + m.group(1)!.length + lead.length + gap));
+          out.add(
+            _taskBox(p, done, at + m.group(1)!.length + lead.length + gap),
+          );
           // Skip the `[` — the box stands in for it.
           out.add(
             TextSpan(
@@ -625,16 +678,20 @@ List<InlineSpan> buildLiveSpans({
         // A real horizontal rule: the first dash becomes the line itself and
         // the remaining ones collapse behind it, so the row keeps its height
         // and the line spans the column whatever the window width.
-        out.add(_decoration(MarkdownDividerLine(color: p.outline, height: row)));
+        out.add(
+          _decoration(MarkdownDividerLine(color: p.outline, height: row)),
+        );
         out.add(_swallowed(line, base));
 
       case _Kind.tableHeader:
       case _Kind.table:
         final _Table? table = tableOf[i] < 0
             ? null
-            : (tableOf[i] < tableBlocks.length ? tableBlocks[tableOf[i]] : null);
-        final List<_CellData>? cells = (table != null &&
-                table.lineOfRow.containsKey(i))
+            : (tableOf[i] < tableBlocks.length
+                  ? tableBlocks[tableOf[i]]
+                  : null);
+        final List<_CellData>? cells =
+            (table != null && table.lineOfRow.containsKey(i))
             ? table.cellsOf(i)
             : null;
         if (cells == null || cells.isEmpty) {
@@ -686,6 +743,7 @@ List<InlineSpan> buildLiveSpans({
                     ),
                     style: d.style,
                     dx: d.textX,
+                    codeRuns: d.codeRuns,
                   ),
               ],
               palette: p,
@@ -781,6 +839,19 @@ List<InlineSpan> buildLiveSpans({
 WidgetSpan _decoration(Widget child) =>
     WidgetSpan(alignment: PlaceholderAlignment.middle, child: child);
 
+/// A widget aligned on the text's baseline rather than on the line's middle.
+///
+/// The middle of a taller paragraph line and the middle of a shorter run's own
+/// line box are not the same point when the two fonts have different ascent
+/// ratios; a code chip's ends measured against the line middle sat about a
+/// pixel below the run's own background. Baseline alignment lines the cap's
+/// box up with the run the moment both are measured with the same style.
+WidgetSpan _baselineDecoration(Widget child) => WidgetSpan(
+  alignment: PlaceholderAlignment.baseline,
+  baseline: TextBaseline.alphabetic,
+  child: child,
+);
+
 /// The characters a decoration did not consume, collapsed to nothing so the
 /// caret still has real offsets to move through.
 TextSpan _swallowed(String marker, TextStyle base) => TextSpan(
@@ -791,14 +862,13 @@ TextSpan _swallowed(String marker, TextStyle base) => TextSpan(
 /// Turns a designed line-height multiplier into one the paragraph can honour.
 ///
 /// A paragraph rounds every line's *advance* to a whole logical pixel, but it
-/// computes that line's highlight box from `fontSize * height` unchanged.
-/// `15.5 * 1.78` is 27.59, so the box is 0.41px shorter than the step to the
-/// next line, and a multi-line selection is painted as a stack of bands with a
-/// hairline of paper between them: measured on the real widget, the seam pixel
-/// comes out 41% lighter than the highlight, which is exactly the "1px gap
-/// between the lines" this exists to remove. Handing back a multiplier whose
-/// product is *already* whole makes the box and the advance agree to the last
-/// bit (the box height is `fontSize * height` — verified across 1.7 … 1.9).
+/// computes that line's box from `fontSize * height` unchanged. `15.5 * 1.78`
+/// is 27.59, so every box is 0.41px shorter than the step to the next line;
+/// the table's row chrome and the selection's boxes are then measured on a
+/// different grid from the glyphs and drift inside their rows. Handing back a
+/// multiplier whose product is *already* whole makes the box and the advance
+/// agree to the last bit (the box height is `fontSize * height` — verified
+/// across 1.7 … 1.9).
 ///
 /// The multiplier moves by at most half a pixel of line spacing, which is not
 /// visible as spacing but does put the line grid on whole pixels.
@@ -963,6 +1033,7 @@ List<InlineSpan> _inline(
   int absStart,
   _Ctx ctx, {
   TextStyle? forceStyle,
+  List<_CellCode>? codeRuns,
 }) {
   if (text.isEmpty) return const <InlineSpan>[];
   final AppPalette p = ctx.p;
@@ -990,14 +1061,83 @@ List<InlineSpan> _inline(
         spans.add(_swallowed(token, body));
       }
     } else if (token.startsWith('`')) {
-      spans.add(TextSpan(text: '`', style: mark));
-      spans.add(
-        TextSpan(
-          text: token.substring(1, token.length - 1),
-          style: _inlineCode(body, p),
-        ),
-      );
-      spans.add(TextSpan(text: '`', style: mark));
+      final String inner = token.substring(1, token.length - 1);
+      final int from = absStart + m.start;
+      final int to = absStart + m.end;
+      final Color fill = ctx.selected(from, to)
+          ? _selectedChip(p)
+          : p.surfaceSunken;
+      if (open) {
+        // Editing: the fill drops away and the source shows — backticks and
+        // all. Leaving the chip on made a span that was being edited still
+        // look rendered, user: 「选中后没有恢复成编辑态」.
+        final TextStyle source = _inlineCodeSource(body, p);
+        final TextStyle tick = _markerVisible(source, p);
+        spans.add(TextSpan(text: '`', style: tick));
+        spans.add(TextSpan(text: inner, style: source));
+        spans.add(TextSpan(text: '`', style: tick));
+      } else if (ctx.plain) {
+        // A cell is a `TextPainter`: it has no room for the widget caps the
+        // prose chip uses, and a `TextStyle` background can never be padded or
+        // rounded. So the ends still reserve the padding — a collapsed
+        // character's advance is exactly its `letterSpacing` — and the row
+        // renderer paints one rounded band behind the range.
+        final TextStyle source = _inlineCodeSource(body, p);
+        final TextStyle edge = mark.copyWith(
+          letterSpacing: ctx.textScaler.scale(_kInlineCodePad),
+        );
+        spans.add(TextSpan(text: '`', style: edge));
+        spans.add(TextSpan(text: inner, style: source));
+        spans.add(TextSpan(text: '`', style: edge));
+        codeRuns?.add(
+          _CellCode(
+            start: m.start,
+            end: m.end,
+            probe: inner,
+            style: source,
+            fill: fill,
+          ),
+        );
+      } else {
+        // The backticks are the chip's two ends: each collapses into a cap as
+        // wide as the padding the text needs, and rounds its outward corners.
+        // The run in between keeps its own background, so the three pieces
+        // read as one rounded chip — a `TextSpan` background alone is always a
+        // hard-edged rectangle flush with the glyphs.
+        final TextStyle source = _inlineCodeSource(body, p);
+        final double pad = ctx.textScaler.scale(_kInlineCodePad);
+        final double radius = ctx.textScaler.scale(_kInlineCodeRadius);
+        final bool ltr = ctx.direction == TextDirection.ltr;
+        spans.add(
+          _baselineDecoration(
+            _InlineCodeEnd(
+              width: pad,
+              radius: radius,
+              color: fill,
+              roundStart: ltr,
+              probe: inner,
+              style: source,
+              textDirection: ctx.direction,
+              textScaler: ctx.textScaler,
+            ),
+          ),
+        );
+        spans.add(TextSpan(text: inner, style: _inlineCode(body, p, fill)));
+        spans.add(
+          _baselineDecoration(
+            _InlineCodeEnd(
+              width: pad,
+              radius: radius,
+              color: fill,
+              roundStart: !ltr,
+              probe: inner,
+              style: source,
+              textDirection: ctx.direction,
+              textScaler: ctx.textScaler,
+            ),
+          ),
+        );
+      }
     } else if (token.startsWith('**') || token.startsWith('__')) {
       spans.add(TextSpan(text: token.substring(0, 2), style: mark));
       spans.add(
@@ -1031,7 +1171,10 @@ List<InlineSpan> _inline(
     } else if (token.startsWith('[[') || token.startsWith('![[')) {
       final bool embed = token.startsWith('!');
       final String inner = token.substring(embed ? 3 : 2, token.length - 2);
-      if (open || ctx.plain || ctx.onWikilinkTap == null || inner.trim().isEmpty) {
+      if (open ||
+          ctx.plain ||
+          ctx.onWikilinkTap == null ||
+          inner.trim().isEmpty) {
         spans.add(TextSpan(text: token, style: _wikiText(style, p)));
       } else {
         spans.add(
@@ -1071,9 +1214,7 @@ List<InlineSpan> _inline(
         }
       } else if (ctx.plain) {
         spans.add(TextSpan(text: token.substring(0, openLen), style: mark));
-        spans.add(
-          TextSpan(text: label, style: _linkText(style, p)),
-        );
+        spans.add(TextSpan(text: label, style: _linkText(style, p)));
         spans.add(TextSpan(text: token.substring(close), style: mark));
       } else {
         spans.add(_linkChip(p, label.isEmpty ? url : label, style));
@@ -1087,9 +1228,7 @@ List<InlineSpan> _inline(
           style: style.copyWith(fontStyle: FontStyle.italic),
         ),
       );
-      spans.add(
-        TextSpan(text: token.substring(token.length - 1), style: mark),
-      );
+      spans.add(TextSpan(text: token.substring(token.length - 1), style: mark));
     }
     cursor = m.end;
   }
@@ -1099,6 +1238,27 @@ List<InlineSpan> _inline(
   }
   return spans;
 }
+
+/// The cell's context in **edit mode**: every inline token in `[from, to]` is
+/// revealed, as if the caret were on all of them at once.
+///
+/// [touched] opens only the token the caret overlaps; a cell in edit mode shows
+/// the source of the whole cell, so the cell's own range is handed to it.
+/// `plain` stays true: the cell is still painted by a `TextPainter` and cannot
+/// host the chips' widgets, so source is the only honest "editing" look.
+_Ctx _cellEditCtx(_Ctx ctx, int from, int to) => _Ctx(
+  p: ctx.p,
+  caretA: from,
+  caretB: to,
+  selA: ctx.selA,
+  selB: ctx.selB,
+  contentWidth: ctx.contentWidth,
+  direction: ctx.direction,
+  textScaler: ctx.textScaler,
+  plain: true,
+  onTagTap: ctx.onTagTap,
+  onWikilinkTap: ctx.onWikilinkTap,
+);
 
 bool _isTableKind(_Kind kind) =>
     kind == _Kind.table ||
@@ -1182,7 +1342,18 @@ List<InlineSpan> _tableRowSkeleton(
     x += d.advance;
     cursor = from + d.cell.text.length;
   }
-  gap(cursor, line.length, x + _kCellPad);
+  // The last cell can be **wider than its text**: an empty cell still gets the
+  // column minimum, and an aligned cell gets slop. If the skeleton stopped at
+  // the text plus padding, a click on the blank half of that last cell landed
+  // past the end of the paragraph line — on the collapsed divider source, which
+  // the soft break parks right behind it. The caret then looked like it was in
+  // the header while typing edited `| --- | --- |`. The skeleton spans the
+  // whole painted box so every click in the cell resolves inside its own line.
+  gap(
+    cursor,
+    line.length,
+    cells.isEmpty ? x + _kCellPad : cells.last.x + cells.last.boxWidth,
+  );
   return spans;
 }
 
@@ -1317,6 +1488,7 @@ class TableDragPreview {
     required this.tableId,
     required this.column,
     required this.index,
+    this.count = 1,
   });
 
   /// Source offset of the table block's first line — identity of the table.
@@ -1327,6 +1499,11 @@ class TableDragPreview {
 
   /// Where it would land.
   final int index;
+
+  /// How many rows or columns the drag would move. A grip dragged out of a
+  /// multi-row/column selection moves the whole block, and the preview has to
+  /// show the whole destination — one lit row would promise the wrong thing.
+  final int count;
 }
 
 /// Where the mouse is, in **global** coordinates — `null` while it is outside
@@ -1377,22 +1554,55 @@ abstract class TableRowChrome {
   List<TableChromeTarget> chromeVisible();
 }
 
+/// One inline code token in a cell, as range data for the row renderer.
+///
+/// [start] and [end] count characters in the cell's painted text (the source
+/// the span tree carries), so they can be fed straight to
+/// [TextPainter.getBoxesForSelection]. [style] is the code run's own style —
+/// the renderer measures it to get the band's height and baseline — and [fill]
+/// already has the selection tint mixed in.
+class _CellCode {
+  const _CellCode({
+    required this.start,
+    required this.end,
+    required this.probe,
+    required this.style,
+    required this.fill,
+  });
+
+  final int start;
+  final int end;
+  final String probe;
+  final TextStyle style;
+  final Color fill;
+}
+
 class _PaintCell {
   _PaintCell({
     required this.spans,
     required this.cell,
     required this.style,
     required this.dx,
+    required this.codeRuns,
   });
 
   final List<InlineSpan> spans;
   final TableCellGeometry cell;
   final TextStyle style;
+  final List<_CellCode> codeRuns;
 
   /// Left edge of the **text** (not the box), in the table's coordinates.
   /// Comes from [ _CellData.textX ], so a centred or right-aligned column is
   /// painted exactly where the skeleton says its characters are.
   final double dx;
+}
+
+/// A rounded fill behind one inline code run, in the cell painter's coordinates.
+class _PaintedChip {
+  const _PaintedChip(this.rect, this.fill);
+
+  final Rect rect;
+  final Color fill;
 }
 
 /// One rendered table row.
@@ -1488,10 +1698,7 @@ class _TableRowView extends LeafRenderObjectWidget {
   );
 
   @override
-  void updateRenderObject(
-    BuildContext context,
-    _RenderTableRow renderObject,
-  ) {
+  void updateRenderObject(BuildContext context, _RenderTableRow renderObject) {
     renderObject
       ..cells = cells
       ..palette = palette
@@ -1647,21 +1854,21 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
   /// the two `+` buttons right of and below it. That is where they belong
   /// (Obsidian puts them there too), and it keeps them off the cells the user
   /// is reading. All four are sized for their **glyph**, not for a button:
-  /// a bare arrow needs 10x16, a bare plus 12x12.
+  /// a bare six-dot grip needs 16x16, a bare plus 12x12.
   Rect rowGripRect() => Rect.fromLTWH(
-    -_kChromeGap - _kGripShort,
-    (_contentHeight - _kGripLong) / 2,
-    _kGripShort,
-    _kGripLong,
+    -_kChromeGap - _kGrip,
+    (_contentHeight - _kGrip) / 2,
+    _kGrip,
+    _kGrip,
   );
 
   Rect columnGripRect(int column) {
     final Rect cell = _cellRect(column);
     return Rect.fromLTWH(
-      cell.center.dx - _kGripLong / 2,
-      -_kChromeGap - _kGripShort,
-      _kGripLong,
-      _kGripShort,
+      cell.center.dx - _kGrip / 2,
+      -_kChromeGap - _kGrip,
+      _kGrip,
+      _kGrip,
     );
   }
 
@@ -1724,10 +1931,14 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
     final TableDragPreview? preview = tableDragPreview.value;
     if (preview == null || preview.tableId != _tableId) return false;
     if (kind == TableChromeKind.rowHandle) {
-      return !preview.column && preview.index == index;
+      return !preview.column &&
+          index >= preview.index &&
+          index < preview.index + preview.count;
     }
     if (kind == TableChromeKind.columnHandle) {
-      return preview.column && preview.index == index;
+      return preview.column &&
+          index >= preview.index &&
+          index < preview.index + preview.count;
     }
     return false;
   }
@@ -1766,13 +1977,13 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
   Offset get _paintedOrigin => localToGlobal(Offset(0, _dyShift));
 
   @override
-  Rect chromeBounds() =>
-      _paintedOrigin & Size(_tableWidth, _contentHeight);
+  Rect chromeBounds() => _paintedOrigin & Size(_tableWidth, _contentHeight);
 
   @override
   List<Rect> chromeCells() => <Rect>[
     for (final _PaintCell cell in _cells)
-      _paintedOrigin + Offset(cell.cell.x, 0) & Size(cell.cell.width, _contentHeight),
+      _paintedOrigin + Offset(cell.cell.x, 0) &
+          Size(cell.cell.width, _contentHeight),
   ];
 
   @override
@@ -1822,7 +2033,7 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
     if (p == null) return false;
     final Rect box = _paintedOrigin & Size(_tableWidth, _contentHeight);
     return box
-        .inflate(_kChromeGap + _kGripLong + kTableChromeSlop + 8)
+        .inflate(_kChromeGap + _kGrip + kTableChromeSlop + 8)
         .contains(p);
   }
 
@@ -1848,6 +2059,7 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
   }
 
   final List<TextPainter> _painters = <TextPainter>[];
+  final List<List<_PaintedChip>> _chips = <List<_PaintedChip>>[];
   double _contentHeight = 0;
 
   void _disposePainters() {
@@ -1860,6 +2072,7 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
   @override
   void performLayout() {
     _disposePainters();
+    _chips.clear();
     _contentHeight = _rowHeight;
     for (final _PaintCell cell in _cells) {
       final TextPainter tp = TextPainter(
@@ -1874,6 +2087,7 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
       );
       tp.layout(maxWidth: math.max(1, cell.cell.width - 2 * _kCellPad));
       _painters.add(tp);
+      _chips.add(_chipsFor(tp, cell));
       _contentHeight = math.max(_contentHeight, tp.height);
     }
     // `_kCellPad` wide, not zero: the row stands on the line's first character
@@ -1882,6 +2096,58 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
     // (The table is painted from `-_kCellPad`, so the grid still starts at the
     // text column's left edge.)
     size = constraints.constrain(Size(_kCellPad, _contentHeight));
+  }
+
+  /// Measures one rounded chip per inline code run in [cell].
+  ///
+  /// The horizontal span comes from the cell's own painter — the two collapsed
+  /// backticks reserve the padding as `letterSpacing`, so their boxes are the
+  /// chip's true ends, squeeze correction and all. Vertically the chip must
+  /// match the code run's *line box*, not its ink: a separate painter measures
+  /// the mono style, and the band hangs from the cell's baseline exactly like
+  /// the prose chip's end caps do.
+  List<_PaintedChip> _chipsFor(TextPainter tp, _PaintCell cell) {
+    if (cell.codeRuns.isEmpty) return const <_PaintedChip>[];
+    final double baseline = tp.computeDistanceToActualBaseline(
+      TextBaseline.alphabetic,
+    );
+    final List<_PaintedChip> chips = <_PaintedChip>[];
+    for (final _CellCode code in cell.codeRuns) {
+      final List<TextBox> boxes = tp.getBoxesForSelection(
+        TextSelection(baseOffset: code.start, extentOffset: code.end),
+      );
+      if (boxes.isEmpty) continue;
+      double left = boxes.first.left;
+      double right = boxes.first.right;
+      for (final TextBox box in boxes) {
+        left = math.min(left, box.left);
+        right = math.max(right, box.right);
+      }
+      final TextPainter metrics = TextPainter(
+        text: TextSpan(
+          text: code.probe.isEmpty ? ' ' : code.probe,
+          style: code.style,
+        ),
+        textDirection: _direction,
+        textScaler: _textScaler,
+      )..layout();
+      final double drop = metrics.computeDistanceToActualBaseline(
+        TextBaseline.alphabetic,
+      );
+      chips.add(
+        _PaintedChip(
+          Rect.fromLTRB(
+            left,
+            baseline - drop,
+            right,
+            baseline - drop + metrics.height,
+          ),
+          code.fill,
+        ),
+      );
+      metrics.dispose();
+    }
+    return chips;
   }
 
   @override
@@ -1937,10 +2203,7 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
     final double br = band == null
         ? right
         : edgeAt(math.min(_tableWidth, band.right));
-    final double radius = math.min(
-      _kSelectRadius,
-      math.max(0, (br - bl) / 2),
-    );
+    final double radius = math.min(_kSelectRadius, math.max(0, (br - bl) / 2));
     // Which corners the shape actually *turns* at: only where the row above (or
     // below) does not carry the same edge on. A stack of equal bands is
     // therefore one rounded rectangle, while a band that begins halfway down
@@ -1996,6 +2259,81 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
         ),
         Paint()..color = wash,
       );
+    }
+
+    // What the pointer is proposing to do, if it is dragging a grip: the row or
+    // column it would land on, painted as a light accent wash so the drop is
+    // not a guess.
+    //
+    // Under the chips, the grid and the band outline on purpose. Pressing a
+    // grip also selects its row/column, and the drop target starts out on that
+    // very row — painted last, this wash would cover the selection's edge and
+    // the press would look like a plain highlight instead of a selection.
+    final TableDragPreview? preview = tableDragPreview.value;
+    if (preview != null && preview.tableId == _tableId) {
+      final Paint hot = Paint()
+        ..color = Color.alphaBlend(
+          _palette.accent.withValues(alpha: 0.18),
+          _palette.surface,
+        );
+      if (preview.column) {
+        // The destination is a contiguous run: paint the run as one wash with
+        // an accent rule down each end, so a block drag reads as a block.
+        final int last = math.min(
+          _cells.length - 1,
+          preview.index + preview.count - 1,
+        );
+        for (int c = preview.index; c <= last; c++) {
+          final Rect cell = _cellRect(c);
+          if (cell.width > 0) {
+            canvas.drawRect(
+              Rect.fromLTWH(left + cell.left, top, cell.width, height),
+              hot,
+            );
+            if (c == preview.index) {
+              canvas.drawRect(
+                Rect.fromLTWH(left + cell.left, top, 2, height),
+                Paint()..color = _palette.accent,
+              );
+            }
+          }
+        }
+      } else if (_rowIndex >= preview.index &&
+          _rowIndex < preview.index + preview.count) {
+        canvas.drawRect(Rect.fromLTWH(left, top, _tableWidth, height), hot);
+        if (_rowIndex == preview.index) {
+          canvas.drawRect(
+            Rect.fromLTWH(left, top, _tableWidth, 2),
+            Paint()..color = _palette.accent,
+          );
+        }
+      }
+    }
+
+    // Inline code's padded, rounded band. A cell is a `TextPainter`, so it
+    // cannot carry the prose chip's widget caps; the row paints the band
+    // itself, behind the glyphs. It goes down **before** the grid so the rules
+    // stay on top — a 26px band on a 28px row otherwise shaves the header's
+    // bottom border (「代码挡住了表格的边框」).
+    final double chipRadius = _textScaler.scale(_kInlineCodeRadius);
+    final Paint chipPaint = Paint();
+    for (int i = 0; i < _cells.length && i < _painters.length; i++) {
+      if (i >= _chips.length || _chips[i].isEmpty) continue;
+      final TextPainter tp = _painters[i];
+      final Offset origin = Offset(
+        left + _cells[i].dx,
+        offset.dy + (height - tp.height) / 2,
+      );
+      for (final _PaintedChip chip in _chips[i]) {
+        chipPaint.color = chip.fill;
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            chip.rect.shift(origin),
+            Radius.circular(chipRadius),
+          ),
+          chipPaint,
+        );
+      }
     }
 
     // The grid: a rule along the top of every row (plus the bottom of the header
@@ -2059,34 +2397,6 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
       _paintBandOutline(canvas, left, bl, br, top, bottom);
     }
 
-    // What the pointer is proposing to do, if it is dragging a grip: the row or
-    // column it would land on, painted as a light accent wash so the drop is
-    // not a guess.
-    final TableDragPreview? preview = tableDragPreview.value;
-    if (preview != null && preview.tableId == _tableId) {
-      final Paint hot = Paint()
-        ..color = Color.alphaBlend(
-          _palette.accent.withValues(alpha: 0.18),
-          _palette.surface,
-        );
-      if (preview.column) {
-        final Rect cell = _cellRect(preview.index);
-        if (cell.width > 0) {
-          canvas.drawRect(Rect.fromLTWH(left + cell.left, top, cell.width, height), hot);
-          canvas.drawRect(
-            Rect.fromLTWH(left + cell.left, top, 2, height),
-            Paint()..color = _palette.accent,
-          );
-        }
-      } else if (preview.index == _rowIndex) {
-        canvas.drawRect(Rect.fromLTWH(left, top, _tableWidth, height), hot);
-        canvas.drawRect(
-          Rect.fromLTWH(left, top, _tableWidth, 2),
-          Paint()..color = _palette.accent,
-        );
-      }
-    }
-
     // The text, last, so the glyphs sit on top of fill and grid alike.
     for (int i = 0; i < _cells.length && i < _painters.length; i++) {
       final _PaintCell cell = _cells[i];
@@ -2105,14 +2415,14 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
   /// The grips and the two `+` buttons — **hover-only**, and bare glyphs.
   ///
   /// The style is Obsidian's own edge controls, which is what the user pointed
-  /// at: a thin `↔` and a thin `+` floating in the margin with **nothing**
+  /// at: six thin dots and a thin `+` floating in the margin with **nothing**
   /// behind them. So no plate, no ring, no chip — the icon *is* the button.
   ///
   /// Three states, and only three:
   ///  * out of reach  — not painted at all (a table is a page, not a toolbar);
   ///  * at the edge   — the tertiary ink, so the control whispers "here";
-  ///  * on the glyph, or the drop target of a drag — the accent, and a hair
-  ///    thicker, which is the whole "you are holding it" feedback.
+  ///  * on the glyph, or the drop target of a drag — the accent, which is the
+  ///    whole "you are holding it" feedback.
   void _paintChrome(Canvas canvas, double left, double top) {
     // ⛔ Two different origins, and mixing them up silently draws nothing:
     // the glyphs are drawn at `(left, top)` — paragraph coordinates plus the
@@ -2129,9 +2439,8 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
       final Rect r = local.shift(painted);
       switch (kind) {
         case TableChromeKind.rowHandle:
-          _paintArrow(canvas, r, vertical: true, color: color, weight: weight);
         case TableChromeKind.columnHandle:
-          _paintArrow(canvas, r, vertical: false, color: color, weight: weight);
+          _paintGrip(canvas, r, color: color);
         case TableChromeKind.addRow:
         case TableChromeKind.addColumn:
           _paintPlus(canvas, r, color: color, weight: weight);
@@ -2139,49 +2448,33 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
     }
   }
 
-  /// A double-headed arrow: one shaft along the edge, a chevron at each end.
+  /// The six dots that say "drag me": two columns of three, the grip everyone
+  /// already knows from reorderable lists. A grab *hand* belongs to the cursor
+  /// alone — here the dots stay upright for both axes, so a row and a column
+  /// read as the same kind of control.
   ///
-  /// Stroked, not filled, and only ~10px across — the same weight as a caret, so
-  /// it reads as part of the editor rather than as a button bolted onto it.
-  void _paintArrow(
-    Canvas canvas,
-    Rect r, {
-    required bool vertical,
-    required Color color,
-    required double weight,
-  }) {
-    final Paint stroke = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = weight
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-    final Offset c = r.center;
-    final double half = (vertical ? r.height : r.width) / 2 - weight / 2;
-    const double head = 3.0;
-    final Path path = Path();
-    if (vertical) {
-      path.moveTo(c.dx, c.dy - half);
-      path.lineTo(c.dx, c.dy + half);
-      path
-        ..moveTo(c.dx - head, c.dy - half + head)
-        ..lineTo(c.dx, c.dy - half)
-        ..lineTo(c.dx + head, c.dy - half + head)
-        ..moveTo(c.dx - head, c.dy + half - head)
-        ..lineTo(c.dx, c.dy + half)
-        ..lineTo(c.dx + head, c.dy + half - head);
-    } else {
-      path.moveTo(c.dx - half, c.dy);
-      path.lineTo(c.dx + half, c.dy);
-      path
-        ..moveTo(c.dx - half + head, c.dy - head)
-        ..lineTo(c.dx - half, c.dy)
-        ..lineTo(c.dx - half + head, c.dy + head)
-        ..moveTo(c.dx + half - head, c.dy - head)
-        ..lineTo(c.dx + half, c.dy)
-        ..lineTo(c.dx + half - head, c.dy + head);
-    }
-    canvas.drawPath(path, stroke);
+  /// Repainted from the Material icon font rather than stroked by hand: the
+  /// chrome is painted by a render object, and an [Icon] would need a widget —
+  /// which would swallow the taps the skeleton owns.
+  void _paintGrip(Canvas canvas, Rect r, {required Color color}) {
+    final IconData icon = Icons.drag_indicator;
+    final TextPainter tp = TextPainter(
+      text: TextSpan(
+        text: String.fromCharCode(icon.codePoint),
+        style: TextStyle(
+          fontSize: _kGrip,
+          fontFamily: icon.fontFamily,
+          package: icon.fontPackage,
+          color: color,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+      // The editor's own text scale belongs to the note, not to the chrome;
+      // a grip has to stay the same size at any zoom.
+      textScaler: TextScaler.noScaling,
+    )..layout();
+    tp.paint(canvas, r.center - Offset(tp.width / 2, tp.height / 2));
+    tp.dispose();
   }
 
   void _paintPlus(
@@ -2453,6 +2746,7 @@ class _CellData {
     required this.cell,
     required this.style,
     required this.spans,
+    required this.codeRuns,
     required this.natural,
     required this.width,
     required this.align,
@@ -2460,6 +2754,9 @@ class _CellData {
 
   final _ParsedCell cell;
   final TextStyle style;
+
+  /// Inline code tokens, in [cell] text coordinates.
+  final List<_CellCode> codeRuns;
 
   /// The cell's painted tree — the same runs the row renderer draws and the
   /// skeleton lays out invisibly. Any tracking correction is already in it, so
@@ -2533,9 +2830,10 @@ const double _kCellPad = 8;
 
 /// The chrome a live table hangs around itself: a grip per row and per column,
 /// and a `+` on the right and bottom edges.
-/// The arrow's long side (along the edge) and short side (across it).
-const double _kGripLong = 16;
-const double _kGripShort = 10;
+///
+/// The grip is a square: it holds six dots, which read the same whether the row
+/// moves up and down or the column moves left and right.
+const double _kGrip = 16;
 
 /// The gap between the table's border and the chrome that hangs off it.
 const double _kChromeGap = 5;
@@ -2555,11 +2853,48 @@ const double _kMinCell = 64;
 /// Splits `| a | b |` into its cells, keeping each cell's absolute offset.
 ///
 /// The ranges come from [tableCellsOf] — the same parser Tab uses to walk the
-/// table, so the two can never disagree about where a cell begins.
+/// table, so the two can never disagree about where a cell begins. The text is
+/// the **painted** form, not the raw source: the escapes are rendered rather
+/// than shown (`\|` is a pipe, `<br>` is a break mark).
 List<_ParsedCell> _parseCells(String line, int absStart) => <_ParsedCell>[
   for (final (int a, int b) in tableCellsOf(line))
-    _ParsedCell(line.substring(a, b), absStart + a),
+    _ParsedCell(tableCellDisplay(line.substring(a, b)), absStart + a),
 ];
+
+/// A character that takes no room, used to keep an escape's source slots alive
+/// without painting the punctuation.
+const String _kZeroWidth = '\u200b';
+
+/// The raw source of one cell as it is **painted**.
+///
+/// `\|` is a literal pipe — the backslash becomes zero-width, the pipe is drawn
+/// as text — and `<br>` is a visible break mark (「↵」) whose three trailing
+/// letters become zero-width. The model unescapes both on the way in, so this
+/// is the only place the source spelling and the painted spelling differ.
+///
+/// ⛔ The result is always the **same UTF-16 length** as [raw]. The row
+/// skeleton, the cell geometry and the selection bands all map painted
+/// characters back to source offsets by counting them; a shorter string would
+/// slide every character after the first escape — the caret would land one
+/// slot off, then two.
+@visibleForTesting
+String tableCellDisplay(String raw) {
+  if (!raw.contains(r'\|') && !raw.contains('<br>')) return raw;
+  final StringBuffer out = StringBuffer();
+  for (int i = 0; i < raw.length; i++) {
+    if (raw.startsWith(r'\|', i)) {
+      out.write(_kZeroWidth);
+      continue;
+    }
+    if (raw.startsWith('<br>', i)) {
+      out.write('↵$_kZeroWidth$_kZeroWidth$_kZeroWidth');
+      i += 3;
+      continue;
+    }
+    out.write(raw[i]);
+  }
+  return out.toString();
+}
 
 /// Natural width of a cell: its *painted* span tree, measured on one line.
 ///
@@ -2617,6 +2952,53 @@ List<InlineSpan> _spaced(List<InlineSpan> spans, double extra) => extra == 0
         (TextStyle s) =>
             s.copyWith(letterSpacing: (s.letterSpacing ?? 0) + extra),
       );
+
+/// The same, but the cell's **first character** keeps its natural advance.
+///
+/// Skia applies half of a text run's tracking *before* its first glyph. On the
+/// first run of a paragraph line that half pulls the whole line back, so a
+/// squeezed first cell moved its row — the row widget, the skeleton under it,
+/// every column rule — up to several pixels left of the rest of the table
+/// (`ls = -5.18` shifted the header by 2.6px, measured). A run that starts on
+/// the second character is not the line's first: its tracking only bites the
+/// glyphs behind it, and the row origin never moves.
+///
+/// The caller divides the correction over the characters that actually receive
+/// it, so the cell still comes out exactly as wide as its column.
+List<InlineSpan> _squeeze(
+  List<InlineSpan> spans,
+  double extra,
+  TextStyle base,
+) {
+  if (extra == 0 || spans.isEmpty) return spans;
+  final InlineSpan first = spans.first;
+  if (first is! TextSpan || first.text == null || first.text!.isEmpty) {
+    return _spaced(spans, extra);
+  }
+  final String text = first.text!;
+  final int cut = text.characters.first.length;
+  final TextStyle firstStyle = first.style ?? base;
+  final TextStyle restStyle = firstStyle.copyWith(
+    letterSpacing: (firstStyle.letterSpacing ?? 0) + extra,
+  );
+  final List<InlineSpan> rest = <InlineSpan>[
+    if (text.length > cut) TextSpan(text: text.substring(cut), style: restStyle),
+    if (first.children != null)
+      TextSpan(
+        style: restStyle,
+        children: _restyle(
+          first.children!,
+          (TextStyle s) =>
+              s.copyWith(letterSpacing: (s.letterSpacing ?? 0) + extra),
+        ),
+      ),
+  ];
+  return <InlineSpan>[
+    TextSpan(text: text.substring(0, cut), style: first.style),
+    ...rest,
+    ..._spaced(spans.skip(1).toList(), extra),
+  ];
+}
 
 /// The same tree, invisible. This is what the paragraph lays out underneath a
 /// painted row, so its advances place the caret exactly where the glyphs are.
@@ -2703,6 +3085,7 @@ _Table _measureTable({
   required int divider,
   required TextStyle base,
   required _Ctx ctx,
+  required int editAt,
   required TextDirection direction,
 }) {
   final List<_RowData> rows = <_RowData>[];
@@ -2735,27 +3118,53 @@ _Table _measureTable({
   // Pass one: build each cell's tree and measure it. The tree is kept — it is
   // exactly what the row renderer paints and what the skeleton redraws
   // invisibly, so the three of them cannot drift apart.
+  //
+  // The cell under the caret gets **two** trees: the rendered one decides the
+  // column widths (so entering a cell never reflows the table under the
+  // pointer), and the source-revealed one is what is painted and laid out
+  // underneath it. Any squeeze the revealed text needs is baked into both.
   final List<List<List<InlineSpan>>> trees = <List<List<InlineSpan>>>[];
+  final List<List<List<_CellCode>>> codes = <List<List<_CellCode>>>[];
   final List<List<double>> measured = <List<double>>[];
+  final List<List<double>> painted = <List<double>>[];
   final List<double> natural = List<double>.filled(cols, 0);
   for (final _RowData r in rows) {
     final TextStyle style = r.header ? headStyle : bodyStyle;
     final List<List<InlineSpan>> rowTrees = <List<InlineSpan>>[];
+    final List<List<_CellCode>> rowCodes = <List<_CellCode>>[];
     final List<double> rowWidths = <double>[];
+    final List<double> rowPainted = <double>[];
     for (int c = 0; c < r.cells.length; c++) {
-      final List<InlineSpan> spans = _inline(
+      final int from = r.cells[c].offset;
+      final int to = from + r.cells[c].text.length;
+      final bool editing = editAt >= from && editAt <= to;
+      final List<_CellCode> codeRuns = <_CellCode>[];
+      final List<InlineSpan> rendered = _inline(
         r.cells[c].text,
         style,
-        r.cells[c].offset,
+        from,
         ctx,
+        // A revealed cell paints no chip, so it has no chip runs to report.
+        codeRuns: editing ? null : codeRuns,
       );
-      final double w = _measureSpans(spans, style, ctx.textScaler, direction);
-      rowTrees.add(spans);
+      final double w = _measureSpans(rendered, style, ctx.textScaler, direction);
+      final List<InlineSpan> paintSpans = editing
+          ? _inline(r.cells[c].text, style, from, _cellEditCtx(ctx, from, to))
+          : rendered;
+      rowTrees.add(paintSpans);
+      rowCodes.add(editing ? const <_CellCode>[] : codeRuns);
       rowWidths.add(w);
+      rowPainted.add(
+        editing
+            ? _measureSpans(paintSpans, style, ctx.textScaler, direction)
+            : w,
+      );
       natural[c] = math.max(natural[c], w);
     }
     trees.add(rowTrees);
+    codes.add(rowCodes);
     measured.add(rowWidths);
+    painted.add(rowPainted);
   }
 
   // Pass two: hand out the columns.
@@ -2767,8 +3176,15 @@ _Table _measureTable({
   //
   // `_kMinCell` is the floor — it is what keeps `|  |  |` (the empty table
   // `insertTable` writes) a usable grid instead of a 32px speck, and what stops
-  // a one-letter column from being a sliver. Only when the natural widths
-  // *exceed* the column does everything shrink proportionally.
+  // a one-letter column from being a sliver.
+  //
+  // When the natural widths exceed the column, the **minimum is served first**
+  // and only the demand above it is squeezed proportionally: a table with one
+  // long paragraph column and four short ones used to shrink all five by the
+  // same percentage, which turned labels into unreadable slivers while the
+  // paragraph was still wide. Proportional-from-the-floor keeps every short
+  // column whole and takes the space out of the column that can spare it.
+  // Only when even the floors do not fit does everything shrink linearly.
   //
   // The 1px from `contentWidth` is not cosmetic: a line break fires on a strict
   // `> contentWidth`, so a table landing exactly on the last pixel makes
@@ -2780,9 +3196,20 @@ _Table _measureTable({
   ];
   final double fit = math.max(1, available - cols * 2 * _kCellPad);
   final double span = wanted.fold<double>(0, (double a, double w) => a + w);
-  final List<double> widths = span <= fit
-      ? wanted
-      : <double>[for (final double w in wanted) w * fit / span];
+  final double floor = cols * _kMinCell;
+  final List<double> widths;
+  if (span <= fit) {
+    widths = wanted;
+  } else if (floor <= fit) {
+    final double extra = span - floor;
+    final double room = fit - floor;
+    widths = <double>[
+      for (final double w in wanted)
+        _kMinCell + (extra <= 0 ? 0 : (w - _kMinCell) * room / extra),
+    ];
+  } else {
+    widths = <double>[for (final double w in wanted) w * fit / span];
+  }
 
   // Pass three: bake each cell's tracking correction into its tree and record
   // where the box ended up.
@@ -2792,18 +3219,30 @@ _Table _measureTable({
     for (int c = 0; c < r.cells.length; c++) {
       final _ParsedCell parsed = r.cells[c];
       final List<InlineSpan> spans = trees[ri][c];
-      final double nat = measured[ri][c];
+      // A revealed cell is wider than its rendered form; squeeze it back into
+      // the column it was measured for, exactly like a long cell. The column
+      // itself keeps the width it had before the cell opened.
+      //
+      // The squeeze skips the cell's first character (see [_squeeze]) so it
+      // cannot move the row's line origin, and is spread over the characters
+      // that do carry it, so the cell still measures exactly `widths[c]`.
+      final double nat = painted[ri][c];
       final int len = parsed.text.length;
+      final int head = parsed.text.isEmpty
+          ? 0
+          : parsed.text.characters.first.length;
+      final int tracked = len - head;
       // Negative only: a squeezed column has to shrink its text, while a
       // stretched one simply keeps the extra room *after* the text.
       final double ls = len > 0 && nat > widths[c]
-          ? (widths[c] - nat) / len
+          ? (widths[c] - nat) / (tracked > 0 ? tracked : len)
           : 0;
       r.data.add(
         _CellData(
           cell: parsed,
           style: style,
-          spans: _spaced(spans, ls),
+          spans: tracked > 0 ? _squeeze(spans, ls, style) : _spaced(spans, ls),
+          codeRuns: codes[ri][c],
           natural: nat,
           width: widths[c],
           align: divider >= 0 ? _alignOf(lines[divider], c) : TextAlign.start,
@@ -2898,7 +3337,21 @@ TextStyle _codeLine(TextStyle base, AppPalette p) {
   );
 }
 
-TextStyle _inlineCode(TextStyle base, AppPalette p) {
+/// Horizontal padding inside an inline code chip, carried by the two backticks.
+const double _kInlineCodePad = 4;
+
+/// Corner radius of a code chip's rounded ends. Small on purpose — at this
+/// height anything rounder turns a one-character span into a pill.
+const double _kInlineCodeRadius = 3;
+
+TextStyle _inlineCode(TextStyle base, AppPalette p, [Color? fill]) =>
+    _inlineCodeSource(base, p).copyWith(
+      backgroundColor: fill ?? p.surfaceSunken,
+    );
+
+/// The code run while it is being edited: same face and size as the chip, but
+/// no fill — the backticks and the plain background are what say "source".
+TextStyle _inlineCodeSource(TextStyle base, AppPalette p) {
   final double s = (base.fontSize ?? 15) * 0.92;
   return base.copyWith(
     fontFamily: AppFonts.mono,
@@ -2907,10 +3360,14 @@ TextStyle _inlineCode(TextStyle base, AppPalette p) {
     // A line that is *only* inline code still owes the paragraph a whole-pixel
     // advance, or it shows the same seam as body text.
     height: snapLineHeight(s, base.height ?? 1.78),
-    color: p.isDark ? p.accent : p.accentHover,
-    backgroundColor: p.surfaceSunken,
+    color: p.textPrimary,
   );
 }
+
+/// `surfaceSunken` with the selection wash mixed in, for a chip the live
+/// selection covers while the reveal is frozen.
+Color _selectedChip(AppPalette p) =>
+    Color.alphaBlend(p.selection, p.surfaceSunken);
 
 TextStyle _numberStyle(TextStyle base, AppPalette p) => base.copyWith(
   color: p.accent,
@@ -2982,7 +3439,8 @@ TextStyle _collapsed(TextStyle base) => base.copyWith(
 /// A row that is *only* syntax (a setext underline, a table divider) is painted
 /// transparent instead of zero-size, so the row keeps its normal height and a
 /// caret landing on it stays visible and clickable.
-TextStyle _invisible(TextStyle base) => base.copyWith(color: Colors.transparent);
+TextStyle _invisible(TextStyle base) =>
+    base.copyWith(color: Colors.transparent);
 
 // ------------------------------------------------------------- inline widgets
 
@@ -3013,10 +3471,7 @@ WidgetSpan _bulletDot(AppPalette p, int level) {
     ),
   };
   return _decoration(
-    Padding(
-      padding: const EdgeInsets.only(left: 2, right: 9),
-      child: dot,
-    ),
+    Padding(padding: const EdgeInsets.only(left: 2, right: 9), child: dot),
   );
 }
 
@@ -3117,10 +3572,7 @@ WidgetSpan _taskBox(AppPalette p, bool done, int sourceOffset) => _decoration(
           decoration: BoxDecoration(
             color: done ? p.accent : Colors.transparent,
             borderRadius: BorderRadius.circular(AppRadius.xs),
-            border: Border.all(
-              color: done ? p.accent : p.outline,
-              width: 1.5,
-            ),
+            border: Border.all(color: done ? p.accent : p.outline, width: 1.5),
           ),
           child: done
               ? Icon(Icons.check_rounded, size: 11, color: p.onAccent)
@@ -3214,10 +3666,7 @@ WidgetSpan _embedChip(
           children: <Widget>[
             Icon(Icons.attachment_rounded, size: 11, color: p.textTertiary),
             const SizedBox(width: 4),
-            Text(
-              label,
-              style: TextStyle(fontSize: 12, color: p.textSecondary),
-            ),
+            Text(label, style: TextStyle(fontSize: 12, color: p.textSecondary)),
           ],
         ),
       ),
@@ -3238,31 +3687,27 @@ WidgetSpan _linkChip(AppPalette p, String label, TextStyle body) => _decoration(
   ),
 );
 
-WidgetSpan _imageSpan(
-  AppPalette p,
-  String url,
-  String alt,
-  double maxWidth,
-) => _decoration(
-  Padding(
-    padding: const EdgeInsets.symmetric(vertical: 10),
-    child: ClipRRect(
-      borderRadius: AppRadius.mdAll,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxWidth: math.max(120, maxWidth - 24),
-          maxHeight: 420,
-        ),
-        child: Image.network(
-          url,
-          fit: BoxFit.contain,
-          errorBuilder: (BuildContext c, Object e, StackTrace? s) =>
-              _brokenImage(p, alt),
+WidgetSpan _imageSpan(AppPalette p, String url, String alt, double maxWidth) =>
+    _decoration(
+      Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: ClipRRect(
+          borderRadius: AppRadius.mdAll,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: math.max(120, maxWidth - 24),
+              maxHeight: 420,
+            ),
+            child: Image.network(
+              url,
+              fit: BoxFit.contain,
+              errorBuilder: (BuildContext c, Object e, StackTrace? s) =>
+                  _brokenImage(p, alt),
+            ),
+          ),
         ),
       ),
-    ),
-  ),
-);
+    );
 
 Widget _brokenImage(AppPalette p, String alt) => Container(
   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -3287,6 +3732,203 @@ Widget _brokenImage(AppPalette p, String alt) => Container(
     ],
   ),
 );
+
+/// One rounded end of an inline code chip, standing in for a backtick.
+///
+/// A [TextStyle.backgroundColor] can only paint a rectangle flush with the
+/// glyphs, so the padding and the rounded corners are carried by the two
+/// characters the syntax already has: each backtick collapses into a fixed-width
+/// box that paints its half of the chip. The run between them keeps a plain
+/// background; together the three pieces read as one continuous chip, and no
+/// source character is lost — the caret still steps through the backticks.
+///
+/// The box is measured from [probe] under the same [style] as the run, and it
+/// is placed by **baseline**, not by the line's middle. That is what keeps the
+/// cap and the run's own background on the same two horizontal edges when the
+/// paragraph font and the mono font have different ascent ratios.
+class _InlineCodeEnd extends LeafRenderObjectWidget {
+  const _InlineCodeEnd({
+    required this.width,
+    required this.radius,
+    required this.color,
+    required this.roundStart,
+    required this.probe,
+    required this.style,
+    required this.textDirection,
+    required this.textScaler,
+  });
+
+  final double width;
+  final double radius;
+  final Color color;
+
+  /// Whether the rounded corners are on the visual start side — left in LTR,
+  /// right in RTL. The other side stays square and bleeds into the code run.
+  final bool roundStart;
+
+  /// The code itself: measuring the real content keeps a fallback glyph (CJK
+  /// in a code span, say) from changing the run's metrics behind the cap's back.
+  final String probe;
+  final TextStyle style;
+  final TextDirection textDirection;
+  final TextScaler textScaler;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) => _RenderInlineCodeEnd(
+    width,
+    radius,
+    color,
+    roundStart,
+    probe,
+    style,
+    textDirection,
+    textScaler,
+  );
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderInlineCodeEnd renderObject,
+  ) {
+    renderObject
+      ..width = width
+      ..radius = radius
+      ..color = color
+      ..roundStart = roundStart
+      ..setMetrics(probe, style, textDirection, textScaler);
+  }
+}
+
+class _RenderInlineCodeEnd extends RenderBox {
+  _RenderInlineCodeEnd(
+    this._width,
+    this._radius,
+    this._color,
+    this._roundStart,
+    String probe,
+    TextStyle style,
+    TextDirection textDirection,
+    TextScaler textScaler,
+  ) : _metrics = _measure(probe, style, textDirection, textScaler);
+
+  /// The line the cap must be as tall as, and the baseline it hangs from.
+  static TextPainter _measure(
+    String probe,
+    TextStyle style,
+    TextDirection direction,
+    TextScaler scaler,
+  ) => TextPainter(
+    text: TextSpan(text: probe.isEmpty ? ' ' : probe, style: style),
+    textDirection: direction,
+    textScaler: scaler,
+  )..layout();
+
+  TextPainter _metrics;
+
+  double _width;
+  double get width => _width;
+  set width(double value) {
+    if (value == _width) return;
+    _width = value;
+    markNeedsLayout();
+  }
+
+  double _radius;
+  double get radius => _radius;
+  set radius(double value) {
+    if (value == _radius) return;
+    _radius = value;
+    markNeedsPaint();
+  }
+
+  Color _color;
+  Color get color => _color;
+  set color(Color value) {
+    if (value == _color) return;
+    _color = value;
+    markNeedsPaint();
+  }
+
+  bool _roundStart;
+  bool get roundStart => _roundStart;
+  set roundStart(bool value) {
+    if (value == _roundStart) return;
+    _roundStart = value;
+    markNeedsPaint();
+  }
+
+  void setMetrics(
+    String probe,
+    TextStyle style,
+    TextDirection direction,
+    TextScaler scaler,
+  ) {
+    final TextPainter next = _measure(probe, style, direction, scaler);
+    if (next.height == _metrics.height &&
+        next.computeDistanceToActualBaseline(TextBaseline.alphabetic) ==
+            _metrics.computeDistanceToActualBaseline(TextBaseline.alphabetic)) {
+      next.dispose();
+      return;
+    }
+    _metrics.dispose();
+    _metrics = next;
+    markNeedsLayout();
+  }
+
+  Size _size() => Size(_width, _metrics.height);
+
+  @override
+  double? computeDistanceToActualBaseline(TextBaseline baseline) =>
+      _metrics.computeDistanceToActualBaseline(baseline);
+
+  @override
+  void performLayout() {
+    size = constraints.constrain(_size());
+  }
+
+  @override
+  Size computeDryLayout(BoxConstraints constraints) =>
+      constraints.constrain(_size());
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    if (_width <= 0 || size.height <= 0 || _color.a == 0) return;
+    // Bleed one pixel towards the run: cap and run paint two abutting
+    // rectangles, and antialiasing each edge separately leaves a hairline
+    // seam between them at fractional device-pixel ratios. Both sides are the
+    // same colour, so the overlap is invisible.
+    final Rect band = Rect.fromLTWH(
+      offset.dx + (_roundStart ? 0 : -1),
+      offset.dy,
+      _width + 1,
+      size.height,
+    );
+    final Radius corner = Radius.circular(_radius);
+    final RRect shape = _roundStart
+        ? RRect.fromRectAndCorners(
+            band,
+            topLeft: corner,
+            bottomLeft: corner,
+          )
+        : RRect.fromRectAndCorners(
+            band,
+            topRight: corner,
+            bottomRight: corner,
+          );
+    context.canvas.drawRRect(shape, Paint()..color = _color);
+  }
+
+  @override
+  void dispose() {
+    _metrics.dispose();
+    super.dispose();
+  }
+
+  /// ⛔ Never take part in hit testing — a click on the chip's padding has to
+  /// place the caret, exactly like a click on the backtick it replaced.
+  @override
+  bool hitTestSelf(Offset position) => false;
+}
 
 // -------------------------------------------------------------- the rule line
 
