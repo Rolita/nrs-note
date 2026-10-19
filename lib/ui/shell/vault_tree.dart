@@ -9,6 +9,7 @@ import '../../core/theme/app_tokens.dart';
 import '../../data/models/note.dart';
 import '../../state/notes_controller.dart';
 import '../common/app_widgets.dart';
+import '../editor/editor_context_menu.dart';
 
 /// The real directory tree of the vault: folders first, then the notes that
 /// live directly in each one.
@@ -161,8 +162,7 @@ class VaultTreeState extends State<VaultTree> {
     return folders.every(_expanded.contains);
   }
 
-  void _notifyExpansion() =>
-      widget.onAllExpandedChanged?.call(allExpanded);
+  void _notifyExpansion() => widget.onAllExpandedChanged?.call(allExpanded);
 
   void expandAll() {
     setState(() {
@@ -261,7 +261,6 @@ class VaultTreeState extends State<VaultTree> {
   }
 
   Future<void> _showFileMenu(Note note, Offset position) async {
-    final AppPalette p = context.palette;
     _treeFocus.requestFocus();
     _focusNoteId = note.id;
     _focusFolderPath = null;
@@ -283,48 +282,41 @@ class VaultTreeState extends State<VaultTree> {
         ? '删除 ${affected.length} 篇笔记'
         : '删除笔记';
 
-    final String? action = await showMenu<String>(
-      context: context,
-      position: RelativeRect.fromLTRB(
-        position.dx,
-        position.dy,
-        position.dx,
-        position.dy,
-      ),
-      color: p.surfaceRaised,
-      items: <PopupMenuEntry<String>>[
-        _menuItem(p, 'open', Icons.open_in_new_rounded, '打开'),
-        const PopupMenuDivider(),
-        _menuItem(
-          p,
-          'rename',
-          Icons.drive_file_rename_outline_rounded,
-          '重命名',
-          hint: 'F2',
+    // The same panel the editor opens on a right-click — one menu design for the
+    // whole app, not a `PopupMenu` here and a hand-built one there.
+    await showAppMenu(
+      context,
+      globalPosition: position,
+      entries: <MenuNode>[
+        MenuAction(
+          label: '打开',
+          icon: Icons.open_in_new_rounded,
+          onPressed: () {
+            widget.notes.setActiveFolder(note.folderPath);
+            widget.onOpenNote(note);
+          },
         ),
-        _menuItem(p, 'move', Icons.drive_file_move_outline, '移到文件夹…'),
-        const PopupMenuDivider(),
-        _menuItem(
-          p,
-          'delete',
-          Icons.delete_outline_rounded,
-          deleteLabel,
+        const MenuSeparator(),
+        MenuAction(
+          label: '重命名',
+          icon: Icons.drive_file_rename_outline_rounded,
+          shortcut: 'F2',
+          onPressed: () => _startRenameNote(note),
+        ),
+        MenuAction(
+          label: '移到文件夹…',
+          icon: Icons.drive_file_move_outline,
+          onPressed: () => unawaited(_pickFolder(affected)),
+        ),
+        const MenuSeparator(),
+        MenuAction(
+          label: deleteLabel,
+          icon: Icons.delete_outline_rounded,
           danger: true,
+          onPressed: () => widget.onDeleteNotes(affected),
         ),
       ],
     );
-    if (!mounted || action == null) return;
-    switch (action) {
-      case 'open':
-        widget.notes.setActiveFolder(note.folderPath);
-        widget.onOpenNote(note);
-      case 'rename':
-        _startRenameNote(note);
-      case 'move':
-        await _pickFolder(affected);
-      case 'delete':
-        widget.onDeleteNotes(affected);
-    }
   }
 
   Future<void> _showFolderMenu(
@@ -332,64 +324,20 @@ class VaultTreeState extends State<VaultTree> {
     String name,
     Offset position,
   ) async {
-    final AppPalette p = context.palette;
     _treeFocus.requestFocus();
     _focusFolderPath = folder;
     _focusNoteId = null;
-    final String? action = await showMenu<String>(
-      context: context,
-      position: RelativeRect.fromLTRB(
-        position.dx,
-        position.dy,
-        position.dx,
-        position.dy,
-      ),
-      color: p.surfaceRaised,
-      items: <PopupMenuEntry<String>>[
-        _menuItem(
-          p,
-          'rename',
-          Icons.drive_file_rename_outline_rounded,
-          '重命名',
-          hint: 'F2',
+    await showAppMenu(
+      context,
+      globalPosition: position,
+      entries: <MenuNode>[
+        MenuAction(
+          label: '重命名',
+          icon: Icons.drive_file_rename_outline_rounded,
+          shortcut: 'F2',
+          onPressed: () => _startRenameFolder(folder, name),
         ),
       ],
-    );
-    if (!mounted || action == null) return;
-    if (action == 'rename') _startRenameFolder(folder, name);
-  }
-
-  PopupMenuItem<String> _menuItem(
-    AppPalette p,
-    String value,
-    IconData icon,
-    String label, {
-    bool danger = false,
-    String? hint,
-  }) {
-    return PopupMenuItem<String>(
-      value: value,
-      height: 34,
-      child: Row(
-        children: <Widget>[
-          Icon(icon, size: 15, color: danger ? p.danger : p.textSecondary),
-          const SizedBox(width: 9),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: AppText.ui,
-              color: danger ? p.danger : p.textPrimary,
-            ),
-          ),
-          if (hint != null) ...<Widget>[
-            const SizedBox(width: 12),
-            Text(
-              hint,
-              style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
-            ),
-          ],
-        ],
-      ),
     );
   }
 
@@ -401,7 +349,11 @@ class VaultTreeState extends State<VaultTree> {
   void _startRenameFolder(String folder, String name) =>
       _beginRename(folderPath: folder, current: name);
 
-  void _beginRename({String? noteId, String? folderPath, required String current}) {
+  void _beginRename({
+    String? noteId,
+    String? folderPath,
+    required String current,
+  }) {
     setState(() {
       _renamingNoteId = noteId;
       _renamingFolderPath = folderPath;
@@ -469,8 +421,7 @@ class VaultTreeState extends State<VaultTree> {
   }
 
   KeyEventResult _onTreeKey(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent ||
-        event.logicalKey != LogicalKeyboardKey.f2) {
+    if (event is! KeyDownEvent || event.logicalKey != LogicalKeyboardKey.f2) {
       return KeyEventResult.ignored;
     }
     final String? folder = _focusFolderPath;
@@ -511,7 +462,11 @@ class VaultTreeState extends State<VaultTree> {
         onSubmitted: (String _) => _finishRename(),
         cursorColor: p.accent,
         cursorWidth: 1.3,
-        style: TextStyle(fontSize: AppText.ui, height: 1.2, color: p.textPrimary),
+        style: TextStyle(
+          fontSize: AppText.ui,
+          height: 1.2,
+          color: p.textPrimary,
+        ),
         decoration: InputDecoration(
           isDense: true,
           filled: false,
@@ -569,9 +524,7 @@ class VaultTreeState extends State<VaultTree> {
   }
 
   static String _parentOf(String folder) =>
-      folder.contains('/')
-      ? folder.substring(0, folder.lastIndexOf('/'))
-      : '';
+      folder.contains('/') ? folder.substring(0, folder.lastIndexOf('/')) : '';
 
   Future<void> _moveSelectionInto(String folder) async {
     final List<Note> targets = _dragTargets();
@@ -630,12 +583,7 @@ class VaultTreeState extends State<VaultTree> {
     await widget.notes.moveNotes(targets, folder);
   }
 
-  Widget _folderOption(
-    AppPalette p,
-    String path,
-    String label,
-    int depth,
-  ) {
+  Widget _folderOption(AppPalette p, String path, String label, int depth) {
     return InkWell(
       onTap: () => Navigator.of(context).pop(path),
       child: SizedBox(
@@ -829,10 +777,11 @@ class VaultTreeState extends State<VaultTree> {
             return Draggable<_DragPayload>(
               data: _DragPayload.folder(this, folder),
               feedback: _dragPreview(label: () => row.name),
-              childWhenDragging: Opacity(opacity: 0.4, child: build(hot: false)),
-              child: build(
-                hot: hovering != null && _canDrop(hovering, folder),
+              childWhenDragging: Opacity(
+                opacity: 0.4,
+                child: build(hot: false),
               ),
+              child: build(hot: hovering != null && _canDrop(hovering, folder)),
             );
           },
     );
@@ -893,9 +842,7 @@ class VaultTreeState extends State<VaultTree> {
                 if (target != null) ...<Widget>[
                   const SizedBox(height: 3),
                   Text(
-                    target.isEmpty
-                        ? '移到根目录'
-                        : '移动到「${target.split('/').last}」',
+                    target.isEmpty ? '移到根目录' : '移动到「${target.split('/').last}」',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -932,7 +879,12 @@ class _DragPayload {
 }
 
 class _TreeRow {
-  const _TreeRow._({required this.depth, this.folderPath, this.name = '', this.note});
+  const _TreeRow._({
+    required this.depth,
+    this.folderPath,
+    this.name = '',
+    this.note,
+  });
 
   factory _TreeRow.folder(String path, String name, int depth) =>
       _TreeRow._(depth: depth, folderPath: path, name: name);
@@ -982,8 +934,8 @@ class _FolderRow extends StatelessWidget {
           height: AppLayout.rowHeight,
           decoration: BoxDecoration(
             color: dropTarget
-              ? p.accentSoft
-              : (hovered ? p.surfaceRaised : Colors.transparent),
+                ? p.accentSoft
+                : (hovered ? p.surfaceRaised : Colors.transparent),
             borderRadius: AppRadius.smAll,
           ),
           child: Row(
@@ -1115,9 +1067,7 @@ class _FileRow extends StatelessWidget {
                               fontWeight: selected
                                   ? FontWeight.w500
                                   : FontWeight.w400,
-                              color: selected
-                                  ? p.textPrimary
-                                  : p.textSecondary,
+                              color: selected ? p.textPrimary : p.textSecondary,
                             ),
                           ),
                         ),
@@ -1162,12 +1112,7 @@ class _IndentGuides extends StatelessWidget {
         for (int i = 0; i < depth; i++)
           SizedBox(
             width: AppLayout.rowIndent,
-            child: Center(
-              child: Container(
-                width: 1,
-                color: p.outlineSoft,
-              ),
-            ),
+            child: Center(child: Container(width: 1, color: p.outlineSoft)),
           ),
       ],
     );

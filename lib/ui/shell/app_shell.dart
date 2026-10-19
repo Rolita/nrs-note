@@ -13,9 +13,10 @@ import '../common/app_widgets.dart';
 import '../editor/editor_pane.dart';
 import '../editor/outline_panel.dart';
 import 'command_palette.dart';
+import 'function_rail.dart';
 import 'note_list_panel.dart';
 import 'settings_dialog.dart';
-import 'sidebar.dart';
+import 'title_bar.dart';
 
 /// Four regions, left to right: the function rail, the switchable sidebar
 /// (files / search / tags), the editor, and the document outline.
@@ -292,7 +293,6 @@ class _AppShellState extends State<AppShell> {
 
   void _createNote() {
     context.read<NotesController>().createNote();
-    _toast('已创建新笔记');
   }
 
   void _openPalette() {
@@ -326,7 +326,6 @@ class _AppShellState extends State<AppShell> {
             final int next =
                 (settings.theme.index + 1) % ThemePreference.values.length;
             settings.theme = ThemePreference.values[next];
-            _toast('主题:${settings.theme.label}');
           },
         ),
         PaletteAction(
@@ -353,7 +352,6 @@ class _AppShellState extends State<AppShell> {
             final String md = notes.exportSelectedMarkdown();
             if (md.isEmpty) return;
             await Clipboard.setData(ClipboardData(text: md));
-            _toast('已复制 Markdown 到剪贴板');
           },
         ),
         if (notes.supportsNativeFiles)
@@ -407,6 +405,14 @@ class _AppShellState extends State<AppShell> {
         control: true,
         alt: true,
       ): () => notes.selectAdjacentInList(notes.visibleNotes, 1),
+      // Ctrl+Tab walks the open tabs, the way every tabbed app does.
+      const SingleActivator(LogicalKeyboardKey.tab, control: true): () =>
+          notes.selectAdjacentTab(1),
+      const SingleActivator(
+        LogicalKeyboardKey.tab,
+        control: true,
+        shift: true,
+      ): () => notes.selectAdjacentTab(-1),
       const SingleActivator(LogicalKeyboardKey.escape): () {
         if (settings.focusMode) settings.focusMode = false;
       },
@@ -431,33 +437,60 @@ class _AppShellState extends State<AppShell> {
         autofocus: true,
         child: Scaffold(
           backgroundColor: p.canvas,
-          body: Column(
-            children: <Widget>[
-              if (notes.error != null) _ErrorBanner(message: notes.error!),
-              Expanded(
-                child: LayoutBuilder(
-                  builder: (BuildContext context, BoxConstraints c) {
-                    final bool showOutline =
-                        !zen &&
-                        settings.outlineVisible &&
-                        c.maxWidth >= AppLayout.outlineMinShellWidth;
-                    return Row(
+          // The title bar aligns its tabs to the editor and its outline button
+          // to the outline, so it has to know where those two seams are — and
+          // they depend on the window width (the outline steps aside in a
+          // narrow window) as well as on both drag handles.
+          body: LayoutBuilder(
+            builder: (BuildContext context, BoxConstraints c) {
+              final bool showOutline =
+                  !zen &&
+                  settings.outlineVisible &&
+                  c.maxWidth >= AppLayout.outlineMinShellWidth;
+              final double leftInset = zen
+                  ? 0
+                  : AppLayout.railWidth +
+                        (settings.sidebarCollapsed
+                            ? 0
+                            : settings.listWidth +
+                                  AppLayout.resizeHandleWidth);
+              // The outline button aligns with the *panel*, not with the drag
+              // handle in front of it, so the handle's width is not counted.
+              final double rightInset = showOutline ? settings.outlineWidth : 0;
+
+              return Column(
+                children: <Widget>[
+                  // The app's own caption: drag to move, double-click to
+                  // maximize, and the three window buttons. It stays in focus
+                  // mode too — without it there would be no way to move the
+                  // window at all.
+                  AppTitleBar(
+                    view: _view,
+                    onSelectView: _selectView,
+                    onToggleSidebar: _toggleSidebar,
+                    onCreateNote: _createNote,
+                    leftInset: leftInset,
+                    rightInset: rightInset,
+                  ),
+                  if (notes.error != null)
+                    _ErrorBanner(message: notes.error!),
+                  Expanded(
+                    child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: <Widget>[
+                        // The rail keeps only what has no place in the caption:
+                        // the tag view, quick open and settings.
                         if (!zen)
                           AppRail(
                             view: _view,
-                            collapsed: settings.sidebarCollapsed,
-                            onToggleCollapsed: _toggleSidebar,
                             onSelectView: _selectView,
                             onOpenPalette: _openPalette,
                             onOpenSettings: () => showSettingsDialog(context),
                           ),
-                        // The rail is a fixed strip of icons: nothing drags
-                        // there. The three real panes each get a handle on the
-                        // edge that faces the editor, and each handle is carved
-                        // out of the pane it follows, so its hairline lands on
-                        // the seam and the boundary reads the same everywhere.
+                        // The panes each get a handle on the edge that faces the
+                        // editor, and each handle is carved out of the pane it
+                        // follows, so its hairline lands on the seam and the
+                        // boundary reads the same everywhere.
                         if (!zen && !settings.sidebarCollapsed) ...<Widget>[
                           SizedBox(
                             width: settings.listWidth,
@@ -466,7 +499,6 @@ class _AppShellState extends State<AppShell> {
                               onCreateNote: _createNote,
                               onDeleteNotes: _confirmDeleteMany,
                               onSwitchView: _selectView,
-                              onToast: _toast,
                             ),
                           ),
                           ResizeHandle(
@@ -479,7 +511,8 @@ class _AppShellState extends State<AppShell> {
                           child: EditorPane(
                             key: _editorKey,
                             onDelete: _confirmDelete,
-                            onToast: _toast,
+                            onOpenSearch: () =>
+                                _selectView(SidebarView.search),
                             onCursorLineChanged: (int line) {
                               if (line == _cursorLine) return;
                               setState(() => _cursorLine = line);
@@ -503,11 +536,11 @@ class _AppShellState extends State<AppShell> {
                           ),
                         ],
                       ],
-                    );
-                  },
-                ),
-              ),
-            ],
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
         ),
       ),

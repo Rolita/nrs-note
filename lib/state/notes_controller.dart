@@ -17,6 +17,36 @@ class TagStat {
   final int count;
 }
 
+/// One search result: a note, and every line in it that matched.
+class SearchHit {
+  const SearchHit({required this.note, required this.snippets});
+
+  final Note note;
+
+  /// Matching lines, in the order they appear. Empty when the only match was in
+  /// the title — the group header already shows that.
+  final List<SearchSnippet> snippets;
+
+  int get matchCount => snippets.length;
+}
+
+/// One matching line, with the range to pick out inside it.
+class SearchSnippet {
+  const SearchSnippet({
+    required this.text,
+    required this.matchStart,
+    required this.matchEnd,
+  });
+
+  final String text;
+
+  /// Range to highlight inside [text]. `-1` when there is nothing to mark.
+  final int matchStart;
+  final int matchEnd;
+
+  bool get hasHighlight => matchStart >= 0 && matchEnd > matchStart;
+}
+
 enum SaveState { idle, dirty, saving, saved }
 
 /// Owns the vault: loading, filtering, editing and persisting notes.
@@ -56,7 +86,6 @@ class NotesController extends ChangeNotifier {
   // -------------------------------------------------------------- filter state
   String _query = '';
   bool _caseSensitive = false;
-  String? _activeTag;
 
   // ------------------------------------------------------------------ getters
 
@@ -73,8 +102,19 @@ class NotesController extends ChangeNotifier {
   /// Whether the query matches case for case. Off by default, because most
   /// searches are for a word rather than for its capitalisation.
   bool get caseSensitive => _caseSensitive;
-  String? get activeTag => _activeTag;
-  bool get isFiltered => _query.isNotEmpty || _activeTag != null;
+
+  /// The tag the query is pinned to, if any.
+  ///
+  /// Derived from the query rather than stored beside it: clicking `#入门` in a
+  /// note types `tag:#入门` into the search box, so there is exactly one place
+  /// that says what is being filtered — and the user can see it, edit it, or
+  /// add a word after it.
+  String? get activeTag {
+    final List<String> tags = parseQuery(_query).tags;
+    return tags.isEmpty ? null : tags.first;
+  }
+
+  bool get isFiltered => _query.trim().isNotEmpty;
 
   /// Folder that receives the next new note. Empty means the vault root.
   String get activeFolder => _activeFolder;
@@ -152,16 +192,153 @@ class NotesController extends ChangeNotifier {
   Note? get draft => _draft;
 
   List<Note> get visibleNotes {
-    final String raw = _query.trim();
+    final ({List<String> tags, String text}) parsed = parseQuery(_query);
+    final String raw = parsed.text;
     final String q = _caseSensitive ? raw : raw.toLowerCase();
     String fold(String text) => _caseSensitive ? text : text.toLowerCase();
     return _ordered.where((Note n) {
-      if (_activeTag != null && !n.tags.contains(_activeTag)) return false;
+      // Every `tag:` filter has to hold; tags are matched case-insensitively
+      // because they are labels, not code.
+      for (final String tag in parsed.tags) {
+        final String needle = tag.toLowerCase();
+        if (!n.tags.any((String t) => t.toLowerCase() == needle)) return false;
+      }
       if (q.isEmpty) return true;
       return fold(n.title).contains(q) ||
           fold(n.body).contains(q) ||
           n.tags.any((String t) => fold(t).contains(q));
     }).toList(growable: false);
+  }
+
+  /// The visible notes, each with the line that made it match.
+  ///
+  /// A list of names answers "which notes"; a search wants "where", so every
+  /// hit carries the matching line and the range inside it to highlight.
+  List<SearchHit> get searchHits {
+    final ({List<String> tags, String text}) parsed = parseQuery(_query);
+    return <SearchHit>[
+      for (final Note note in visibleNotes) _hitFor(note, parsed),
+    ];
+  }
+
+  /// Splits a query into `tag:` filters and the free text that is left.
+  ///
+  /// `tag:#入门 引用` means "notes tagged 入门 that mention 引用": the tag is a
+  /// filter, not a word to look for, so it is parsed out instead of being
+  /// matched against the body — otherwise a note that merely mentions the tag
+  /// in passing would still be found.
+  static ({List<String> tags, String text}) parseQuery(String raw) {
+    final List<String> tags = <String>[];
+    final StringBuffer text = StringBuffer();
+    for (final String token in raw.split(RegExp(r'\s+'))) {
+      if (token.isEmpty) continue;
+      if (token.toLowerCase().startsWith('tag:')) {
+        final String name = token
+            .substring(4)
+            .replaceFirst(RegExp(r'^#'), '')
+            .trim();
+        if (name.isNotEmpty) tags.add(name);
+      } else {
+        if (text.isNotEmpty) text.write(' ');
+        text.write(token);
+      }
+    }
+    return (tags: tags, text: text.toString());
+  }
+
+  /// Every matching line in [note], one snippet per line, in source order.
+  ///
+  /// A note can match on several lines — every mention of a tag, say — and each
+  /// of them is worth showing: the count in the group header has to mean
+  /// something, and one snippet per note would hide the other four.
+  SearchHit _hitFor(Note note, ({List<String> tags, String text}) parsed) {
+    final List<String> needles = <String>[
+      for (final String tag in parsed.tags) '#$tag',
+      if (parsed.text.isNotEmpty) parsed.text,
+    ];
+    final List<SearchSnippet> snippets = <SearchSnippet>[];
+    final Set<int> lines = <int>{};
+
+    for (final String needle in needles) {
+      int from = 0;
+      while (snippets.length < _kMaxSnippets) {
+        final int at = _indexOf(note.body, needle, from);
+        if (at < 0) break;
+        final int lineStart = note.body.lastIndexOf('\n', at) + 1;
+        // Two needles on one line is still one line: the group shows lines, and
+        // the same line twice would inflate the count.
+        if (lines.add(lineStart)) {
+          snippets.add(_snippetAt(note.body, at, needle.length, lineStart));
+        }
+        from = at + (needle.isEmpty ? 1 : needle.length);
+      }
+    }
+
+    // Matched on the title only: the header already shows the name, so fall
+    // back to the first line of the body as quiet context.
+    if (snippets.isEmpty) {
+      final String firstLine = note.body
+          .split('\n')
+          .firstWhere((String line) => line.trim().isNotEmpty, orElse: () => '');
+      if (firstLine.trim().isNotEmpty) {
+        snippets.add(
+          SearchSnippet(
+            text: firstLine.trim(),
+            matchStart: -1,
+            matchEnd: -1,
+          ),
+        );
+      }
+    }
+    return SearchHit(note: note, snippets: snippets);
+  }
+
+  /// How many snippets one note may contribute before the group becomes a
+  /// document view rather than a search result.
+  static const int _kMaxSnippets = 20;
+
+  /// The line containing [at], trimmed, with the highlight mapped onto it.
+  ///
+  /// Long lines are cut to a window around the match, because a snippet that
+  /// starts at column zero of a 400-character paragraph would push the
+  /// highlight out of the two visible lines — which is the only reason to show
+  /// the snippet at all.
+  SearchSnippet _snippetAt(
+    String body,
+    int at,
+    int length,
+    int lineStart,
+  ) {
+    int lineEnd = body.indexOf('\n', at);
+    if (lineEnd < 0) lineEnd = body.length;
+    final String rawLine = body.substring(lineStart, lineEnd);
+    final int lead = rawLine.length - rawLine.trimLeft().length;
+    String text = rawLine.trim();
+    int start = at - lineStart - lead;
+    int end = start + length;
+
+    const int window = 120;
+    if (text.length > window) {
+      final int from = (start - 30).clamp(0, text.length - window);
+      final int to = from + window;
+      final String head = from > 0 ? '…' : '';
+      final String tail = to < text.length ? '…' : '';
+      text = '$head${text.substring(from, to)}$tail';
+      start += head.length - from;
+      end += head.length - from;
+    }
+
+    return SearchSnippet(
+      text: text,
+      matchStart: start.clamp(0, text.length),
+      matchEnd: end.clamp(0, text.length),
+    );
+  }
+
+  int _indexOf(String haystack, String needle, [int from = 0]) {
+    if (needle.isEmpty) return -1;
+    if (_caseSensitive) return haystack.indexOf(needle, from);
+    return haystack.toLowerCase().indexOf(needle.toLowerCase(), from);
   }
 
   List<TagStat> get tags {
@@ -217,12 +394,15 @@ class NotesController extends ChangeNotifier {
     }
     _notes = loaded;
     _folders = folders;
+    // A tab whose note is gone (deleted or moved on disk) has nothing to show.
+    _openIds.removeWhere((String id) => _noteById(id) == null);
     if (_activeFolder.isNotEmpty && !_folderPaths().contains(_activeFolder)) {
       _activeFolder = '';
     }
     _resort();
     if (!keepSelection || selectedNote == null) {
       _selectedId = _ordered.isEmpty ? null : _ordered.first.id;
+      if (_selectedId != null) _rememberTab(_selectedId!);
       _draft = selectedNote;
       _draftOriginalPath = _draft?.relativePath;
     } else {
@@ -271,13 +451,12 @@ class NotesController extends ChangeNotifier {
 
   // --------------------------------------------------------------- filtering
 
-  /// The text in the field *is* the filter. Typing lets go of any tag that was
-  /// pinned before, so a query always looks at the whole vault instead of the
-  /// corner the last tag left it in.
+  /// The text in the field *is* the filter — including its `tag:` parts, which
+  /// is why there is no separate "active tag" to keep in sync: whatever the
+  /// field says is what the list shows.
   void setQuery(String value) {
-    if (_query == value && _activeTag == null) return;
+    if (_query == value) return;
     _query = value;
-    _activeTag = null;
     notifyListeners();
   }
 
@@ -287,19 +466,14 @@ class NotesController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Picking a tag is a filter of its own: whatever text was in the field is
-  /// dropped, so the list shows that tag's notes and nothing else.
+  /// Picking a tag writes `tag:#name` into the field, so the filter is visible
+  /// and editable; picking the same tag again clears it.
   void toggleTag(String tagName) {
-    _query = '';
-    _activeTag = _activeTag == tagName ? null : tagName;
-    notifyListeners();
+    final String next = 'tag:#$tagName';
+    setQuery(_query.trim() == next ? '' : next);
   }
 
-  void clearFilters() {
-    _query = '';
-    _activeTag = null;
-    notifyListeners();
-  }
+  void clearFilters() => setQuery('');
 
   // ----------------------------------------------------------------- folders
 
@@ -349,14 +523,91 @@ class NotesController extends ChangeNotifier {
 
   // -------------------------------------------------------------- selection
 
+  /// Notes that are open, in tab order.
+  ///
+  /// The selected id is always one of these — or null when the strip is empty.
+  /// Opening a note that is already open just switches to its tab; the strip
+  /// never holds two tabs for one note.
+  final List<String> _openIds = <String>[];
+
+  List<String> get openIds => List<String>.unmodifiable(_openIds);
+
+  /// The open notes in tab order. A note that disappeared from the vault is
+  /// skipped rather than drawn as a blank tab.
+  List<Note> get openNotes {
+    final List<Note> open = <Note>[];
+    for (final String id in _openIds) {
+      final Note? note = _noteById(id);
+      if (note != null) open.add(note);
+    }
+    return open;
+  }
+
+  Note? _noteById(String id) {
+    for (final Note note in _notes) {
+      if (note.id == id) return note;
+    }
+    return null;
+  }
+
+  void _rememberTab(String id) {
+    if (!_openIds.contains(id)) _openIds.add(id);
+  }
+
   void select(String? id) {
-    if (_selectedId == id) return;
+    if (_selectedId == id) {
+      // A tab can be missing after a restore or a delete that ran behind the
+      // shell's back; selecting it again is the cheapest way to heal that.
+      if (id != null && !_openIds.contains(id)) {
+        _openIds.add(id);
+        notifyListeners();
+      }
+      return;
+    }
     _autosave.flush(() => _persistDraft());
+    if (id != null) _rememberTab(id);
     _selectedId = id;
     _draft = selectedNote;
     _draftOriginalPath = _draft?.relativePath;
     _saveState = SaveState.idle;
     notifyListeners();
+  }
+
+  /// Closes one tab. Closing the active tab hands the editor to its right-hand
+  /// neighbour, or to the left one when it was last — the same rule a browser
+  /// uses, so the strip never jumps back to the far end.
+  void closeTab(String id) {
+    final int index = _openIds.indexOf(id);
+    if (index < 0) return;
+    final bool wasActive = _selectedId == id;
+    _openIds.removeAt(index);
+    if (!wasActive) {
+      notifyListeners();
+      return;
+    }
+    _autosave.flush(() => _persistDraft());
+    _selectedId = _openIds.isEmpty
+        ? null
+        : _openIds[index.clamp(0, _openIds.length - 1)];
+    _draft = selectedNote;
+    _draftOriginalPath = _draft?.relativePath;
+    _saveState = SaveState.idle;
+    notifyListeners();
+  }
+
+  /// Ctrl+Tab / Ctrl+Shift+Tab: moves between open tabs, wrapping at the ends.
+  void selectAdjacentTab(int delta) {
+    if (_openIds.length < 2) return;
+    final int current = _selectedId == null
+        ? -1
+        : _openIds.indexOf(_selectedId!);
+    if (current < 0) {
+      select(_openIds.first);
+      return;
+    }
+    final int count = _openIds.length;
+    final int next = (current + delta) % count;
+    select(_openIds[next < 0 ? next + count : next]);
   }
 
   void selectAdjacentInList(List<Note> visible, int delta) {
@@ -387,6 +638,7 @@ class NotesController extends ChangeNotifier {
     _notes = <Note>[note, ..._notes];
     _resort();
     _selectedId = note.id;
+    _rememberTab(note.id);
     _draft = note;
     _draftOriginalPath = note.relativePath;
     _saveState = SaveState.dirty;
@@ -436,6 +688,7 @@ class NotesController extends ChangeNotifier {
     _notes = <Note>[copy, ..._notes];
     _resort();
     _selectedId = copy.id;
+    _rememberTab(copy.id);
     _draft = copy;
     _draftOriginalPath = null;
     _saveState = SaveState.dirty;
@@ -598,12 +851,21 @@ class NotesController extends ChangeNotifier {
     final Set<String> ids = <String>{for (final Note n in targets) n.id};
     final String? openId = _selectedId ?? _draft?.id;
     final bool removingOpen = openId != null && ids.contains(openId);
+    final int openTabIndex = openId == null ? -1 : _openIds.indexOf(openId);
     if (removingOpen) _autosave.cancel();
 
     _notes = _notes.where((Note n) => !ids.contains(n.id)).toList();
     _ordered = _ordered.where((Note n) => !ids.contains(n.id)).toList();
+    _openIds.removeWhere(ids.contains);
     if (removingOpen || _selectedId == null) {
-      _selectedId = _ordered.isEmpty ? null : _ordered.first.id;
+      if (openTabIndex >= 0 && _openIds.isNotEmpty) {
+        _selectedId = _openIds[openTabIndex.clamp(0, _openIds.length - 1)];
+      } else {
+        _selectedId = _openIds.isNotEmpty
+            ? _openIds.first
+            : (_ordered.isEmpty ? null : _ordered.first.id);
+        if (_selectedId != null) _rememberTab(_selectedId!);
+      }
       _draft = selectedNote;
       _draftOriginalPath = _draft?.relativePath;
       _saveState = SaveState.idle;

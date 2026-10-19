@@ -14,6 +14,7 @@ import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/markdown_outline.dart';
 import '../../core/utils/table_model.dart';
 import '../../core/utils/table_selection.dart';
+import 'code_block_painter.dart';
 import 'editor_context_menu.dart';
 import 'live_markdown.dart';
 import 'selection_wash.dart';
@@ -751,10 +752,10 @@ class MarkdownEditor extends StatefulWidget {
     required this.focusNode,
     required this.scrollController,
     required this.fontSize,
-    required this.hintText,
     this.padding = const EdgeInsets.fromLTRB(40, 28, 40, 200),
     this.maxWidth = AppLayout.proseMaxWidth,
     this.onChanged,
+    this.onTopLineChanged,
     this.readOnly = false,
   });
 
@@ -762,10 +763,14 @@ class MarkdownEditor extends StatefulWidget {
   final FocusNode focusNode;
   final ScrollController scrollController;
   final double fontSize;
-  final String hintText;
   final EdgeInsets padding;
   final double maxWidth;
   final ValueChanged<String>? onChanged;
+
+  /// Reports the source line at the top of the viewport on every scroll, so a
+  /// reader who is only scrolling still gets the right section in the outline.
+  final ValueChanged<int>? onTopLineChanged;
+
   final bool readOnly;
 
   @override
@@ -837,6 +842,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     widget.controller.addListener(_pinCaretAboveText);
     widget.controller.addListener(_scheduleOverlayRefresh);
     widget.scrollController.addListener(_scheduleOverlayRefresh);
+    widget.scrollController.addListener(_reportTopLine);
     widget.focusNode.addListener(_pinCaretAboveText);
     _pinCaretAboveText();
   }
@@ -852,7 +858,9 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     }
     if (oldWidget.scrollController != widget.scrollController) {
       oldWidget.scrollController.removeListener(_scheduleOverlayRefresh);
+      oldWidget.scrollController.removeListener(_reportTopLine);
       widget.scrollController.addListener(_scheduleOverlayRefresh);
+      widget.scrollController.addListener(_reportTopLine);
     }
     if (oldWidget.focusNode != widget.focusNode) {
       oldWidget.focusNode.removeListener(_pinCaretAboveText);
@@ -974,6 +982,94 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       }
     }
     c.selection = TextSelection.collapsed(offset: offset);
+  }
+
+  /// Focuses the field and parks the caret at the end of the note.
+  ///
+  /// Used by the press on the empty paper below the last line, which is outside
+  /// the field's box and therefore has to do the field's work for it.
+  void _focusBodyAtEnd() {
+    widget.focusNode.requestFocus();
+    final TextEditingController c = widget.controller;
+    if (c is MarkdownSourceController) c.disarmClickGuard();
+    c.selection = TextSelection.collapsed(offset: c.text.length);
+  }
+
+  /// The field's own state, for the menu rows that are the platform's commands
+  /// (copy, cut, paste, select all).
+  EditableTextState? _editableTextState() {
+    final BuildContext? root = _fieldKey.currentContext;
+    if (root == null) return null;
+    EditableTextState? found;
+    void visit(Element element) {
+      if (found != null) return;
+      if (element is StatefulElement && element.state is EditableTextState) {
+        found = element.state as EditableTextState;
+        return;
+      }
+      element.visitChildElements(visit);
+    }
+
+    root.visitChildElements(visit);
+    return found;
+  }
+
+  /// Opens the editor's right-click menu at [globalPosition].
+  ///
+  /// Only the press that lands outside the field's box needs this; a press on
+  /// the text is answered by the field's own `contextMenuBuilder`.
+  void _showMenuAt(Offset globalPosition) {
+    final EditableTextState? state = _editableTextState();
+    if (state == null) return;
+    unawaited(
+      showAppMenu(
+        context,
+        globalPosition: globalPosition,
+        // The menu is a route, and a route takes the focus with it. The caret
+        // has to stay on screen under the menu, exactly as it does for a
+        // right-click on the text.
+        keepFocus: widget.focusNode,
+        entries: buildEditorMenu(
+          value: widget.controller.value,
+          onApply: _applyEdit,
+          state: state,
+          resolve: _resolveRange,
+          onEditCell: _openCellEditor,
+        ),
+      ),
+    );
+  }
+
+  /// Whether [globalPosition] sits below the last painted line.
+  ///
+  /// The field ends where its text ends, so the rest of the sheet belongs to
+  /// the scroll view alone; the editor treats a press there as "end of note".
+  bool _belowText(Offset globalPosition) {
+    final RenderEditable? re = _editable();
+    if (re == null) return false;
+    final Offset bottom = re.localToGlobal(Offset(0, re.size.height));
+    return globalPosition.dy > bottom.dy;
+  }
+
+  /// Reports the source line the viewport starts on, whenever it is scrolled.
+  ///
+  /// Asked of the render object rather than measured: one pixel below the
+  /// pane's top edge, `getPositionForPoint` answers exactly the line a reader
+  /// sees first — wrapped paragraphs and heading line boxes included — for the
+  /// price of a hit test.
+  void _reportTopLine() {
+    final ValueChanged<int>? report = widget.onTopLineChanged;
+    if (report == null) return;
+    final RenderEditable? re = _editable();
+    final RenderObject? root = context.findRenderObject();
+    if (re == null || root is! RenderBox || !root.hasSize) return;
+    final Offset top = root.localToGlobal(Offset.zero);
+    final String text = widget.controller.text;
+    final int offset = re
+        .getPositionForPoint(Offset(top.dx + 2, top.dy + 1))
+        .offset
+        .clamp(0, text.length);
+    report('\n'.allMatches(text.substring(0, offset)).length);
   }
 
   /// Table caret movement: Home, End and the four arrows.
@@ -1252,19 +1348,20 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// click handling rewrites the selection before the button comes up.
   TableRange? _rangeBeforeChromeTap;
 
-  /// What the pointer looks like over the chrome: the plain arrow on a grip,
-  /// `click` on a `+`.
+  /// What the pointer looks like over the editor: the I-beam wherever prose can
+  /// be typed — the field stops at its last line, but the space below it is part
+  /// of the writing surface too — the plain arrow on a grip, `click` on a `+`.
   ///
   /// A plain `MouseCursor`, not a `MouseRegion.cursor` computed inline: the
   /// region has to be rebuilt for the cursor to change, and rebuilding the
   /// editor on every mouse move is exactly what the painted chrome exists to
   /// avoid. It only changes when the *kind* of thing under the pointer changes.
-  MouseCursor _chromeCursor = MouseCursor.defer;
+  MouseCursor _pointerCursor = SystemMouseCursors.text;
 
   MouseCursor _cursorAt(Offset? position) {
-    if (position == null) return MouseCursor.defer;
+    if (position == null) return SystemMouseCursors.text;
     final (TableRowChrome, TableChromeTarget)? hit = _chromeAt(position);
-    if (hit == null) return MouseCursor.defer;
+    if (hit == null) return SystemMouseCursors.text;
     return switch (hit.$2.kind) {
       TableChromeKind.rowHandle ||
       TableChromeKind.columnHandle => SystemMouseCursors.basic,
@@ -1274,8 +1371,8 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   }
 
   void _setCursor(MouseCursor next) {
-    if (next == _chromeCursor) return;
-    setState(() => _chromeCursor = next);
+    if (next == _pointerCursor) return;
+    setState(() => _pointerCursor = next);
   }
 
   /// The whole point of the chrome's visibility: nothing is drawn unless the
@@ -1290,7 +1387,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   void _onPointerExit(PointerExitEvent event) {
     if (_grabbedRow != null) return;
     tablePointerPosition.value = null;
-    _setCursor(MouseCursor.defer);
+    _setCursor(SystemMouseCursors.text);
   }
 
   /// Runs whatever the chrome control meant. Returns whether an edit landed.
@@ -1549,9 +1646,48 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
         return;
       }
     }
+    // The paper below the last line is nobody's: the field is exactly as tall
+    // as its text, so a press down there never reached it — the caret only
+    // appeared when the click landed on a line that already had words on it.
+    // Treat the empty sheet as "carry on at the end", which is what every
+    // editor does, and give the field the focus a tap on text would have.
+    if (_belowText(event.position)) {
+      if (secondary) {
+        // A right-click out here is the same gesture as one on the text, and it
+        // has to give the same menu. The field never sees it, so the menu is
+        // opened by hand — after the caret has been parked at the end, so the
+        // rows describe the place the menu was summoned from.
+        _focusBodyAtEnd();
+        _showMenuAt(event.position);
+        _downPosition = null;
+        _gestureMoved = false;
+        return;
+      }
+      _focusBodyAtEnd();
+      // ⛔ On desktop a `TextField` unfocuses the primary focus when a press
+      // lands outside it, and that runs **after** this handler — the press is
+      // outside both the title and the body, so the focus asked for above was
+      // taken straight back and only a second click stuck. Re-assert at the end
+      // of the frame, once that unfocus has landed.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || widget.focusNode.hasFocus) return;
+        _focusBodyAtEnd();
+      });
+      _downPosition = null;
+      _gestureMoved = false;
+      return;
+    }
+    // The caret to hand back is read from the **painting**, not from the value:
+    // the field's own gesture handling can write a word selection during this
+    // very event, either side of this handler, and a range that arrived that way
+    // must not be mistaken for the selection the user had. `paintedSelection` is
+    // the one honest "this is what was on screen when the button went down".
+    final TextEditingController anchor = widget.controller;
     _caretBeforeCheckboxTap = _checkboxAt(event.position) == null
         ? null
-        : widget.controller.selection;
+        : (anchor is MarkdownSourceController
+              ? (anchor.paintedSelection ?? anchor.selection)
+              : anchor.selection);
     _downPosition = event.position;
     _gestureMoved = false;
     _secondaryGesture = secondary;
@@ -1692,21 +1828,28 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
     final TextEditingController c = widget.controller;
     final String next = toggleTaskAt(c.text, at);
+    // Whatever the pointer dragged out on the way, a click on a marker ends as a
+    // click. `TextField` counts clicks, and two of them select a **word**: the
+    // marker column is one character wide — the box swallows the rest of
+    // `- [ ] ` to nothing — so the range's only box with pixels is the marker
+    // cell itself, and the wash paints a square growing out of the checkbox.
+    // Handing the old caret back is not enough on its own: a press that missed
+    // the box has no caret to hand back.
+    final TextSelection end = saved ?? TextSelection.collapsed(offset: at);
     _downPosition = null;
-    if (next == c.text) return;
-    // `[ ]` ⇄ `[x]` is one character for one, so selections stay valid, the undo
-    // stack survives and nothing downstream re-lays out.
-    c.value = c.value.copyWith(text: next, composing: TextRange.empty);
-    widget.onChanged?.call(next);
-    if (saved != null) {
-      // Give the caret back: flipping a checkbox should not also move the
-      // insertion point (otherwise the next keystroke lands inside the marker).
-      // The field's own caret move happens after this handler, so it has to be
-      // undone in a microtask — same frame, no visible jump.
-      scheduleMicrotask(() {
-        if (mounted) c.selection = saved;
-      });
+    if (next != c.text) {
+      // `[ ]` ⇄ `[x]` is one character for one, so selections stay valid, the
+      // undo stack survives and nothing downstream re-lays out.
+      c.value = c.value.copyWith(text: next, composing: TextRange.empty);
+      widget.onChanged?.call(next);
     }
+    // Give the caret back: flipping a checkbox should not also move the
+    // insertion point (otherwise the next keystroke lands inside the marker).
+    // The field's own caret/selection move happens after this handler, so it has
+    // to be undone in a microtask — same frame, no visible jump.
+    scheduleMicrotask(() {
+      if (mounted) c.selection = end;
+    });
   }
 
   void _onPointerCancel(PointerCancelEvent event) {
@@ -1946,6 +2089,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     widget.controller.removeListener(_pinCaretAboveText);
     widget.controller.removeListener(_scheduleOverlayRefresh);
     widget.scrollController.removeListener(_scheduleOverlayRefresh);
+    widget.scrollController.removeListener(_reportTopLine);
     widget.focusNode.removeListener(_pinCaretAboveText);
     _cellText?.dispose();
     _cellFocus?.dispose();
@@ -1970,10 +2114,8 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     final TextStyle style = editorProseStyle(p, widget.fontSize);
     // The field's own region is deeper than the editor's, so its cursor wins
     // wherever it covers the chrome — which is why a column grip used to show
-    // the I-beam. Hand it the chrome cursor explicitly.
-    final MouseCursor fieldCursor = _chromeCursor == MouseCursor.defer
-        ? SystemMouseCursors.text
-        : _chromeCursor;
+    // the I-beam. Hand it the editor's cursor explicitly.
+    final MouseCursor fieldCursor = _pointerCursor;
 
     final Widget editor = Shortcuts(
       shortcuts: <ShortcutActivator, Intent>{
@@ -2152,7 +2294,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
         // `deferToChild` listener only hears about pointers that hit the field
         // itself. That is why a click on the grip did nothing at first.
         child: MouseRegion(
-          cursor: _chromeCursor,
+          cursor: _pointerCursor,
           onHover: _onPointerHover,
           onExit: _onPointerExit,
           child: Listener(
@@ -2250,11 +2392,6 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                               enabledBorder: InputBorder.none,
                               focusedBorder: InputBorder.none,
                               contentPadding: EdgeInsets.zero,
-                              hintText: widget.hintText,
-                              hintStyle: style.copyWith(
-                                color: p.textTertiary.withValues(alpha: 0.7),
-                                fontWeight: FontWeight.w400,
-                              ),
                             ),
                             // The one hook that decides whether right-click reaches
                             // [buildEditorContextMenu] at all. `SelectionOverlay`
@@ -2302,6 +2439,26 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     final _CellEdit? cell = _cellEdit;
     return Stack(
       children: <Widget>[
+        // A fenced block is one rounded slab, painted here because a
+        // `TextStyle` background can only cover the run it belongs to — which
+        // is what turned a block into a stripe per line. Under the wash, so a
+        // selection still reads over the code.
+        Positioned.fill(
+          child: IgnorePointer(
+            child: CustomPaint(
+              painter: CodeBlockPainter(
+                controller: widget.controller,
+                scrollController: widget.scrollController,
+                editable: _editable,
+                editorBox: () {
+                  final RenderObject? root = context.findRenderObject();
+                  return root is RenderBox && root.hasSize ? root : null;
+                },
+                fill: codeSlabFill(p),
+              ),
+            ),
+          ),
+        ),
         // The selection's wash is painted here rather than by the field, so
         // every line can leave a two-pixel seam between its band and the next
         // one. The field's own boxes still decide the geometry (see

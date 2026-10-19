@@ -10,7 +10,10 @@ Future<void> setupWindow() async {
     minimumSize: Size(900, 580),
     center: true,
     title: 'NRS · Markdown 笔记',
-    titleBarStyle: TitleBarStyle.normal,
+    // The caption is drawn by the app itself (`ui/shell/title_bar_io.dart`).
+    // `hidden` keeps the native resize border and the DWM shadow; only the
+    // 36px strip of system chrome goes away.
+    titleBarStyle: TitleBarStyle.hidden,
     backgroundColor: Colors.transparent,
     skipTaskbar: false,
   );

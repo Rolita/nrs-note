@@ -7,7 +7,6 @@ import 'package:provider/provider.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
-import '../../core/utils/debouncer.dart';
 import '../../core/utils/markdown_actions.dart';
 import '../../data/models/note.dart';
 import '../../state/notes_controller.dart';
@@ -22,13 +21,16 @@ class EditorPane extends StatefulWidget {
   const EditorPane({
     super.key,
     required this.onDelete,
-    required this.onToast,
     this.onCursorLineChanged,
+    this.onOpenSearch,
   });
 
   final void Function(Note note) onDelete;
-  final void Function(String message) onToast;
   final ValueChanged<int>? onCursorLineChanged;
+
+  /// Called when a `#tag` in the text is clicked: the shell switches the
+  /// sidebar to search so the results are actually on screen.
+  final VoidCallback? onOpenSearch;
 
   @override
   State<EditorPane> createState() => EditorPaneState();
@@ -48,6 +50,20 @@ class EditorPaneState extends State<EditorPane> {
   String? _boundNoteId;
   int _cursorLine = 0;
   int _cursorColumn = 1;
+
+  /// The line the outline is highlighting. It follows the caret while the user
+  /// writes, and the top of the viewport while the user only scrolls.
+  int _outlineLine = 0;
+
+  /// When the caret last moved. A scroll that happens right after a keystroke is
+  /// the field keeping the caret in view, not the reader scrolling, and it must
+  /// not drag the outline away from the line being written.
+  DateTime _lastCaretMove = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// True while the editor is animating to a heading, so the scroll events that
+  /// animation produces do not fight the heading that was just clicked.
+  bool _jumping = false;
+
   double _contentWidth = AppLayout.proseMaxWidth;
   bool _binding = false;
 
@@ -89,10 +105,32 @@ class EditorPaneState extends State<EditorPane> {
         _cursorColumn = column;
       });
       if (lineMoved) {
-        widget.onCursorLineChanged?.call(line);
+        _lastCaretMove = DateTime.now();
+        _reportOutlineLine(line);
         _maybeTypewriter(line);
       }
     }
+  }
+
+  /// Tells the outline which line to light up, once.
+  void _reportOutlineLine(int line) {
+    if (line == _outlineLine) return;
+    _outlineLine = line;
+    widget.onCursorLineChanged?.call(line);
+  }
+
+  /// The viewport was scrolled: follow the first line the reader can see.
+  ///
+  /// Two scrolls are not the reader's: the animation started by a click in the
+  /// outline, and the field keeping the caret in view a moment after a
+  /// keystroke. Both are ignored — the caret already names the right section.
+  void _onTopLine(int line) {
+    if (_jumping) return;
+    if (DateTime.now().difference(_lastCaretMove) <
+        const Duration(milliseconds: 300)) {
+      return;
+    }
+    _reportOutlineLine(line);
   }
 
   /// Called by the shell so global shortcuts can reach the live controllers.
@@ -116,9 +154,10 @@ class EditorPaneState extends State<EditorPane> {
     _title.text = note.title;
     _body.text = note.body;
     _body.selection = const TextSelection.collapsed(offset: 0);
-    final bool hadCursor = _cursorLine != 0;
+    final bool hadCursor = _cursorLine != 0 || _outlineLine != 0;
     _cursorLine = 0;
     _cursorColumn = 1;
+    _outlineLine = 0;
     _binding = false;
     if (hadCursor) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -130,7 +169,8 @@ class EditorPaneState extends State<EditorPane> {
     // placeholder is selected so the first keystroke replaces it instead of
     // being appended to it.
     final bool fresh =
-        note.body.isEmpty && DateTime.now().difference(note.createdAt).inSeconds < 4;
+        note.body.isEmpty &&
+        DateTime.now().difference(note.createdAt).inSeconds < 4;
     if (fresh) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -173,11 +213,21 @@ class EditorPaneState extends State<EditorPane> {
       0.0,
       pos.maxScrollExtent,
     );
-    await _editorScroll.animateTo(
-      target,
-      duration: duration,
-      curve: AppMotion.enter,
-    );
+    // The heading that was clicked is the one the outline must keep lit, even
+    // though the jump lands it a fifth of the way down and the lines above it
+    // are what the viewport now starts on.
+    _jumping = true;
+    try {
+      await _editorScroll.animateTo(
+        target,
+        duration: duration,
+        curve: AppMotion.enter,
+      );
+    } finally {
+      // One more frame: the last scroll notification of the animation arrives
+      // after `animateTo` completes.
+      WidgetsBinding.instance.addPostFrameCallback((_) => _jumping = false);
+    }
   }
 
   /// Jumping from the outline also parks the caret on that heading, so the raw
@@ -223,10 +273,16 @@ class EditorPaneState extends State<EditorPane> {
     });
   }
 
+  /// Clicking a `#tag` in the text searches for it.
+  ///
+  /// The tag becomes a `tag:#name` query rather than a hidden filter, so the
+  /// search box shows what is being filtered and the user can keep typing after
+  /// it. Switching the sidebar to search is part of the gesture: setting a query
+  /// nobody can see, in a panel that is showing the file tree, looks like the
+  /// click did nothing.
   void _openTag(String tag) {
-    final NotesController notes = context.read<NotesController>();
-    notes.toggleTag(tag);
-    widget.onToast('按标签筛选:#$tag');
+    context.read<NotesController>().setQuery('tag:#$tag');
+    widget.onOpenSearch?.call();
   }
 
   /// Follows a `[[wikilink]]`, writing the note when nothing matches its title.
@@ -237,11 +293,7 @@ class EditorPaneState extends State<EditorPane> {
   /// retyped by hand.
   void _openWikilink(String target) {
     if (target.trim().isEmpty) return;
-    final NotesController notes = context.read<NotesController>();
-    final ({Note note, bool created}) opened = notes.openOrCreateByTitle(target);
-    if (opened.created) {
-      widget.onToast('没有找到「${target.trim()}」,已新建这一篇');
-    }
+    context.read<NotesController>().openOrCreateByTitle(target);
   }
 
   // ------------------------------------------------------------------ build
@@ -274,7 +326,7 @@ class EditorPaneState extends State<EditorPane> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             _header(p, note, notes, settings),
-            _titleRow(p, note, notes),
+            _titleRow(p, notes),
             // No formatting ribbon: every action lives in the editor's own
             // right-click menu now, and the shortcuts are unchanged.
             Expanded(
@@ -303,7 +355,9 @@ class EditorPaneState extends State<EditorPane> {
         LogicalKeyboardKey.keyE,
         control: true,
         shift: true,
-      ): const _EditIntent(_EditKind.codeBlock),
+      ): const _EditIntent(
+        _EditKind.codeBlock,
+      ),
       const SingleActivator(LogicalKeyboardKey.keyK, control: true):
           const _EditIntent(_EditKind.link),
       const SingleActivator(LogicalKeyboardKey.keyS, control: true):
@@ -320,16 +374,30 @@ class EditorPaneState extends State<EditorPane> {
         LogicalKeyboardKey.digit7,
         control: true,
         shift: true,
-      ): const _EditIntent(_EditKind.orderedList),
+      ): const _EditIntent(
+        _EditKind.orderedList,
+      ),
       const SingleActivator(
         LogicalKeyboardKey.digit8,
         control: true,
         shift: true,
-      ): const _EditIntent(_EditKind.bulletList),
-      const SingleActivator(LogicalKeyboardKey.keyT, control: true, shift: true):
-          const _EditIntent(_EditKind.table),
-      const SingleActivator(LogicalKeyboardKey.keyQ, control: true, shift: true):
-          const _EditIntent(_EditKind.quote),
+      ): const _EditIntent(
+        _EditKind.bulletList,
+      ),
+      const SingleActivator(
+        LogicalKeyboardKey.keyT,
+        control: true,
+        shift: true,
+      ): const _EditIntent(
+        _EditKind.table,
+      ),
+      const SingleActivator(
+        LogicalKeyboardKey.keyQ,
+        control: true,
+        shift: true,
+      ): const _EditIntent(
+        _EditKind.quote,
+      ),
     };
   }
 
@@ -400,13 +468,6 @@ class EditorPaneState extends State<EditorPane> {
           const SizedBox(width: AppSpace.xs),
           const Spacer(),
           AppIconButton(
-            icon: Icons.account_tree_outlined,
-            tooltip: '大纲',
-            shortcut: 'Ctrl+Shift+O',
-            active: settings.outlineVisible,
-            onPressed: () => settings.outlineVisible = !settings.outlineVisible,
-          ),
-          AppIconButton(
             icon: Icons.vertical_align_center_rounded,
             tooltip: '打字机模式',
             active: settings.typewriter,
@@ -424,14 +485,18 @@ class EditorPaneState extends State<EditorPane> {
             note: note,
             notes: notes,
             onDelete: () => widget.onDelete(note),
-            onToast: widget.onToast,
           ),
         ],
       ),
     );
   }
 
-  Widget _titleRow(AppPalette p, Note note, NotesController notes) {
+  Widget _titleRow(AppPalette p, NotesController notes) {
+    // H1, as the live renderer draws it: body size scaled by 1.62 with the
+    // same tracking and weight (see `_headingStyle` in live_markdown.dart).
+    // The title field *is* the note's H1 — there is no separate file-name row.
+    final double h1Size = context.read<SettingsController>().proseSize * 1.62;
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(
         AppSpace.xl,
@@ -439,70 +504,42 @@ class EditorPaneState extends State<EditorPane> {
         AppSpace.xl,
         AppSpace.sm,
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          TextField(
-            controller: _title,
-            focusNode: _titleFocus,
-            onChanged: notes.updateTitle,
-            cursorColor: p.accent,
-            cursorWidth: 1.8,
-            // Same rule as the body: highlight the title's glyphs, not the
-            // whole field width (Flutter's desktop default is `max`).
-            selectionWidthStyle: ui.BoxWidthStyle.tight,
-            style: TextStyle(
-              fontSize: 21,
-              height: 1.25,
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.5,
-              color: p.textPrimary,
-            ),
-            decoration: InputDecoration(
-              isDense: true,
-              filled: false,
-              border: InputBorder.none,
-              enabledBorder: InputBorder.none,
-              focusedBorder: InputBorder.none,
-              contentPadding: EdgeInsets.zero,
-              hintText: '未命名',
-              hintStyle: TextStyle(
-                fontSize: 21,
-                height: 1.25,
-                fontWeight: FontWeight.w700,
-                letterSpacing: -0.5,
-                color: p.textTertiary.withValues(alpha: 0.5),
-              ),
-            ),
+      child: TextField(
+        controller: _title,
+        focusNode: _titleFocus,
+        onChanged: notes.updateTitle,
+        cursorColor: p.accent,
+        cursorWidth: 1.8,
+        // Same rule as the body: highlight the title's glyphs, not the
+        // whole field width (Flutter's desktop default is `max`).
+        selectionWidthStyle: ui.BoxWidthStyle.tight,
+        style: TextStyle(
+          fontFamily: AppFonts.prose,
+          fontFamilyFallback: AppFonts.proseFallback,
+          fontSize: h1Size,
+          height: snapLineHeight(h1Size, 1.5),
+          fontWeight: FontWeight.w700,
+          letterSpacing: -0.5,
+          color: p.textPrimary,
+        ),
+        decoration: InputDecoration(
+          isDense: true,
+          filled: false,
+          border: InputBorder.none,
+          enabledBorder: InputBorder.none,
+          focusedBorder: InputBorder.none,
+          contentPadding: EdgeInsets.zero,
+          hintText: '未命名',
+          hintStyle: TextStyle(
+            fontFamily: AppFonts.prose,
+            fontFamilyFallback: AppFonts.proseFallback,
+            fontSize: h1Size,
+            height: snapLineHeight(h1Size, 1.5),
+            fontWeight: FontWeight.w700,
+            letterSpacing: -0.5,
+            color: p.textTertiary.withValues(alpha: 0.5),
           ),
-          const SizedBox(height: 9),
-          Row(
-            children: <Widget>[
-              Icon(
-                Icons.schedule_rounded,
-                size: 12,
-                color: p.textTertiary.withValues(alpha: 0.8),
-              ),
-              const SizedBox(width: 5),
-              Text(
-                '创建于 ${formatFullTime(note.createdAt)}',
-                style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
-              ),
-              const SizedBox(width: AppSpace.md),
-              Text('·', style: TextStyle(fontSize: AppText.caption, color: p.textTertiary)),
-              const SizedBox(width: AppSpace.md),
-              Text(
-                note.relativePath,
-                style: TextStyle(
-                  fontSize: AppText.caption,
-                  fontFamily: AppFonts.mono,
-                  fontFamilyFallback: AppFonts.monoFallback,
-                  color: p.textTertiary.withValues(alpha: 0.85),
-                ),
-              ),
-            ],
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -524,11 +561,8 @@ class EditorPaneState extends State<EditorPane> {
         scrollController: _editorScroll,
         fontSize: context.read<SettingsController>().proseSize,
         padding: _editorPadding,
-        hintText:
-            '开始写下你的想法…\n\n'
-            '直接输入 # 就会变成标题,输入 - 就会变成列表;\n'
-            '把光标移到某一行,那一行的 Markdown 标记就会显现出来。',
         onChanged: notes.updateBody,
+        onTopLineChanged: _onTopLine,
       ),
     );
   }
@@ -568,7 +602,10 @@ class EditorPaneState extends State<EditorPane> {
             decoration: BoxDecoration(color: color, shape: BoxShape.circle),
           ),
           const SizedBox(width: 7),
-          Text(label, style: TextStyle(fontSize: AppText.caption, color: p.textTertiary)),
+          Text(
+            label,
+            style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
+          ),
           const SizedBox(width: 14),
           _Stat(
             text: '行 ${_cursorLine + 1},列 $_cursorColumn',
@@ -638,8 +675,10 @@ class _Stat extends StatelessWidget {
   final Color color;
 
   @override
-  Widget build(BuildContext context) =>
-      Text(text, style: TextStyle(fontSize: AppText.caption, color: color));
+  Widget build(BuildContext context) => Text(
+    text,
+    style: TextStyle(fontSize: AppText.caption, color: color),
+  );
 }
 
 enum _EditKind {
@@ -776,13 +815,11 @@ class _MoreMenu extends StatelessWidget {
     required this.note,
     required this.notes,
     required this.onDelete,
-    required this.onToast,
   });
 
   final Note note;
   final NotesController notes;
   final VoidCallback onDelete;
-  final void Function(String message) onToast;
 
   @override
   Widget build(BuildContext context) {
@@ -797,16 +834,12 @@ class _MoreMenu extends StatelessWidget {
             await Clipboard.setData(
               ClipboardData(text: notes.exportSelectedMarkdown()),
             );
-            onToast('已复制 Markdown 到剪贴板');
           case 'duplicate':
             notes.duplicate(note);
-            onToast('已创建副本');
           case 'reveal':
-            final bool ok = await notes.revealVault();
-            if (!ok) onToast('当前平台不支持打开文件夹');
+            await notes.revealVault();
           case 'reload':
             await notes.refresh();
-            onToast('已从磁盘重新载入');
           case 'delete':
             onDelete();
         }

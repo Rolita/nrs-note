@@ -22,14 +22,12 @@ class NoteListPanel extends StatefulWidget {
     required this.onCreateNote,
     required this.onDeleteNotes,
     required this.onSwitchView,
-    required this.onToast,
   });
 
   final SidebarView view;
   final VoidCallback onCreateNote;
   final void Function(List<Note> notes) onDeleteNotes;
   final ValueChanged<SidebarView> onSwitchView;
-  final void Function(String message) onToast;
 
   @override
   State<NoteListPanel> createState() => NoteListPanelState();
@@ -43,6 +41,10 @@ class NoteListPanelState extends State<NoteListPanel> {
   /// Mirrors [VaultTreeState.allExpanded] so the toolbar button can flip its
   /// own label without waiting for a rebuild to read the tree.
   bool _allExpanded = true;
+
+  /// Result groups the user folded shut, by note id. Search results stay open
+  /// by default — a result you have to open is a result you did not find.
+  final Set<String> _collapsedResults = <String>{};
 
   @override
   void initState() {
@@ -97,13 +99,8 @@ class NoteListPanelState extends State<NoteListPanel> {
   Future<void> _createFolder() async {
     final NotesController notes = context.read<NotesController>();
     final String? path = await notes.createFolder('新建文件夹');
-    if (!mounted) return;
-    if (path == null) {
-      widget.onToast('文件夹名称无效');
-      return;
-    }
+    if (!mounted || path == null) return;
     _treeKey.currentState?.revealFolder(path);
-    widget.onToast('已创建文件夹「${path.split('/').last}」');
   }
 
   @override
@@ -113,8 +110,16 @@ class NoteListPanelState extends State<NoteListPanel> {
     final SettingsController settings = context.watch<SettingsController>();
     final List<Note> visible = notes.visibleNotes;
 
-    if (_search.text != notes.query && !_searchFocus.hasFocus) {
-      _search.text = notes.query;
+    // The field mirrors the query, including when the query was set from
+    // outside — clicking a `#tag` in the editor types `tag:#入门` here, and a
+    // field that kept the old text while the list changed underneath it would
+    // look broken. While the user types, `text == query` already, so this never
+    // fights the caret.
+    if (_search.text != notes.query) {
+      _search.value = TextEditingValue(
+        text: notes.query,
+        selection: TextSelection.collapsed(offset: notes.query.length),
+      );
     }
 
     return Container(
@@ -138,8 +143,30 @@ class NoteListPanelState extends State<NoteListPanel> {
               ),
             ),
           ] else if (widget.view == SidebarView.search) ...<Widget>[
-            _searchField(p, notes, settings),
-            Expanded(child: _searchResults(p, notes, visible)),
+            _searchField(p, notes),
+            if (notes.isFiltered)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppSpace.md + 2,
+                  0,
+                  AppSpace.xs,
+                  AppSpace.xs,
+                ),
+                child: Row(
+                  children: <Widget>[
+                    Text(
+                      '${visible.length} 项结果',
+                      style: TextStyle(
+                        fontSize: AppText.caption,
+                        color: p.textTertiary,
+                      ),
+                    ),
+                    const Spacer(),
+                    _SortButton(settings: settings, notes: notes, showLabel: true),
+                  ],
+                ),
+              ),
+            Expanded(child: _searchResults(p, notes)),
           ] else ...<Widget>[
             _panelHeader(
               p,
@@ -257,11 +284,7 @@ class NoteListPanelState extends State<NoteListPanel> {
     );
   }
 
-  Widget _searchField(
-    AppPalette p,
-    NotesController notes,
-    SettingsController settings,
-  ) {
+  Widget _searchField(AppPalette p, NotesController notes) {
     final bool focused = _searchFocus.hasFocus;
     return Padding(
       padding: const EdgeInsets.all(AppSpace.sm),
@@ -322,7 +345,6 @@ class NoteListPanelState extends State<NoteListPanel> {
               active: notes.caseSensitive,
               onPressed: () => notes.setCaseSensitive(!notes.caseSensitive),
             ),
-            _SortButton(settings: settings, notes: notes),
             const SizedBox(width: AppSpace.xs),
           ],
         ),
@@ -330,11 +352,7 @@ class NoteListPanelState extends State<NoteListPanel> {
     );
   }
 
-  Widget _searchResults(
-    AppPalette p,
-    NotesController notes,
-    List<Note> visible,
-  ) {
+  Widget _searchResults(AppPalette p, NotesController notes) {
     // Nothing asked yet — no query, no tag — so the panel waits with a hint
     // rather than listing the whole vault, which would just be the file tree
     // over again.
@@ -347,7 +365,8 @@ class NoteListPanelState extends State<NoteListPanel> {
       );
     }
 
-    if (visible.isEmpty) {
+    final List<SearchHit> hits = notes.searchHits;
+    if (hits.isEmpty) {
       if (notes.allNotes.isEmpty) {
         return EmptyState(
           compact: true,
@@ -368,17 +387,21 @@ class NoteListPanelState extends State<NoteListPanel> {
     }
 
     return ListView.builder(
-      padding: const EdgeInsets.symmetric(vertical: AppSpace.xs),
-      itemCount: visible.length,
+      padding: const EdgeInsets.only(bottom: AppSpace.md),
+      itemCount: hits.length,
       itemBuilder: (BuildContext context, int i) {
-        final Note note = visible[i];
-        final String name = note.title.trim();
-        return _SearchResultRow(
-          name: name.isEmpty ? '未命名' : name,
-          selected: note.id == notes.selectedId,
-          onTap: () {
-            notes.setActiveFolder(note.folderPath);
-            notes.select(note.id);
+        final SearchHit hit = hits[i];
+        final String id = hit.note.id;
+        return _SearchResultGroup(
+          hit: hit,
+          selected: id == notes.selectedId,
+          collapsed: _collapsedResults.contains(id),
+          onToggle: () => setState(() {
+            if (!_collapsedResults.remove(id)) _collapsedResults.add(id);
+          }),
+          onOpen: () {
+            notes.setActiveFolder(hit.note.folderPath);
+            notes.select(id);
           },
         );
       },
@@ -546,49 +569,156 @@ class _CaseToggle extends StatelessWidget {
   }
 }
 
-/// One line of a search: the note's name, nothing else. A result list is a
-/// lookup, not a gallery — the note cards belong to the note's own view.
-class _SearchResultRow extends StatelessWidget {
-  const _SearchResultRow({
-    required this.name,
+/// One file's worth of search results: a header you can fold, and a card per
+/// matching line.
+///
+/// Grouping by file is what makes a multi-match search readable: ten mentions
+/// of a tag across three notes is three groups, not ten rows that all start with
+/// the same name. The number on the right is how many lines matched, so the
+/// header is a summary before it is a control.
+class _SearchResultGroup extends StatelessWidget {
+  const _SearchResultGroup({
+    required this.hit,
     required this.selected,
-    required this.onTap,
+    required this.collapsed,
+    required this.onToggle,
+    required this.onOpen,
   });
 
-  final String name;
+  final SearchHit hit;
   final bool selected;
+  final bool collapsed;
+  final VoidCallback onToggle;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    // The file name, not the title: this is a list of files, and the `.md` is
+    // the only part of the name the editor never shows.
+    final String raw = hit.note.fileName.isNotEmpty
+        ? hit.note.fileName
+        : hit.note.title;
+    final String name = raw
+        .replaceFirst(RegExp(r'\.md$', caseSensitive: false), '')
+        .trim();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        HoverBuilder(
+          cursor: SystemMouseCursors.click,
+          builder: (BuildContext context, bool hovered) => GestureDetector(
+            onTap: onToggle,
+            behavior: HitTestBehavior.opaque,
+            child: Container(
+              height: AppLayout.rowHeight + 2,
+              padding: const EdgeInsets.symmetric(horizontal: AppSpace.xs + 1),
+              child: Row(
+                children: <Widget>[
+                  AnimatedRotation(
+                    turns: collapsed ? -0.25 : 0,
+                    duration: AppMotion.fast,
+                    child: Icon(
+                      Icons.keyboard_arrow_down_rounded,
+                      size: 15,
+                      color: hovered ? p.textSecondary : p.textTertiary,
+                    ),
+                  ),
+                  const SizedBox(width: 2),
+                  Expanded(
+                    child: Text(
+                      name.isEmpty ? '未命名' : name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        height: 1.2,
+                        fontWeight: FontWeight.w500,
+                        // Never the accent: amber is for the thing being
+                        // searched, not for the file it happens to be in.
+                        color: selected || hovered
+                            ? p.textPrimary
+                            : p.textSecondary,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    '${hit.matchCount}',
+                    style: TextStyle(
+                      fontSize: AppText.caption,
+                      color: p.textTertiary,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                ],
+              ),
+            ),
+          ),
+        ),
+        if (!collapsed)
+          for (final SearchSnippet snippet in hit.snippets)
+            _SnippetCard(snippet: snippet, onTap: onOpen),
+      ],
+    );
+  }
+}
+
+/// One matching line.
+///
+/// The highlight stays neutral until the pointer is on the card: a page of
+/// results where every match glows yellow reads as an alarm, and the eye has no
+/// way to tell which one it is about to click. Hover turns the one under the
+/// pointer into the accent colour.
+class _SnippetCard extends StatefulWidget {
+  const _SnippetCard({required this.snippet, required this.onTap});
+
+  final SearchSnippet snippet;
   final VoidCallback onTap;
+
+  @override
+  State<_SnippetCard> createState() => _SnippetCardState();
+}
+
+class _SnippetCardState extends State<_SnippetCard> {
+  bool _hovered = false;
 
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: AppSpace.xs),
-      child: HoverBuilder(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpace.md + 4,
+        0,
+        AppSpace.xs + 2,
+        AppSpace.xs,
+      ),
+      child: MouseRegion(
         cursor: SystemMouseCursors.click,
-        builder: (BuildContext context, bool hovered) => GestureDetector(
-          onTap: onTap,
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: GestureDetector(
+          onTap: widget.onTap,
           behavior: HitTestBehavior.opaque,
           child: AnimatedContainer(
             duration: AppMotion.fast,
-            height: AppLayout.rowHeight,
-            padding: const EdgeInsets.symmetric(horizontal: AppSpace.sm),
-            alignment: Alignment.centerLeft,
+            padding: const EdgeInsets.fromLTRB(9, 7, 9, 8),
             decoration: BoxDecoration(
-              color: selected
-                  ? p.accentSoft
-                  : (hovered ? p.surfaceRaised : Colors.transparent),
+              color: _hovered
+                  ? p.surfaceRaised
+                  : p.surfaceRaised.withValues(alpha: 0.55),
               borderRadius: AppRadius.smAll,
+              border: Border.all(color: p.outlineSoft),
             ),
-            child: Text(
-              name,
-              maxLines: 1,
+            child: Text.rich(
+              _span(p),
+              maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: AppText.ui,
-                height: 1.2,
-                fontWeight: selected ? FontWeight.w500 : FontWeight.w400,
-                color: selected ? p.textPrimary : p.textSecondary,
+                fontSize: AppText.caption,
+                height: 1.55,
+                color: p.textSecondary,
               ),
             ),
           ),
@@ -596,14 +726,41 @@ class _SearchResultRow extends StatelessWidget {
       ),
     );
   }
+
+  TextSpan _span(AppPalette p) {
+    final SearchSnippet snippet = widget.snippet;
+    if (!snippet.hasHighlight) return TextSpan(text: snippet.text);
+    return TextSpan(
+      children: <InlineSpan>[
+        TextSpan(text: snippet.text.substring(0, snippet.matchStart)),
+        TextSpan(
+          text: snippet.text.substring(snippet.matchStart, snippet.matchEnd),
+          style: TextStyle(
+            backgroundColor: _hovered ? p.accentSoft : p.outline,
+            color: _hovered ? p.accent : p.textSecondary,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        TextSpan(text: snippet.text.substring(snippet.matchEnd)),
+      ],
+    );
+  }
 }
 
 /// Sort icon + the six modes, grouped by what they sort on.
 class _SortButton extends StatelessWidget {
-  const _SortButton({required this.settings, required this.notes});
+  const _SortButton({
+    required this.settings,
+    required this.notes,
+    this.showLabel = false,
+  });
 
   final SettingsController settings;
   final NotesController notes;
+
+  /// Show the current mode's name beside the glyph — the search panel has room
+  /// for it and a bare icon does not say *what* the results are ordered by.
+  final bool showLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -628,7 +785,7 @@ class _SortButton extends StatelessWidget {
         _item(p, SortMode.createdDesc),
         _item(p, SortMode.createdAsc),
       ],
-      child: const _SortTrigger(),
+      child: _SortTrigger(showLabel: showLabel, label: settings.sort.label),
     );
   }
 
@@ -660,7 +817,10 @@ class _SortButton extends StatelessWidget {
 }
 
 class _SortTrigger extends StatefulWidget {
-  const _SortTrigger();
+  const _SortTrigger({this.showLabel = false, this.label = ''});
+
+  final bool showLabel;
+  final String label;
 
   @override
   State<_SortTrigger> createState() => _SortTriggerState();
@@ -672,23 +832,42 @@ class _SortTriggerState extends State<_SortTrigger> {
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
+    final Color foreground = _hovered ? p.textPrimary : p.textSecondary;
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
       child: AnimatedContainer(
         duration: AppMotion.fast,
-        width: 30,
-        height: 30,
+        height: widget.showLabel ? 22 : 30,
+        width: widget.showLabel ? null : 30,
+        padding: widget.showLabel
+            ? const EdgeInsets.symmetric(horizontal: 5)
+            : null,
         decoration: BoxDecoration(
           color: _hovered ? p.surfaceRaised : Colors.transparent,
           borderRadius: AppRadius.smAll,
         ),
-        child: Icon(
-          Icons.sort_rounded,
-          size: 16.5,
-          color: _hovered ? p.textPrimary : p.textSecondary,
-        ),
+        child: widget.showLabel
+            ? Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Text(
+                    widget.label,
+                    style: TextStyle(
+                      fontSize: AppText.caption,
+                      color: _hovered ? p.textSecondary : p.textTertiary,
+                    ),
+                  ),
+                  const SizedBox(width: 3),
+                  Icon(
+                    Icons.unfold_more_rounded,
+                    size: 13,
+                    color: _hovered ? p.textSecondary : p.textTertiary,
+                  ),
+                ],
+              )
+            : Icon(Icons.sort_rounded, size: 16.5, color: foreground),
       ),
     );
   }

@@ -137,6 +137,12 @@ abstract final class AppLayout {
   /// Below this width the outline yields to the editor.
   static const double outlineMinShellWidth = 980;
 
+  /// The draggable strip between two panes.
+  ///
+  /// The title bar measures with it as well: the editor's left edge — and so
+  /// the first tab — starts one strip *after* the sidebar ends.
+  static const double resizeHandleWidth = 5;
+
   static const double titleBarHeight = 36;
 
   /// Below this width the shell degrades gracefully to a single pane.

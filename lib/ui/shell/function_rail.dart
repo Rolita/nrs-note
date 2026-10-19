@@ -4,22 +4,21 @@ import '../../core/app_enums.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 
-/// The far-left function rail. Buttons only: it switches the middle sidebar
-/// between files, search and tags, and collapses that sidebar entirely.
+/// The narrow strip on the far left.
+///
+/// It holds only what does not fit in the title bar's three regions: the tag
+/// view at the top, and the two window-wide commands — quick open and settings
+/// — pinned to the bottom where they are always in the same place.
 class AppRail extends StatelessWidget {
   const AppRail({
     super.key,
     required this.view,
-    required this.collapsed,
-    required this.onToggleCollapsed,
     required this.onSelectView,
     required this.onOpenPalette,
     required this.onOpenSettings,
   });
 
   final SidebarView view;
-  final bool collapsed;
-  final VoidCallback onToggleCollapsed;
   final ValueChanged<SidebarView> onSelectView;
   final VoidCallback onOpenPalette;
   final VoidCallback onOpenSettings;
@@ -39,29 +38,11 @@ class AppRail extends StatelessWidget {
         children: <Widget>[
           const SizedBox(height: AppSpace.sm),
           _RailButton(
-            icon: collapsed
-                ? Icons.keyboard_double_arrow_right_rounded
-                : Icons.keyboard_double_arrow_left_rounded,
-            tooltip: collapsed ? '展开侧边栏' : '收起侧边栏',
-            shortcut: 'Ctrl+\\',
-            onPressed: onToggleCollapsed,
+            icon: SidebarView.tags.icon,
+            tooltip: SidebarView.tags.label,
+            selected: view == SidebarView.tags,
+            onPressed: () => onSelectView(SidebarView.tags),
           ),
-          const SizedBox(height: AppSpace.sm),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: AppSpace.md),
-            child: Divider(height: 1, color: p.outlineSoft),
-          ),
-          const SizedBox(height: AppSpace.sm),
-          for (final SidebarView item in SidebarView.values)
-            Padding(
-              padding: const EdgeInsets.only(bottom: AppSpace.xs),
-              child: _RailButton(
-                icon: item.icon,
-                tooltip: item.label,
-                selected: view == item,
-                onPressed: () => onSelectView(item),
-              ),
-            ),
           const Spacer(),
           _RailButton(
             icon: Icons.bolt_outlined,
@@ -119,6 +100,7 @@ class _RailButtonState extends State<_RailButton> {
       message: widget.shortcut == null
           ? widget.tooltip
           : '${widget.tooltip}  ·  ${widget.shortcut}',
+      waitDuration: const Duration(milliseconds: 600),
       child: MouseRegion(
         cursor: SystemMouseCursors.click,
         onEnter: (_) => setState(() => _hovered = true),

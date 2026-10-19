@@ -57,6 +57,7 @@ class MenuAction extends MenuNode {
     this.shortcut,
     this.onPressed,
     this.checked = false,
+    this.danger = false,
   });
 
   final String label;
@@ -76,6 +77,11 @@ class MenuAction extends MenuNode {
 
   /// Ticks the row — block styles use it to say "this line already is that".
   final bool checked;
+
+  /// Paints the row in the palette's danger colour. Only rows that destroy
+  /// something use it, and it is the *only* difference between them and their
+  /// neighbours: a red row is still the same height, icon slot and rhythm.
+  final bool danger;
 
   bool get enabled => onPressed != null;
 }
@@ -133,6 +139,56 @@ Widget buildEditorContextMenu({
     anchor: state.contextMenuAnchors.primaryAnchor,
     onDismiss: onDismiss,
   );
+}
+
+/// Shows [entries] at [globalPosition] — the same panel the editor opens on a
+/// right-click, for the parts of the app that are not a `TextField` (the vault
+/// tree, and the editor's own paper below its last line).
+///
+/// The menu is a route, so Escape closes it and it paints above everything the
+/// way a menu should. [keepFocus] is for the editor: pushing a route moves the
+/// primary focus, and the caret has to stay visible underneath the menu, so the
+/// field takes it back as soon as the menu is up.
+Future<void> showAppMenu(
+  BuildContext context, {
+  required Offset globalPosition,
+  required List<MenuNode> entries,
+  FocusNode? keepFocus,
+}) {
+  final RenderObject? root = Overlay.of(context).context.findRenderObject();
+  final Offset anchor = root is RenderBox && root.hasSize
+      ? root.globalToLocal(globalPosition)
+      : globalPosition;
+  final Future<void> shown = Navigator.of(context).push<void>(
+    PageRouteBuilder<void>(
+      opaque: false,
+      barrierColor: null,
+      barrierDismissible: false,
+      transitionDuration: Duration.zero,
+      reverseTransitionDuration: Duration.zero,
+      pageBuilder:
+          (
+            BuildContext routeContext,
+            Animation<double> animation,
+            Animation<double> secondaryAnimation,
+          ) {
+            return Material(
+              type: MaterialType.transparency,
+              child: _EditorContextMenu(
+                entries: entries,
+                anchor: anchor,
+                onDismiss: () => Navigator.of(routeContext).maybePop(),
+              ),
+            );
+          },
+    ),
+  );
+  if (keepFocus != null) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (keepFocus.context != null) keepFocus.requestFocus();
+    });
+  }
+  return shown;
 }
 
 /// Assembles the menu for the current caret / selection.
@@ -1073,6 +1129,7 @@ class _MenuPanel extends StatelessWidget {
       shortcut: node.shortcut,
       checked: node.checked,
       enabled: node.enabled,
+      danger: node.danger,
       onHover: () => onHover(level, index, node),
       onTap: () => onTap(level, index, node),
     ),
@@ -1134,6 +1191,7 @@ class _MenuRow extends StatefulWidget {
     this.expanded = false,
     this.checked = false,
     this.enabled = true,
+    this.danger = false,
     this.onHover,
     this.onTap,
   });
@@ -1146,6 +1204,7 @@ class _MenuRow extends StatefulWidget {
   final bool expanded;
   final bool checked;
   final bool enabled;
+  final bool danger;
   final VoidCallback? onHover;
   final VoidCallback? onTap;
 
@@ -1164,8 +1223,11 @@ class _MenuRowState extends State<_MenuRow> {
     // has to survive the pointer crossing the gap between the two.
     final bool lit = (_hovered || widget.expanded) && widget.enabled;
     final Color foreground = widget.enabled
-        ? p.textPrimary
+        ? (widget.danger ? p.danger : p.textPrimary)
         : p.textTertiary.withValues(alpha: 0.55);
+    final Color iconColor = widget.enabled
+        ? (widget.danger ? p.danger : p.textSecondary)
+        : foreground;
 
     return MouseRegion(
       cursor: widget.enabled
@@ -1200,16 +1262,10 @@ class _MenuRowState extends State<_MenuRow> {
                             fontWeight: FontWeight.w700,
                             fontFamily: AppFonts.mono,
                             fontFamilyFallback: AppFonts.monoFallback,
-                            color: widget.enabled
-                                ? p.textSecondary
-                                : foreground,
+                            color: iconColor,
                           ),
                         )
-                      : Icon(
-                          widget.icon,
-                          size: 14.5,
-                          color: widget.enabled ? p.textSecondary : foreground,
-                        ),
+                      : Icon(widget.icon, size: 14.5, color: iconColor),
                 ),
               ),
               const SizedBox(width: AppSpace.sm),

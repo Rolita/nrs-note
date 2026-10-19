@@ -1,6 +1,7 @@
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -43,7 +44,6 @@ void main() {
             focusNode: focusNode ?? FocusNode(),
             scrollController: ScrollController(),
             fontSize: 15.5,
-            hintText: '',
           ),
         ),
       ),
@@ -87,7 +87,6 @@ void main() {
                 focusNode: focus,
                 scrollController: ScrollController(),
                 fontSize: 15.5,
-                hintText: '',
               ),
             ),
           ),
@@ -135,7 +134,8 @@ void main() {
   testWidgets('the laid-out tree is exactly as long as the text', (
     WidgetTester tester,
   ) async {
-    const String text = '# 标题\n\n- 列表\n- [ ] 待办\n\n---\n\n> 引用\n\n```\ncode\n```\n';
+    const String text =
+        '# 标题\n\n- 列表\n- [ ] 待办\n\n---\n\n> 引用\n\n```\ncode\n```\n';
     final MarkdownSourceController controller = await pump(tester, text);
 
     final InlineSpan? tree = editable(tester).text;
@@ -175,7 +175,57 @@ void main() {
     );
   });
 
-  testWidgets('tapping a tag pill reports the tag', (WidgetTester tester) async {
+  /// A gesture that ends on a marker ends as a **click**, whatever the field
+  /// wrote on the way.
+  ///
+  /// `TextField` counts clicks, and two of them select a *word*; the marker
+  /// column is one character wide (the box swallows the rest of `- [ ] ` to
+  /// nothing), so the range's only box with pixels is the marker cell — and the
+  /// wash paints it as a square growing out of the checkbox:
+  /// 「点击这个图标的时候，后面出现一个正方形背景」.
+  testWidgets('a click on a checkbox never leaves a range behind', (
+    WidgetTester tester,
+  ) async {
+    final MarkdownSourceController controller = await pump(
+      tester,
+      '- [ ] 待办\n- [ ] 另一件\n',
+    );
+    controller.selection = const TextSelection.collapsed(offset: 0);
+    await tester.pump();
+
+    final Finder boxes = find.byType(MarkdownTodoCheckbox);
+    expect(boxes, findsNWidgets(2));
+    final Rect rect = tester.getRect(boxes.first);
+
+    // A click on the prose a moment earlier arms the field's click counter, so
+    // the press below is read as the second half of a double click.
+    await tester.tapAt(rect.center + const Offset(40, 0));
+    await tester.pump(const Duration(milliseconds: 120));
+
+    // The press lands in the marker column but in the padding outside the
+    // shell's paint rect; the release lands on the box itself. Before this was
+    // fixed the press found no caret to hand back, so the field's own range
+    // survived the flip.
+    final TestGesture gesture = await tester.startGesture(
+      Offset(rect.right + 7, rect.center.dy),
+    );
+    await tester.pump(const Duration(milliseconds: 60));
+    await gesture.moveTo(rect.center);
+    await tester.pump(const Duration(milliseconds: 30));
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(controller.text, '- [x] 待办\n- [ ] 另一件\n');
+    expect(
+      controller.selection.isCollapsed,
+      isTrue,
+      reason: 'a range covering the marker cell washes it into a square',
+    );
+  });
+
+  testWidgets('tapping a tag pill reports the tag', (
+    WidgetTester tester,
+  ) async {
     final List<String> tapped = <String>[];
     await pump(tester, '想法 #写作 收尾\n', onTagTap: tapped.add);
 
@@ -305,7 +355,9 @@ void main() {
       // Zero-width means a hidden marker character: it is deliberately drawn at
       // no width, so there is nothing to aim at.
       if (box.width <= 0) continue;
-      final TextPosition got = re.getPositionForPoint(re.localToGlobal(box.center));
+      final TextPosition got = re.getPositionForPoint(
+        re.localToGlobal(box.center),
+      );
       if (got.offset != i && got.offset != i + 1) {
         drifted.add('$i「${body[i]}」→ ${got.offset}（差 ${got.offset - i}）');
       }
@@ -396,15 +448,23 @@ void main() {
   testWidgets('the editor continues a list when the platform sends a newline', (
     WidgetTester tester,
   ) async {
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
     final MarkdownSourceController controller = await pump(
       tester,
       '普通段落\n- 甲\n1. 乙\n',
+      focusNode: focus,
     );
-    await tester.tap(find.byKey(const Key('nrs-editor-field')));
+    // Focus without a tap: the field is only as tall as its text, and a tap on
+    // its centre now lands on the empty paper below the note (which parks the
+    // caret at the end). This test is about the formatter, not about clicking.
+    focus.requestFocus();
     await tester.pump();
 
     // Caret at the end of the `- 甲` line — `普通段落\n- 甲` is 8 characters.
     const int caret = 8;
+    controller.selection = const TextSelection.collapsed(offset: caret);
+    await tester.pump();
     expect(controller.text.substring(0, caret), '普通段落\n- 甲');
 
     tester.testTextInput.updateEditingValue(
@@ -416,11 +476,102 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(controller.text, '普通段落\n- 甲\n- \n1. 乙\n');
+    expect(controller.selection.baseOffset, caret + 3, reason: '光标应落在新记号之后');
+  });
+
+  /// The empty paper below the last line is part of the editing surface: a
+  /// press there has to focus the field and leave the caret at the end. It used
+  /// to be dead space, so the caret only appeared when the click landed on a
+  /// line that already had words on it.
+  testWidgets('a click below the last line focuses the editor at the end', (
+    WidgetTester tester,
+  ) async {
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
+    final MarkdownSourceController controller = await pump(
+      tester,
+      '第一行\n第二行\n',
+      focusNode: focus,
+    );
+    final Rect field = tester.getRect(
+      find.byKey(const Key('nrs-editor-field')),
+    );
+    await tester.tapAt(Offset(field.center.dx, field.bottom + 120));
+    await tester.pumpAndSettle();
+
+    expect(focus.hasFocus, isTrue, reason: '点空白处没有拿到焦点，键盘无处可去');
     expect(
       controller.selection.baseOffset,
-      caret + 3,
-      reason: '光标应落在新记号之后',
+      controller.text.length,
+      reason: '点空白处应把光标放到文末',
     );
+  });
+
+  /// The field is focused and the caret is somewhere in the text. A press on the
+  /// paper below must keep the caret in the editor — on desktop the field's own
+  /// `onTapOutside` unfocuses it first, so this is the case that used to need a
+  /// second click.
+  testWidgets('clicking the empty paper keeps the caret in the editor', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    try {
+      final FocusNode focus = FocusNode();
+      addTearDown(focus.dispose);
+      final MarkdownSourceController controller = await pump(
+        tester,
+        '第一行\n第二行\n',
+        focusNode: focus,
+      );
+      focus.requestFocus();
+      await tester.pump();
+      controller.selection = const TextSelection.collapsed(offset: 2);
+      await tester.pump();
+      expect(focus.hasFocus, isTrue);
+
+      final Rect field = tester.getRect(
+        find.byKey(const Key('nrs-editor-field')),
+      );
+      await tester.tapAt(Offset(field.center.dx, field.bottom + 120));
+      await tester.pumpAndSettle();
+
+      expect(focus.hasFocus, isTrue, reason: '点空白处不该把光标弄丢');
+      expect(
+        controller.selection.baseOffset,
+        controller.text.length,
+        reason: '点空白处应把光标放到文末',
+      );
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  /// A right-click below the last line is outside the field's box, so the field
+  /// never sees it — the menu has to be opened by the editor itself, and it has
+  /// to be the same menu.
+  testWidgets('a right-click on the empty paper opens the editor menu', (
+    WidgetTester tester,
+  ) async {
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
+    await pump(tester, '第一行\n', focusNode: focus);
+
+    final Rect field = tester.getRect(
+      find.byKey(const Key('nrs-editor-field')),
+    );
+    await tester.tapAt(
+      Offset(field.center.dx, field.bottom + 100),
+      buttons: kSecondaryButton,
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('全选'), findsOneWidget, reason: '空白处右键没有菜单');
+    expect(focus.hasFocus, isTrue, reason: '菜单打开时光标不该消失');
+
+    // A click that misses the panel closes it.
+    await tester.tapAt(const Offset(4, 4));
+    await tester.pumpAndSettle();
+    expect(find.text('全选'), findsNothing);
   });
 
   /// A click is a click, however fast it is repeated.
@@ -788,8 +939,7 @@ void main() {
     int ticks({required bool visible}) => leaves(re.text!)
         .where(
           (TextSpan s) =>
-              s.text == '`' &&
-              ((s.style?.fontSize ?? 0) > 0) == visible,
+              s.text == '`' && ((s.style?.fontSize ?? 0) > 0) == visible,
         )
         .length;
 
@@ -797,11 +947,10 @@ void main() {
     expect(ticks(visible: false), 4, reason: '两颗格子里的代码都应先渲染成 chip');
 
     final List<TableRowChrome> rows =
-        tester.allRenderObjects.whereType<TableRowChrome>().toList()
-          ..sort(
-            (TableRowChrome a, TableRowChrome b) =>
-                a.chromeRowIndex.compareTo(b.chromeRowIndex),
-          );
+        tester.allRenderObjects.whereType<TableRowChrome>().toList()..sort(
+          (TableRowChrome a, TableRowChrome b) =>
+              a.chromeRowIndex.compareTo(b.chromeRowIndex),
+        );
     final List<List<Rect>> before = <List<Rect>>[
       for (final TableRowChrome row in rows) row.chromeCells(),
     ];
@@ -823,16 +972,8 @@ void main() {
       inInclusiveRange(firstCell, body.indexOf('后') + 1),
       reason: '点击后光标应落在这一格',
     );
-    expect(
-      ticks(visible: true),
-      2,
-      reason: '点击的格子应展开源码：反引号要看得见',
-    );
-    expect(
-      ticks(visible: false),
-      2,
-      reason: '另一颗格子的代码仍应保持渲染态（chip）',
-    );
+    expect(ticks(visible: true), 2, reason: '点击的格子应展开源码：反引号要看得见');
+    expect(ticks(visible: false), 2, reason: '另一颗格子的代码仍应保持渲染态（chip）');
 
     final List<List<Rect>> after = <List<Rect>>[
       for (final TableRowChrome row in rows) row.chromeCells(),
@@ -861,7 +1002,8 @@ void main() {
   testWidgets('the caret maps onto a cell’s revealed source', (
     WidgetTester tester,
   ) async {
-    const String body = '上文\n\n| aa **bb** cc | zz |\n| --- | --- |\n| x | y |\n';
+    const String body =
+        '上文\n\n| aa **bb** cc | zz |\n| --- | --- |\n| x | y |\n';
     final MarkdownSourceController controller = await pump(tester, body);
     controller.selection = const TextSelection.collapsed(offset: 0);
     await tester.pumpAndSettle();
@@ -882,7 +1024,9 @@ void main() {
     final int cc = body.indexOf('cc', cellStart);
     expect(cc, greaterThan(cellStart));
     final Rect target = re
-        .getBoxesForSelection(TextSelection(baseOffset: cc, extentOffset: cc + 1))
+        .getBoxesForSelection(
+          TextSelection(baseOffset: cc, extentOffset: cc + 1),
+        )
         .first
         .toRect();
     await tester.tapAt(re.localToGlobal(target.center));
@@ -969,8 +1113,7 @@ void main() {
     await pump(tester, '- [ ] 甲\n  - [ ] 乙\n    - [ ] 丙\n');
 
     final List<Rect> boxes = <Rect>[
-      for (final Element e
-          in find.byType(MarkdownTodoCheckbox).evaluate())
+      for (final Element e in find.byType(MarkdownTodoCheckbox).evaluate())
         tester.getRect(find.byWidget(e.widget)),
     ];
     expect(boxes.length, 3);
@@ -983,14 +1126,8 @@ void main() {
         .widgetList<MarkdownIndentGuides>(find.byType(MarkdownIndentGuides))
         .toList();
     expect(guides.map((MarkdownIndentGuides g) => g.levels), <int>[1, 2]);
-    expect(
-      tester.getSize(find.byType(MarkdownIndentGuides).first).width,
-      26,
-    );
-    expect(
-      tester.getSize(find.byType(MarkdownIndentGuides).last).width,
-      52,
-    );
+    expect(tester.getSize(find.byType(MarkdownIndentGuides).first).width, 26);
+    expect(tester.getSize(find.byType(MarkdownIndentGuides).last).width, 52);
   });
 
   testWidgets('the rail is painted, and only from the first child down', (
@@ -1023,7 +1160,6 @@ void main() {
                 focusNode: focus,
                 scrollController: ScrollController(),
                 fontSize: 15.5,
-                hintText: '',
               ),
             ),
           ),
@@ -1033,8 +1169,8 @@ void main() {
     focus.requestFocus();
     await tester.pumpAndSettle();
 
-    final RenderRepaintBoundary boundary = key.currentContext!.findRenderObject()!
-        as RenderRepaintBoundary;
+    final RenderRepaintBoundary boundary =
+        key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
     // ⛔ `toImage` rasterises on another thread, so inside a widget test it has
     // to run through `runAsync` — called directly it never completes and the
     // test hangs until the harness kills it.
@@ -1082,16 +1218,8 @@ void main() {
     final RenderEditable re = editable(tester);
     final double left = re.localToGlobal(Offset.zero).dx;
     // 9.5 from the row start, minus the half-pixel nudge onto the pixel grid.
-    expect(
-      bestX.toDouble(),
-      closeTo(left + 9, 1.5),
-      reason: '竖线必须落在父级标记的中心',
-    );
-    expect(
-      bestRun,
-      greaterThan(40),
-      reason: '竖线要跨过整段子级、不能断成一段一段',
-    );
+    expect(bestX.toDouble(), closeTo(left + 9, 1.5), reason: '竖线必须落在父级标记的中心');
+    expect(bestRun, greaterThan(40), reason: '竖线要跨过整段子级、不能断成一段一段');
     // …and it starts on the *second* line, not on the parent's.
     expect(bestTop, greaterThan(20), reason: '父级自己那一行不该有竖线');
   });
@@ -1131,7 +1259,6 @@ void main() {
                 focusNode: focus,
                 scrollController: ScrollController(),
                 fontSize: 15.5,
-                hintText: '',
               ),
             ),
           ),
@@ -1141,8 +1268,8 @@ void main() {
     focus.requestFocus();
     await tester.pumpAndSettle();
 
-    final RenderRepaintBoundary boundary = key.currentContext!.findRenderObject()!
-        as RenderRepaintBoundary;
+    final RenderRepaintBoundary boundary =
+        key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
     late ByteData bytes;
     late int width;
     late int height;
@@ -1237,8 +1364,10 @@ void main() {
 
     // No paper showing *inside* the band: the wash is one continuous shape, not
     // per-cell boxes with grid-coloured gaps between them.
-    final int left = px.firstOf(px.palette.selectionEdge, bands.first.last + 4) + 3;
-    final int right = px.lastOf(px.palette.selectionEdge, bands.last.last - 4) - 3;
+    final int left =
+        px.firstOf(px.palette.selectionEdge, bands.first.last + 4) + 3;
+    final int right =
+        px.lastOf(px.palette.selectionEdge, bands.last.last - 4) - 3;
     for (int y = bands.first.last + 4; y < bands.last.first - 3; y++) {
       for (int x = left; x < right; x++) {
         expect(
@@ -1272,8 +1401,7 @@ void main() {
     expect(
       bands.length,
       2,
-      reason:
-          '冻结揭示时表格被画成了一行行的正文色带（只数到 ${bands.length} 条外框）',
+      reason: '冻结揭示时表格被画成了一行行的正文色带（只数到 ${bands.length} 条外框）',
     );
     expect(
       bands.last.first - bands.first.first,
@@ -1283,8 +1411,10 @@ void main() {
 
     // No paper seam between the rows: the opaque table wash has to sit on top of
     // the prose stripes, not let them through line by line.
-    final int left = px.firstOf(px.palette.selectionEdge, bands.first.first) + 6;
-    final int right = px.lastOf(px.palette.selectionEdge, bands.first.first) - 6;
+    final int left =
+        px.firstOf(px.palette.selectionEdge, bands.first.first) + 6;
+    final int right =
+        px.lastOf(px.palette.selectionEdge, bands.first.first) - 6;
     for (int y = bands.first.first + 3; y < bands.last.first - 3; y++) {
       for (int x = left; x < right; x++) {
         expect(
@@ -1419,11 +1549,18 @@ void main() {
     final List<List<int>> bands = px.bandsOf(px.palette.selectionEdge, 120);
     expect(bands.length, 2, reason: '只有外框上下的两条，代码本身不算');
 
-    final int left = px.firstOf(px.palette.selectionEdge, bands.first.last + 6) + 6;
-    final int right = px.lastOf(px.palette.selectionEdge, bands.first.last + 6) - 6;
+    final int left =
+        px.firstOf(px.palette.selectionEdge, bands.first.last + 6) + 6;
+    final int right =
+        px.lastOf(px.palette.selectionEdge, bands.first.last + 6) - 6;
     for (int x = left; x < right; x++) {
       expect(
-        px.isColor(px.palette.selectionEdge, x, bands.last.first, tolerance: 40),
+        px.isColor(
+          px.palette.selectionEdge,
+          x,
+          bands.last.first,
+          tolerance: 40,
+        ),
         isTrue,
         reason: '底边框在 x=$x 处被格子里的代码色带盖掉了',
       );
@@ -1447,7 +1584,9 @@ void main() {
     final RenderEditable re = editable(tester);
     final Offset origin = re.localToGlobal(Offset.zero);
     final Rect code = re
-        .getBoxesForSelection(const TextSelection(baseOffset: 3, extentOffset: 7))
+        .getBoxesForSelection(
+          const TextSelection(baseOffset: 3, extentOffset: 7),
+        )
         .first
         .toRect()
         .shift(origin);
@@ -1499,16 +1638,18 @@ void main() {
       reason: '代码右边没有内边距，色带仍然贴着字',
     );
 
-    // The corner: at the band's top row the leftmost filled column is paper,
-    // while a few pixels in the fill is already there. A rectangle would keep
-    // both filled.
-    final int top = bandY - 1;
-    expect(fill(left, top), isFalse, reason: '圆角没有切出来：色带左上角还是实心的');
-    expect(
-      fill(left + 4, top),
-      isTrue,
-      reason: '圆角削掉了端部整整一行，色带的上沿不平',
-    );
+    // The corner: the band's top edge is found by walking up from the widest
+    // row, because where the edge lands inside a row depends on the pixel grid
+    // (and moved when the field lost its hint). What matters is the shape: at
+    // the top row the leftmost filled column is paper, while a few pixels in
+    // the fill is already there. A rectangle would keep both filled.
+    int bandTop = bandY;
+    while (bandTop > 0 && fill(left, bandTop - 1)) {
+      bandTop--;
+    }
+    expect(bandTop, greaterThan(0), reason: '代码色带找不到上沿');
+    expect(fill(left, bandTop - 1), isFalse, reason: '圆角没有切出来：色带左上角还是实心的');
+    expect(fill(left + 4, bandTop - 1), isTrue, reason: '圆角削掉了端部整整一行，色带的上沿不平');
   });
 
   testWidgets('inline code in a table cell is a padded, rounded chip', (
@@ -1586,7 +1727,11 @@ void main() {
     // Its first and last give the band's height.
     int top = -1;
     int bottom = -1;
-    for (int y = (token.top - 10).round(); y <= (token.bottom + 10).round(); y++) {
+    for (
+      int y = (token.top - 10).round();
+      y <= (token.bottom + 10).round();
+      y++
+    ) {
       if (y < 0 || y >= px.height) continue;
       if (countAt(y) >= 6) {
         if (top < 0) top = y;
@@ -1613,11 +1758,7 @@ void main() {
     // The rounded corner: on the top row the fill begins further in than it
     // does a few rows down. A rectangle would start on the same column.
     final int topLeft = leftAt(top);
-    expect(
-      topLeft,
-      greaterThan(leftAt(top + 5)),
-      reason: '圆角没有切出来：色带左上角还是实心的',
-    );
+    expect(topLeft, greaterThan(leftAt(top + 5)), reason: '圆角没有切出来：色带左上角还是实心的');
   });
 
   testWidgets('a caret inside inline code tears the chip down to source', (
@@ -1684,6 +1825,7 @@ void main() {
     );
   });
 }
+
 class _Pixels {
   _Pixels(this.width, this.height, this.bytes, this.palette);
 

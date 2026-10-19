@@ -37,7 +37,6 @@ void main() {
             focusNode: focus,
             scrollController: ScrollController(),
             fontSize: 15.5,
-            hintText: '',
           ),
         ),
       ),

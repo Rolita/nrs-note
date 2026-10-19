@@ -394,7 +394,7 @@ class ResizeHandle extends StatefulWidget {
     super.key,
     required this.onDelta,
     required this.background,
-    this.width = 5,
+    this.width = AppLayout.resizeHandleWidth,
   });
 
   /// Called with the horizontal drag delta in logical pixels.

@@ -443,15 +443,19 @@ List<InlineSpan> buildLiveSpans({
           );
           break;
         }
-        // The band stands in for the first backtick; the rest of the fence
-        // collapses behind it. A sunken band keeps the block reading as one
-        // slab, and gives the language somewhere quiet to live.
+        // The fence line is the block's header: the language sits at its right
+        // end, quiet and out of the way. The slab behind the whole block is
+        // painted by `CodeBlockPainter` — a `TextStyle` background can only hug
+        // a run, which is what turned every line into a stripe of its own
+        // width. This span only carries the label, plus the block's bottom
+        // breathing room when the fence has no label to show.
+        final String? label = opens ? _codeLabel(language) : null;
         out.add(
-          _codeBand(
+          _codeHeader(
             p,
             ctx.contentWidth,
-            label: opens ? _displayLanguage(language) : null,
-            height: row,
+            label: label,
+            height: label == null ? _kCodeSlabTail : row,
           ),
         );
         out.add(_swallowed(line, base));
@@ -1037,8 +1041,14 @@ String _fenceLanguage(String info) {
   return normaliseLanguage(m?.group(0));
 }
 
-String _displayLanguage(String? lang) =>
-    (lang == null || lang.isEmpty) ? 'text' : lang;
+/// The language as the block's header shows it: `dart` → `Dart`.
+///
+/// An unnamed fence gets **no** label: a `text` badge on every plain block is
+/// noise, not information, and the header row collapses to a few pixels.
+String? _codeLabel(String language) {
+  if (language.isEmpty) return null;
+  return language[0].toUpperCase() + language.substring(1);
+}
 
 List<InlineSpan> _highlight(List<CodeToken> tokens, bool isDark) {
   final CodePalette c = CodePalette.forDark(isDark);
@@ -3388,11 +3398,11 @@ TextStyle _codeLine(TextStyle base, AppPalette p) {
     fontFamily: AppFonts.mono,
     fontFamilyFallback: AppFonts.monoFallback,
     fontSize: s,
-    // Same row height as body text, so every row of a fenced block lines up
-    // and the sunken background reads as one slab instead of a staircase.
+    // Same row height as body text, so every row of a fenced block lines up.
+    // No `backgroundColor`: the block's fill is one painted slab behind the
+    // field, not a stripe per line.
     height: snapLineHeight(s, base.height ?? 1.78),
     color: p.textSecondary,
-    backgroundColor: p.surfaceSunken,
     letterSpacing: 0,
   );
 }
@@ -3560,8 +3570,11 @@ WidgetSpan _quoteBar(AppPalette p, TextStyle base) => _decoration(
   ),
 );
 
-/// The sunken band that keeps a fenced block reading as a single slab.
-WidgetSpan _codeBand(
+/// The sunken slab that keeps a fenced block reading as a single card is
+/// painted behind the field (see `CodeBlockPainter`); this is only the fence
+/// line's own row — the language at its right end, or the block's bottom
+/// breathing room when there is no language to name.
+WidgetSpan _codeHeader(
   AppPalette p,
   double width, {
   String? label,
@@ -3572,37 +3585,64 @@ WidgetSpan _codeBand(
     // may never be wider than the line, or the paragraph wraps.
     width: math.max(24, width - 8),
     height: height,
-    alignment: Alignment.centerLeft,
-    padding: const EdgeInsets.only(left: 11),
-    color: p.surfaceSunken,
+    alignment: Alignment.centerRight,
+    padding: const EdgeInsets.only(right: 10),
     child: label == null
         ? null
-        : Row(
-            children: <Widget>[
-              Container(
-                width: 5,
-                height: 5,
-                decoration: BoxDecoration(
-                  color: p.accent.withValues(alpha: 0.55),
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: TextStyle(
-                  fontFamily: AppFonts.mono,
-                  fontFamilyFallback: AppFonts.monoFallback,
-                  fontSize: AppText.caption,
-                  letterSpacing: 0.3,
-                  fontWeight: FontWeight.w600,
-                  color: p.textTertiary,
-                ),
-              ),
-            ],
+        : Text(
+            label,
+            style: TextStyle(
+              fontFamily: AppFonts.mono,
+              fontFamilyFallback: AppFonts.monoFallback,
+              fontSize: AppText.caption,
+              letterSpacing: 0.3,
+              fontWeight: FontWeight.w500,
+              color: p.textTertiary,
+            ),
           ),
   ),
 );
+
+/// Air inside the bottom of a code slab, carried by the closing fence line —
+/// which has nothing to show and is only a few pixels tall.
+const double _kCodeSlabTail = 8;
+
+/// One fenced code block's source range, fence lines included.
+class CodeBlockRange {
+  const CodeBlockRange({required this.start, required this.end});
+
+  /// Offset of the opening fence's first character.
+  final int start;
+
+  /// Offset just past the closing fence's last character (the end of the note
+  /// for a block that was never closed).
+  final int end;
+}
+
+/// The source ranges of every fenced block, scanned with the same rule the
+/// renderer uses so the slab and the text can never disagree about where a
+/// block starts or ends.
+List<CodeBlockRange> codeBlockRanges(String text) {
+  final List<CodeBlockRange> out = <CodeBlockRange>[];
+  if (!text.contains('```') && !text.contains('~~~')) return out;
+  final List<String> lines = text.split('\n');
+  int offset = 0;
+  int open = -1;
+  for (int i = 0; i < lines.length; i++) {
+    final String line = lines[i];
+    if (_fenceRe.hasMatch(line)) {
+      if (open < 0) {
+        open = offset;
+      } else {
+        out.add(CodeBlockRange(start: open, end: offset + line.length));
+        open = -1;
+      }
+    }
+    offset += line.length + 1;
+  }
+  if (open >= 0) out.add(CodeBlockRange(start: open, end: text.length));
+  return out;
+}
 
 /// The marker shell around a task checkbox.
 ///

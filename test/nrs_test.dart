@@ -991,8 +991,11 @@ final x = 1;
         reason: 'the fence is drawn as a sunken band',
       );
 
-      // The code line is a single span carrying the recessed background, with
-      // the highlighted tokens as children.
+      // The code line is a single span with the highlighted tokens as
+      // children — but *no* background of its own. The block's fill is one
+      // rounded slab painted behind the field (`CodeBlockPainter`), because a
+      // `TextStyle` background can only hug the run, which is what turned every
+      // line into a stripe of its own width.
       final TextSpan code = texts.firstWhere(
         (TextSpan s) =>
             s.children != null &&
@@ -1002,7 +1005,7 @@ final x = 1;
                     .join() ==
                 'final x = 1;',
       );
-      expect(code.style!.backgroundColor, palette.surfaceSunken);
+      expect(code.style!.backgroundColor, isNull);
       expect(code.style!.fontFamily, isNot(base.fontFamily));
       expect(
         code.children!.whereType<TextSpan>().any(
@@ -1011,6 +1014,41 @@ final x = 1;
         isTrue,
         reason: '`final` should be coloured as a keyword',
       );
+
+      // The fence row names the language at its right end, capitalised.
+      final Container header = widgetsOf(spans)
+          .whereType<Container>()
+          .firstWhere(
+            (Container c) => c.child is Text && (c.child! as Text).data == 'Dart',
+            orElse: () => throw StateError('no `Dart` label in the fence row'),
+          );
+      expect(
+        header.alignment,
+        Alignment.centerRight,
+        reason: 'the label sits at the right end of the block, not the left',
+      );
+
+      // The slab and the text must agree on where the block starts and ends.
+      final List<CodeBlockRange> ranges = codeBlockRanges(document);
+      expect(ranges, hasLength(1));
+      expect(
+        document.substring(ranges.single.start, ranges.single.end),
+        '```dart\nfinal x = 1;\n```',
+      );
+    });
+
+    test('a fence with no language shows no label', () {
+      const String source = '```\nplain\n```';
+      final List<InlineSpan> spans = render(source);
+
+      expect(
+        widgetsOf(spans).whereType<Container>().where(
+          (Container c) => c.child != null,
+        ),
+        isEmpty,
+        reason: 'an unnamed fence is only the slab and its tail air',
+      );
+      expect(codeBlockRanges(source), hasLength(1));
     });
 
     test('turns a horizontal rule into a real full-width line', () {
