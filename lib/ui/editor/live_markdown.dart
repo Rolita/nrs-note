@@ -40,6 +40,7 @@ import 'package:flutter/rendering.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/utils/markdown_actions.dart';
+import '../../core/utils/markdown_outline.dart';
 import '../../core/theme/app_tokens.dart';
 import '../preview/code_palette.dart';
 import '../preview/syntax_highlighter.dart';
@@ -679,7 +680,7 @@ List<InlineSpan> buildLiveSpans({
         // the remaining ones collapse behind it, so the row keeps its height
         // and the line spans the column whatever the window width.
         out.add(
-          _decoration(MarkdownDividerLine(color: p.outline, height: row)),
+          _decoration(MarkdownDividerLine(color: p.rule, height: row)),
         );
         out.add(_swallowed(line, base));
 
@@ -884,6 +885,60 @@ double snapLineHeight(double fontSize, double designed) {
 double _lineHeightOf(TextStyle base) =>
     ((base.fontSize ?? 15) * (base.height ?? 1.78)).roundToDouble();
 
+/// How much text is laid out above source line [line], in paragraph
+/// coordinates — the measure the pane needs to put a line at a given place on
+/// screen ("jump to heading", typewriter centring).
+///
+/// The whole prefix goes through **one** [TextPainter] pass, so a paragraph that
+/// wrapped is counted at the width it will really be painted at. That pass can
+/// only be handed one style, though, and a heading does not occupy a body row:
+/// every heading above [line] comes out of the pass as one body row and is then
+/// corrected here by the difference between what it really occupies and that row.
+///
+/// ⛔ The correction is not optional. Without it the landing point falls short by
+/// the sum of those differences, and that sum grows with every heading above the
+/// target — a long, heading-heavy note lands tens to hundreds of pixels high.
+/// [extractHeadings] is the level source on purpose: the outline panel uses the
+/// same scan, and the two have to agree about which line is a heading at all.
+///
+/// Still approximate for a heading long enough to wrap (the pass sees one line,
+/// so the correction adds one line box) and for inline images, which a
+/// [TextPainter] lays out at no size.
+double textHeightAbove({
+  required String text,
+  required TextStyle base,
+  required AppPalette p,
+  required int line,
+  double contentWidth = AppLayout.proseMaxWidth,
+}) {
+  if (line <= 0) return 0;
+  final List<String> lines = text.split('\n');
+  final int target = line.clamp(0, lines.length - 1);
+  int offset = 0;
+  for (int i = 0; i < target; i++) {
+    offset += lines[i].length + 1;
+  }
+  if (offset <= 0) return 0;
+
+  // The prefix is every character of the lines above, which always ends on the
+  // newline that closed the last of them. Paint that newline and the paragraph
+  // opens one more, empty line box — a whole row of overshoot on every measure.
+  final TextPainter painter = TextPainter(
+    text: TextSpan(text: text.substring(0, offset - 1), style: base),
+    textDirection: TextDirection.ltr,
+  )..layout(maxWidth: contentWidth);
+  final double measured = painter.height;
+  painter.dispose();
+
+  final double row = _lineHeightOf(base);
+  double correction = 0;
+  for (final Heading h in extractHeadings(text)) {
+    if (h.line >= target) continue;
+    correction += _lineHeightOf(_headingStyle(base, p, h.level)) - row;
+  }
+  return measured + correction;
+}
+
 bool _isHiddenStyle(TextStyle? style) =>
     style != null && style.fontSize == _kHiddenFontSize;
 
@@ -966,7 +1021,7 @@ List<InlineSpan> _indentRun(String indent, TextStyle base, AppPalette p) {
     _decoration(
       MarkdownIndentGuides(
         levels: level,
-        color: p.outline,
+        color: p.rule,
         rowHeight: _lineHeightOf(base),
       ),
     ),
@@ -2346,9 +2401,9 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
     // again in the lifted colour with a clip to the band. A rule that runs out
     // of the band therefore changes colour exactly at its edge, and the ones
     // the outline covers (the band's own two sides) are stroked over anyway.
-    final Paint line = Paint()..color = _palette.outlineSoft;
+    final Paint line = Paint()..color = _palette.rule;
     final Paint strong = Paint()
-      ..color = band == null ? _palette.outline : _palette.outlineSoft;
+      ..color = band == null ? _strongRule(_palette) : _palette.rule;
     final Set<double> edges = <double>{0, _tableWidth};
     for (final _PaintCell cell in _cells) {
       edges
@@ -2382,7 +2437,7 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
       final Paint lifted = Paint()
         ..color = Color.alphaBlend(
           _palette.selectionEdge.withValues(alpha: 0.2),
-          _palette.outline,
+          _palette.rule,
         );
       canvas.save();
       canvas.clipRRect(shape);
@@ -3305,13 +3360,18 @@ _Table _measureTable({
 
 TextStyle _headingStyle(TextStyle base, AppPalette p, int level) {
   final double s = base.fontSize ?? 15;
+  // The designed line box is the only lever a heading has for breathing room:
+  // there is no margin between blocks here — markup characters are collapsed in
+  // place, never spliced with spacer spans, or the tree would stop matching the
+  // text. Airy leading therefore buys the space above and below that a margin
+  // would have given, and it still snaps to a whole-pixel advance.
   final (double scale, double height, double tracking) = switch (level) {
-    1 => (1.62, 1.3, -0.5),
-    2 => (1.36, 1.34, -0.4),
-    3 => (1.18, 1.4, -0.25),
-    4 => (1.07, 1.45, -0.1),
-    5 => (0.99, 1.5, 0),
-    _ => (0.93, 1.5, 0.1),
+    1 => (1.62, 1.5, -0.5),
+    2 => (1.36, 1.55, -0.4),
+    3 => (1.18, 1.6, -0.25),
+    4 => (1.07, 1.65, -0.1),
+    5 => (0.99, 1.7, 0),
+    _ => (0.93, 1.75, 0.1),
   };
   return base.copyWith(
     fontSize: s * scale,
@@ -3368,6 +3428,16 @@ TextStyle _inlineCodeSource(TextStyle base, AppPalette p) {
 /// selection covers while the reveal is frozen.
 Color _selectedChip(AppPalette p) =>
     Color.alphaBlend(p.selection, p.surfaceSunken);
+
+/// A content rule that has to *read* as a line: a table's header and closing
+/// rules, and the outline of a checkbox.
+///
+/// [AppPalette.rule] is already separated from the surface; this is the step
+/// above it, for the few lines that carry a boundary rather than a grid. [Color.alphaBlend]
+/// rather than a fixed hex so the step keeps its relationship to the rule in
+/// both themes.
+Color _strongRule(AppPalette p) =>
+    Color.alphaBlend(p.textTertiary.withValues(alpha: 0.55), p.rule);
 
 TextStyle _numberStyle(TextStyle base, AppPalette p) => base.copyWith(
   color: p.accent,
@@ -3485,7 +3555,7 @@ WidgetSpan _quoteBar(AppPalette p, TextStyle base) => _decoration(
     child: Container(
       width: 2,
       height: _lineHeightOf(base),
-      color: p.accent.withValues(alpha: 0.55),
+      color: p.accent.withValues(alpha: 0.7),
     ),
   ),
 );
@@ -3523,7 +3593,7 @@ WidgetSpan _codeBand(
                 style: TextStyle(
                   fontFamily: AppFonts.mono,
                   fontFamilyFallback: AppFonts.monoFallback,
-                  fontSize: 10.5,
+                  fontSize: AppText.caption,
                   letterSpacing: 0.3,
                   fontWeight: FontWeight.w600,
                   color: p.textTertiary,
@@ -3572,7 +3642,10 @@ WidgetSpan _taskBox(AppPalette p, bool done, int sourceOffset) => _decoration(
           decoration: BoxDecoration(
             color: done ? p.accent : Colors.transparent,
             borderRadius: BorderRadius.circular(AppRadius.xs),
-            border: Border.all(color: done ? p.accent : p.outline, width: 1.5),
+            border: Border.all(
+              color: done ? p.accent : _strongRule(p),
+              width: 1.5,
+            ),
           ),
           child: done
               ? Icon(Icons.check_rounded, size: 11, color: p.onAccent)
@@ -3659,7 +3732,7 @@ WidgetSpan _embedChip(
         decoration: BoxDecoration(
           color: p.surfaceSunken,
           borderRadius: BorderRadius.circular(AppRadius.xs),
-          border: Border.all(color: p.outlineSoft),
+          border: Border.all(color: p.rule),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -3714,7 +3787,7 @@ Widget _brokenImage(AppPalette p, String alt) => Container(
   decoration: BoxDecoration(
     color: p.surfaceSunken,
     borderRadius: AppRadius.smAll,
-    border: Border.all(color: p.outlineSoft),
+    border: Border.all(color: p.rule),
   ),
   child: Row(
     mainAxisSize: MainAxisSize.min,

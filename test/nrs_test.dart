@@ -1633,6 +1633,39 @@ final x = 1;
     });
   });
 
+  group('Text above a line', () {
+    // The pane puts a line at a given height on screen — "jump to heading",
+    // typewriter centring — from this number. Counting headings as body rows
+    // used to land every jump short by the headings it had passed.
+    const TextStyle base = TextStyle(fontSize: 15.5, height: 1.78);
+    const AppPalette palette = AppPalette.light;
+    const int target = 6;
+
+    double above(String text) =>
+        textHeightAbove(text: text, base: base, p: palette, line: target);
+
+    test('body rows above the line measure one row each', () {
+      expect(above('a\n\nb\n\nc\n\ntarget'), closeTo(6 * 28, 1e-6));
+    });
+
+    test('an H1 above the line is measured as its own line box', () {
+      // Six lines again, but the first is a heading: five body rows plus the
+      // heading's 38px box — not six rows of 28.
+      expect(above('# 一\n\nb\n\nc\n\ntarget'), closeTo(5 * 28 + 38, 1e-6));
+    });
+
+    test('a heading below the line is not counted', () {
+      expect(above('a\n\nb\n\nc\n\ntarget\n\n# 二'), closeTo(6 * 28, 1e-6));
+    });
+
+    test('a # inside a fence is code, at body height', () {
+      // Six rows above the target, none of them a heading — the `#` sits inside
+      // the fence, and a code line is a body row. Counting it as a heading would
+      // add the 38px box.
+      expect(above('```\n# 一\n```\na\n\nb\ntarget'), closeTo(6 * 28, 1e-6));
+    });
+  });
+
   group('Table', () {
     const TextStyle base = TextStyle(fontSize: 15.5, height: 1.78);
     const AppPalette palette = AppPalette.light;

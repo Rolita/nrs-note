@@ -24,6 +24,7 @@ class AppPalette extends ThemeExtension<AppPalette> {
     required this.surfaceSunken,
     required this.outline,
     required this.outlineSoft,
+    required this.rule,
     required this.textPrimary,
     required this.textSecondary,
     required this.textTertiary,
@@ -72,6 +73,17 @@ class AppPalette extends ThemeExtension<AppPalette> {
   /// The weaker divider used *inside* a region, where a full-strength line
   /// would cut the panel in two.
   final Color outlineSoft;
+
+  /// A hairline drawn on top of the *content* surface: the editor's table grid
+  /// and its horizontal rules.
+  ///
+  /// The two outline steps above are chrome colours, measured against the panel
+  /// steps they separate. On the editor's [surface] they both fail: the soft one
+  /// sits four levels off the dark surface (1.04:1 — literally invisible) and the
+  /// strong one is only 1.27:1. Content rules are spaced further from their
+  /// background than panel edges are, so they need their own step rather than a
+  /// borrowed one.
+  final Color rule;
 
   final Color textPrimary;
   final Color textSecondary;
@@ -135,6 +147,7 @@ class AppPalette extends ThemeExtension<AppPalette> {
     surfaceSunken: Color(0xFFEDEDEF),
     outline: Color(0xFFDCDCE2),
     outlineSoft: Color(0xFFE8E8EC),
+    rule: Color(0xFFD4D4DB),
     textPrimary: Color(0xFF191919),
     textSecondary: Color(0xFF5C5C66),
     textTertiary: Color(0xFF8E8E99),
@@ -164,6 +177,7 @@ class AppPalette extends ThemeExtension<AppPalette> {
     surfaceSunken: Color(0xFF141416),
     outline: Color(0xFF31313A),
     outlineSoft: Color(0xFF24242A),
+    rule: Color(0xFF3A3A44),
     textPrimary: Color(0xFFE8E8ED),
     textSecondary: Color(0xFF9A9AA6),
     textTertiary: Color(0xFF6B6B78),
@@ -196,6 +210,7 @@ class AppPalette extends ThemeExtension<AppPalette> {
     surfaceSunken: surfaceSunken,
     outline: outline,
     outlineSoft: outlineSoft,
+    rule: rule,
     textPrimary: textPrimary,
     textSecondary: textSecondary,
     textTertiary: textTertiary,
@@ -228,6 +243,7 @@ class AppPalette extends ThemeExtension<AppPalette> {
       surfaceSunken: mix(surfaceSunken, other.surfaceSunken),
       outline: mix(outline, other.outline),
       outlineSoft: mix(outlineSoft, other.outlineSoft),
+      rule: mix(rule, other.rule),
       textPrimary: mix(textPrimary, other.textPrimary),
       textSecondary: mix(textSecondary, other.textSecondary),
       textTertiary: mix(textTertiary, other.textTertiary),

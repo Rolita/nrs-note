@@ -13,6 +13,7 @@ import '../../data/models/note.dart';
 import '../../state/notes_controller.dart';
 import '../../state/settings_controller.dart';
 import '../common/app_widgets.dart';
+import 'live_markdown.dart';
 import 'markdown_editor.dart';
 
 /// The centre pane: note header, the live editor and a status bar. The outline
@@ -144,26 +145,20 @@ class EditorPaneState extends State<EditorPane> {
 
   // ------------------------------------------------------------ navigation
 
-  /// Height of the laid-out text above `line`, measured with the very style the
-  /// editor paints with. Approximate for wrapped paragraphs and inline images,
-  /// exact for the plain-text case that matters when jumping between headings.
-  double _lineTop(int line, TextStyle style) {
-    if (line <= 0) return 0;
-    final List<String> lines = _body.text.split('\n');
-    final int target = line.clamp(0, lines.length - 1);
-    int offset = 0;
-    for (int i = 0; i < target; i++) {
-      offset += lines[i].length + 1;
-    }
-    if (offset <= 0) return 0;
-    final TextPainter painter = TextPainter(
-      text: TextSpan(text: _body.text.substring(0, offset), style: style),
-      textDirection: TextDirection.ltr,
-    )..layout(maxWidth: _contentWidth);
-    final double height = painter.height;
-    painter.dispose();
-    return height;
-  }
+  /// Height of the laid-out text above `line`.
+  ///
+  /// Measured by the renderer itself ([textHeightAbove]) so it carries the
+  /// heading line boxes: a heading is not a body row, and treating it as one
+  /// used to land a jump short by a margin that grew with every heading above
+  /// the target. Wrapped paragraphs come out exact; a wrapped heading and an
+  /// inline image stay approximate.
+  double _lineTop(int line, TextStyle style) => textHeightAbove(
+    text: _body.text,
+    base: style,
+    p: context.palette,
+    line: line,
+    contentWidth: _contentWidth,
+  );
 
   Future<void> _scrollToLine(
     int line, {
