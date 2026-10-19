@@ -395,8 +395,8 @@ class EditorPaneState extends State<EditorPane> {
     SettingsController settings,
   ) {
     return Container(
-      height: 42,
-      padding: const EdgeInsets.symmetric(horizontal: AppSpace.sm),
+      height: AppLayout.toolbarHeight,
+      padding: const EdgeInsets.symmetric(horizontal: AppSpace.xs),
       decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: p.outlineSoft)),
       ),
@@ -440,7 +440,7 @@ class EditorPaneState extends State<EditorPane> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(
         AppSpace.xl,
-        AppSpace.lg,
+        AppSpace.md,
         AppSpace.xl,
         AppSpace.sm,
       ),
@@ -491,15 +491,15 @@ class EditorPaneState extends State<EditorPane> {
               const SizedBox(width: 5),
               Text(
                 '创建于 ${formatFullTime(note.createdAt)}',
-                style: TextStyle(fontSize: 11, color: p.textTertiary),
+                style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
               ),
               const SizedBox(width: AppSpace.md),
-              Text('·', style: TextStyle(fontSize: 11, color: p.textTertiary)),
+              Text('·', style: TextStyle(fontSize: AppText.caption, color: p.textTertiary)),
               const SizedBox(width: AppSpace.md),
               Text(
                 note.relativePath,
                 style: TextStyle(
-                  fontSize: 11,
+                  fontSize: AppText.caption,
                   fontFamily: AppFonts.mono,
                   fontFamilyFallback: AppFonts.monoFallback,
                   color: p.textTertiary.withValues(alpha: 0.85),
@@ -559,7 +559,7 @@ class EditorPaneState extends State<EditorPane> {
     };
 
     return Container(
-      height: 28,
+      height: AppLayout.footerHeight,
       padding: kEditorChromePadding,
       decoration: BoxDecoration(
         border: Border(top: BorderSide(color: p.outlineSoft)),
@@ -573,7 +573,7 @@ class EditorPaneState extends State<EditorPane> {
             decoration: BoxDecoration(color: color, shape: BoxShape.circle),
           ),
           const SizedBox(width: 7),
-          Text(label, style: TextStyle(fontSize: 10.5, color: p.textTertiary)),
+          Text(label, style: TextStyle(fontSize: AppText.caption, color: p.textTertiary)),
           const SizedBox(width: 14),
           _Stat(
             text: '行 ${_cursorLine + 1},列 $_cursorColumn',
@@ -620,7 +620,7 @@ class EditorPaneState extends State<EditorPane> {
             const SizedBox(height: AppSpace.lg),
             Text(
               '正在打开笔记库…',
-              style: TextStyle(fontSize: 12.5, color: p.textTertiary),
+              style: TextStyle(fontSize: AppText.ui, color: p.textTertiary),
             ),
           ],
         ),
@@ -644,7 +644,7 @@ class _Stat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) =>
-      Text(text, style: TextStyle(fontSize: 10.5, color: color));
+      Text(text, style: TextStyle(fontSize: AppText.caption, color: color));
 }
 
 enum _EditKind {

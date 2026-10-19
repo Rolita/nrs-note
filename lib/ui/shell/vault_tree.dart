@@ -377,7 +377,7 @@ class VaultTreeState extends State<VaultTree> {
           Text(
             label,
             style: TextStyle(
-              fontSize: 12.5,
+              fontSize: AppText.ui,
               color: danger ? p.danger : p.textPrimary,
             ),
           ),
@@ -385,7 +385,7 @@ class VaultTreeState extends State<VaultTree> {
             const SizedBox(width: 12),
             Text(
               hint,
-              style: TextStyle(fontSize: 10.5, color: p.textTertiary),
+              style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
             ),
           ],
         ],
@@ -511,7 +511,7 @@ class VaultTreeState extends State<VaultTree> {
         onSubmitted: (String _) => _finishRename(),
         cursorColor: p.accent,
         cursorWidth: 1.3,
-        style: TextStyle(fontSize: 12.5, height: 1.2, color: p.textPrimary),
+        style: TextStyle(fontSize: AppText.ui, height: 1.2, color: p.textPrimary),
         decoration: InputDecoration(
           isDense: true,
           filled: false,
@@ -520,7 +520,7 @@ class VaultTreeState extends State<VaultTree> {
           focusedBorder: InputBorder.none,
           contentPadding: EdgeInsets.zero,
           hintText: '名称',
-          hintStyle: TextStyle(fontSize: 12.5, color: p.textTertiary),
+          hintStyle: TextStyle(fontSize: AppText.ui, color: p.textTertiary),
         ),
       ),
     );
@@ -584,22 +584,28 @@ class VaultTreeState extends State<VaultTree> {
   Future<void> _pickFolder(List<Note> targets) async {
     final AppPalette p = context.palette;
     final List<String> folders = widget.notes.folders;
-    final double height = (46 + folders.length * 32).clamp(64, 320).toDouble();
+    final double height = (40 + folders.length * AppLayout.rowHeight)
+        .clamp(56, 300)
+        .toDouble();
     final String? folder = await showDialog<String>(
       context: context,
       barrierColor: const Color(0x44000000),
       builder: (BuildContext context) => AlertDialog(
-        backgroundColor: p.surface,
+        backgroundColor: p.surfaceRaised,
         title: Text(
           targets.length > 1 ? '把 ${targets.length} 篇笔记移到' : '把这篇笔记移到',
-          style: TextStyle(fontSize: 14, color: p.textPrimary),
+          style: TextStyle(
+            fontSize: AppText.title,
+            fontWeight: FontWeight.w600,
+            color: p.textPrimary,
+          ),
         ),
-        contentPadding: const EdgeInsets.symmetric(vertical: 6),
+        contentPadding: const EdgeInsets.symmetric(vertical: AppSpace.xs),
         content: SizedBox(
           width: 330,
           height: height,
           child: ListView(
-            padding: const EdgeInsets.symmetric(horizontal: 6),
+            padding: const EdgeInsets.symmetric(horizontal: AppSpace.xs),
             children: <Widget>[
               _folderOption(p, '', '根目录', 0),
               for (final String path in folders)
@@ -632,27 +638,28 @@ class VaultTreeState extends State<VaultTree> {
   ) {
     return InkWell(
       onTap: () => Navigator.of(context).pop(path),
-      child: Padding(
-        padding: EdgeInsets.only(
-          left: 10 + depth * 14,
-          top: 7,
-          bottom: 7,
-          right: 10,
-        ),
-        child: Row(
-          children: <Widget>[
-            if (path.isNotEmpty)
-              Icon(
-                Icons.subdirectory_arrow_right_rounded,
-                size: 13,
-                color: p.textTertiary,
+      child: SizedBox(
+        height: AppLayout.rowHeight + 4,
+        child: Padding(
+          padding: EdgeInsets.only(
+            left: AppSpace.sm + depth * AppLayout.rowIndent,
+            right: AppSpace.sm,
+          ),
+          child: Row(
+            children: <Widget>[
+              if (path.isNotEmpty)
+                Icon(
+                  Icons.subdirectory_arrow_right_rounded,
+                  size: 13,
+                  color: p.textTertiary,
+                ),
+              if (path.isNotEmpty) const SizedBox(width: AppSpace.xs + 2),
+              Text(
+                label,
+                style: TextStyle(fontSize: AppText.ui, color: p.textPrimary),
               ),
-            if (path.isNotEmpty) const SizedBox(width: 6),
-            Text(
-              label,
-              style: TextStyle(fontSize: 12.5, color: p.textPrimary),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -718,7 +725,12 @@ class VaultTreeState extends State<VaultTree> {
               List<_DragPayload?> candidate,
               List<dynamic> rejected,
             ) => ListView.builder(
-              padding: const EdgeInsets.fromLTRB(6, 6, 6, AppSpace.xl),
+              padding: const EdgeInsets.fromLTRB(
+                AppSpace.xs,
+                AppSpace.xs,
+                AppSpace.xs,
+                AppSpace.xl,
+              ),
               itemCount: rows.length,
               itemBuilder: (BuildContext context, int i) {
                 final _TreeRow row = rows[i];
@@ -872,7 +884,7 @@ class VaultTreeState extends State<VaultTree> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 12.5,
+                    fontSize: AppText.ui,
                     height: 1.25,
                     fontWeight: FontWeight.w500,
                     color: p.textPrimary,
@@ -887,7 +899,7 @@ class VaultTreeState extends State<VaultTree> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontSize: 11,
+                      fontSize: AppText.caption,
                       height: 1.25,
                       color: p.textTertiary,
                     ),
@@ -967,25 +979,24 @@ class _FolderRow extends StatelessWidget {
         onSecondaryTapDown: onSecondaryTapDown,
         behavior: HitTestBehavior.opaque,
         child: Container(
-          height: 29,
-          margin: const EdgeInsets.only(bottom: 1),
+          height: AppLayout.rowHeight,
           decoration: BoxDecoration(
             color: dropTarget
-              ? p.accent.withValues(alpha: p.isDark ? 0.26 : 0.16)
+              ? p.accentSoft
               : (hovered ? p.surfaceRaised : Colors.transparent),
             borderRadius: AppRadius.smAll,
           ),
           child: Row(
             children: <Widget>[
               _IndentGuides(depth: depth),
-              const SizedBox(width: 3),
+              const SizedBox(width: AppSpace.xs),
               SizedBox(
                 width: 16,
                 child: Icon(
                   expanded
                       ? Icons.keyboard_arrow_down_rounded
                       : Icons.keyboard_arrow_right_rounded,
-                  size: 15,
+                  size: 14,
                   color: p.textTertiary,
                 ),
               ),
@@ -1000,15 +1011,17 @@ class _FolderRow extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 12.5,
+                          fontSize: AppText.ui,
                           height: 1.2,
                           fontWeight: FontWeight.w500,
-                          color: dropTarget ? p.accent : p.textSecondary,
+                          color: dropTarget
+                              ? p.accent
+                              : (hovered ? p.textPrimary : p.textSecondary),
                         ),
                       ),
                     ),
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: AppSpace.xs),
             ],
           ),
         ),
@@ -1048,30 +1061,32 @@ class _FileRow extends StatelessWidget {
         onSecondaryTapDown: onSecondaryTapDown,
         behavior: HitTestBehavior.opaque,
         child: Container(
-          height: 28,
-          margin: const EdgeInsets.only(bottom: 1),
+          height: AppLayout.rowHeight,
           decoration: BoxDecoration(
             color: selected
-                ? p.accent.withValues(alpha: p.isDark ? 0.20 : 0.12)
+                ? p.accentSoft
                 : (hovered ? p.surfaceRaised : Colors.transparent),
             borderRadius: AppRadius.smAll,
           ),
           // `StackFit.expand` keeps the row full-height even when there are no
           // indent guides to stretch it, so the label stays vertically centred
-          // instead of sticking to the top of the 28px row.
+          // instead of sticking to the top of the row.
           child: Stack(
             fit: StackFit.expand,
             children: <Widget>[
+              // The open note marks itself with a short amber bar rather than
+              // with amber text: in a dense tree, one bright mark per row is
+              // what keeps the list scannable.
               if (active)
                 Positioned(
                   left: 0,
-                  top: 5,
-                  bottom: 5,
+                  top: AppSpace.xs,
+                  bottom: AppSpace.xs,
                   child: Container(
-                    width: 2.5,
+                    width: 2,
                     decoration: BoxDecoration(
                       color: p.accent,
-                      borderRadius: BorderRadius.circular(2),
+                      borderRadius: BorderRadius.circular(AppRadius.xs),
                     ),
                   ),
                 ),
@@ -1095,12 +1110,14 @@ class _FileRow extends StatelessWidget {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
-                              fontSize: 12.5,
+                              fontSize: AppText.ui,
                               height: 1.2,
                               fontWeight: selected
-                                  ? FontWeight.w600
+                                  ? FontWeight.w500
                                   : FontWeight.w400,
-                              color: selected ? p.accent : p.textSecondary,
+                              color: selected
+                                  ? p.textPrimary
+                                  : p.textSecondary,
                             ),
                           ),
                         ),
@@ -1109,15 +1126,15 @@ class _FileRow extends StatelessWidget {
                     Text(
                       '${note.taskDone}/${note.taskTotal}',
                       style: TextStyle(
-                        fontSize: 9.5,
+                        fontSize: 10,
                         color: note.taskDone == note.taskTotal
                             ? p.success
                             : p.textTertiary,
                       ),
                     ),
-                    const SizedBox(width: 6),
+                    const SizedBox(width: AppSpace.xs),
                   ],
-                  const SizedBox(width: 2),
+                  const SizedBox(width: AppSpace.xxs),
                 ],
               ),
             ],
@@ -1144,11 +1161,11 @@ class _IndentGuides extends StatelessWidget {
       children: <Widget>[
         for (int i = 0; i < depth; i++)
           SizedBox(
-            width: 14,
+            width: AppLayout.rowIndent,
             child: Center(
               child: Container(
                 width: 1,
-                color: p.outlineSoft.withValues(alpha: 0.75),
+                color: p.outlineSoft,
               ),
             ),
           ),

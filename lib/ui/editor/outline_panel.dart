@@ -41,31 +41,36 @@ class OutlinePanel extends StatelessWidget {
     return Container(
       width: width,
       decoration: BoxDecoration(
-        color: p.surface,
-        border: Border(left: BorderSide(color: p.outlineSoft)),
+        // Same step as the sidebar: the editor is the only bright surface, and
+        // both side columns read as chrome around it.
+        color: p.sidebar,
+        border: Border(left: BorderSide(color: p.outline)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          Padding(
-            padding: const EdgeInsets.fromLTRB(AppSpace.lg, AppSpace.md, AppSpace.md, AppSpace.sm),
-            child: Row(
-              children: <Widget>[
-                Text(
-                  '大纲',
-                  style: TextStyle(
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.9,
-                    color: p.textTertiary,
+          SizedBox(
+            height: AppLayout.panelHeaderHeight,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(AppSpace.md, 0, AppSpace.sm, 0),
+              child: Row(
+                children: <Widget>[
+                  Text(
+                    '大纲',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.4,
+                      color: p.textTertiary,
+                    ),
                   ),
-                ),
-                const Spacer(),
-                Text(
-                  '${headings.length}',
-                  style: TextStyle(fontSize: 10.5, color: p.textTertiary),
-                ),
-              ],
+                  const Spacer(),
+                  Text(
+                    '${headings.length}',
+                    style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
+                  ),
+                ],
+              ),
             ),
           ),
           Expanded(
@@ -87,7 +92,8 @@ class OutlinePanel extends StatelessWidget {
                     itemBuilder: (BuildContext context, int i) {
                       final Heading h = headings[i];
                       final bool selected = i == active;
-                      final double indent = (h.level - 1) * 9.0;
+                      final double indent =
+                          (h.level - 1) * AppLayout.rowIndent;
 
                       return HoverBuilder(
                         cursor: SystemMouseCursors.click,
@@ -98,18 +104,16 @@ class OutlinePanel extends StatelessWidget {
                             padding: EdgeInsets.only(
                               left: AppSpace.md + indent,
                               right: AppSpace.sm,
-                              top: 1,
-                              bottom: 1,
                             ),
                             child: AnimatedContainer(
                               duration: AppMotion.fast,
                               padding: const EdgeInsets.symmetric(
                                 horizontal: AppSpace.sm,
-                                vertical: 5,
+                                vertical: AppSpace.xs,
                               ),
                               decoration: BoxDecoration(
                                 color: selected
-                                    ? p.accent.withValues(alpha: p.isDark ? 0.16 : 0.09)
+                                    ? p.accentSoft
                                     : (hovered ? p.surfaceRaised : Colors.transparent),
                                 borderRadius: AppRadius.smAll,
                                 border: selected
@@ -152,7 +156,7 @@ class OutlinePanel extends StatelessWidget {
                                             ? FontWeight.w600
                                             : FontWeight.w400,
                                         color: selected
-                                            ? p.accent
+                                            ? p.textPrimary
                                             : (h.level <= 2
                                                   ? p.textSecondary
                                                   : p.textTertiary),

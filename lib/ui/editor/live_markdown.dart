@@ -3306,12 +3306,12 @@ _Table _measureTable({
 TextStyle _headingStyle(TextStyle base, AppPalette p, int level) {
   final double s = base.fontSize ?? 15;
   final (double scale, double height, double tracking) = switch (level) {
-    1 => (1.66, 1.32, -0.6),
-    2 => (1.38, 1.34, -0.45),
-    3 => (1.19, 1.4, -0.3),
-    4 => (1.07, 1.45, -0.15),
-    5 => (0.98, 1.5, 0),
-    _ => (0.92, 1.5, 0.1),
+    1 => (1.62, 1.3, -0.5),
+    2 => (1.36, 1.34, -0.4),
+    3 => (1.18, 1.4, -0.25),
+    4 => (1.07, 1.45, -0.1),
+    5 => (0.99, 1.5, 0),
+    _ => (0.93, 1.5, 0.1),
   };
   return base.copyWith(
     fontSize: s * scale,
@@ -3396,17 +3396,17 @@ TextStyle _struck(TextStyle base) => base.copyWith(
 );
 
 TextStyle _tagText(TextStyle base, AppPalette p) =>
-    base.copyWith(color: p.isDark ? p.accent : p.accentHover);
+    base.copyWith(color: p.accent);
 
 TextStyle _wikiText(TextStyle base, AppPalette p) => base.copyWith(
-  color: p.isDark ? p.accent : p.accentHover,
+  color: p.accent,
   decoration: TextDecoration.underline,
   decorationStyle: TextDecorationStyle.dotted,
   decorationColor: p.accent.withValues(alpha: 0.45),
 );
 
 TextStyle _linkText(TextStyle base, AppPalette p) => base.copyWith(
-  color: p.isDark ? p.accent : p.accentHover,
+  color: p.accent,
   decoration: TextDecoration.underline,
   decorationColor: p.accent.withValues(alpha: 0.35),
 );
@@ -3483,9 +3483,9 @@ WidgetSpan _quoteBar(AppPalette p, TextStyle base) => _decoration(
   Padding(
     padding: const EdgeInsets.only(left: 2, right: 10),
     child: Container(
-      width: 3,
+      width: 2,
       height: _lineHeightOf(base),
-      color: p.accent.withValues(alpha: 0.6),
+      color: p.accent.withValues(alpha: 0.55),
     ),
   ),
 );
@@ -3609,7 +3609,7 @@ WidgetSpan _tagChip(
               fontSize: size * 0.88,
               height: 1.25,
               fontWeight: FontWeight.w600,
-              color: p.isDark ? p.accent : p.accentHover,
+              color: p.accent,
             ),
           ),
         ),
@@ -3634,7 +3634,7 @@ WidgetSpan _wikiChip(
           fontSize: body.fontSize,
           height: body.height,
           fontWeight: body.fontWeight,
-          color: p.isDark ? p.accent : p.accentHover,
+          color: p.accent,
           decoration: TextDecoration.underline,
           decorationStyle: TextDecorationStyle.dotted,
           decorationColor: p.accent.withValues(alpha: 0.45),
@@ -3680,7 +3680,7 @@ WidgetSpan _linkChip(AppPalette p, String label, TextStyle body) => _decoration(
     style: TextStyle(
       fontSize: body.fontSize,
       height: body.height,
-      color: p.isDark ? p.accent : p.accentHover,
+      color: p.accent,
       decoration: TextDecoration.underline,
       decorationColor: p.accent.withValues(alpha: 0.35),
     ),

@@ -134,7 +134,10 @@ class _CommandPaletteState extends State<CommandPalette> {
 
   void _ensureVisible() {
     if (!_scroll.hasClients) return;
-    const double rowHeight = 46;
+    // Approximate: a row plus its share of the section header above it. Only
+    // ever used to keep the keyboard cursor on screen, so it does not have to
+    // be exact — it has to be *close*, or the list jumps a row too far.
+    const double rowHeight = 38;
     final double target = _index * rowHeight;
     final double viewStart = _scroll.offset;
     final double viewEnd = viewStart + _scroll.position.viewportDimension;
@@ -159,16 +162,15 @@ class _CommandPaletteState extends State<CommandPalette> {
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
-    final bool isDark = p.isDark;
 
     return Align(
       alignment: Alignment.topCenter,
       child: Padding(
-        padding: const EdgeInsets.only(top: 76, left: 24, right: 24, bottom: 24),
+        padding: const EdgeInsets.only(top: 60, left: 24, right: 24, bottom: 24),
         child: Material(
           type: MaterialType.transparency,
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 560),
+            constraints: const BoxConstraints(maxWidth: 520),
             child: Container(
               decoration: BoxDecoration(
                 color: p.surfaceRaised,
@@ -176,12 +178,10 @@ class _CommandPaletteState extends State<CommandPalette> {
                 border: Border.all(color: p.outline),
                 boxShadow: <BoxShadow>[
                   BoxShadow(
-                    color: isDark
-                        ? const Color(0x66000000)
-                        : const Color(0x1F1B1A18),
-                    blurRadius: 40,
+                    color: p.shadow,
+                    blurRadius: 32,
                     spreadRadius: -8,
-                    offset: const Offset(0, 18),
+                    offset: const Offset(0, 16),
                   ),
                 ],
               ),
@@ -190,16 +190,16 @@ class _CommandPaletteState extends State<CommandPalette> {
                 mainAxisSize: MainAxisSize.min,
                 children: <Widget>[
                   SizedBox(
-                    height: 52,
+                    height: 46,
                     child: Row(
                       children: <Widget>[
                         const SizedBox(width: AppSpace.lg),
                         Icon(
                           Icons.search_rounded,
-                          size: 17,
+                          size: 16,
                           color: p.textTertiary,
                         ),
-                        const SizedBox(width: 10),
+                        const SizedBox(width: AppSpace.sm),
                         Expanded(
                           child: CallbackShortcuts(
                             bindings: <ShortcutActivator, VoidCallback>{
@@ -220,7 +220,7 @@ class _CommandPaletteState extends State<CommandPalette> {
                               cursorColor: p.accent,
                               cursorWidth: 1.6,
                               style: TextStyle(
-                                fontSize: 15,
+                                fontSize: AppText.title,
                                 color: p.textPrimary,
                               ),
                               decoration: InputDecoration(
@@ -232,7 +232,7 @@ class _CommandPaletteState extends State<CommandPalette> {
                                 contentPadding: EdgeInsets.zero,
                                 hintText: '搜索笔记或输入命令…',
                                 hintStyle: TextStyle(
-                                  fontSize: 15,
+                                  fontSize: AppText.title,
                                   color: p.textTertiary,
                                 ),
                               ),
@@ -242,19 +242,19 @@ class _CommandPaletteState extends State<CommandPalette> {
                         const SizedBox(width: AppSpace.lg),
                         Container(
                           padding: const EdgeInsets.symmetric(
-                            horizontal: 7,
-                            vertical: 3,
+                            horizontal: 6,
+                            vertical: 2,
                           ),
                           decoration: BoxDecoration(
                             color: p.surfaceSunken,
-                            borderRadius: BorderRadius.circular(AppRadius.xs + 2),
+                            borderRadius: BorderRadius.circular(AppRadius.xs),
                             border: Border.all(color: p.outlineSoft),
                           ),
                           child: Text(
                             'ESC',
                             style: TextStyle(
-                              fontSize: 9.5,
-                              fontWeight: FontWeight.w700,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
                               letterSpacing: 0.5,
                               color: p.textTertiary,
                             ),
@@ -267,10 +267,15 @@ class _CommandPaletteState extends State<CommandPalette> {
                   Divider(height: 1, color: p.outlineSoft),
                   if (_rows.isEmpty)
                     Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 34),
+                      padding: const EdgeInsets.symmetric(
+                        vertical: AppSpace.xxl,
+                      ),
                       child: Text(
                         '没有找到匹配的内容',
-                        style: TextStyle(fontSize: 13, color: p.textTertiary),
+                        style: TextStyle(
+                          fontSize: AppText.ui,
+                          color: p.textTertiary,
+                        ),
                       ),
                     )
                   else
@@ -279,7 +284,9 @@ class _CommandPaletteState extends State<CommandPalette> {
                       child: ListView.builder(
                         controller: _scroll,
                         shrinkWrap: true,
-                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        padding: const EdgeInsets.symmetric(
+                          vertical: AppSpace.xs,
+                        ),
                         itemCount: _rows.length,
                         itemBuilder: (BuildContext context, int i) {
                           final _Row row = _rows[i];
@@ -290,20 +297,20 @@ class _CommandPaletteState extends State<CommandPalette> {
                     ),
                   Divider(height: 1, color: p.outlineSoft),
                   Container(
-                    height: 32,
+                    height: AppLayout.footerHeight,
                     padding: const EdgeInsets.symmetric(
-                      horizontal: AppSpace.lg,
+                      horizontal: AppSpace.md,
                     ),
                     child: Row(
                       children: <Widget>[
                         _Hint(p: p, keys: '↑ ↓', label: '选择'),
-                        const SizedBox(width: 14),
+                        const SizedBox(width: AppSpace.md),
                         _Hint(p: p, keys: 'Enter', label: '打开'),
                         const Spacer(),
                         Text(
                           '${widget.notes.length} 篇笔记',
                           style: TextStyle(
-                            fontSize: 10.5,
+                            fontSize: AppText.caption,
                             color: p.textTertiary,
                           ),
                         ),
@@ -330,38 +337,46 @@ class _CommandPaletteState extends State<CommandPalette> {
       children: <Widget>[
         if (isFirstAction && row.action != null && index != 0)
           Padding(
-            padding: const EdgeInsets.fromLTRB(AppSpace.lg, 10, AppSpace.lg, 4),
+            padding: const EdgeInsets.fromLTRB(
+              AppSpace.md,
+              AppSpace.sm,
+              AppSpace.md,
+              AppSpace.xxs,
+            ),
             child: Text(
               '操作',
               style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.8,
+                fontSize: AppText.label,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.4,
                 color: p.textTertiary,
               ),
             ),
           ),
         if (isFirstNote && index == 0)
           Padding(
-            padding: const EdgeInsets.fromLTRB(AppSpace.lg, 4, AppSpace.lg, 4),
+            padding: const EdgeInsets.fromLTRB(
+              AppSpace.md,
+              AppSpace.xs,
+              AppSpace.md,
+              AppSpace.xxs,
+            ),
             child: Text(
               '笔记',
               style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.8,
+                fontSize: AppText.label,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.4,
                 color: p.textTertiary,
               ),
             ),
           ),
         Container(
-          height: 42,
-          margin: const EdgeInsets.symmetric(horizontal: 6),
-          padding: const EdgeInsets.symmetric(horizontal: 10),
+          height: 34,
+          margin: const EdgeInsets.symmetric(horizontal: AppSpace.xs),
+          padding: const EdgeInsets.symmetric(horizontal: AppSpace.sm),
           decoration: BoxDecoration(
-            color: selected
-                ? p.accent.withValues(alpha: p.isDark ? 0.20 : 0.11)
-                : Colors.transparent,
+            color: selected ? p.accentSoft : Colors.transparent,
             borderRadius: AppRadius.smAll,
           ),
           child: Row(
@@ -370,20 +385,18 @@ class _CommandPaletteState extends State<CommandPalette> {
                 row.note != null
                     ? Icons.description_outlined
                     : row.action!.icon,
-                size: 15,
+                size: 14.5,
                 color: selected ? p.accent : p.textTertiary,
               ),
-              const SizedBox(width: 11),
+              const SizedBox(width: AppSpace.sm),
               Expanded(
                 child: Text(
                   row.title,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 13.5,
-                    fontWeight: row.note != null
-                        ? FontWeight.w500
-                        : FontWeight.w500,
-                    color: selected ? p.accent : p.textPrimary,
+                    fontSize: AppText.ui,
+                    fontWeight: FontWeight.w500,
+                    color: p.textPrimary,
                   ),
                 ),
               ),
@@ -394,7 +407,10 @@ class _CommandPaletteState extends State<CommandPalette> {
                     row.subtitle!,
                     overflow: TextOverflow.ellipsis,
                     textAlign: TextAlign.right,
-                    style: TextStyle(fontSize: 11.5, color: p.textTertiary),
+                    style: TextStyle(
+                      fontSize: AppText.caption,
+                      color: p.textTertiary,
+                    ),
                   ),
                 ),
             ],
@@ -434,7 +450,7 @@ class _Hint extends StatelessWidget {
     return Row(
       children: <Widget>[
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
           decoration: BoxDecoration(
             color: p.surfaceSunken,
             borderRadius: BorderRadius.circular(AppRadius.xs),
@@ -443,14 +459,17 @@ class _Hint extends StatelessWidget {
           child: Text(
             keys,
             style: TextStyle(
-              fontSize: 9.5,
+              fontSize: 10,
               fontWeight: FontWeight.w600,
               color: p.textSecondary,
             ),
           ),
         ),
-        const SizedBox(width: 6),
-        Text(label, style: TextStyle(fontSize: 10.5, color: p.textTertiary)),
+        const SizedBox(width: AppSpace.xs + 2),
+        Text(
+          label,
+          style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
+        ),
       ],
     );
   }

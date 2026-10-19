@@ -38,8 +38,8 @@ class AppIconButton extends StatefulWidget {
     this.onPressed,
     this.active = false,
     this.activeColor,
-    this.size = 30,
-    this.iconSize = 16.5,
+    this.size = AppLayout.buttonHeight,
+    this.iconSize = 15.5,
     this.shortcut,
     this.tone,
   });
@@ -68,7 +68,7 @@ class _AppIconButtonState extends State<AppIconButton> {
     final Color accent = widget.activeColor ?? p.accent;
 
     final Color background = widget.active
-        ? accent.withValues(alpha: p.isDark ? 0.20 : 0.13)
+        ? p.accentSoft
         : (_hovered && enabled ? p.surfaceRaised : Colors.transparent);
 
     Color foreground;
@@ -102,9 +102,6 @@ class _AppIconButtonState extends State<AppIconButton> {
             decoration: BoxDecoration(
               color: background,
               borderRadius: AppRadius.smAll,
-              border: widget.active && !p.isDark
-                  ? Border.all(color: accent.withValues(alpha: 0.16))
-                  : null,
             ),
             child: Icon(widget.icon, size: widget.iconSize, color: foreground),
           ),
@@ -155,11 +152,11 @@ class _AppTextButtonState extends State<AppTextButton> {
         behavior: HitTestBehavior.opaque,
         child: AnimatedContainer(
           duration: AppMotion.fast,
-          height: 30,
+          height: AppLayout.buttonHeight,
           padding: const EdgeInsets.symmetric(horizontal: AppSpace.sm + 2),
           decoration: BoxDecoration(
             color: widget.active
-                ? p.accent.withValues(alpha: p.isDark ? 0.20 : 0.13)
+                ? p.accentSoft
                 : (_hovered && enabled ? p.surfaceRaised : Colors.transparent),
             borderRadius: AppRadius.smAll,
           ),
@@ -212,7 +209,7 @@ class TagPill extends StatelessWidget {
       cursor: onTap == null ? SystemMouseCursors.basic : SystemMouseCursors.click,
       builder: (BuildContext context, bool hovered) {
         final Color bg = selected
-            ? p.accent.withValues(alpha: p.isDark ? 0.24 : 0.14)
+            ? p.accentSoft
             : (hovered ? p.surfaceRaised : p.surfaceSunken);
         final Color fg = selected
             ? p.accent
@@ -223,14 +220,14 @@ class TagPill extends StatelessWidget {
             duration: AppMotion.fast,
             padding: EdgeInsets.symmetric(
               horizontal: compact ? 7 : 9,
-              vertical: compact ? 2 : 3.5,
+              vertical: compact ? 2 : 3,
             ),
             decoration: BoxDecoration(
               color: bg,
               borderRadius: AppRadius.pillAll,
               border: Border.all(
                 color: selected
-                    ? p.accent.withValues(alpha: 0.28)
+                    ? p.accent.withValues(alpha: 0.3)
                     : p.outlineSoft,
               ),
             ),
@@ -240,18 +237,18 @@ class TagPill extends StatelessWidget {
                 Text(
                   label,
                   style: TextStyle(
-                    fontSize: compact ? 10.5 : 11.5,
+                    fontSize: compact ? 11 : AppText.caption,
                     height: 1.2,
                     fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                     color: fg,
                   ),
                 ),
                 if (count != null) ...<Widget>[
-                  const SizedBox(width: 4),
+                  const SizedBox(width: AppSpace.xs),
                   Text(
                     '$count',
                     style: TextStyle(
-                      fontSize: compact ? 9.5 : 10.5,
+                      fontSize: compact ? 10 : 11,
                       height: 1.2,
                       fontWeight: FontWeight.w600,
                       color: fg.withValues(alpha: 0.7),
@@ -259,7 +256,7 @@ class TagPill extends StatelessWidget {
                   ),
                 ],
                 if (onRemove != null) ...<Widget>[
-                  const SizedBox(width: 4),
+                  const SizedBox(width: AppSpace.xs),
                   GestureDetector(
                     onTap: onRemove,
                     child: Icon(Icons.close_rounded, size: 11, color: fg),
@@ -293,10 +290,10 @@ class SegmentedToggle<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     return Container(
-      padding: const EdgeInsets.all(2),
+      padding: const EdgeInsets.all(AppSpace.xxs),
       decoration: BoxDecoration(
         color: p.surfaceSunken,
-        borderRadius: BorderRadius.circular(AppRadius.sm + 2),
+        borderRadius: AppRadius.mdAll,
         border: Border.all(color: p.outlineSoft),
       ),
       child: Row(
@@ -354,19 +351,15 @@ class _SegmentState extends State<_Segment> {
           onTap: widget.onTap,
           child: AnimatedContainer(
             duration: AppMotion.fast,
-            height: widget.compact ? 24 : 26,
+            height: widget.compact ? 22 : 24,
             padding: EdgeInsets.symmetric(horizontal: widget.compact ? 7 : 9),
             decoration: BoxDecoration(
+              // The selected segment is marked by its surface, not by a drop
+              // shadow: the shell keeps shadows for genuinely floating layers.
               color: widget.selected ? p.surfaceRaised : Colors.transparent,
               borderRadius: AppRadius.smAll,
-              boxShadow: widget.selected
-                  ? <BoxShadow>[
-                      BoxShadow(
-                        color: p.shadow,
-                        blurRadius: 4,
-                        offset: const Offset(0, 1),
-                      ),
-                    ]
+              border: widget.selected
+                  ? Border.all(color: p.outline)
                   : null,
             ),
             child: Row(
@@ -458,15 +451,20 @@ class SectionLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(AppSpace.lg, AppSpace.lg, AppSpace.md, AppSpace.sm),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpace.md,
+        AppSpace.md,
+        AppSpace.sm,
+        AppSpace.xs,
+      ),
       child: Row(
         children: <Widget>[
           Text(
             text.toUpperCase(),
             style: TextStyle(
-              fontSize: 10.5,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.9,
+              fontSize: AppText.caption,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.4,
               color: p.textTertiary,
             ),
           ),
@@ -505,8 +503,8 @@ class EmptyState extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
             Container(
-              width: compact ? 40 : 52,
-              height: compact ? 40 : 52,
+              width: compact ? 38 : 48,
+              height: compact ? 38 : 48,
               decoration: BoxDecoration(
                 color: p.surfaceSunken,
                 borderRadius: AppRadius.lgAll,
@@ -514,7 +512,7 @@ class EmptyState extends StatelessWidget {
               ),
               child: Icon(
                 icon,
-                size: compact ? 18 : 22,
+                size: compact ? 17 : 21,
                 color: p.textTertiary,
               ),
             ),
@@ -536,7 +534,7 @@ class EmptyState extends StatelessWidget {
                   message!,
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    fontSize: 12.5,
+                    fontSize: AppText.ui,
                     height: 1.6,
                     color: p.textTertiary,
                   ),

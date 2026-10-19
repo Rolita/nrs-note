@@ -118,7 +118,7 @@ class NoteListPanelState extends State<NoteListPanel> {
     }
 
     return Container(
-      color: p.surface,
+      color: p.sidebar,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
@@ -147,7 +147,7 @@ class NoteListPanelState extends State<NoteListPanel> {
               notes,
               trailing: Text(
                 '${notes.tags.length}',
-                style: TextStyle(fontSize: 10.5, color: p.textTertiary),
+                style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
               ),
             ),
             Divider(height: 1, color: p.outlineSoft),
@@ -172,9 +172,9 @@ class NoteListPanelState extends State<NoteListPanel> {
     SettingsController settings,
   ) {
     return SizedBox(
-      height: 44,
+      height: AppLayout.toolbarHeight,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: AppSpace.sm),
+        padding: const EdgeInsets.symmetric(horizontal: AppSpace.xs),
         child: Row(
           children: <Widget>[
             AppIconButton(
@@ -225,17 +225,16 @@ class NoteListPanelState extends State<NoteListPanel> {
     Widget? trailing,
   }) {
     return SizedBox(
-      height: 40,
+      height: AppLayout.panelHeaderHeight,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(AppSpace.md, 0, AppSpace.sm, 0),
+        padding: const EdgeInsets.fromLTRB(AppSpace.md, 0, AppSpace.xs, 0),
         child: Row(
           children: <Widget>[
             Text(
               label,
               style: TextStyle(
                 fontSize: 12,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.2,
+                fontWeight: FontWeight.w600,
                 color: p.textSecondary,
               ),
             ),
@@ -265,31 +264,23 @@ class NoteListPanelState extends State<NoteListPanel> {
   ) {
     final bool focused = _searchFocus.hasFocus;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        AppSpace.md,
-        AppSpace.md,
-        AppSpace.md,
-        AppSpace.sm + 2,
-      ),
+      padding: const EdgeInsets.all(AppSpace.sm),
       child: Container(
-        height: 34,
+        height: AppLayout.fieldHeight,
         decoration: BoxDecoration(
-          color: focused ? p.surfaceRaised : p.surfaceSunken,
-          borderRadius: AppRadius.mdAll,
-          border: Border.all(
-            color: focused ? p.accent.withValues(alpha: 0.5) : p.outlineSoft,
-            width: focused ? 1.3 : 1,
-          ),
+          color: p.surfaceRaised,
+          borderRadius: AppRadius.smAll,
+          border: Border.all(color: focused ? p.accent : p.outline),
         ),
         child: Row(
           children: <Widget>[
-            const SizedBox(width: 10),
+            const SizedBox(width: AppSpace.sm),
             Icon(
               Icons.search_rounded,
-              size: 15,
+              size: 14.5,
               color: focused ? p.accent : p.textTertiary,
             ),
-            const SizedBox(width: 7),
+            const SizedBox(width: AppSpace.sm),
             Expanded(
               child: TextField(
                 controller: _search,
@@ -310,7 +301,7 @@ class NoteListPanelState extends State<NoteListPanel> {
                   focusedBorder: InputBorder.none,
                   contentPadding: EdgeInsets.zero,
                   hintText: '输入并开始搜索...',
-                  hintStyle: TextStyle(fontSize: 12.5, color: p.textTertiary),
+                  hintStyle: TextStyle(fontSize: AppText.ui, color: p.textTertiary),
                 ),
               ),
             ),
@@ -332,7 +323,7 @@ class NoteListPanelState extends State<NoteListPanel> {
               onPressed: () => notes.setCaseSensitive(!notes.caseSensitive),
             ),
             _SortButton(settings: settings, notes: notes),
-            const SizedBox(width: 3),
+            const SizedBox(width: AppSpace.xs),
           ],
         ),
       ),
@@ -410,7 +401,12 @@ class NoteListPanelState extends State<NoteListPanel> {
       );
     }
     return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(6, 6, 6, AppSpace.xl),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpace.xs,
+        AppSpace.xs,
+        AppSpace.xs,
+        AppSpace.xl,
+      ),
       itemCount: tags.length,
       itemBuilder: (BuildContext context, int i) {
         final TagStat tag = tags[i];
@@ -425,12 +421,11 @@ class NoteListPanelState extends State<NoteListPanel> {
             behavior: HitTestBehavior.opaque,
             child: AnimatedContainer(
               duration: AppMotion.fast,
-              height: 32,
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              margin: const EdgeInsets.only(bottom: 1),
+              height: AppLayout.rowHeight,
+              padding: const EdgeInsets.symmetric(horizontal: AppSpace.sm),
               decoration: BoxDecoration(
                 color: selected
-                    ? p.accent.withValues(alpha: p.isDark ? 0.18 : 0.10)
+                    ? p.accentSoft
                     : (hovered ? p.surfaceRaised : Colors.transparent),
                 borderRadius: AppRadius.smAll,
               ),
@@ -439,27 +434,27 @@ class NoteListPanelState extends State<NoteListPanel> {
                   Text(
                     '#',
                     style: TextStyle(
-                      fontSize: 12.5,
+                      fontSize: AppText.ui,
                       fontWeight: FontWeight.w600,
                       color: selected ? p.accent : p.textTertiary,
                     ),
                   ),
-                  const SizedBox(width: 7),
+                  const SizedBox(width: AppSpace.sm),
                   Expanded(
                     child: Text(
                       tag.name,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                        color: selected ? p.accent : p.textSecondary,
+                        fontSize: AppText.ui,
+                        fontWeight: selected ? FontWeight.w500 : FontWeight.w400,
+                        color: selected ? p.textPrimary : p.textSecondary,
                       ),
                     ),
                   ),
                   Text(
                     '${tag.count}',
                     style: TextStyle(
-                      fontSize: 10.5,
+                      fontSize: AppText.caption,
                       color: p.textTertiary,
                     ),
                   ),
@@ -474,26 +469,26 @@ class NoteListPanelState extends State<NoteListPanel> {
 
   Widget _footer(AppPalette p, NotesController notes, int visibleCount) {
     return Container(
-      height: 30,
+      height: AppLayout.footerHeight,
       padding: const EdgeInsets.symmetric(horizontal: AppSpace.md),
       child: Row(
         children: <Widget>[
           Text(
             '${notes.allNotes.length} 篇笔记',
-            style: TextStyle(fontSize: 10.5, color: p.textTertiary),
+            style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
           ),
           const SizedBox(width: 10),
           Container(width: 1, height: 10, color: p.outlineSoft),
           const SizedBox(width: 10),
           Text(
             '共 ${_compact(notes.totalWords)} 字',
-            style: TextStyle(fontSize: 10.5, color: p.textTertiary),
+            style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
           ),
           const Spacer(),
           if (notes.isFiltered)
             Text(
               '筛选出 $visibleCount 篇',
-              style: TextStyle(fontSize: 10.5, color: p.textTertiary),
+              style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
             ),
         ],
       ),
@@ -531,7 +526,7 @@ class _CaseToggle extends StatelessWidget {
             alignment: Alignment.center,
             decoration: BoxDecoration(
               color: active
-                  ? p.accent.withValues(alpha: p.isDark ? 0.20 : 0.13)
+                  ? p.accentSoft
                   : (hovered ? p.surfaceRaised : Colors.transparent),
               borderRadius: AppRadius.smAll,
             ),
@@ -568,7 +563,7 @@ class _SearchResultRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      padding: const EdgeInsets.symmetric(horizontal: AppSpace.xs),
       child: HoverBuilder(
         cursor: SystemMouseCursors.click,
         builder: (BuildContext context, bool hovered) => GestureDetector(
@@ -576,12 +571,12 @@ class _SearchResultRow extends StatelessWidget {
           behavior: HitTestBehavior.opaque,
           child: AnimatedContainer(
             duration: AppMotion.fast,
-            height: 28,
-            padding: const EdgeInsets.symmetric(horizontal: 8),
+            height: AppLayout.rowHeight,
+            padding: const EdgeInsets.symmetric(horizontal: AppSpace.sm),
             alignment: Alignment.centerLeft,
             decoration: BoxDecoration(
               color: selected
-                  ? p.accent.withValues(alpha: p.isDark ? 0.18 : 0.10)
+                  ? p.accentSoft
                   : (hovered ? p.surfaceRaised : Colors.transparent),
               borderRadius: AppRadius.smAll,
             ),
@@ -590,10 +585,10 @@ class _SearchResultRow extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: 12.5,
+                fontSize: AppText.ui,
                 height: 1.2,
-                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                color: selected ? p.accent : p.textSecondary,
+                fontWeight: selected ? FontWeight.w500 : FontWeight.w400,
+                color: selected ? p.textPrimary : p.textSecondary,
               ),
             ),
           ),
@@ -653,7 +648,7 @@ class _SortButton extends StatelessWidget {
           Text(
             mode.label,
             style: TextStyle(
-              fontSize: 12.5,
+              fontSize: AppText.ui,
               fontWeight: active ? FontWeight.w600 : FontWeight.w400,
               color: active ? p.accent : p.textPrimary,
             ),

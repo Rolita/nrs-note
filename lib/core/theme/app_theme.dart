@@ -53,12 +53,12 @@ abstract final class AppTheme {
       ),
       iconTheme: IconThemeData(color: p.textSecondary, size: 18),
       scrollbarTheme: ScrollbarThemeData(
-        thickness: const WidgetStatePropertyAll<double>(7),
+        thickness: const WidgetStatePropertyAll<double>(8),
         radius: const Radius.circular(4),
         thumbColor: WidgetStateProperty.resolveWith(
           (Set<WidgetState> s) => s.contains(WidgetState.hovered)
-              ? p.textTertiary.withValues(alpha: 0.55)
-              : p.textTertiary.withValues(alpha: 0.28),
+              ? p.textTertiary.withValues(alpha: 0.7)
+              : p.outline,
         ),
         trackColor: const WidgetStatePropertyAll<Color>(Colors.transparent),
         trackBorderColor: const WidgetStatePropertyAll<Color>(
@@ -77,7 +77,10 @@ abstract final class AppTheme {
           fontFamily: AppFonts.ui,
           fontFamilyFallback: AppFonts.uiFallback,
         ),
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpace.sm,
+          vertical: AppSpace.xs + 1,
+        ),
         decoration: BoxDecoration(
           color: p.textPrimary.withValues(alpha: p.isDark ? 0.94 : 0.92),
           borderRadius: AppRadius.smAll,
@@ -86,14 +89,14 @@ abstract final class AppTheme {
       popupMenuTheme: PopupMenuThemeData(
         color: p.surfaceRaised,
         surfaceTintColor: Colors.transparent,
-        elevation: 8,
+        elevation: 12,
         shadowColor: p.shadow,
-        menuPadding: const EdgeInsets.symmetric(vertical: 5),
+        menuPadding: const EdgeInsets.symmetric(vertical: AppSpace.xs),
         shape: RoundedRectangleBorder(
-          borderRadius: AppRadius.lgAll,
+          borderRadius: AppRadius.mdAll,
           side: BorderSide(color: p.outline),
         ),
-        textStyle: text.bodyMedium,
+        textStyle: TextStyle(fontSize: AppText.ui, color: p.textPrimary),
       ),
       menuTheme: MenuThemeData(
         style: MenuStyle(
@@ -101,10 +104,10 @@ abstract final class AppTheme {
           surfaceTintColor: const WidgetStatePropertyAll<Color>(
             Colors.transparent,
           ),
-          elevation: const WidgetStatePropertyAll<double>(8),
+          elevation: const WidgetStatePropertyAll<double>(12),
           shape: WidgetStatePropertyAll<OutlinedBorder>(
             RoundedRectangleBorder(
-              borderRadius: AppRadius.lgAll,
+              borderRadius: AppRadius.mdAll,
               side: BorderSide(color: p.outline),
             ),
           ),
@@ -113,11 +116,24 @@ abstract final class AppTheme {
       dialogTheme: DialogThemeData(
         backgroundColor: p.surfaceRaised,
         surfaceTintColor: Colors.transparent,
-        elevation: 16,
+        elevation: 14,
         shadowColor: p.shadow,
         shape: RoundedRectangleBorder(borderRadius: AppRadius.xlAll),
-        titleTextStyle: text.titleMedium,
-        contentTextStyle: text.bodyMedium,
+        titleTextStyle: TextStyle(
+          fontSize: AppText.display,
+          fontWeight: FontWeight.w600,
+          letterSpacing: -0.2,
+          color: p.textPrimary,
+          fontFamily: AppFonts.ui,
+          fontFamilyFallback: AppFonts.uiFallback,
+        ),
+        contentTextStyle: TextStyle(
+          fontSize: AppText.body,
+          height: 1.5,
+          color: p.textSecondary,
+          fontFamily: AppFonts.ui,
+          fontFamilyFallback: AppFonts.uiFallback,
+        ),
       ),
       snackBarTheme: SnackBarThemeData(
         backgroundColor: p.textPrimary.withValues(alpha: p.isDark ? 0.95 : 0.93),
@@ -134,21 +150,21 @@ abstract final class AppTheme {
         isDense: true,
         filled: true,
         fillColor: p.surfaceRaised,
-        hintStyle: text.bodyMedium?.copyWith(color: p.textTertiary),
+        hintStyle: TextStyle(fontSize: AppText.ui, color: p.textTertiary),
         contentPadding: const EdgeInsets.symmetric(
-          horizontal: AppSpace.md,
-          vertical: AppSpace.md,
+          horizontal: AppSpace.sm + 2,
+          vertical: AppSpace.xs + 2,
         ),
         border: OutlineInputBorder(
-          borderRadius: AppRadius.mdAll,
+          borderRadius: AppRadius.smAll,
           borderSide: BorderSide(color: p.outline),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: AppRadius.mdAll,
+          borderRadius: AppRadius.smAll,
           borderSide: BorderSide(color: p.outline),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: AppRadius.mdAll,
+          borderRadius: AppRadius.smAll,
           borderSide: BorderSide(color: p.accent, width: 1.4),
         ),
       ),
@@ -196,11 +212,11 @@ abstract final class AppTheme {
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
           foregroundColor: p.accent,
-          textStyle: text.labelLarge,
+          textStyle: TextStyle(fontSize: AppText.ui, fontWeight: FontWeight.w600),
           shape: RoundedRectangleBorder(borderRadius: AppRadius.smAll),
           padding: const EdgeInsets.symmetric(
-            horizontal: AppSpace.md,
-            vertical: AppSpace.sm,
+            horizontal: AppSpace.sm + 2,
+            vertical: AppSpace.xs,
           ),
         ),
       ),
@@ -208,11 +224,11 @@ abstract final class AppTheme {
         style: FilledButton.styleFrom(
           backgroundColor: p.accent,
           foregroundColor: p.onAccent,
-          textStyle: text.labelLarge,
-          shape: RoundedRectangleBorder(borderRadius: AppRadius.mdAll),
+          textStyle: TextStyle(fontSize: AppText.ui, fontWeight: FontWeight.w600),
+          shape: RoundedRectangleBorder(borderRadius: AppRadius.smAll),
           padding: const EdgeInsets.symmetric(
-            horizontal: AppSpace.lg,
-            vertical: AppSpace.md,
+            horizontal: AppSpace.md,
+            vertical: AppSpace.sm,
           ),
         ),
       ),
@@ -220,8 +236,8 @@ abstract final class AppTheme {
         style: OutlinedButton.styleFrom(
           foregroundColor: p.textPrimary,
           side: BorderSide(color: p.outline),
-          textStyle: text.labelLarge,
-          shape: RoundedRectangleBorder(borderRadius: AppRadius.mdAll),
+          textStyle: TextStyle(fontSize: AppText.ui, fontWeight: FontWeight.w600),
+          shape: RoundedRectangleBorder(borderRadius: AppRadius.smAll),
         ),
       ),
     );

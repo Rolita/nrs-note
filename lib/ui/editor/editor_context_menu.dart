@@ -24,19 +24,19 @@ import '../../core/utils/table_selection.dart';
 //    rather than eyeballed.
 
 /// Width shared by every panel — root and submenu alike.
-const double kMenuPanelWidth = 226;
+const double kMenuPanelWidth = 220;
 
 /// Height of one row.
-const double kMenuRowHeight = 30;
+const double kMenuRowHeight = 28;
 
 /// Height of the hairline between groups: the rule plus the air around it.
-const double kMenuSeparatorHeight = 9;
+const double kMenuSeparatorHeight = 8;
 
 /// Air above the first row and below the last.
-const double kMenuPanelPadding = 6;
+const double kMenuPanelPadding = 5;
 
 /// Between a panel and the submenu it opened.
-const double kMenuPanelGap = 3;
+const double kMenuPanelGap = 4;
 
 /// Closest any panel may come to a screen edge.
 const double kMenuScreenMargin = 6;
@@ -1024,14 +1024,14 @@ class _MenuPanel extends StatelessWidget {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: p.surfaceRaised,
-        borderRadius: AppRadius.lgAll,
+        borderRadius: AppRadius.mdAll,
         border: Border.all(color: p.outline),
         boxShadow: <BoxShadow>[
           BoxShadow(
             color: p.shadow,
-            blurRadius: 22,
-            spreadRadius: -4,
-            offset: const Offset(0, 9),
+            blurRadius: 18,
+            spreadRadius: -3,
+            offset: const Offset(0, 6),
           ),
         ],
       ),
@@ -1092,11 +1092,11 @@ class _MenuInfoRow extends StatelessWidget {
     final AppPalette p = context.palette;
     return Container(
       height: kMenuRowHeight,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
+      padding: const EdgeInsets.symmetric(horizontal: AppSpace.sm),
       child: Row(
         children: <Widget>[
           SizedBox(
-            width: 22,
+            width: 20,
             child: Center(
               child: Icon(
                 Icons.functions_rounded,
@@ -1105,14 +1105,14 @@ class _MenuInfoRow extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: AppSpace.sm),
           Expanded(
             child: Text(
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: 11.5,
+                fontSize: AppText.caption,
                 color: p.textTertiary,
                 fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
               ),
@@ -1181,7 +1181,7 @@ class _MenuRowState extends State<_MenuRow> {
         onTap: widget.enabled ? widget.onTap : null,
         child: Container(
           height: kMenuRowHeight,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
+          padding: const EdgeInsets.symmetric(horizontal: AppSpace.sm),
           decoration: BoxDecoration(
             color: lit ? _menuRowFill(p) : Colors.transparent,
             borderRadius: AppRadius.smAll,
@@ -1189,7 +1189,7 @@ class _MenuRowState extends State<_MenuRow> {
           child: Row(
             children: <Widget>[
               SizedBox(
-                width: 22,
+                width: 20,
                 child: Center(
                   child: widget.leading != null
                       ? Text(
@@ -1207,26 +1207,26 @@ class _MenuRowState extends State<_MenuRow> {
                         )
                       : Icon(
                           widget.icon,
-                          size: 15,
+                          size: 14.5,
                           color: widget.enabled ? p.textSecondary : foreground,
                         ),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: AppSpace.sm),
               Expanded(
                 child: Text(
                   widget.label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 13, color: foreground),
+                  style: TextStyle(fontSize: AppText.ui, color: foreground),
                 ),
               ),
               if (widget.shortcut != null) ...<Widget>[
-                const SizedBox(width: 12),
+                const SizedBox(width: AppSpace.md),
                 Text(
                   widget.shortcut!,
                   style: TextStyle(
-                    fontSize: 10.5,
+                    fontSize: AppText.mono,
                     fontFamily: AppFonts.mono,
                     fontFamilyFallback: AppFonts.monoFallback,
                     color: p.textTertiary.withValues(alpha: 0.9),
@@ -1234,16 +1234,16 @@ class _MenuRowState extends State<_MenuRow> {
                 ),
               ],
               if (widget.submenu) ...<Widget>[
-                const SizedBox(width: 6),
+                const SizedBox(width: AppSpace.xs + 2),
                 Icon(
                   Icons.chevron_right_rounded,
-                  size: 15,
+                  size: 14,
                   color: p.textTertiary,
                 ),
               ],
               if (widget.checked) ...<Widget>[
-                const SizedBox(width: 6),
-                Icon(Icons.check_rounded, size: 14, color: p.accent),
+                const SizedBox(width: AppSpace.xs + 2),
+                Icon(Icons.check_rounded, size: 13, color: p.accent),
               ],
             ],
           ),

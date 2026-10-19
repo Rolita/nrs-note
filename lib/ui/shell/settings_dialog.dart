@@ -28,22 +28,27 @@ class _SettingsDialog extends StatelessWidget {
 
     return Dialog(
       alignment: Alignment.topCenter,
-      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 56),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 48),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 620, maxHeight: 700),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
             Padding(
-              padding: const EdgeInsets.fromLTRB(AppSpace.xl, AppSpace.xl, AppSpace.md, AppSpace.md),
+              padding: const EdgeInsets.fromLTRB(
+                AppSpace.xl,
+                AppSpace.lg,
+                AppSpace.md,
+                AppSpace.sm,
+              ),
               child: Row(
                 children: <Widget>[
                   Text(
                     '设置',
                     style: TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -0.3,
+                      fontSize: AppText.display,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: -0.2,
                       color: p.textPrimary,
                     ),
                   ),
@@ -61,9 +66,9 @@ class _SettingsDialog extends StatelessWidget {
               child: SingleChildScrollView(
                 padding: const EdgeInsets.fromLTRB(
                   AppSpace.xl,
+                  AppSpace.md,
+                  AppSpace.xl,
                   AppSpace.lg,
-                  AppSpace.xl,
-                  AppSpace.xl,
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -192,7 +197,7 @@ class _SettingsDialog extends StatelessWidget {
                                       notes.vaultLocation,
                                       maxLines: 2,
                                       style: TextStyle(
-                                        fontSize: 11.5,
+                                        fontSize: AppText.mono,
                                         height: 1.5,
                                         fontFamily: AppFonts.mono,
                                         fontFamilyFallback:
@@ -211,7 +216,7 @@ class _SettingsDialog extends StatelessWidget {
                                     '${notes.totalWords} 字 · '
                                     '${notes.tags.length} 个标签',
                                     style: TextStyle(
-                                      fontSize: 11.5,
+                                      fontSize: AppText.caption,
                                       color: p.textTertiary,
                                     ),
                                   ),
@@ -239,7 +244,7 @@ class _SettingsDialog extends StatelessWidget {
                                 ? '每篇笔记都是一个独立的 .md 文件,可以用任何编辑器打开、同步或备份。'
                                 : '当前运行在浏览器中,笔记保存在 localStorage 里。用桌面版运行即可获得真正的 .md 文件。',
                             style: TextStyle(
-                              fontSize: 11.5,
+                              fontSize: AppText.caption,
                               height: 1.6,
                               color: p.textTertiary,
                             ),
@@ -275,21 +280,20 @@ class _SettingsDialog extends StatelessWidget {
                         Row(
                           children: <Widget>[
                             Container(
-                              width: 40,
-                              height: 40,
+                              width: 36,
+                              height: 36,
                               decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  colors: <Color>[p.accentHover, p.accent],
-                                ),
-                                borderRadius: BorderRadius.circular(12),
+                                color: p.accentSoft,
+                                borderRadius: AppRadius.mdAll,
+                                border: Border.all(color: p.outline),
                               ),
                               alignment: Alignment.center,
                               child: Text(
                                 'N',
                                 style: TextStyle(
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.w800,
-                                  color: p.onAccent,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w700,
+                                  color: p.accent,
                                 ),
                               ),
                             ),
@@ -301,7 +305,7 @@ class _SettingsDialog extends StatelessWidget {
                                   Text(
                                     'NRS · Markdown 笔记',
                                     style: TextStyle(
-                                      fontSize: 13.5,
+                                      fontSize: AppText.ui,
                                       fontWeight: FontWeight.w600,
                                       color: p.textPrimary,
                                     ),
@@ -310,7 +314,7 @@ class _SettingsDialog extends StatelessWidget {
                                   Text(
                                     '版本 1.0.0 · Flutter 桌面应用 · 本地优先,数据完全属于你',
                                     style: TextStyle(
-                                      fontSize: 11.5,
+                                      fontSize: AppText.caption,
                                       color: p.textTertiary,
                                     ),
                                   ),
@@ -342,18 +346,18 @@ class _Group extends StatelessWidget {
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     return Padding(
-      padding: const EdgeInsets.only(bottom: AppSpace.xl),
+      padding: const EdgeInsets.only(bottom: AppSpace.lg),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           Padding(
-            padding: const EdgeInsets.only(bottom: AppSpace.sm, left: 2),
+            padding: const EdgeInsets.only(bottom: AppSpace.xs),
             child: Text(
               title.toUpperCase(),
               style: TextStyle(
-                fontSize: 10.5,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.9,
+                fontSize: AppText.label,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.4,
                 color: p.textTertiary,
               ),
             ),
@@ -361,7 +365,7 @@ class _Group extends StatelessWidget {
           DecoratedBox(
             decoration: BoxDecoration(
               color: p.surface,
-              borderRadius: AppRadius.lgAll,
+              borderRadius: AppRadius.mdAll,
               border: Border.all(color: p.outlineSoft),
             ),
             child: Padding(
@@ -402,7 +406,7 @@ class _Row extends StatelessWidget {
                 Text(
                   label,
                   style: TextStyle(
-                    fontSize: 13,
+                    fontSize: AppText.ui,
                     fontWeight: FontWeight.w500,
                     color: p.textPrimary,
                   ),
@@ -412,8 +416,8 @@ class _Row extends StatelessWidget {
                   Text(
                     hint!,
                     style: TextStyle(
-                      fontSize: 11,
-                      height: 1.4,
+                      fontSize: AppText.caption,
+                      height: 1.45,
                       color: p.textTertiary,
                     ),
                   ),
@@ -460,7 +464,7 @@ class _SliderRow extends StatelessWidget {
             child: Text(
               label,
               style: TextStyle(
-                fontSize: 13,
+                fontSize: AppText.ui,
                 fontWeight: FontWeight.w500,
                 color: p.textPrimary,
               ),
@@ -481,7 +485,7 @@ class _SliderRow extends StatelessWidget {
               '${value.toStringAsFixed(0)} $suffix',
               textAlign: TextAlign.right,
               style: TextStyle(
-                fontSize: 11.5,
+                fontSize: AppText.mono,
                 fontFamily: AppFonts.mono,
                 fontFamilyFallback: AppFonts.monoFallback,
                 color: p.textTertiary,
@@ -512,7 +516,7 @@ class _Switch extends StatelessWidget {
       children: <Widget>[
         Text(
           label,
-          style: TextStyle(fontSize: 11.5, color: p.textTertiary),
+          style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
         ),
         const SizedBox(width: AppSpace.sm),
         Switch(value: value, onChanged: onChanged),
@@ -536,7 +540,7 @@ class _Dropdown<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     return Container(
-      height: 32,
+      height: AppLayout.fieldHeight,
       padding: const EdgeInsets.symmetric(horizontal: AppSpace.sm),
       decoration: BoxDecoration(
         color: p.surfaceRaised,
@@ -554,7 +558,7 @@ class _Dropdown<T> extends StatelessWidget {
             size: 16,
             color: p.textTertiary,
           ),
-          style: TextStyle(fontSize: 12.5, color: p.textPrimary),
+          style: TextStyle(fontSize: AppText.ui, color: p.textPrimary),
           onChanged: (T? v) {
             if (v != null) onChanged(v);
           },
@@ -601,7 +605,7 @@ class _ShortcutTable extends StatelessWidget {
                   child: Text(
                     keys,
                     style: TextStyle(
-                      fontSize: 10.5,
+                      fontSize: AppText.mono,
                       fontWeight: FontWeight.w600,
                       fontFamily: AppFonts.mono,
                       fontFamilyFallback: AppFonts.monoFallback,
@@ -612,7 +616,7 @@ class _ShortcutTable extends StatelessWidget {
                 const SizedBox(width: AppSpace.md),
                 Text(
                   label,
-                  style: TextStyle(fontSize: 12, color: p.textSecondary),
+                  style: TextStyle(fontSize: AppText.label, color: p.textSecondary),
                 ),
               ],
             ),

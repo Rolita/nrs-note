@@ -139,7 +139,7 @@ class _AppShellState extends State<AppShell> {
                     child: Text(
                       path,
                       style: TextStyle(
-                        fontSize: 11.5,
+                        fontSize: AppText.caption,
                         fontFamily: AppFonts.mono,
                         fontFamilyFallback: AppFonts.monoFallback,
                         color: p.textSecondary,
@@ -159,7 +159,9 @@ class _AppShellState extends State<AppShell> {
           FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: p.danger,
-              foregroundColor: Colors.white,
+              // The dark theme's danger is a light salmon: white on it would be
+              // the one unreadable pair in the whole app.
+              foregroundColor: p.isDark ? p.canvas : Colors.white,
             ),
             onPressed: () => Navigator.of(context).pop(true),
             child: const Text('删除'),
@@ -238,7 +240,7 @@ class _AppShellState extends State<AppShell> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                            fontSize: 11.5,
+                            fontSize: AppText.caption,
                             color: p.textSecondary,
                           ),
                         ),
@@ -249,7 +251,7 @@ class _AppShellState extends State<AppShell> {
                         child: Text(
                           '…还有 ${titles.length - listed} 篇',
                           style: TextStyle(
-                            fontSize: 11.5,
+                            fontSize: AppText.caption,
                             color: p.textTertiary,
                           ),
                         ),
@@ -268,7 +270,9 @@ class _AppShellState extends State<AppShell> {
           FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: p.danger,
-              foregroundColor: Colors.white,
+              // The dark theme's danger is a light salmon: white on it would be
+              // the one unreadable pair in the whole app.
+              foregroundColor: p.isDark ? p.canvas : Colors.white,
             ),
             onPressed: () => Navigator.of(context).pop(true),
             child: const Text('删除'),
@@ -531,7 +535,7 @@ class _ErrorBanner extends StatelessWidget {
           Expanded(
             child: Text(
               message,
-              style: TextStyle(fontSize: 12.5, color: p.danger),
+              style: TextStyle(fontSize: AppText.ui, color: p.danger),
             ),
           ),
           AppIconButton(

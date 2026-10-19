@@ -6,6 +6,13 @@ import 'package:flutter/material.dart';
 /// and text colour is named by *role*. Both the light and the dark palette
 /// implement the exact same contract so a widget never needs to know which
 /// brightness is active.
+///
+/// The dark theme is the primary one: five clearly separated neutral steps
+/// (canvas → sidebar → surface → surfaceRaised, plus surfaceSunken below the
+/// canvas), a single warm amber accent, and no decorative tint anywhere else.
+/// Neighbouring steps sit at least five levels apart on purpose — that gap is
+/// what lets the four shell regions separate with a hairline instead of a
+/// border and a shadow fighting each other.
 @immutable
 class AppPalette extends ThemeExtension<AppPalette> {
   const AppPalette({
@@ -38,37 +45,60 @@ class AppPalette extends ThemeExtension<AppPalette> {
 
   final Brightness brightness;
 
-  /// Window background, behind every panel.
+  /// Window background, behind every panel. Also the function rail, which reads
+  /// as the deepest step so the sidebar can sit *above* it rather than beside it.
   final Color canvas;
 
-  /// The tall navigation column on the far left.
+  /// The switchable file / search / tags sidebar, and the document outline.
+  ///
+  /// One step above [canvas] and one below [surface]: the editor stays the
+  /// brightest surface on screen, which is where the eye should land.
   final Color sidebar;
 
-  /// Main content panels (note list, editor, preview).
+  /// Main content surface: the editor, and every dialog that reads as a sheet
+  /// of paper.
   final Color surface;
 
-  /// Cards, chips, popovers and inputs that sit *on top of* [surface].
+  /// Cards, chips, popovers, inputs and hovered rows that sit *on top of*
+  /// [surface].
   final Color surfaceRaised;
 
   /// Recessed areas: code blocks, inline code, scrollbar tracks.
   final Color surfaceSunken;
 
+  /// The hairline between two regions, and the edge of a control.
   final Color outline;
+
+  /// The weaker divider used *inside* a region, where a full-strength line
+  /// would cut the panel in two.
   final Color outlineSoft;
 
   final Color textPrimary;
   final Color textSecondary;
   final Color textTertiary;
 
+  /// The one warm accent: selection, focus, tags, the current row.
+  ///
+  /// Everything else in the shell is neutral grey, so this colour is only ever
+  /// spent on the thing the user is looking at.
   final Color accent;
+
   final Color accentHover;
+
+  /// A quiet amber wash for a selected row's background.
   final Color accentSoft;
+
+  /// Text and icons sitting *on* a solid [accent] fill.
   final Color onAccent;
 
   final Color success;
   final Color successSoft;
+
+  /// Attention, not decoration. Deliberately pushed towards burnt orange so it
+  /// stays distinguishable from the amber [accent].
   final Color warning;
   final Color warningSoft;
+
   final Color danger;
   final Color dangerSoft;
 
@@ -82,7 +112,8 @@ class AppPalette extends ThemeExtension<AppPalette> {
   /// every row instead of one shape around the selection.
   final Color selectionEdge;
 
-  /// Ambient shadow colour (already alpha-composited).
+  /// Ambient shadow colour (already alpha-composited). Spent only on floating
+  /// layers — popovers, dialogs, the drag preview.
   final Color shadow;
 
   /// Scrim used behind dialogs / modal sheets.
@@ -90,60 +121,64 @@ class AppPalette extends ThemeExtension<AppPalette> {
 
   bool get isDark => brightness == Brightness.dark;
 
-  /// A warm, paper-like light theme.
+  /// A neutral, cool grey light theme.
+  ///
+  /// The amber has to be darkened a long way to keep its contrast on a white
+  /// surface, which is why the light accent is not the same hue value as the
+  /// dark one.
   static const AppPalette light = AppPalette(
     brightness: Brightness.light,
-    canvas: Color(0xFFF4F2EE),
-    sidebar: Color(0xFFEFEDE8),
-    surface: Color(0xFFFFFEFC),
+    canvas: Color(0xFFF6F6F7),
+    sidebar: Color(0xFFF1F1F3),
+    surface: Color(0xFFFBFBFC),
     surfaceRaised: Color(0xFFFFFFFF),
-    surfaceSunken: Color(0xFFF2F0EB),
-    outline: Color(0xFFE3DFD7),
-    outlineSoft: Color(0xFFEDEAE3),
-    textPrimary: Color(0xFF1B1A18),
-    textSecondary: Color(0xFF6A655D),
-    textTertiary: Color(0xFF9C968B),
-    accent: Color(0xFF6B5BD2),
-    accentHover: Color(0xFF5B4BC4),
-    accentSoft: Color(0xFFEEEBFC),
+    surfaceSunken: Color(0xFFEDEDEF),
+    outline: Color(0xFFDCDCE2),
+    outlineSoft: Color(0xFFE8E8EC),
+    textPrimary: Color(0xFF191919),
+    textSecondary: Color(0xFF5C5C66),
+    textTertiary: Color(0xFF8E8E99),
+    accent: Color(0xFFB45309),
+    accentHover: Color(0xFF92400E),
+    accentSoft: Color(0xFFFEF3C7),
     onAccent: Color(0xFFFFFFFF),
     success: Color(0xFF2E8B62),
     successSoft: Color(0xFFE3F3EA),
-    warning: Color(0xFFB57B1A),
-    warningSoft: Color(0xFFFBF0DC),
+    warning: Color(0xFFC25A12),
+    warningSoft: Color(0xFFFBEDE0),
     danger: Color(0xFFC4473F),
     dangerSoft: Color(0xFFFBEAE8),
-    selection: Color(0x336B5BD2),
-    selectionEdge: Color(0xFF6B5BD2),
+    selection: Color(0x33B45309),
+    selectionEdge: Color(0xFFB45309),
     shadow: Color(0x14000000),
-    overlay: Color(0x331B1A18),
+    overlay: Color(0x33191919),
   );
 
-  /// A deep, low-contrast dark theme that stays readable for long sessions.
+  /// The primary theme: five separated grey steps, one amber accent.
   static const AppPalette dark = AppPalette(
     brightness: Brightness.dark,
-    canvas: Color(0xFF111113),
-    sidebar: Color(0xFF16161A),
-    surface: Color(0xFF1A1A1E),
-    surfaceRaised: Color(0xFF232329),
-    surfaceSunken: Color(0xFF141418),
-    outline: Color(0xFF2C2C34),
-    outlineSoft: Color(0xFF232329),
-    textPrimary: Color(0xFFECECF0),
-    textSecondary: Color(0xFFA3A3AF),
-    textTertiary: Color(0xFF71717E),
-    accent: Color(0xFF9E90F7),
-    accentHover: Color(0xFFB1A5FA),
-    accentSoft: Color(0xFF272342),
-    onAccent: Color(0xFF17122B),
+    canvas: Color(0xFF17171A),
+    sidebar: Color(0xFF1C1C1F),
+    surface: Color(0xFF202024),
+    surfaceRaised: Color(0xFF27272C),
+    surfaceSunken: Color(0xFF141416),
+    outline: Color(0xFF31313A),
+    outlineSoft: Color(0xFF24242A),
+    textPrimary: Color(0xFFE8E8ED),
+    textSecondary: Color(0xFF9A9AA6),
+    textTertiary: Color(0xFF6B6B78),
+    accent: Color(0xFFE0A44A),
+    accentHover: Color(0xFFEDB463),
+    accentSoft: Color(0xFF352C1A),
+    onAccent: Color(0xFF241A08),
     success: Color(0xFF5FC79A),
     successSoft: Color(0xFF16281F),
-    warning: Color(0xFFE0B054),
-    warningSoft: Color(0xFF2C2416),
+    warning: Color(0xFFE5843F),
+    warningSoft: Color(0xFF33220F),
     danger: Color(0xFFE4796F),
     dangerSoft: Color(0xFF2E1C1A),
-    selection: Color(0x449E90F7),
-    selectionEdge: Color(0xFF8A5CF5),
+    selection: Color(0x4DE0A44A),
+    selectionEdge: Color(0xFFC08A2E),
     shadow: Color(0x66000000),
     overlay: Color(0x99000000),
   );

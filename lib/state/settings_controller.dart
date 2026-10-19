@@ -98,10 +98,14 @@ class SettingsController extends ChangeNotifier {
     notifyListeners();
   }
 
-  double get listWidth => _prefs.getDouble(_kListWidth) ?? 316;
+  double get listWidth =>
+      _prefs.getDouble(_kListWidth) ?? AppLayout.listDefaultWidth;
 
   set listWidth(double value) {
-    final double clamped = value.clamp(264, 460);
+    final double clamped = value.clamp(
+      AppLayout.listMinWidth,
+      AppLayout.listMaxWidth,
+    );
     if ((listWidth - clamped).abs() < 0.5) return;
     _prefs.setDouble(_kListWidth, clamped);
     notifyListeners();
@@ -112,7 +116,10 @@ class SettingsController extends ChangeNotifier {
       _prefs.getDouble(_kOutlineWidth) ?? AppLayout.outlineWidth;
 
   set outlineWidth(double value) {
-    final double clamped = value.clamp(200, 420);
+    final double clamped = value.clamp(
+      AppLayout.outlineMinWidth,
+      AppLayout.outlineMaxWidth,
+    );
     if ((outlineWidth - clamped).abs() < 0.5) return;
     _prefs.setDouble(_kOutlineWidth, clamped);
     notifyListeners();

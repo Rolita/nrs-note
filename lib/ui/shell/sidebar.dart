@@ -30,8 +30,10 @@ class AppRail extends StatelessWidget {
     return Container(
       width: AppLayout.railWidth,
       decoration: BoxDecoration(
-        color: p.sidebar,
-        border: Border(right: BorderSide(color: p.outlineSoft)),
+        // The deepest step on screen: the rail reads as the window's own edge,
+        // so the sidebar next to it can sit *above* it instead of beside it.
+        color: p.canvas,
+        border: Border(right: BorderSide(color: p.outline)),
       ),
       child: Column(
         children: <Widget>[
@@ -46,13 +48,13 @@ class AppRail extends StatelessWidget {
           ),
           const SizedBox(height: AppSpace.sm),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 13),
+            padding: const EdgeInsets.symmetric(horizontal: AppSpace.md),
             child: Divider(height: 1, color: p.outlineSoft),
           ),
           const SizedBox(height: AppSpace.sm),
           for (final SidebarView item in SidebarView.values)
             Padding(
-              padding: const EdgeInsets.only(bottom: 4),
+              padding: const EdgeInsets.only(bottom: AppSpace.xs),
               child: _RailButton(
                 icon: item.icon,
                 tooltip: item.label,
@@ -67,7 +69,7 @@ class AppRail extends StatelessWidget {
             shortcut: 'Ctrl+P',
             onPressed: onOpenPalette,
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: AppSpace.xs),
           _RailButton(
             icon: Icons.settings_outlined,
             tooltip: '设置',
@@ -107,7 +109,7 @@ class _RailButtonState extends State<_RailButton> {
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     final Color background = widget.selected
-        ? p.accent.withValues(alpha: p.isDark ? 0.22 : 0.13)
+        ? p.accentSoft
         : (_hovered ? p.surfaceRaised : Colors.transparent);
     final Color foreground = widget.selected
         ? p.accent
@@ -126,16 +128,13 @@ class _RailButtonState extends State<_RailButton> {
           behavior: HitTestBehavior.opaque,
           child: AnimatedContainer(
             duration: AppMotion.fast,
-            width: 36,
-            height: 36,
+            width: 34,
+            height: 34,
             decoration: BoxDecoration(
               color: background,
-              borderRadius: AppRadius.mdAll,
-              border: widget.selected && !p.isDark
-                  ? Border.all(color: p.accent.withValues(alpha: 0.16))
-                  : null,
+              borderRadius: AppRadius.smAll,
             ),
-            child: Icon(widget.icon, size: 18, color: foreground),
+            child: Icon(widget.icon, size: 17, color: foreground),
           ),
         ),
       ),
