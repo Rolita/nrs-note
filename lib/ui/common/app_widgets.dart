@@ -393,11 +393,23 @@ class ResizeHandle extends StatefulWidget {
   const ResizeHandle({
     super.key,
     required this.onDelta,
-    this.width = 6,
+    required this.background,
+    this.width = 5,
   });
 
   /// Called with the horizontal drag delta in logical pixels.
   final ValueChanged<double> onDelta;
+
+  /// The pane colour this strip is carved out of.
+  ///
+  /// The shell paints its own background with the darkest step on screen, and
+  /// the strip is a *gap* between two panes, so leaving it unpainted drew a 5px
+  /// trench at every seam the panes could be dragged on — while the rail, which
+  /// has no strip, met its neighbour flush. Painting the strip as the pane it
+  /// belongs to makes all three seams the same thing: a hairline between two
+  /// surfaces, with nothing else in between.
+  final Color background;
+
   final double width;
 
   @override
@@ -424,13 +436,21 @@ class _ResizeHandleState extends State<ResizeHandle> {
             widget.onDelta(d.delta.dx),
         child: SizedBox(
           width: widget.width,
-          child: Center(
-            child: AnimatedContainer(
-              duration: AppMotion.fast,
-              width: lit ? 3 : 1,
-              decoration: BoxDecoration(
-                color: lit ? p.accent.withValues(alpha: 0.55) : p.outline,
-                borderRadius: BorderRadius.circular(2),
+          child: ColoredBox(
+            color: widget.background,
+            // The line sits hard against the pane that follows, so the seam it
+            // marks is exactly where the panes meet. Centring it instead left
+            // two pixels of trench on either side and the edge stopped reading
+            // as an edge.
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: AnimatedContainer(
+                duration: AppMotion.fast,
+                width: lit ? 3 : 1,
+                decoration: BoxDecoration(
+                  color: lit ? p.accent.withValues(alpha: 0.55) : p.outline,
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
             ),
           ),

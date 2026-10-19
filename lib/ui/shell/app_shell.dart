@@ -455,7 +455,9 @@ class _AppShellState extends State<AppShell> {
                           ),
                         // The rail is a fixed strip of icons: nothing drags
                         // there. The three real panes each get a handle on the
-                        // edge that faces the editor.
+                        // edge that faces the editor, and each handle is carved
+                        // out of the pane it follows, so its hairline lands on
+                        // the seam and the boundary reads the same everywhere.
                         if (!zen && !settings.sidebarCollapsed) ...<Widget>[
                           SizedBox(
                             width: settings.listWidth,
@@ -468,7 +470,7 @@ class _AppShellState extends State<AppShell> {
                             ),
                           ),
                           ResizeHandle(
-                            width: 5,
+                            background: p.sidebar,
                             onDelta: (double d) =>
                                 settings.listWidth = settings.listWidth + d,
                           ),
@@ -488,7 +490,7 @@ class _AppShellState extends State<AppShell> {
                           // The handle sits left of the outline, so dragging it
                           // rightwards narrows the column.
                           ResizeHandle(
-                            width: 5,
+                            background: p.surface,
                             onDelta: (double d) =>
                                 settings.outlineWidth = settings.outlineWidth - d,
                           ),

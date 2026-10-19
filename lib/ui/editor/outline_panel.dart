@@ -40,12 +40,15 @@ class OutlinePanel extends StatelessWidget {
 
     return Container(
       width: width,
-      decoration: BoxDecoration(
-        // Same step as the sidebar: the editor is the only bright surface, and
-        // both side columns read as chrome around it.
-        color: p.sidebar,
-        border: Border(left: BorderSide(color: p.outline)),
-      ),
+      // Same step as the sidebar: the editor is the only bright surface, and
+      // both side columns read as chrome around it.
+      //
+      // No left border here: the resize handle to its left already draws the
+      // hairline, on this exact pixel. Both drawn at the same time added up to
+      // two lines 3px apart — invisible while they were the faint `outlineSoft`
+      // step, a doubled edge the moment the palette stepped them up to
+      // `outline`.
+      color: p.sidebar,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
