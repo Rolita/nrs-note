@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/core/theme/app_tokens.dart';
 import 'package:nrs/core/theme/app_theme.dart';
@@ -89,7 +90,7 @@ void main() {
   String tickedRow(WidgetTester tester) {
     final Finder row = find
         .ancestor(
-          of: find.byIcon(Icons.check),
+          of: find.byIcon(LucideIcons.check),
           matching: find.byType(Row),
         )
         .first;

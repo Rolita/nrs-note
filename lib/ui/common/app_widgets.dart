@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
@@ -259,7 +260,7 @@ class TagPill extends StatelessWidget {
                   const SizedBox(width: AppSpace.xs),
                   GestureDetector(
                     onTap: onRemove,
-                    child: Icon(Icons.close, size: 11, color: fg),
+                    child: Icon(LucideIcons.x, size: 11, color: fg),
                   ),
                 ],
               ],

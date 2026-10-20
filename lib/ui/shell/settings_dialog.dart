@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/app_enums.dart';
 import '../../core/theme/app_palette.dart';
@@ -54,7 +55,7 @@ class _SettingsDialog extends StatelessWidget {
                   ),
                   const Spacer(),
                   AppIconButton(
-                    icon: Icons.close,
+                    icon: LucideIcons.x,
                     tooltip: '关闭',
                     onPressed: () => Navigator.of(context).pop(),
                   ),
@@ -186,8 +187,8 @@ class _SettingsDialog extends StatelessWidget {
                                 children: <Widget>[
                                   Icon(
                                     notes.supportsNativeFiles
-                                        ? Icons.folder_outlined
-                                        : Icons.cloud_outlined,
+                                        ? LucideIcons.folder
+                                        : LucideIcons.cloud,
                                     size: 15,
                                     color: p.textTertiary,
                                   ),
@@ -224,12 +225,12 @@ class _SettingsDialog extends StatelessWidget {
                                   if (notes.supportsNativeFiles)
                                     AppTextButton(
                                       label: '打开文件夹',
-                                      icon: Icons.open_in_new_outlined,
+                                      icon: LucideIcons.externalLink,
                                       onPressed: notes.revealVault,
                                     ),
                                   AppTextButton(
                                     label: '重新载入',
-                                    icon: Icons.refresh_outlined,
+                                    icon: LucideIcons.refreshCw,
                                     onPressed: () => notes.refresh(),
                                   ),
                                 ],
@@ -553,7 +554,7 @@ class _Dropdown<T> extends StatelessWidget {
           borderRadius: AppRadius.mdAll,
           dropdownColor: p.surfaceRaised,
           icon: Icon(
-            Icons.expand_more,
+            LucideIcons.chevronDown,
             size: 16,
             color: p.textTertiary,
           ),

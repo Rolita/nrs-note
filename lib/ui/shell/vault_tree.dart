@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
@@ -290,7 +291,7 @@ class VaultTreeState extends State<VaultTree> {
       entries: <MenuNode>[
         MenuAction(
           label: '打开',
-          icon: Icons.open_in_new,
+          icon: LucideIcons.externalLink,
           onPressed: () {
             widget.notes.setActiveFolder(note.folderPath);
             widget.onOpenNote(note);
@@ -299,19 +300,19 @@ class VaultTreeState extends State<VaultTree> {
         const MenuSeparator(),
         MenuAction(
           label: '重命名',
-          icon: Icons.drive_file_rename_outline,
+          icon: LucideIcons.filePen,
           shortcut: 'F2',
           onPressed: () => _startRenameNote(note),
         ),
         MenuAction(
           label: '移到文件夹…',
-          icon: Icons.drive_file_move_outline,
+          icon: LucideIcons.folderInput,
           onPressed: () => unawaited(_pickFolder(affected)),
         ),
         const MenuSeparator(),
         MenuAction(
           label: deleteLabel,
-          icon: Icons.delete_outline,
+          icon: LucideIcons.trash2,
           danger: true,
           onPressed: () => widget.onDeleteNotes(affected),
         ),
@@ -333,7 +334,7 @@ class VaultTreeState extends State<VaultTree> {
       entries: <MenuNode>[
         MenuAction(
           label: '重命名',
-          icon: Icons.drive_file_rename_outline,
+          icon: LucideIcons.filePen,
           shortcut: 'F2',
           onPressed: () => _startRenameFolder(folder, name),
         ),
@@ -597,7 +598,7 @@ class VaultTreeState extends State<VaultTree> {
             children: <Widget>[
               if (path.isNotEmpty)
                 Icon(
-                  Icons.subdirectory_arrow_right,
+                  LucideIcons.cornerDownRight,
                   size: AppIconSize.xs,
                   color: p.textTertiary,
                 ),
@@ -637,7 +638,7 @@ class VaultTreeState extends State<VaultTree> {
     if (notes.allNotes.isEmpty && notes.folders.isEmpty) {
       return const EmptyState(
         compact: true,
-        icon: Icons.edit_note_outlined,
+        icon: LucideIcons.notebookPen,
         title: '笔记库还是空的',
         message: '写下第一个念头 —— 它会立刻变成一个可以被任何编辑器打开的 .md 文件。',
       );
@@ -945,7 +946,7 @@ class _FolderRow extends StatelessWidget {
               SizedBox(
                 width: 16,
                 child: Icon(
-                  expanded ? Icons.expand_more : Icons.chevron_right,
+                  expanded ? LucideIcons.chevronDown : LucideIcons.chevronRight,
                   size: AppIconSize.sm,
                   color: p.textTertiary,
                 ),

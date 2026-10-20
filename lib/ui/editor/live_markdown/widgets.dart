@@ -44,7 +44,7 @@ WidgetSpan _taskBox(AppPalette p, bool done, int sourceOffset) => _decoration(
             ),
           ),
           child: done
-              ? Icon(Icons.check, size: 11, color: p.onAccent)
+              ? Icon(LucideIcons.check, size: 11, color: p.onAccent)
               : null,
         ),
       ),
@@ -170,7 +170,7 @@ WidgetSpan _embedChip(
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            Icon(Icons.attachment_outlined, size: 11, color: p.textTertiary),
+            Icon(LucideIcons.paperclip, size: 11, color: p.textTertiary),
             const SizedBox(width: 4),
             Text(label, style: TextStyle(fontSize: 12, color: p.textSecondary)),
           ],
@@ -225,7 +225,7 @@ Widget _brokenImage(AppPalette p, String alt) => Container(
   child: Row(
     mainAxisSize: MainAxisSize.min,
     children: <Widget>[
-      Icon(Icons.image_not_supported_outlined, size: 13, color: p.textTertiary),
+      Icon(LucideIcons.imageOff, size: 13, color: p.textTertiary),
       const SizedBox(width: 6),
       Text(
         alt.trim().isEmpty ? '图片无法加载' : alt.trim(),

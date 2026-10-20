@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart' hide TableCell, TableRow;
 import 'package:flutter/services.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
@@ -330,93 +331,93 @@ List<MenuNode> buildEditorMenu({
   return <MenuNode>[
     MenuAction(
       label: '新增链接',
-      icon: Icons.link_outlined,
+      icon: LucideIcons.link,
       onPressed: () => onApply(insertWikilink()),
     ),
     MenuAction(
       label: '新增外部链接',
-      icon: Icons.open_in_new_outlined,
+      icon: LucideIcons.externalLink,
       shortcut: 'Ctrl+K',
       onPressed: () => onApply(insertLink()),
     ),
     const MenuSeparator(),
     MenuSubmenu(
       label: '文本格式',
-      icon: Icons.text_format_outlined,
+      icon: LucideIcons.type,
       children: <MenuNode>[
         MenuAction(
           label: '加粗',
-          icon: Icons.format_bold_outlined,
+          icon: LucideIcons.bold,
           shortcut: 'Ctrl+B',
           onPressed: () => onApply(wrapSelection('**', '**')),
         ),
         MenuAction(
           label: '倾斜',
-          icon: Icons.format_italic_outlined,
+          icon: LucideIcons.italic,
           shortcut: 'Ctrl+I',
           onPressed: () => onApply(wrapSelection('*', '*')),
         ),
         MenuAction(
           label: '删除线',
-          icon: Icons.format_strikethrough_outlined,
+          icon: LucideIcons.strikethrough,
           onPressed: () => onApply(wrapSelection('~~', '~~')),
         ),
         MenuAction(
           label: '高亮',
-          icon: Icons.brush_outlined,
+          icon: LucideIcons.highlighter,
           onPressed: () =>
               onApply(wrapSelection('==', '==', placeholder: '高亮')),
         ),
         const MenuSeparator(),
         MenuAction(
           label: '代码',
-          icon: Icons.code_outlined,
+          icon: LucideIcons.code,
           shortcut: 'Ctrl+E',
           onPressed: () => onApply(wrapSelection('`', '`', placeholder: '代码')),
         ),
         MenuAction(
           label: '数学',
-          icon: Icons.functions_outlined,
+          icon: LucideIcons.sigma,
           onPressed: () =>
               onApply(wrapSelection(r'$', r'$', placeholder: '公式')),
         ),
         // Obsidian's comment syntax, so a note stays portable between the two.
         MenuAction(
           label: '注释',
-          icon: Icons.percent_outlined,
+          icon: LucideIcons.percent,
           onPressed: () =>
               onApply(wrapSelection('%%', '%%', placeholder: '注释')),
         ),
         const MenuSeparator(),
         MenuAction(
           label: '清除格式',
-          icon: Icons.format_clear_outlined,
+          icon: LucideIcons.removeFormatting,
           onPressed: () => onApply(clearFormatting()),
         ),
       ],
     ),
     MenuSubmenu(
       label: '段落设置',
-      icon: Icons.subject_outlined,
+      icon: LucideIcons.pilcrow,
       children: <MenuNode>[
         style(
           '无序列表',
-          Icons.format_list_bulleted_outlined,
+          LucideIcons.list,
           BlockStyle.bullet,
           shortcut: 'Ctrl+Shift+8',
         ),
         style(
           '有序列表',
-          Icons.format_list_numbered_outlined,
+          LucideIcons.listOrdered,
           BlockStyle.ordered,
           shortcut: 'Ctrl+Shift+7',
         ),
-        style('任务列表', Icons.checklist_outlined, BlockStyle.task),
+        style('任务列表', LucideIcons.listTodo, BlockStyle.task),
         const MenuSeparator(),
         for (int level = 1; level <= 6; level++)
           MenuAction(
             label: '$level 级标题',
-            icon: Icons.title_outlined,
+            icon: LucideIcons.heading,
             leading: 'H$level',
             shortcut: level <= 3 ? 'Ctrl+$level' : null,
             checked: current.headingLevel == level,
@@ -429,13 +430,13 @@ List<MenuNode> buildEditorMenu({
         const MenuSeparator(),
         style(
           '正文',
-          Icons.format_clear_outlined,
+          LucideIcons.removeFormatting,
           BlockStyle.paragraph,
           shortcut: 'Ctrl+0',
         ),
         style(
           '引用',
-          Icons.format_quote_outlined,
+          LucideIcons.quote,
           BlockStyle.quote,
           shortcut: 'Ctrl+Shift+Q',
         ),
@@ -443,22 +444,22 @@ List<MenuNode> buildEditorMenu({
     ),
     MenuSubmenu(
       label: '插入',
-      icon: Icons.add,
+      icon: LucideIcons.plus,
       children: <MenuNode>[
         MenuAction(
           label: '分割线',
-          icon: Icons.horizontal_rule_outlined,
+          icon: LucideIcons.minus,
           onPressed: () => onApply(insertDivider()),
         ),
         MenuAction(
           label: '代码块',
-          icon: Icons.code_off_outlined,
+          icon: LucideIcons.squareCode,
           shortcut: 'Ctrl+Shift+E',
           onPressed: () => onApply(codeBlock()),
         ),
         MenuAction(
           label: '表格',
-          icon: Icons.grid_on_outlined,
+          icon: LucideIcons.table,
           onPressed: () => onApply(insertTable()),
         ),
       ],
@@ -467,21 +468,21 @@ List<MenuNode> buildEditorMenu({
     if (inTable) ...<MenuNode>[
       MenuSubmenu(
         label: '表格工具',
-        icon: Icons.table_chart_outlined,
+        icon: LucideIcons.table,
         children: <MenuNode>[
           MenuSubmenu(
             label: '单元格',
-            icon: Icons.grid_view_outlined,
+            icon: LucideIcons.grid2x2,
             children: <MenuNode>[
               MenuAction(
                 label: '编辑单元格',
-                icon: Icons.edit_outlined,
+                icon: LucideIcons.squarePen,
                 shortcut: 'F2',
                 onPressed: active == null ? null : onEditCell,
               ),
               MenuAction(
                 label: range == null ? '清空单元格' : '清空所选单元格',
-                icon: Icons.backspace_outlined,
+                icon: LucideIcons.delete,
                 shortcut: range == null ? null : 'Delete',
                 onPressed: active == null
                     ? null
@@ -493,7 +494,7 @@ List<MenuNode> buildEditorMenu({
               const MenuSeparator(),
               tableData(
                 '向下填充',
-                Icons.south_outlined,
+                LucideIcons.arrowDownToLine,
                 (TextEditingValue v) =>
                     tableFill(v, down: true, resolve: resolve),
                 enabled: canFillDown,
@@ -501,7 +502,7 @@ List<MenuNode> buildEditorMenu({
               ),
               tableData(
                 '向右填充',
-                Icons.east_outlined,
+                LucideIcons.arrowRightToLine,
                 (TextEditingValue v) =>
                     tableFill(v, down: false, resolve: resolve),
                 enabled: canFillRight,
@@ -510,7 +511,7 @@ List<MenuNode> buildEditorMenu({
               const MenuSeparator(),
               MenuAction(
                 label: '复制所选为制表符文本',
-                icon: Icons.grid_on_outlined,
+                icon: LucideIcons.table,
                 shortcut: 'Ctrl+Shift+C',
                 onPressed: tsv == null
                     ? null
@@ -534,30 +535,30 @@ List<MenuNode> buildEditorMenu({
           ),
           MenuSubmenu(
             label: '行',
-            icon: Icons.table_rows_outlined,
+            icon: LucideIcons.rows3,
             children: <MenuNode>[
               tableData(
                 multiRows ? '上方插入 $selectedRows 行' : '上方插入行',
-                Icons.vertical_align_top_outlined,
+                LucideIcons.arrowUpToLine,
                 (TextEditingValue v) =>
                     tableInsertRows(v, above: true, resolve: resolve),
               ),
               tableData(
                 multiRows ? '下方插入 $selectedRows 行' : '下方插入行',
-                Icons.vertical_align_bottom_outlined,
+                LucideIcons.arrowDownToLine,
                 (TextEditingValue v) =>
                     tableInsertRows(v, above: false, resolve: resolve),
               ),
               tableData(
                 multiRows ? '上移 $selectedRows 行' : '上移本行',
-                Icons.arrow_upward_outlined,
+                LucideIcons.arrowUp,
                 (TextEditingValue v) =>
                     tableMoveRows(v, delta: -1, resolve: resolve),
                 enabled: rowFrom > 0,
               ),
               tableData(
                 multiRows ? '下移 $selectedRows 行' : '下移本行',
-                Icons.arrow_downward_outlined,
+                LucideIcons.arrowDown,
                 (TextEditingValue v) =>
                     tableMoveRows(v, delta: 1, resolve: resolve),
                 enabled:
@@ -567,7 +568,7 @@ List<MenuNode> buildEditorMenu({
               ),
               tableData(
                 multiRows ? '复制 $selectedRows 行到下方' : '复制本行到下方',
-                Icons.content_copy_outlined,
+                LucideIcons.copy,
                 (TextEditingValue v) => tableDuplicateRows(v, resolve: resolve),
                 enabled: !isTableDivider(caretLine) || range != null,
               ),
@@ -576,7 +577,7 @@ List<MenuNode> buildEditorMenu({
               // removed.
               tableData(
                 multiRows ? '删除 $selectedRows 行' : '删除本行',
-                Icons.delete_outline,
+                LucideIcons.trash2,
                 (TextEditingValue v) => tableDeleteRows(v, resolve: resolve),
                 enabled: !isTableDivider(caretLine) || range != null,
               ),
@@ -584,44 +585,44 @@ List<MenuNode> buildEditorMenu({
           ),
           MenuSubmenu(
             label: '列',
-            icon: Icons.view_column_outlined,
+            icon: LucideIcons.columns3,
             children: <MenuNode>[
               tableData(
                 multiColumns ? '左侧插入 $selectedColumns 列' : '左侧插入列',
-                Icons.keyboard_tab_outlined,
+                LucideIcons.arrowLeftToLine,
                 (TextEditingValue v) =>
                     tableInsertColumns(v, right: false, resolve: resolve),
               ),
               tableData(
                 multiColumns ? '右侧插入 $selectedColumns 列' : '右侧插入列',
-                Icons.keyboard_tab_outlined,
+                LucideIcons.arrowRightToLine,
                 (TextEditingValue v) =>
                     tableInsertColumns(v, right: true, resolve: resolve),
               ),
               tableData(
                 multiColumns ? '左移 $selectedColumns 列' : '左移本列',
-                Icons.arrow_back_outlined,
+                LucideIcons.arrowLeft,
                 (TextEditingValue v) =>
                     tableMoveColumns(v, delta: -1, resolve: resolve),
                 enabled: columnFrom > 0,
               ),
               tableData(
                 multiColumns ? '右移 $selectedColumns 列' : '右移本列',
-                Icons.arrow_forward_outlined,
+                LucideIcons.arrowRight,
                 (TextEditingValue v) =>
                     tableMoveColumns(v, delta: 1, resolve: resolve),
                 enabled: columnTo >= 0 && columnTo < columns - 1,
               ),
               tableData(
                 multiColumns ? '复制 $selectedColumns 列到右侧' : '复制本列到右侧',
-                Icons.content_copy_outlined,
+                LucideIcons.copy,
                 (TextEditingValue v) =>
                     tableDuplicateColumns(v, resolve: resolve),
               ),
               // Never the last column: a table with no cells is not a table.
               tableData(
                 multiColumns ? '删除 $selectedColumns 列' : '删除本列',
-                Icons.delete_sweep_outlined,
+                LucideIcons.trash2,
                 (TextEditingValue v) => tableDeleteColumns(v, resolve: resolve),
                 enabled: selectedColumns < columns,
               ),
@@ -629,83 +630,83 @@ List<MenuNode> buildEditorMenu({
           ),
           MenuSubmenu(
             label: '对齐',
-            icon: Icons.format_align_left_outlined,
+            icon: LucideIcons.alignLeft,
             children: <MenuNode>[
-              alignRow('默认对齐', Icons.short_text_outlined, TableAlign.none),
-              alignRow('左对齐', Icons.format_align_left_outlined, TableAlign.left),
+              alignRow('默认对齐', LucideIcons.text, TableAlign.none),
+              alignRow('左对齐', LucideIcons.alignLeft, TableAlign.left),
               alignRow(
                 '居中',
-                Icons.format_align_center_outlined,
+                LucideIcons.alignCenter,
                 TableAlign.center,
               ),
               alignRow(
                 '右对齐',
-                Icons.format_align_right_outlined,
+                LucideIcons.alignRight,
                 TableAlign.right,
               ),
             ],
           ),
           MenuSubmenu(
             label: '数据',
-            icon: Icons.functions_outlined,
+            icon: LucideIcons.sigma,
             children: <MenuNode>[
               tableData(
                 '按本列升序',
-                Icons.sort_outlined,
+                LucideIcons.arrowUpDown,
                 (TextEditingValue v) => sortTable(v, ascending: true),
                 enabled: canSort,
               ),
               tableData(
                 '按本列降序',
-                Icons.sort_outlined,
+                LucideIcons.arrowUpDown,
                 (TextEditingValue v) => sortTable(v, ascending: false),
                 enabled: canSort,
               ),
               const MenuSeparator(),
-              tableData('数字列自动右对齐', Icons.straighten_outlined, autoAlignTable),
-              tableData('转置表格', Icons.swap_horiz_outlined, transposeTable),
+              tableData('数字列自动右对齐', LucideIcons.ruler, autoAlignTable),
+              tableData('转置表格', LucideIcons.arrowLeftRight, transposeTable),
               const MenuSeparator(),
               tableData(
                 '追加合计行',
-                Icons.functions_outlined,
+                LucideIcons.sigma,
                 (TextEditingValue v) => summarizeTable(v, TableAggregate.sum),
                 enabled: numericColumn,
               ),
               tableData(
                 '追加平均值行',
-                Icons.balance_outlined,
+                LucideIcons.scale,
                 (TextEditingValue v) =>
                     summarizeTable(v, TableAggregate.average),
                 enabled: numericColumn,
               ),
               tableData(
                 '追加计数行',
-                Icons.numbers_outlined,
+                LucideIcons.hash,
                 (TextEditingValue v) => summarizeTable(v, TableAggregate.count),
               ),
               tableData(
                 '追加最大值行',
-                Icons.arrow_upward_outlined,
+                LucideIcons.arrowUp,
                 (TextEditingValue v) => summarizeTable(v, TableAggregate.max),
                 enabled: numericColumn,
               ),
               tableData(
                 '追加最小值行',
-                Icons.arrow_downward_outlined,
+                LucideIcons.arrowDown,
                 (TextEditingValue v) => summarizeTable(v, TableAggregate.min),
                 enabled: numericColumn,
               ),
             ],
           ),
           const MenuSeparator(),
-          tableData('删除表格', Icons.delete_outline, deleteTableAt),
+          tableData('删除表格', LucideIcons.trash2, deleteTableAt),
         ],
       ),
       const MenuSeparator(),
     ],
     MenuAction(
       label: '剪切',
-      icon: Icons.content_cut_outlined,
+      icon: LucideIcons.scissors,
       shortcut: 'Ctrl+X',
       onPressed: hasSelection
           ? () => cutSelectionCells(
@@ -717,7 +718,7 @@ List<MenuNode> buildEditorMenu({
     ),
     MenuAction(
       label: '复制',
-      icon: Icons.content_copy_outlined,
+      icon: LucideIcons.copy,
       shortcut: 'Ctrl+C',
       onPressed: hasSelection
           ? () => copySelectionCells(
@@ -729,14 +730,14 @@ List<MenuNode> buildEditorMenu({
     ),
     MenuAction(
       label: '粘贴',
-      icon: Icons.content_paste_outlined,
+      icon: LucideIcons.clipboardPaste,
       shortcut: 'Ctrl+V',
       onPressed: () =>
           unawaited(pasteIntoEditor(state, plain: false, resolve: resolve)),
     ),
     MenuAction(
       label: '以纯文本形式粘贴',
-      icon: Icons.content_paste_off_outlined,
+      icon: LucideIcons.clipboardType,
       shortcut: 'Ctrl+Shift+V',
       onPressed: () =>
           unawaited(pasteIntoEditor(state, plain: true, resolve: resolve)),
@@ -744,7 +745,7 @@ List<MenuNode> buildEditorMenu({
     const MenuSeparator(),
     MenuAction(
       label: '全选',
-      icon: Icons.select_all_outlined,
+      icon: LucideIcons.boxSelect,
       shortcut: 'Ctrl+A',
       onPressed: () => state.selectAll(SelectionChangedCause.toolbar),
     ),
@@ -1164,7 +1165,7 @@ class _MenuInfoRow extends StatelessWidget {
             width: 20,
             child: Center(
               child: Icon(
-                Icons.functions_outlined,
+                LucideIcons.sigma,
                 size: 13,
                 color: p.textTertiary,
               ),
@@ -1300,14 +1301,14 @@ class _MenuRowState extends State<_MenuRow> {
               if (widget.submenu) ...<Widget>[
                 const SizedBox(width: AppSpace.xs + 2),
                 Icon(
-                  Icons.chevron_right_outlined,
+                  LucideIcons.chevronRight,
                   size: 14,
                   color: p.textTertiary,
                 ),
               ],
               if (widget.checked) ...<Widget>[
                 const SizedBox(width: AppSpace.xs + 2),
-                Icon(Icons.check, size: 13, color: p.accent),
+                Icon(LucideIcons.check, size: 13, color: p.accent),
               ],
             ],
           ),

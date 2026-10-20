@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 enum ThemePreference {
-  system('跟随系统', Icons.brightness_auto_outlined),
-  light('浅色', Icons.light_mode_outlined),
-  dark('深色', Icons.dark_mode_outlined);
+  system('跟随系统', LucideIcons.sunMoon),
+  light('浅色', LucideIcons.sun),
+  dark('深色', LucideIcons.moon);
 
   const ThemePreference(this.label, this.icon);
   final String label;
@@ -32,9 +33,9 @@ enum SortMode {
 
 /// Which pane the left sidebar is showing.
 enum SidebarView {
-  files('文件', Icons.folder_outlined),
-  search('搜索', Icons.search_outlined),
-  tags('标签', Icons.tag_outlined);
+  files('文件', LucideIcons.folder),
+  search('搜索', LucideIcons.search),
+  tags('标签', LucideIcons.tag);
 
   const SidebarView(this.label, this.icon);
   final String label;

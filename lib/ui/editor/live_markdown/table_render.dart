@@ -899,11 +899,11 @@ class _RenderTableRow extends RenderBox implements TableRowChrome {
   /// alone — here the dots stay upright for both axes, so a row and a column
   /// read as the same kind of control.
   ///
-  /// Repainted from the Material icon font rather than stroked by hand: the
+  /// Repainted from the icon font rather than stroked by hand: the
   /// chrome is painted by a render object, and an [Icon] would need a widget —
   /// which would swallow the taps the skeleton owns.
   void _paintGrip(Canvas canvas, Rect r, {required Color color}) {
-    final IconData icon = Icons.drag_indicator;
+    final IconData icon = LucideIcons.gripVertical;
     final TextPainter tp = TextPainter(
       text: TextSpan(
         text: String.fromCharCode(icon.codePoint),

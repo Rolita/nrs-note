@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/app_enums.dart';
 import '../../core/theme/app_palette.dart';
@@ -47,7 +48,7 @@ class AppRail extends StatelessWidget {
           ),
           const Spacer(),
           _RailButton(
-            icon: Icons.settings_outlined,
+            icon: LucideIcons.settings,
             tooltip: '设置',
             shortcut: 'Ctrl+,',
             onPressed: onOpenSettings,

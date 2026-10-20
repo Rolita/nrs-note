@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
@@ -493,13 +494,13 @@ class EditorPaneState extends State<EditorPane> {
           ),
           const SizedBox(width: AppSpace.sm),
           AppIconButton(
-            icon: Icons.vertical_align_center_outlined,
+            icon: LucideIcons.alignVerticalJustifyCenter,
             tooltip: '打字机模式',
             active: settings.typewriter,
             onPressed: () => settings.typewriter = !settings.typewriter,
           ),
           AppIconButton(
-            icon: Icons.fullscreen_outlined,
+            icon: LucideIcons.maximize,
             tooltip: '专注模式',
             shortcut: 'Ctrl+Shift+F',
             active: settings.focusMode,
@@ -535,7 +536,7 @@ class EditorPaneState extends State<EditorPane> {
       ),
       child: Row(
         children: <Widget>[
-          Icon(Icons.sync_problem_outlined, size: 15, color: p.warning),
+          Icon(LucideIcons.refreshCwOff, size: 15, color: p.warning),
           const SizedBox(width: AppSpace.sm),
           Expanded(
             child: Text(
@@ -764,7 +765,7 @@ class EditorPaneState extends State<EditorPane> {
       );
     }
     return EmptyState(
-      icon: Icons.article_outlined,
+      icon: LucideIcons.fileText,
       title: '选择一篇笔记开始',
       message: notes.allNotes.isEmpty
           ? '或者用 Ctrl+N 创建你的第一篇笔记。'
@@ -868,7 +869,7 @@ class _TypographyMenu extends StatelessWidget {
       ],
       child: const Padding(
         padding: EdgeInsets.symmetric(horizontal: 2),
-        child: _MenuTrigger(icon: Icons.format_size_outlined, tooltip: '正文字号'),
+        child: _MenuTrigger(icon: LucideIcons.aLargeSmall, tooltip: '正文字号'),
       ),
     );
   }
@@ -950,17 +951,17 @@ class _MoreMenu extends StatelessWidget {
         }
       },
       itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-        _entry(p, 'copy', Icons.content_copy_outlined, '复制 Markdown'),
-        _entry(p, 'duplicate', Icons.copy_all_outlined, '创建副本'),
+        _entry(p, 'copy', LucideIcons.copy, '复制 Markdown'),
+        _entry(p, 'duplicate', LucideIcons.copyPlus, '创建副本'),
         if (notes.supportsNativeFiles)
-          _entry(p, 'reveal', Icons.folder_open_outlined, '打开笔记库文件夹'),
-        _entry(p, 'reload', Icons.refresh, '从磁盘重新载入'),
+          _entry(p, 'reveal', LucideIcons.folderOpen, '打开笔记库文件夹'),
+        _entry(p, 'reload', LucideIcons.refreshCw, '从磁盘重新载入'),
         const PopupMenuDivider(),
-        _entry(p, 'delete', Icons.delete_outline, '删除笔记', danger: true),
+        _entry(p, 'delete', LucideIcons.trash2, '删除笔记', danger: true),
       ],
       child: const Padding(
         padding: EdgeInsets.symmetric(horizontal: 2),
-        child: _MenuTrigger(icon: Icons.more_horiz_outlined, tooltip: '更多操作'),
+        child: _MenuTrigger(icon: LucideIcons.ellipsis, tooltip: '更多操作'),
       ),
     );
   }

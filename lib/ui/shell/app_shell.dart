@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/app_enums.dart';
 import '../../core/platform/vault_sync.dart';
@@ -77,7 +78,7 @@ class _AppShellState extends State<AppShell> {
         duration: Duration(seconds: onAction == null ? 2 : 6),
         content: Row(
           children: <Widget>[
-            Icon(Icons.check_circle_outlined, size: 15, color: p.success),
+            Icon(LucideIcons.circleCheck, size: 15, color: p.success),
             const SizedBox(width: 10),
             Expanded(child: Text(message)),
           ],
@@ -143,7 +144,7 @@ class _AppShellState extends State<AppShell> {
               child: Row(
                 children: <Widget>[
                   Icon(
-                    Icons.description_outlined,
+                    LucideIcons.fileText,
                     size: 13,
                     color: p.textTertiary,
                   ),
@@ -495,7 +496,7 @@ class _ErrorBanner extends StatelessWidget {
       color: p.dangerSoft,
       child: Row(
         children: <Widget>[
-          Icon(Icons.error_outline, size: 15, color: p.danger),
+          Icon(LucideIcons.circleAlert, size: 15, color: p.danger),
           const SizedBox(width: AppSpace.sm),
           Expanded(
             child: Text(
@@ -504,7 +505,7 @@ class _ErrorBanner extends StatelessWidget {
             ),
           ),
           AppIconButton(
-            icon: Icons.close,
+            icon: LucideIcons.x,
             tooltip: '关闭',
             size: 24,
             iconSize: 13,

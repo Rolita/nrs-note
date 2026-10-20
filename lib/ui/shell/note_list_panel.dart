@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/app_enums.dart';
 import '../../core/theme/app_palette.dart';
@@ -208,7 +209,7 @@ class NoteListPanelState extends State<NoteListPanel> {
           // One button, two faces: it always offers the opposite of what the
           // tree is showing right now.
           action(
-            _allExpanded ? Icons.unfold_less_outlined : Icons.unfold_more_outlined,
+            _allExpanded ? LucideIcons.chevronsDownUp : LucideIcons.chevronsUpDown,
             _allExpanded ? '全部收起' : '全部展开',
             () {
               final VaultTreeState? tree = _treeKey.currentState;
@@ -220,9 +221,9 @@ class NoteListPanelState extends State<NoteListPanel> {
               }
             },
           ),
-          action(Icons.create_new_folder_outlined, '新建文件夹', _createFolder),
+          action(LucideIcons.folderPlus, '新建文件夹', _createFolder),
           action(
-            Icons.note_add_outlined,
+            LucideIcons.filePlus2,
             '新建笔记',
             widget.onCreateNote,
             shortcut: 'Ctrl+N',
@@ -285,7 +286,7 @@ class NoteListPanelState extends State<NoteListPanel> {
               const SizedBox(width: AppSpace.sm),
               AppTextButton(
                 label: '清空',
-                icon: Icons.filter_alt_off_outlined,
+                icon: LucideIcons.filterX,
                 onPressed: () {
                   _search.clear();
                   notes.clearFilters();
@@ -326,7 +327,7 @@ class NoteListPanelState extends State<NoteListPanel> {
           children: <Widget>[
             const SizedBox(width: AppSpace.sm),
             Icon(
-              Icons.search_outlined,
+              LucideIcons.search,
               size: AppIconSize.sm,
               color: focused ? p.accent : p.textTertiary,
             ),
@@ -357,7 +358,7 @@ class NoteListPanelState extends State<NoteListPanel> {
             ),
             if (notes.query.isNotEmpty)
               AppIconButton(
-                icon: Icons.close,
+                icon: LucideIcons.x,
                 tooltip: '清除',
                 size: 24,
                 iconSize: AppIconSize.xs,
@@ -386,7 +387,7 @@ class NoteListPanelState extends State<NoteListPanel> {
     if (!notes.isFiltered) {
       return const EmptyState(
         compact: true,
-        icon: Icons.search_outlined,
+        icon: LucideIcons.search,
         title: '搜索笔记',
         message: '输入关键词 —— 标题、正文和 #标签 都会被搜到。',
       );
@@ -397,7 +398,7 @@ class NoteListPanelState extends State<NoteListPanel> {
       if (notes.allNotes.isEmpty) {
         return EmptyState(
           compact: true,
-          icon: Icons.edit_note_outlined,
+          icon: LucideIcons.notebookPen,
           title: '笔记库还是空的',
           message: '写下第一个念头 —— 它会立刻变成一个可以被任何编辑器打开的 .md 文件。',
         );
@@ -650,7 +651,7 @@ class _SearchResultGroup extends StatelessWidget {
                     turns: collapsed ? -0.25 : 0,
                     duration: AppMotion.fast,
                     child: Icon(
-                      Icons.expand_more,
+                      LucideIcons.chevronDown,
                       size: AppIconSize.sm,
                       color: hovered ? p.textSecondary : p.textTertiary,
                     ),
@@ -829,7 +830,7 @@ class _SortButton extends StatelessWidget {
           SizedBox(
             width: 22,
             child: active
-                ? Icon(Icons.check, size: 15, color: p.accent)
+                ? Icon(LucideIcons.check, size: 15, color: p.accent)
                 : null,
           ),
           Text(
@@ -891,13 +892,13 @@ class _SortTriggerState extends State<_SortTrigger> {
                   ),
                   const SizedBox(width: 3),
                   Icon(
-                    Icons.unfold_more_outlined,
+                    LucideIcons.chevronsUpDown,
                     size: AppIconSize.xs,
                     color: _hovered ? p.textSecondary : p.textTertiary,
                   ),
                 ],
               )
-            : Icon(Icons.sort_outlined, size: AppIconSize.sm - 2, color: foreground),
+            : Icon(LucideIcons.arrowUpDown, size: AppIconSize.sm - 2, color: foreground),
       ),
     );
   }

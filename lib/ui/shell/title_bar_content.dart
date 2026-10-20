@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/app_enums.dart';
 import '../../core/theme/app_palette.dart';
@@ -88,8 +89,8 @@ class TitleBarLayout extends StatelessWidget {
         const SizedBox(width: 6),
         _BarButton(
           icon: collapsed
-              ? Icons.keyboard_double_arrow_right_outlined
-              : Icons.keyboard_double_arrow_left_outlined,
+              ? LucideIcons.chevronsRight
+              : LucideIcons.chevronsLeft,
           tooltip: collapsed ? '展开侧边栏' : '收起侧边栏',
           shortcut: 'Ctrl+\\',
           onPressed: onToggleSidebar,
@@ -119,7 +120,7 @@ class TitleBarLayout extends StatelessWidget {
     );
 
     final Widget outlineButton = _BarButton(
-      icon: Icons.toc_outlined,
+      icon: LucideIcons.listTree,
       tooltip: '大纲',
       shortcut: 'Ctrl+Shift+O',
       selected: settings.outlineVisible,
@@ -448,7 +449,7 @@ class _TabCloseButtonState extends State<_TabCloseButton> {
             borderRadius: BorderRadius.circular(AppRadius.xs),
           ),
           child: Icon(
-            Icons.close,
+            LucideIcons.x,
             size: AppIconSize.xs - 2,
             color: _hovered ? p.textPrimary : p.textTertiary,
           ),
@@ -496,7 +497,7 @@ class _NewTabButtonState extends State<_NewTabButton> {
               borderRadius: AppRadius.mdAll,
             ),
             child: Icon(
-              Icons.add,
+              LucideIcons.plus,
               size: AppIconSize.sm,
               color: _hovered ? p.textPrimary : p.textSecondary,
             ),
