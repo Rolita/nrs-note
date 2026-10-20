@@ -1594,11 +1594,14 @@ void main() {
     bool fill(int x, int y) =>
         px.isColor(px.palette.surfaceSunken, x, y, tolerance: 8);
 
-    // The rows above the glyphs show the band end to end. Take the widest one,
-    // so the measurement cannot land on the rounded top edge.
+    // The widest filled row of the band around the code is the one to measure:
+// it runs end to end, while the rounded rows at the band's top and bottom
+// are inset by the corner radius — and a row of the glyphs themselves is
+// punched through by the ink. The window reaches past the box the field
+// reports: that box is the *line's*, and the chip hangs inside it.
     int bandY = -1;
     int widest = 0;
-    for (int y = code.top.round() - 8; y < code.top.round(); y++) {
+    for (int y = code.top.round() - 12; y < code.bottom.round(); y++) {
       int n = 0;
       for (int x = 0; x < px.width; x++) {
         if (fill(x, y)) n++;
@@ -1609,6 +1612,7 @@ void main() {
       }
     }
     expect(bandY, greaterThanOrEqualTo(0), reason: '代码没有任何底色');
+    expect(widest, greaterThan(20), reason: '找到的色带只有几个像素，不是一整条');
 
     int leftAt(int y) {
       for (int x = 0; x < px.width; x++) {

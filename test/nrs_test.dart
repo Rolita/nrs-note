@@ -971,7 +971,9 @@ final x = 1;
       final TextSpan body = texts.firstWhere((TextSpan s) => s.text == '正文');
 
       expect(heading.style!.fontSize, greaterThan(base.fontSize!));
-      expect(heading.style!.fontWeight, FontWeight.w700);
+      // Semibold, not bold: the design sheet's H1 is w600, and at 27px the
+      // extra weight read as a browser default rather than as a choice.
+      expect(heading.style!.fontWeight, FontWeight.w600);
       expect(body.style!.fontSize, base.fontSize);
     });
 
@@ -1015,22 +1017,26 @@ final x = 1;
         reason: '`final` should be coloured as a keyword',
       );
 
-      // The fence row names the language at its right end, capitalised.
-      final Container header = widgetsOf(spans)
-          .whereType<Container>()
-          .firstWhere(
-            (Container c) => c.child is Text && (c.child! as Text).data == 'Dart',
-            orElse: () => throw StateError('no `Dart` label in the fence row'),
-          );
+      // The opening fence reserves the card's header row and the label is
+      // painted into the slab's corner (`CodeBlockPainter`), so the paragraph
+      // holds no `Dart` widget at all — a widget label would be a line of the
+      // paragraph and push the first code row down a whole header.
+      final List<CodeBlockRange> ranges = codeBlockRanges(document);
+      expect(ranges, hasLength(1));
       expect(
-        header.alignment,
-        Alignment.centerRight,
-        reason: 'the label sits at the right end of the block, not the left',
+        ranges.single.label,
+        'Dart',
+        reason: 'the language is read off the fence line, capitalised',
+      );
+      expect(
+        widgetsOf(spans).whereType<Container>().where(
+          (Container c) => c.child is Text && (c.child! as Text).data == 'Dart',
+        ),
+        isEmpty,
+        reason: 'the label is painted, not laid out',
       );
 
       // The slab and the text must agree on where the block starts and ends.
-      final List<CodeBlockRange> ranges = codeBlockRanges(document);
-      expect(ranges, hasLength(1));
       expect(
         document.substring(ranges.single.start, ranges.single.end),
         '```dart\nfinal x = 1;\n```',
@@ -1041,14 +1047,18 @@ final x = 1;
       const String source = '```\nplain\n```';
       final List<InlineSpan> spans = render(source);
 
+      expect(codeBlockRanges(source), hasLength(1));
+      expect(
+        codeBlockRanges(source).single.label,
+        isNull,
+        reason: 'an unnamed fence paints no label in the card corner',
+      );
       expect(
         widgetsOf(spans).whereType<Container>().where(
-          (Container c) => c.child != null,
+          (Container c) => c.child is Text && (c.child! as Text).data == 'Plain',
         ),
         isEmpty,
-        reason: 'an unnamed fence is only the slab and its tail air',
       );
-      expect(codeBlockRanges(source), hasLength(1));
     });
 
     test('turns a horizontal rule into a real full-width line', () {
@@ -1286,6 +1296,26 @@ final x = 1;
       );
       expect(taps(onLine).length, 1);
       expectFaithful(text, onLine, 'tags with caret');
+    });
+
+    test('the quote bar is exactly as wide as the marker it hides', () {
+      // A fixed-width bar nudged the paragraph sideways the moment the caret
+      // landed on a quote line, and re-wrapped it when the line ended near the
+      // column's edge. The slot has to match the advance of `> ` exactly.
+      final List<InlineSpan> spans = buildLiveSpans(
+        text: '> 引用\n',
+        base: base,
+        p: palette,
+        selection: const TextSelection.collapsed(offset: -1),
+      );
+      final WidgetSpan bar = spans.whereType<WidgetSpan>().first;
+      final SizedBox slot = bar.child as SizedBox;
+
+      final TextPainter tp = TextPainter(
+        text: TextSpan(text: '> ', style: base),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      expect(slot.width, closeTo(tp.width, 0.001));
     });
 
     test('draws wikilinks as tappable links', () {
@@ -1686,21 +1716,35 @@ final x = 1;
       expect(above('a\n\nb\n\nc\n\ntarget'), closeTo(6 * 28, 1e-6));
     });
 
+    test('a fenced block counts its own shorter rows', () {
+      // The opening fence is a 16px header row, each code row is 20px, and the
+      // closing fence collapses to nothing. The measuring pass sees body rows
+      // for all of them, so each has to be corrected to its real box.
+      expect(
+        above('```\na\nb\n```\n\n\ntarget'),
+        closeTo(16 + 2 * 20 + 2 * 28, 1e-6),
+      );
+    });
+
     test('an H1 above the line is measured as its own line box', () {
       // Six lines again, but the first is a heading: five body rows plus the
-      // heading's 38px box — not six rows of 28.
-      expect(above('# 一\n\nb\n\nc\n\ntarget'), closeTo(5 * 28 + 38, 1e-6));
+      // heading's 39px box — not six rows of 28.
+      expect(above('# 一\n\nb\n\nc\n\ntarget'), closeTo(5 * 28 + 39, 1e-6));
     });
 
     test('a heading below the line is not counted', () {
       expect(above('a\n\nb\n\nc\n\ntarget\n\n# 二'), closeTo(6 * 28, 1e-6));
     });
 
-    test('a # inside a fence is code, at body height', () {
-      // Six rows above the target, none of them a heading — the `#` sits inside
-      // the fence, and a code line is a body row. Counting it as a heading would
-      // add the 38px box.
-      expect(above('```\n# 一\n```\na\n\nb\ntarget'), closeTo(6 * 28, 1e-6));
+    test('a # inside a fence is code, not a heading', () {
+      // None of the rows above the target is a heading — the `#` sits inside
+      // the fence: header 16, one code row at 20, a collapsed closing fence,
+      // then three body rows. Counting the `#` as a heading would add the H1
+      // box on top.
+      expect(
+        above('```\n# 一\n```\na\n\nb\ntarget'),
+        closeTo(16 + 20 + 3 * 28, 1e-6),
+      );
     });
   });
 

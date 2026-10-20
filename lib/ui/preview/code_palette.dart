@@ -10,6 +10,7 @@ import 'syntax_highlighter.dart';
 @immutable
 class CodePalette {
   const CodePalette({
+    required this.plain,
     required this.keyword,
     required this.string,
     required this.number,
@@ -21,6 +22,10 @@ class CodePalette {
     required this.badge,
   });
 
+  /// The colour of everything the highlighter has no opinion about. The
+  /// reference draws code brighter than prose secondary, so plain tokens do not
+  /// disappear next to the coloured ones.
+  final Color plain;
   final Color keyword;
   final Color string;
   final Color number;
@@ -32,6 +37,7 @@ class CodePalette {
   final Color badge;
 
   static const CodePalette light = CodePalette(
+    plain: Color(0xFF5C5C66),
     keyword: Color(0xFF9C36B5),
     string: Color(0xFF3F8F4F),
     number: Color(0xFFB76B01),
@@ -44,15 +50,16 @@ class CodePalette {
   );
 
   static const CodePalette dark = CodePalette(
-    keyword: Color(0xFFC88BE8),
-    string: Color(0xFF8FCB92),
+    plain: Color(0xFFDADADA),
+    keyword: Color(0xFFE0DE71),
+    string: Color(0xFF44CF6E),
     number: Color(0xFFE0A46A),
-    comment: Color(0xFF6A7180),
+    comment: Color(0xFF686868),
     type: Color(0xFFE2C27A),
-    func: Color(0xFF6FAEF0),
-    punct: Color(0xFF8B93A1),
+    func: Color(0xFF53DFDD),
+    punct: Color(0xFFDADADA),
     meta: Color(0xFF9E90F7),
-    badge: Color(0xFF71717E),
+    badge: Color(0xFFB3B3B3),
   );
 
   Color operator [](TokenKind kind) => switch (kind) {

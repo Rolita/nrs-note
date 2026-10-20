@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -326,7 +327,10 @@ class EditorPaneState extends State<EditorPane> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             _header(p, note, notes, settings),
-            _titleRow(p, notes),
+            LayoutBuilder(
+              builder: (BuildContext context, BoxConstraints c) =>
+                  _titleRow(p, notes, _proseSide(c.maxWidth)),
+            ),
             // No formatting ribbon: every action lives in the editor's own
             // right-click menu now, and the shortcuts are unchanged.
             Expanded(
@@ -508,19 +512,14 @@ class EditorPaneState extends State<EditorPane> {
     );
   }
 
-  Widget _titleRow(AppPalette p, NotesController notes) {
-    // H1, as the live renderer draws it: body size scaled by 1.62 with the
+  Widget _titleRow(AppPalette p, NotesController notes, double side) {
+    // H1, as the live renderer draws it: body size scaled by 1.74 with the
     // same tracking and weight (see `_headingStyle` in live_markdown.dart).
     // The title field *is* the note's H1 — there is no separate file-name row.
-    final double h1Size = context.read<SettingsController>().proseSize * 1.62;
+    final double h1Size = context.read<SettingsController>().proseSize * 1.74;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        AppSpace.xl,
-        AppSpace.md,
-        AppSpace.xl,
-        AppSpace.sm,
-      ),
+      padding: EdgeInsets.fromLTRB(side, AppSpace.md, side, AppSpace.sm),
       child: TextField(
         controller: _title,
         focusNode: _titleFocus,
@@ -534,9 +533,9 @@ class EditorPaneState extends State<EditorPane> {
           fontFamily: AppFonts.prose,
           fontFamilyFallback: AppFonts.proseFallback,
           fontSize: h1Size,
-          height: snapLineHeight(h1Size, 1.5),
-          fontWeight: FontWeight.w700,
-          letterSpacing: -0.5,
+          height: snapLineHeight(h1Size, 1.3),
+          fontWeight: FontWeight.w600,
+          letterSpacing: -0.45,
           color: p.textPrimary,
         ),
         decoration: InputDecoration(
@@ -551,9 +550,9 @@ class EditorPaneState extends State<EditorPane> {
             fontFamily: AppFonts.prose,
             fontFamilyFallback: AppFonts.proseFallback,
             fontSize: h1Size,
-            height: snapLineHeight(h1Size, 1.5),
-            fontWeight: FontWeight.w700,
-            letterSpacing: -0.5,
+            height: snapLineHeight(h1Size, 1.3),
+            fontWeight: FontWeight.w600,
+            letterSpacing: -0.45,
             color: p.textTertiary.withValues(alpha: 0.5),
           ),
         ),
@@ -563,11 +562,31 @@ class EditorPaneState extends State<EditorPane> {
 
   // -------------------------------------------------------------- workspace
 
+  /// Where the prose column starts inside [availableWidth].
+  ///
+  /// The column is capped and centred, the way the design sheet draws it. The
+  /// title row and the body share this number: they are the same paragraph as
+  /// far as the eye is concerned, and a 20px step between them was the most
+  /// visible misalignment in the whole pane.
+  double _proseSide(double availableWidth) => math.max(
+    _editorPadding.left,
+    (availableWidth - AppLayout.proseMaxWidth) / 2,
+  );
+
   Widget _workspace(NotesController notes, double availableWidth) {
+    // The *field* stays full width, because the padding is what moves the text:
+    // constraining the widget instead would leave the gutter beside the column
+    // dead to clicks, and "click the paper to start typing" has to keep working
+    // everywhere.
+    final double side = _proseSide(availableWidth);
+    final EdgeInsets padding = EdgeInsets.fromLTRB(side, 28, side, 200);
+
     // Exactly the width the laid-out text gets, so the few spans that draw a
     // real widget (rules, images) can span the column without overflowing it.
-    final double contentWidth = (availableWidth - _editorPadding.horizontal)
-        .clamp(60.0, AppLayout.proseMaxWidth);
+    final double contentWidth = (availableWidth - padding.horizontal).clamp(
+      60.0,
+      AppLayout.proseMaxWidth,
+    );
     _contentWidth = contentWidth;
 
     return Actions(
@@ -577,7 +596,7 @@ class EditorPaneState extends State<EditorPane> {
         focusNode: _bodyFocus,
         scrollController: _editorScroll,
         fontSize: context.read<SettingsController>().proseSize,
-        padding: _editorPadding,
+        padding: padding,
         onChanged: notes.updateBody,
         onTopLineChanged: _onTopLine,
       ),

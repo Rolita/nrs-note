@@ -82,6 +82,12 @@ abstract final class AppFonts {
     'Consolas',
     'SF Mono',
     'Menlo',
+    // A code comment is often Chinese. Without a CJK face in the list the
+    // glyphs come from the platform's own fallback, and a comment can end up
+    // in a different face from the prose right under it.
+    'Microsoft YaHei UI',
+    'PingFang SC',
+    'Noto Sans CJK SC',
     'monospace',
   ];
 }

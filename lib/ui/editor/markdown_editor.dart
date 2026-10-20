@@ -16,6 +16,7 @@ import '../../core/utils/table_model.dart';
 import '../../core/utils/table_selection.dart';
 import 'code_block_painter.dart';
 import 'editor_context_menu.dart';
+import 'heading_rule_painter.dart';
 import 'live_markdown.dart';
 import 'selection_wash.dart';
 
@@ -2382,9 +2383,22 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                             selectionWidthStyle: ui.BoxWidthStyle.tight,
                             selectionHeightStyle:
                                 ui.BoxHeightStyle.includeLineSpacingTop,
-                            // No forced strut: headings are allowed to be taller than
-                            // body text, and a hidden marker must collapse fully.
-                            strutStyle: null,
+                            // ⛔ Not `null` or `StrutStyle.disabled`: both let
+                            // `EditableText` inherit the base style into the
+                            // strut, and the engine still takes the strut's
+                            // font metrics as a floor. At 15.5px that floor is
+                            // ~23px, so every code row was taller than the
+                            // 20px its own style asked for.
+                            //
+                            // A 1px strut with no forced height is below every
+                            // run's metrics, so each run sets its own line box:
+                            // the code's 20px, the body's 28px, a heading's
+                            // more, and a collapsed marker's none.
+                            strutStyle: const StrutStyle(
+                              fontSize: 1,
+                              height: 1,
+                              leading: 0,
+                            ),
                             decoration: InputDecoration(
                               isDense: true,
                               filled: false,
@@ -2439,6 +2453,25 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     final _CellEdit? cell = _cellEdit;
     return Stack(
       children: <Widget>[
+        // The hairline under an `## ` heading. First in the stack because it is
+        // the lowest layer that belongs to the document: below the code slab,
+        // below the wash, below the glyphs.
+        Positioned.fill(
+          child: IgnorePointer(
+            child: CustomPaint(
+              painter: HeadingRulePainter(
+                controller: widget.controller,
+                scrollController: widget.scrollController,
+                editable: _editable,
+                editorBox: () {
+                  final RenderObject? root = context.findRenderObject();
+                  return root is RenderBox && root.hasSize ? root : null;
+                },
+                color: p.rule,
+              ),
+            ),
+          ),
+        ),
         // A fenced block is one rounded slab, painted here because a
         // `TextStyle` background can only cover the run it belongs to — which
         // is what turned a block into a stripe per line. Under the wash, so a
@@ -2455,6 +2488,23 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                   return root is RenderBox && root.hasSize ? root : null;
                 },
                 fill: codeSlabFill(p),
+                labelStyle: TextStyle(
+                  fontFamily: AppFonts.ui,
+                  fontFamilyFallback: AppFonts.uiFallback,
+                  fontSize: AppText.caption,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.2,
+                  color: p.textSecondary,
+                ),
+                // The label goes away while the block shows its source; the
+                // renderer freezes the reveal for a drag, so ask for the same
+                // selection it paints with.
+                selection: () {
+                  final TextEditingController c = widget.controller;
+                  return c is MarkdownSourceController
+                      ? (c.revealAs ?? c.selection)
+                      : c.selection;
+                },
               ),
             ),
           ),

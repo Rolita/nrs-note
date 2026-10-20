@@ -425,15 +425,17 @@ List<InlineSpan> buildLiveSpans({
     final String line = lines[i];
     final bool on = active.contains(i);
     final int at = starts[i];
+    // The break belongs to the line it closes, and a fenced block's rows are
+    // shorter than prose. Leaving the newline at the body style made every code
+    // row step by the body's line height (28px) instead of the code's (20px) —
+    // the compact block the reference shows was impossible.
+    TextStyle? breakStyle;
 
     switch (kinds[i]) {
       case _Kind.fence:
         final int fenceId = fences[i];
         final _Fence? block = _blockAt(blocks, fenceId);
-        final int openLine = block == null ? -1 : block.open;
-        final String language = block == null ? '' : block.language;
         final bool revealed = on || revealedFences.contains(fenceId);
-        final bool opens = openLine == i;
         if (revealed) {
           out.add(
             TextSpan(
@@ -443,22 +445,22 @@ List<InlineSpan> buildLiveSpans({
           );
           break;
         }
-        // The fence line is the block's header: the language sits at its right
-        // end, quiet and out of the way. The slab behind the whole block is
+        // The fence line is folded away. The slab behind the whole block is
         // painted by `CodeBlockPainter` — a `TextStyle` background can only hug
         // a run, which is what turned every line into a stripe of its own
-        // width. This span only carries the label, plus the block's bottom
-        // breathing room when the fence has no label to show.
-        final String? label = opens ? _codeLabel(language) : null;
+        // width. The opening fence only reserves the card's header row; the
+        // closing one collapses to nothing and leaves the bottom air to the
+        // slab. The language label is painted with the slab, in the top-right
+        // corner, so it does not push the code down a whole line.
+        final bool opens = block != null && block.open == i;
         out.add(
-          _codeHeader(
-            p,
+          _codeFenceSpacer(
             ctx.contentWidth,
-            label: label,
-            height: label == null ? _kCodeSlabTail : row,
+            opens ? _kCodeHeaderHeight : 0,
           ),
         );
         out.add(_swallowed(line, base));
+        breakStyle = _collapsed(base);
 
       case _Kind.code:
         final _Fence? block = _blockAt(blocks, fences[i]);
@@ -469,6 +471,7 @@ List<InlineSpan> buildLiveSpans({
             ? all[index]
             : null;
         final TextStyle style = _codeLine(base, p);
+        breakStyle = style;
         out.add(
           TextSpan(
             style: style,
@@ -541,7 +544,7 @@ List<InlineSpan> buildLiveSpans({
         // otherwise the keystroke appears to have done nothing.
         final String marker = '${m.group(2)}${m.group(3)}';
         out.addAll(_indentRun(m.group(1)!, base, p));
-        out.add(_bulletDot(p, _level(m.group(1)!)));
+        out.add(_bulletDot(p));
         out.add(_swallowed(marker, base));
         out.addAll(
           _inline(
@@ -663,7 +666,7 @@ List<InlineSpan> buildLiveSpans({
             ),
           );
         } else {
-          out.add(_quoteBar(p, base));
+          out.add(_quoteBar(p, base, marker, ctx.textScaler));
           out.add(_swallowed(marker, base));
         }
         out.addAll(
@@ -827,7 +830,7 @@ List<InlineSpan> buildLiveSpans({
       out.add(
         softBreak
             ? _decoration(const SizedBox(width: 0, height: 0))
-            : TextSpan(text: '\n', style: base),
+            : TextSpan(text: '\n', style: breakStyle ?? base),
       );
     }
   }
@@ -940,6 +943,27 @@ double textHeightAbove({
     if (h.line >= target) continue;
     correction += _lineHeightOf(_headingStyle(base, p, h.level)) - row;
   }
+
+  // A fenced block's rows are shorter than a body row, and the pass above laid
+  // every one of them out at the body style. Same deal as a heading: every row
+  // above the target has to give the difference back, or a jump to a heading
+  // under a long snippet lands short. The opening fence is a 16px header row,
+  // the closing one collapses, and only the code between them is a code row —
+  // counting all of them as code rows overshoots by more than a line per block.
+  final double codeRow = _lineHeightOf(_codeLine(base, p));
+  for (final CodeBlockRange fence in codeBlockRanges(text)) {
+    final int startLine = _lineOf(text, fence.start);
+    final int endLine = _lineOf(
+      text,
+      math.min(fence.end, math.max(0, text.length - 1)),
+    );
+    for (int i = startLine; i <= endLine && i < target; i++) {
+      final double actual = i == startLine
+          ? _kCodeHeaderHeight
+          : (fence.closed && i == endLine ? 0 : codeRow);
+      correction += actual - row;
+    }
+  }
   return measured + correction;
 }
 
@@ -1041,10 +1065,10 @@ String _fenceLanguage(String info) {
   return normaliseLanguage(m?.group(0));
 }
 
-/// The language as the block's header shows it: `dart` → `Dart`.
+/// The language as the block's card shows it: `dart` → `Dart`.
 ///
 /// An unnamed fence gets **no** label: a `text` badge on every plain block is
-/// noise, not information, and the header row collapses to a few pixels.
+/// noise, not information.
 String? _codeLabel(String language) {
   if (language.isEmpty) return null;
   return language[0].toUpperCase() + language.substring(1);
@@ -3375,34 +3399,44 @@ TextStyle _headingStyle(TextStyle base, AppPalette p, int level) {
   // place, never spliced with spacer spans, or the tree would stop matching the
   // text. Airy leading therefore buys the space above and below that a margin
   // would have given, and it still snaps to a whole-pixel advance.
+  // The ratios are read off the design sheet at a 15.5px body: H1 27, H2 19,
+  // H3 16 — i.e. 1.74 / 1.23 / 1.03. They used to be 1.62 / 1.36 / 1.18, which
+  // made the body's H2 nearly as tall as the note title and left H3 within a
+  // pixel of it, so a note read as three shades of the same size.
   final (double scale, double height, double tracking) = switch (level) {
-    1 => (1.62, 1.5, -0.5),
-    2 => (1.36, 1.55, -0.4),
-    3 => (1.18, 1.6, -0.25),
-    4 => (1.07, 1.65, -0.1),
-    5 => (0.99, 1.7, 0),
-    _ => (0.93, 1.75, 0.1),
+    1 => (1.74, 1.45, -0.45),
+    2 => (1.23, 1.75, -0.3),
+    3 => (1.03, 1.9, -0.15),
+    4 => (0.99, 1.9, -0.1),
+    5 => (0.95, 1.95, 0),
+    _ => (0.91, 2.0, 0.1),
   };
   return base.copyWith(
     fontSize: s * scale,
     height: snapLineHeight(s * scale, height),
     letterSpacing: tracking,
-    fontWeight: level <= 2 ? FontWeight.w700 : FontWeight.w600,
+    // w600, not w700: at 27px the extra weight reads as a browser's `<h1>`
+    // default rather than as the design sheet's semibold.
+    fontWeight: FontWeight.w600,
     color: level == 6 ? p.textTertiary : p.textPrimary,
   );
 }
 
 TextStyle _codeLine(TextStyle base, AppPalette p) {
-  final double s = (base.fontSize ?? 15) * 0.94;
+  // 0.84 of the body size: the design sheet's `pre code` is 12.5px against a
+  // 15px paragraph. Code used to be 0.94, which made a fenced block read as
+  // loudly as the prose around it.
+  final double s = (base.fontSize ?? 15) * 0.84;
   return base.copyWith(
     fontFamily: AppFonts.mono,
     fontFamilyFallback: AppFonts.monoFallback,
     fontSize: s,
-    // Same row height as body text, so every row of a fenced block lines up.
-    // No `backgroundColor`: the block's fill is one painted slab behind the
-    // field, not a stripe per line.
-    height: snapLineHeight(s, base.height ?? 1.78),
-    color: p.textSecondary,
+    // 1.5 of air, the reference's `pre code { line-height: 1.5 }`. A fenced
+    // block is the one place where rows are *not* on the body's grid: code is
+    // read line by line, and body leading (1.78) made a snippet look
+    // double-spaced next to the reference.
+    height: snapLineHeight(s, 1.5),
+    color: CodePalette.forDark(p.isDark).plain,
     letterSpacing: 0,
   );
 }
@@ -3422,7 +3456,9 @@ TextStyle _inlineCode(TextStyle base, AppPalette p, [Color? fill]) =>
 /// The code run while it is being edited: same face and size as the chip, but
 /// no fill — the backticks and the plain background are what say "source".
 TextStyle _inlineCodeSource(TextStyle base, AppPalette p) {
-  final double s = (base.fontSize ?? 15) * 0.92;
+  // Same ratio as a fenced block — the sheet uses one size for both, and a
+  // chip that is bigger than the code block it sits next to looks like a bug.
+  final double s = (base.fontSize ?? 15) * 0.84;
   return base.copyWith(
     fontFamily: AppFonts.mono,
     fontFamilyFallback: AppFonts.monoFallback,
@@ -3524,92 +3560,111 @@ TextStyle _invisible(TextStyle base) =>
 
 // ------------------------------------------------------------- inline widgets
 
-WidgetSpan _bulletDot(AppPalette p, int level) {
+/// The dot in front of a bullet item.
+///
+/// One solid disc at every depth. It used to cycle ● / ○ / ▪ by nesting level,
+/// which is the browser default rather than a decision: three shapes meant three
+/// things to learn, and the hollow ring at level 2 read as a disabled control.
+/// Depth is already said by the indent, and one glyph says it once.
+WidgetSpan _bulletDot(AppPalette p) {
   final Color color = p.textTertiary.withValues(alpha: 0.9);
-  final int shape = level % 3;
-  final Widget dot = switch (shape) {
-    0 => Container(
-      width: 5,
-      height: 5,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-    ),
-    1 => Container(
-      width: 5.5,
-      height: 5.5,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        border: Border.all(color: color, width: 1.3),
-      ),
-    ),
-    _ => Container(
-      width: 4.5,
-      height: 4.5,
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: const BorderRadius.all(Radius.circular(1)),
-      ),
-    ),
-  };
   return _decoration(
-    Padding(padding: const EdgeInsets.only(left: 2, right: 9), child: dot),
+    Padding(
+      padding: const EdgeInsets.only(left: 2, right: 9),
+      child: Container(
+        width: 5,
+        height: 5,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      ),
+    ),
   );
 }
 
 /// The vertical rule on the left of a quote.
 ///
 /// It is exactly one row tall so consecutive quote lines butt up against each
-/// other and read as a single continuous bar rather than a dashed one.
-WidgetSpan _quoteBar(AppPalette p, TextStyle base) => _decoration(
-  Padding(
-    padding: const EdgeInsets.only(left: 2, right: 10),
-    child: Container(
-      width: 2,
-      height: _lineHeightOf(base),
-      color: p.accent.withValues(alpha: 0.7),
+/// other and read as a single continuous bar rather than a dashed one, and it is
+/// exactly as wide as the `> ` it hides — see [_markerAdvance].
+WidgetSpan _quoteBar(
+  AppPalette p,
+  TextStyle base,
+  String marker,
+  TextScaler scaler,
+) {
+  final double row = _lineHeightOf(base);
+  return _decoration(
+    SizedBox(
+      width: _markerAdvance(marker, base, scaler),
+      height: row,
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Container(
+          width: 2,
+          height: row,
+          margin: const EdgeInsets.only(left: 2),
+          color: p.accent,
+        ),
+      ),
     ),
-  ),
-);
+  );
+}
+
+/// Advance width of a marker, measured the way the paragraph will lay it out.
+///
+/// A decoration that stands in for `> ` has to occupy exactly as much room as
+/// the characters it hides. The bar used to be a fixed 14px while `> ` is as
+/// wide as the font makes it, so putting the caret on a quote line nudged the
+/// whole paragraph sideways under the pointer — and re-wrapped the line whenever
+/// it happened to end near the column's edge. That is the jitter you feel when
+/// you click into a quote.
+double _markerAdvance(String marker, TextStyle style, TextScaler scaler) {
+  final String key =
+      '${style.fontFamily}|${style.fontSize}|${style.letterSpacing}|'
+      '${scaler.scale(1)}|$marker';
+  final double? cached = _kMarkerAdvances[key];
+  if (cached != null) return cached;
+  final TextPainter tp = TextPainter(
+    text: TextSpan(text: marker, style: style),
+    textDirection: TextDirection.ltr,
+    textScaler: scaler,
+  )..layout();
+  final double width = tp.width;
+  tp.dispose();
+  // A note has a handful of distinct markers; the bound is only here so a
+  // pathological document cannot grow the map without end.
+  if (_kMarkerAdvances.length > 128) _kMarkerAdvances.clear();
+  _kMarkerAdvances[key] = width;
+  return width;
+}
+
+final Map<String, double> _kMarkerAdvances = <String, double>{};
 
 /// The sunken slab that keeps a fenced block reading as a single card is
 /// painted behind the field (see `CodeBlockPainter`); this is only the fence
-/// line's own row — the language at its right end, or the block's bottom
-/// breathing room when there is no language to name.
-WidgetSpan _codeHeader(
-  AppPalette p,
-  double width, {
-  String? label,
-  double height = 18,
-}) => _decoration(
-  Container(
+/// line's own row — an empty spacer that reserves the card's header, or nothing
+/// at all for the closing fence.
+WidgetSpan _codeFenceSpacer(double width, double height) => _decoration(
+  SizedBox(
     // A few pixels short of the column: the widget plus whatever it swapped out
     // may never be wider than the line, or the paragraph wraps.
     width: math.max(24, width - 8),
     height: height,
-    alignment: Alignment.centerRight,
-    padding: const EdgeInsets.only(right: 10),
-    child: label == null
-        ? null
-        : Text(
-            label,
-            style: TextStyle(
-              fontFamily: AppFonts.mono,
-              fontFamilyFallback: AppFonts.monoFallback,
-              fontSize: AppText.caption,
-              letterSpacing: 0.3,
-              fontWeight: FontWeight.w500,
-              color: p.textTertiary,
-            ),
-          ),
   ),
 );
 
-/// Air inside the bottom of a code slab, carried by the closing fence line —
-/// which has nothing to show and is only a few pixels tall.
-const double _kCodeSlabTail = 8;
+/// Height of the card's header row: the band above the first line of code that
+/// carries the language label. 16px — not a prose row — is what keeps the card
+/// compact; the label itself is painted by `CodeBlockPainter`.
+const double _kCodeHeaderHeight = 16;
 
 /// One fenced code block's source range, fence lines included.
 class CodeBlockRange {
-  const CodeBlockRange({required this.start, required this.end});
+  const CodeBlockRange({
+    required this.start,
+    required this.end,
+    this.label,
+    this.closed = true,
+  });
 
   /// Offset of the opening fence's first character.
   final int start;
@@ -3617,6 +3672,14 @@ class CodeBlockRange {
   /// Offset just past the closing fence's last character (the end of the note
   /// for a block that was never closed).
   final int end;
+
+  /// The language the card names in its top-right corner, or `null` when the
+  /// fence carried no info string.
+  final String? label;
+
+  /// False for a fence that was never closed. The block then has no closing
+  /// row, which is the one thing a line-height measure has to know.
+  final bool closed;
 }
 
 /// The source ranges of every fenced block, scanned with the same rule the
@@ -3628,19 +3691,38 @@ List<CodeBlockRange> codeBlockRanges(String text) {
   final List<String> lines = text.split('\n');
   int offset = 0;
   int open = -1;
+  String? label;
   for (int i = 0; i < lines.length; i++) {
     final String line = lines[i];
-    if (_fenceRe.hasMatch(line)) {
+    final Match? f = _fenceRe.firstMatch(line);
+    if (f != null) {
       if (open < 0) {
         open = offset;
+        label = _codeLabel(_fenceLanguage(f.group(3) ?? ''));
       } else {
-        out.add(CodeBlockRange(start: open, end: offset + line.length));
+        out.add(
+          CodeBlockRange(
+            start: open,
+            end: offset + line.length,
+            label: label,
+          ),
+        );
         open = -1;
+        label = null;
       }
     }
     offset += line.length + 1;
   }
-  if (open >= 0) out.add(CodeBlockRange(start: open, end: text.length));
+  if (open >= 0) {
+    out.add(
+      CodeBlockRange(
+        start: open,
+        end: text.length,
+        label: label,
+        closed: false,
+      ),
+    );
+  }
   return out;
 }
 
@@ -3704,31 +3786,68 @@ WidgetSpan _tagChip(
 ) {
   final double size = (body.fontSize ?? 15).clamp(11.0, 15.0);
   return _decoration(
-    MouseRegion(
+    // The tappable box stays the outermost widget: the pill's hover wash lives
+    // in [_TagPill] so the document's own tap detection is unchanged.
+    GestureDetector(
+      onTap: () => onTap(tag),
+      child: _TagPill(tag: tag, size: size, palette: p),
+    ),
+  );
+}
+
+/// A `#tag` pill.
+///
+/// Stateful only for the hover wash: in the design sheet a tag inverts to a
+/// solid accent fill under the pointer, which is the one place in the document
+/// where a *word* is also a button. Without it the pill looked like decoration
+/// and nobody clicked it.
+class _TagPill extends StatefulWidget {
+  const _TagPill({
+    required this.tag,
+    required this.size,
+    required this.palette,
+  });
+
+  final String tag;
+  final double size;
+  final AppPalette palette;
+
+  @override
+  State<_TagPill> createState() => _TagPillState();
+}
+
+class _TagPillState extends State<_TagPill> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = widget.palette;
+    return MouseRegion(
       cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: () => onTap(tag),
-        child: Container(
-          margin: const EdgeInsets.symmetric(horizontal: 2),
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-          decoration: BoxDecoration(
-            color: p.accentSoft,
-            borderRadius: BorderRadius.circular(AppRadius.xs),
-            border: Border.all(color: p.accent.withValues(alpha: 0.25)),
-          ),
-          child: Text(
-            '#$tag',
-            style: TextStyle(
-              fontSize: size * 0.88,
-              height: 1.25,
-              fontWeight: FontWeight.w600,
-              color: p.accent,
-            ),
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: AnimatedContainer(
+        duration: AppMotion.fast,
+        margin: const EdgeInsets.symmetric(horizontal: 2),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+        decoration: BoxDecoration(
+          // No border: at 12.5px a hairline around a pill is the difference
+          // between "a tag" and "a form field".
+          color: _hovered ? p.accent : p.accentSoft,
+          borderRadius: AppRadius.smAll,
+        ),
+        child: Text(
+          '#${widget.tag}',
+          style: TextStyle(
+            fontSize: widget.size * 0.88,
+            height: 1.25,
+            fontWeight: FontWeight.w600,
+            color: _hovered ? p.onAccent : p.accent,
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 WidgetSpan _wikiChip(

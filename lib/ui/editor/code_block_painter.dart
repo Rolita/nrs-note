@@ -4,28 +4,52 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../core/theme/app_palette.dart';
+import '../../core/theme/app_tokens.dart';
 import 'live_markdown.dart';
 
 /// How far the slab bleeds past the text column on each side.
 ///
 /// The code cannot be moved — it is a `TextField`, and its glyphs start on the
 /// column's left edge — so the slab is drawn *wider* than the column instead.
-/// The bleed is what reads as the block's inner padding.
-const double kCodeSlabBleed = 14;
+/// The block's inner padding, and the reason it has to be a bleed.
+///
+/// The sheet gets its `pre { padding: 14px 16px }` from CSS. Here the code *is*
+/// the paragraph: its glyphs start on the column's left edge and a `TextField`
+/// has no way to indent one line. So the only way to put air between the code
+/// and the block's edge is to draw the block 16px wider than the column on each
+/// side. Zero bleed (flush edges, code glued to the border) is the alternative,
+/// and it is worse — the block stops reading as a card at all.
+const double kCodeSlabBleed = 16;
 
 /// Air above the header row and below the last line of code.
-const double kCodeSlabTopPad = 6;
-const double kCodeSlabBottomPad = 10;
+///
+/// The header itself is a real (empty) line — [kCodeHeaderHeight] — so the
+/// card only needs a couple of pixels above it. The bottom has no line of its
+/// own: the closing fence is collapsed, and all of the breathing room below the
+/// last code row lives here.
+const double kCodeSlabTopPad = 1;
+const double kCodeSlabBottomPad = 12;
 
-const double kCodeSlabRadius = 8;
+const double kCodeSlabRadius = AppRadius.sm;
 
-/// The block's fill: a step **up** from the paper in the dark theme (where the
-/// card reads as lifted) and a step **down** in the light one (where a lift
-/// would be white on white).
+/// The language label, laid into the card's top-right corner the way the
+/// reference does: inside the padding, not on a header row that pushes the code
+/// down. Measured from the slab's own edge.
+const double kCodeSlabLabelTop = 10;
+const double kCodeSlabLabelRight = 13;
+
+/// The block's fill: the step that makes the card read as its own surface.
+///
+/// The reference draws the boundary with the fill alone and no border, and in
+/// dark that step goes *up* — `surfaceRaised` is what separates the card from
+/// the page. In light nothing sits above the page but pure white, a
+/// four-level step that vanishes on screen; the step has to go *down* instead,
+/// into the same well the inline chip sits in.
 Color codeSlabFill(AppPalette p) =>
     p.isDark ? p.surfaceRaised : p.surfaceSunken;
 
-/// Paints one rounded slab behind every fenced code block.
+/// Paints one rounded slab behind every fenced code block, plus its language
+/// label.
 ///
 /// A `TextStyle` background can only cover the run it belongs to, so a fenced
 /// block used to come out as one stripe per line — indented lines narrower than
@@ -34,6 +58,11 @@ Color codeSlabFill(AppPalette p) =>
 /// coordinates the selection wash uses, and asks the field for the boxes of the
 /// block's own source range so the slab lands on the rows that are really
 /// painted there.
+///
+/// The label lives here for the same reason. A `WidgetSpan` label would be a
+/// line of the paragraph, and that line pushed the first code row a full header
+/// below the card's edge. Painted, it can sit in the top-right corner without
+/// costing a line, and it can follow the slab when the block scrolls.
 class CodeBlockPainter extends CustomPainter {
   CodeBlockPainter({
     required this.controller,
@@ -41,6 +70,8 @@ class CodeBlockPainter extends CustomPainter {
     required this.editable,
     required this.editorBox,
     required this.fill,
+    required this.labelStyle,
+    required this.selection,
   }) : super(
          repaint: Listenable.merge(<Listenable>[controller, scrollController]),
        );
@@ -55,6 +86,14 @@ class CodeBlockPainter extends CustomPainter {
 
   final Color fill;
 
+  /// The type on the right of the card's header — `Dart`, `Python`.
+  final TextStyle labelStyle;
+
+  /// The selection the renderer is painting for, so the label disappears while
+  /// the block is knocked back to its source. `revealAs` freezes that selection
+  /// for a drag, which is why this is a callback rather than [controller.selection].
+  final TextSelection? Function() selection;
+
   @override
   void paint(Canvas canvas, Size size) {
     final RenderEditable? field = editable();
@@ -64,6 +103,9 @@ class CodeBlockPainter extends CustomPainter {
     final String text = controller.text;
     final List<CodeBlockRange> ranges = codeBlockRanges(text);
     if (ranges.isEmpty) return;
+
+    final TextSelection? sel = selection();
+    final bool hasSelection = sel != null && sel.isValid && sel.start >= 0;
 
     final Rect bounds = Offset.zero & size;
     final Paint paint = Paint()..color = fill;
@@ -93,10 +135,34 @@ class CodeBlockPainter extends CustomPainter {
         box.globalToLocal(field.localToGlobal(local.bottomRight)),
       );
       if (slab.isEmpty) continue;
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(slab, const Radius.circular(kCodeSlabRadius)),
-        paint,
+      final RRect rounded = RRect.fromRectAndRadius(
+        slab,
+        const Radius.circular(kCodeSlabRadius),
       );
+      canvas.drawRRect(rounded, paint);
+
+      final String? label = range.label;
+      if (label == null) continue;
+      // When the block is open for editing the fence line shows its source and
+      // the label has no meaning; the paragraph is already painting `dart`
+      // there. Same rule the header used to follow.
+      if (hasSelection &&
+          sel.start <= range.end &&
+          sel.end >= range.start) {
+        continue;
+      }
+      final TextPainter tp = TextPainter(
+        text: TextSpan(text: label, style: labelStyle),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(
+        canvas,
+        Offset(
+          slab.right - kCodeSlabLabelRight - tp.width,
+          slab.top + kCodeSlabLabelTop,
+        ),
+      );
+      tp.dispose();
     }
     canvas.restore();
   }
