@@ -54,7 +54,7 @@ class _SettingsDialog extends StatelessWidget {
                   ),
                   const Spacer(),
                   AppIconButton(
-                    icon: Icons.close_rounded,
+                    icon: Icons.close,
                     tooltip: '关闭',
                     onPressed: () => Navigator.of(context).pop(),
                   ),
@@ -224,12 +224,12 @@ class _SettingsDialog extends StatelessWidget {
                                   if (notes.supportsNativeFiles)
                                     AppTextButton(
                                       label: '打开文件夹',
-                                      icon: Icons.open_in_new_rounded,
+                                      icon: Icons.open_in_new_outlined,
                                       onPressed: notes.revealVault,
                                     ),
                                   AppTextButton(
                                     label: '重新载入',
-                                    icon: Icons.refresh_rounded,
+                                    icon: Icons.refresh_outlined,
                                     onPressed: () => notes.refresh(),
                                   ),
                                 ],
@@ -554,7 +554,7 @@ class _Dropdown<T> extends StatelessWidget {
           borderRadius: AppRadius.mdAll,
           dropdownColor: p.surfaceRaised,
           icon: Icon(
-            Icons.expand_more_rounded,
+            Icons.expand_more,
             size: 16,
             color: p.textTertiary,
           ),

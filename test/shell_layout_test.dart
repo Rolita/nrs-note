@@ -165,8 +165,9 @@ void main() {
     expect(find.byType(NoteListPanel), findsOneWidget);
     expect(find.byType(OutlinePanel), findsOneWidget);
 
-    // The file toolbar starts immediately: no "文件" heading above it.
-    expect(find.text('文件'), findsNothing);
+    // The file panel names itself, and its five actions share that 32px header
+    // rather than taking a second row of their own.
+    expect(find.text('文件'), findsOneWidget);
     for (final String tooltip in <String>[
       '新建笔记  ·  Ctrl+N',
       '新建文件夹',

@@ -119,10 +119,38 @@ abstract final class AppText {
   static const double mono = 11.5;
 }
 
+/// Icon sizes.
+///
+/// Four rungs, and only four. Before this existed the chrome used nine
+/// (11 / 12 / 13 / 14 / 14.5 / 15 / 16 / 16.5 / 17) for what were really three
+/// jobs, which is why two adjacent panels could carry icons of visibly
+/// different weight.
+abstract final class AppIconSize {
+  /// Inline: inside a chip, a row's trailing affordance.
+  static const double xs = 14;
+
+  /// A list row, a toolbar button.
+  static const double sm = 16;
+
+  /// Navigation: the rail, a panel header.
+  static const double md = 18;
+
+  /// The title bar's window controls.
+  static const double lg = 20;
+}
+
 /// Sizes used by the four-region shell.
+///
+/// Every rung is a multiple of four — the shell's one grid unit — so two
+/// regions can be stacked and still agree on where their edges fall. The only
+/// exceptions are the 1px hairlines and the optical nudges inside a single
+/// glyph.
 abstract final class AppLayout {
   /// Far-left icon rail: buttons only.
-  static const double railWidth = 48;
+  ///
+  /// 44 = 4 + 32 + 4 + 4: a 32px button with room for a hover square and the
+  /// 2px selection bar that sits against its left edge.
+  static const double railWidth = 44;
 
   /// The switchable file / search / tags sidebar.
   static const double listMinWidth = 236;
@@ -143,7 +171,10 @@ abstract final class AppLayout {
   /// the first tab — starts one strip *after* the sidebar ends.
   static const double resizeHandleWidth = 5;
 
-  static const double titleBarHeight = 36;
+  /// The app's own caption. Tall enough for a 32px control plus 4px of air on
+  /// each side, which is what makes the tabs read as sitting *in* the bar
+  /// rather than being squeezed by it.
+  static const double titleBarHeight = 40;
 
   /// Below this width the shell degrades gracefully to a single pane.
   static const double compactBreakpoint = 900;
@@ -158,23 +189,27 @@ abstract final class AppLayout {
   // of five is worth more than the breathing room those three rows would need.
 
   /// One row of the file tree, the tag list, or a search result.
-  static const double rowHeight = 26;
+  ///
+  /// 28 rather than 26: a 16px icon needs 6px above and below before the row
+  /// stops looking like it is swallowing the glyph, and 26 is not a multiple of
+  /// the shell's 4px unit, so it could never line up with the panels beside it.
+  static const double rowHeight = 28;
 
   /// One nesting level inside the file tree.
-  static const double rowIndent = 12;
+  static const double rowIndent = 14;
 
   /// The icon strip above a sidebar panel (new note, new folder, search…).
-  static const double toolbarHeight = 38;
+  static const double toolbarHeight = 40;
 
   /// The `标签 · 12` header a panel carries instead of a toolbar.
   static const double panelHeaderHeight = 32;
 
   /// The search field, and every input that has to match its weight.
-  static const double fieldHeight = 30;
+  static const double fieldHeight = 32;
 
   /// The thin status line under a panel.
-  static const double footerHeight = 26;
+  static const double footerHeight = 28;
 
   /// Square icon button, and the height of a text button beside it.
-  static const double buttonHeight = 28;
+  static const double buttonHeight = 30;
 }

@@ -89,7 +89,7 @@ void main() {
   String tickedRow(WidgetTester tester) {
     final Finder row = find
         .ancestor(
-          of: find.byIcon(Icons.check_rounded),
+          of: find.byIcon(Icons.check),
           matching: find.byType(Row),
         )
         .first;

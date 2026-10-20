@@ -128,7 +128,7 @@ class NoteListPanelState extends State<NoteListPanel> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           if (widget.view == SidebarView.files) ...<Widget>[
-            _fileToolbar(p, notes, settings),
+            _fileHeader(p, notes, settings),
             Divider(height: 1, color: p.outlineSoft),
             Expanded(
               child: VaultTree(
@@ -168,15 +168,7 @@ class NoteListPanelState extends State<NoteListPanel> {
               ),
             Expanded(child: _searchResults(p, notes)),
           ] else ...<Widget>[
-            _panelHeader(
-              p,
-              '标签',
-              notes,
-              trailing: Text(
-                '${notes.tags.length}',
-                style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
-              ),
-            ),
+            _panelHeader(p, '标签', notes, count: '${notes.tags.length}'),
             Divider(height: 1, color: p.outlineSoft),
             Expanded(child: _tags(p, notes)),
           ],
@@ -193,54 +185,65 @@ class NoteListPanelState extends State<NoteListPanel> {
 
   // ----------------------------------------------------------------- toolbar
 
-  Widget _fileToolbar(
+  /// The file view's header.
+  ///
+  /// It used to be a 40px strip of five bare icons with no label above it —
+  /// five shapes the eye had to decode every time it entered the panel. Folding
+  /// them into the 32px header the other two views already use gives the panel
+  /// a name, a count, and a place for its actions without spending a second
+  /// row on chrome.
+  Widget _fileHeader(
     AppPalette p,
     NotesController notes,
     SettingsController settings,
   ) {
-    return SizedBox(
-      height: AppLayout.toolbarHeight,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: AppSpace.xs),
-        child: Row(
-          children: <Widget>[
-            AppIconButton(
-              icon: Icons.note_add_outlined,
-              tooltip: '新建笔记',
-              shortcut: 'Ctrl+N',
-              onPressed: widget.onCreateNote,
-            ),
-            AppIconButton(
-              icon: Icons.create_new_folder_outlined,
-              tooltip: '新建文件夹',
-              onPressed: _createFolder,
-            ),
-            AppIconButton(
-              icon: Icons.search_rounded,
-              tooltip: '搜索笔记',
-              onPressed: _openSearch,
-            ),
-            _SortButton(settings: settings, notes: notes),
-            // One button, two faces: it always offers the opposite of what the
-            // tree is showing right now.
-            AppIconButton(
-              icon: _allExpanded
-                  ? Icons.unfold_less_rounded
-                  : Icons.unfold_more_rounded,
-              tooltip: _allExpanded ? '全部收起' : '全部展开',
-              onPressed: () {
-                final VaultTreeState? tree = _treeKey.currentState;
-                if (tree == null) return;
-                if (_allExpanded) {
-                  tree.collapseAll();
-                } else {
-                  tree.expandAll();
-                }
-              },
-            ),
-            const Spacer(),
-          ],
-        ),
+    Widget action(
+      IconData icon,
+      String tooltip,
+      VoidCallback? onPressed, {
+      String? shortcut,
+    }) => AppIconButton(
+      icon: icon,
+      tooltip: tooltip,
+      shortcut: shortcut,
+      size: 24,
+      iconSize: AppIconSize.sm - 2,
+      onPressed: onPressed,
+    );
+
+    return _panelHeader(
+      p,
+      '文件',
+      notes,
+      count: '${notes.allNotes.length}',
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          action(
+            Icons.note_add_outlined,
+            '新建笔记',
+            widget.onCreateNote,
+            shortcut: 'Ctrl+N',
+          ),
+          action(Icons.create_new_folder_outlined, '新建文件夹', _createFolder),
+          action(Icons.search_outlined, '搜索笔记', _openSearch),
+          _SortButton(settings: settings, notes: notes),
+          // One button, two faces: it always offers the opposite of what the
+          // tree is showing right now.
+          action(
+            _allExpanded ? Icons.unfold_less_outlined : Icons.unfold_more_outlined,
+            _allExpanded ? '全部收起' : '全部展开',
+            () {
+              final VaultTreeState? tree = _treeKey.currentState;
+              if (tree == null) return;
+              if (_allExpanded) {
+                tree.collapseAll();
+              } else {
+                tree.expandAll();
+              }
+            },
+          ),
+        ],
       ),
     );
   }
@@ -249,6 +252,7 @@ class NoteListPanelState extends State<NoteListPanel> {
     AppPalette p,
     String label,
     NotesController notes, {
+    String? count,
     Widget? trailing,
   }) {
     return SizedBox(
@@ -257,14 +261,32 @@ class NoteListPanelState extends State<NoteListPanel> {
         padding: const EdgeInsets.fromLTRB(AppSpace.md, 0, AppSpace.xs, 0),
         child: Row(
           children: <Widget>[
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: p.textSecondary,
+            // Flexible, because the header's actions are fixed-width and must
+            // win: at the panel's minimum width the label gives up its last
+            // glyph rather than pushing the buttons past the edge.
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: AppText.caption,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.4,
+                  color: p.textTertiary,
+                ),
               ),
             ),
+            if (count != null) ...<Widget>[
+              const SizedBox(width: AppSpace.xs + 2),
+              Text(
+                count,
+                style: TextStyle(
+                  fontSize: AppText.caption,
+                  color: p.textTertiary,
+                ),
+              ),
+            ],
             const Spacer(),
             ?trailing,
             if (notes.isFiltered) ...<Widget>[
@@ -288,19 +310,32 @@ class NoteListPanelState extends State<NoteListPanel> {
     final bool focused = _searchFocus.hasFocus;
     return Padding(
       padding: const EdgeInsets.all(AppSpace.sm),
-      child: Container(
+      child: AnimatedContainer(
+        duration: AppMotion.fast,
         height: AppLayout.fieldHeight,
         decoration: BoxDecoration(
-          color: p.surfaceRaised,
-          borderRadius: AppRadius.smAll,
+          // Three signals on focus, because one is not enough to find: the
+          // fill warms to the accent wash, the border goes full accent, and a
+          // 2px ring lifts the field off the panel. A colour change alone was
+          // invisible against the sidebar's own grey.
+          color: focused ? p.accentSoft : p.surfaceRaised,
+          borderRadius: AppRadius.mdAll,
           border: Border.all(color: focused ? p.accent : p.outline),
+          boxShadow: focused
+              ? <BoxShadow>[
+                  BoxShadow(
+                    color: p.accent.withValues(alpha: 0.18),
+                    spreadRadius: 2,
+                  ),
+                ]
+              : null,
         ),
         child: Row(
           children: <Widget>[
             const SizedBox(width: AppSpace.sm),
             Icon(
-              Icons.search_rounded,
-              size: 14.5,
+              Icons.search_outlined,
+              size: AppIconSize.sm,
               color: focused ? p.accent : p.textTertiary,
             ),
             const SizedBox(width: AppSpace.sm),
@@ -330,10 +365,10 @@ class NoteListPanelState extends State<NoteListPanel> {
             ),
             if (notes.query.isNotEmpty)
               AppIconButton(
-                icon: Icons.close_rounded,
+                icon: Icons.close,
                 tooltip: '清除',
                 size: 24,
-                iconSize: 13,
+                iconSize: AppIconSize.xs,
                 onPressed: () {
                   _search.clear();
                   notes.setQuery('');
@@ -359,7 +394,7 @@ class NoteListPanelState extends State<NoteListPanel> {
     if (!notes.isFiltered) {
       return const EmptyState(
         compact: true,
-        icon: Icons.search_rounded,
+        icon: Icons.search_outlined,
         title: '搜索笔记',
         message: '输入关键词 —— 标题、正文和 #标签 都会被搜到。',
       );
@@ -370,7 +405,7 @@ class NoteListPanelState extends State<NoteListPanel> {
       if (notes.allNotes.isEmpty) {
         return EmptyState(
           compact: true,
-          icon: Icons.edit_note_rounded,
+          icon: Icons.edit_note_outlined,
           title: '笔记库还是空的',
           message: '写下第一个念头 —— 它会立刻变成一个可以被任何编辑器打开的 .md 文件。',
         );
@@ -381,7 +416,7 @@ class NoteListPanelState extends State<NoteListPanel> {
         padding: const EdgeInsets.fromLTRB(AppSpace.md + 2, 2, AppSpace.md, 0),
         child: Text(
           '未找到匹配结果。',
-          style: TextStyle(fontSize: 11.5, color: p.textTertiary),
+          style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
         ),
       );
     }
@@ -451,6 +486,9 @@ class NoteListPanelState extends State<NoteListPanel> {
                     ? p.accentSoft
                     : (hovered ? p.surfaceRaised : Colors.transparent),
                 borderRadius: AppRadius.smAll,
+                border: selected
+                    ? Border(left: BorderSide(color: p.accent, width: 2))
+                    : null,
               ),
               child: Row(
                 children: <Widget>[
@@ -620,8 +658,8 @@ class _SearchResultGroup extends StatelessWidget {
                     turns: collapsed ? -0.25 : 0,
                     duration: AppMotion.fast,
                     child: Icon(
-                      Icons.keyboard_arrow_down_rounded,
-                      size: 15,
+                      Icons.expand_more,
+                      size: AppIconSize.sm,
                       color: hovered ? p.textSecondary : p.textTertiary,
                     ),
                   ),
@@ -634,7 +672,7 @@ class _SearchResultGroup extends StatelessWidget {
                       style: TextStyle(
                         fontSize: 12.5,
                         height: 1.2,
-                        fontWeight: FontWeight.w500,
+                        fontWeight: FontWeight.w600,
                         // Never the accent: amber is for the thing being
                         // searched, not for the file it happens to be in.
                         color: selected || hovered
@@ -799,7 +837,7 @@ class _SortButton extends StatelessWidget {
           SizedBox(
             width: 22,
             child: active
-                ? Icon(Icons.check_rounded, size: 15, color: p.accent)
+                ? Icon(Icons.check, size: 15, color: p.accent)
                 : null,
           ),
           Text(
@@ -839,8 +877,8 @@ class _SortTriggerState extends State<_SortTrigger> {
       onExit: (_) => setState(() => _hovered = false),
       child: AnimatedContainer(
         duration: AppMotion.fast,
-        height: widget.showLabel ? 22 : 30,
-        width: widget.showLabel ? null : 30,
+        height: widget.showLabel ? 22 : 24,
+        width: widget.showLabel ? null : 24,
         padding: widget.showLabel
             ? const EdgeInsets.symmetric(horizontal: 5)
             : null,
@@ -861,13 +899,13 @@ class _SortTriggerState extends State<_SortTrigger> {
                   ),
                   const SizedBox(width: 3),
                   Icon(
-                    Icons.unfold_more_rounded,
-                    size: 13,
+                    Icons.unfold_more_outlined,
+                    size: AppIconSize.xs,
                     color: _hovered ? p.textSecondary : p.textTertiary,
                   ),
                 ],
               )
-            : Icon(Icons.sort_rounded, size: 16.5, color: foreground),
+            : Icon(Icons.sort_outlined, size: AppIconSize.sm - 2, color: foreground),
       ),
     );
   }

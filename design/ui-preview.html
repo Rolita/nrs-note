@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NRS · UI 重设计预览</title>
+<style>
+/* ============================================================
+   设计令牌 —— 与 lib/core/theme/app_palette.dart + app_tokens.dart
+   一一对应，改 Flutter 时照抄这里的数值。
+   ============================================================ */
+:root[data-theme="dark"]{
+  --canvas:#17171A; --sidebar:#1C1C1F; --surface:#202024;
+  --raised:#27272C; --sunken:#141416;
+  --outline:#31313A; --outline-soft:#24242A; --rule:#3A3A44;
+  --t1:#E8E8ED; --t2:#9A9AA6; --t3:#6B6B78;
+  --accent:#E0A44A; --accent-hover:#EDB463; --accent-soft:#352C1A; --on-accent:#241A08;
+  --success:#5FC79A; --success-soft:#16281F;
+  --danger:#E4796F; --danger-soft:#2E1C1A;
+  --selection:#4DE0A44A;
+  --shadow:0 12px 32px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.3);
+  --hover-wash:rgba(255,255,255,.045);
+  --hover-wash-2:rgba(255,255,255,.075);
+  --scroll:rgba(255,255,255,.13);
+  --cap-close:#C42B1C; --cap-close-press:#B02617;
+}
+:root[data-theme="light"]{
+  --canvas:#F6F6F7; --sidebar:#F1F1F3; --surface:#FBFBFC;
+  --raised:#FFFFFF; --sunken:#EDEDEF;
+  --outline:#DCDCE2; --outline-soft:#E8E8EC; --rule:#D4D4DB;
+  --t1:#191919; --t2:#5C5C66; --t3:#8E8E99;
+  --accent:#B45309; --accent-hover:#92400E; --accent-soft:#FEF3C7; --on-accent:#FFFFFF;
+  --success:#2E8B62; --success-soft:#E3F3EA;
+  --danger:#C4473F; --danger-soft:#FBEAE8;
+  --selection:#33B45309;
+  --shadow:0 12px 32px rgba(20,20,25,.13), 0 2px 6px rgba(20,20,25,.07);
+  --hover-wash:rgba(0,0,0,.035);
+  --hover-wash-2:rgba(0,0,0,.06);
+  --scroll:rgba(0,0,0,.16);
+  --cap-close:#C42B1C; --cap-close-press:#B02617;
+}
+
+/* ---------- 栅格：一个基准 4px，所有尺寸取 4 的倍数 ---------- */
+:root{
+  --h-title:40px;  --h-toolbar:40px; --h-panel-head:32px;
+  --h-row:28px;    --h-field:32px;   --h-btn:30px;
+  --h-status:26px; --w-rail:44px;    --w-list:288px;
+  --w-outline:232px; --w-handle:5px;
+  --i-sm:14px; --i-md:16px; --i-lg:18px; --i-xl:20px;
+  --r-xs:3px; --r-sm:5px; --r-md:7px; --r-lg:10px;
+  --m-instant:90ms; --m-fast:120ms; --m-base:160ms;
+  --font:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","PingFang SC",system-ui,sans-serif;
+  --mono:"Cascadia Code","Cascadia Mono",Consolas,monospace;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:var(--font); font-size:13px; line-height:1.4;
+  color:var(--t1); background:var(--canvas);
+  -webkit-font-smoothing:antialiased; overflow:hidden;
+  font-feature-settings:"tnum" 0;
+}
+button{font:inherit;color:inherit;background:none;border:0;cursor:default;padding:0}
+svg{display:block;flex:none}
+.i{width:var(--i-md);height:var(--i-md);stroke:currentColor;fill:none;
+   stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.i-sm{width:var(--i-sm);height:var(--i-sm)}
+.i-lg{width:var(--i-lg);height:var(--i-lg)}
+.i-xl{width:var(--i-xl);height:var(--i-xl);stroke-width:1.55}
+
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:6px;border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:var(--t3);border:3px solid transparent;background-clip:content-box}
+
+/* ============================ 窗口 ============================ */
+.win{
+  height:100vh;display:grid;grid-template-rows:var(--h-title) 1fr;
+  background:var(--canvas);
+}
+
+/* ============================ 标题栏 40px ============================ */
+.titlebar{position:relative;display:flex;background:var(--canvas);
+  border-bottom:1px solid var(--outline-soft);user-select:none}
+.tb-left{position:absolute;left:0;top:0;height:100%;display:flex;align-items:center;gap:4px;padding-left:6px}
+.tb-tabs{position:absolute;top:0;bottom:0;left:calc(var(--w-rail) + var(--w-list) + var(--w-handle));
+  right:var(--w-outline);display:flex;align-items:flex-end;gap:2px;overflow:hidden}
+.tb-outline{position:absolute;left:calc(100% - var(--w-outline));top:0;height:100%;
+  display:flex;align-items:center}
+.tb-caption{position:absolute;right:0;top:0;height:100%;display:flex}
+
+.bar-div{width:1px;height:16px;background:var(--outline);margin:0 2px}
+.bar-btn{width:32px;height:32px;display:grid;place-items:center;border-radius:var(--r-md);
+  color:var(--t2);transition:background var(--m-fast) ease,color var(--m-fast) ease}
+.bar-btn:hover{background:var(--hover-wash-2);color:var(--t1)}
+.bar-btn:active{background:var(--hover-wash-2);color:var(--t1);transform:translateY(.5px)}
+.bar-btn.on{background:var(--accent-soft);color:var(--accent)}
+
+/* tab：32px 高，贴底，底部 2px 琥珀下划线 */
+.tab{position:relative;display:flex;align-items:center;gap:8px;height:32px;
+  padding:0 8px 0 12px;max-width:180px;border-radius:var(--r-md) var(--r-md) 0 0;
+  color:var(--t2);transition:background var(--m-fast) ease,color var(--m-fast) ease}
+.tab:hover{background:var(--hover-wash);color:var(--t1)}
+.tab.on{background:var(--surface);color:var(--t1)}
+.tab.on::after{content:"";position:absolute;left:8px;right:8px;bottom:0;height:2px;
+  border-radius:2px 2px 0 0;background:var(--accent)}
+.tab-title{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tab.on .tab-title{font-weight:600}
+.tab-x{width:18px;height:18px;display:grid;place-items:center;border-radius:var(--r-sm);
+  color:var(--t3);opacity:0;transition:opacity var(--m-fast),background var(--m-fast),color var(--m-fast)}
+.tab:hover .tab-x,.tab.on .tab-x{opacity:1}
+.tab-x:hover{background:var(--hover-wash-2);color:var(--t1)}
+.tab-new{width:26px;height:26px;margin:0 2px 3px 2px;display:grid;place-items:center;
+  border-radius:var(--r-sm);color:var(--t3);transition:all var(--m-fast)}
+.tab-new:hover{background:var(--hover-wash-2);color:var(--t1)}
+
+/* 窗口三键：手绘 10×10 描边，与 _GlyphPainter 同手法 */
+.cap{width:46px;height:100%;display:grid;place-items:center;color:var(--t2);
+  transition:background var(--m-instant) ease,color var(--m-instant) ease}
+.cap:hover{background:var(--hover-wash-2);color:var(--t1)}
+.cap-close:hover{background:var(--cap-close);color:#fff}
+.cap-close:active{background:var(--cap-close-press);color:#fff}
+.cap svg{width:10px;height:10px;stroke:currentColor;fill:none;stroke-width:1.1;shape-rendering:crispEdges}
+
+/* ============================ 主体 ============================ */
+.body{display:flex;min-height:0;background:var(--canvas)}
+
+/* 功能栏 44px */
+.rail{width:var(--w-rail);flex:none;display:flex;flex-direction:column;align-items:center;
+  gap:4px;padding:8px 0;background:var(--canvas)}
+.rail-btn{position:relative;width:32px;height:32px;display:grid;place-items:center;
+  border-radius:var(--r-md);color:var(--t2);transition:background var(--m-fast),color var(--m-fast)}
+.rail-btn:hover{background:var(--hover-wash-2);color:var(--t1)}
+.rail-btn.on{background:var(--accent-soft);color:var(--accent)}
+.rail-btn.on::before{content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);
+  width:2px;height:16px;border-radius:0 2px 2px 0;background:var(--accent)}
+.rail-spacer{flex:1}
+.rail-div{width:20px;height:1px;background:var(--outline-soft);margin:4px 0}
+
+/* 侧边栏 */
+.sidebar{width:var(--w-list);flex:none;display:flex;flex-direction:column;
+  background:var(--sidebar);border-right:1px solid var(--outline-soft);min-height:0}
+.panel-head{height:var(--h-panel-head);flex:none;display:flex;align-items:center;
+  padding:0 6px 0 12px;gap:4px}
+.panel-head .label{font-size:11.5px;font-weight:600;letter-spacing:.4px;
+  color:var(--t3);text-transform:uppercase}
+.panel-head .count{font-size:11.5px;color:var(--t3);margin-left:2px}
+.panel-head .spacer{flex:1}
+.icon-btn{width:24px;height:24px;display:grid;place-items:center;border-radius:var(--r-sm);
+  color:var(--t3);transition:background var(--m-fast),color var(--m-fast)}
+.icon-btn:hover{background:var(--hover-wash-2);color:var(--t1)}
+
+/* 搜索框 32px：聚焦时 1px accent 环 + accentSoft 底 */
+.search-wrap{padding:0 10px 8px}
+.search{display:flex;align-items:center;gap:6px;height:var(--h-field);padding:0 8px;
+  background:var(--raised);border:1px solid var(--outline);border-radius:var(--r-md);
+  color:var(--t3);transition:all var(--m-fast) ease}
+.search:hover{border-color:var(--t3)}
+.search.focus{background:var(--accent-soft);border-color:var(--accent);
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent)}
+.search input{flex:1;min-width:0;border:0;outline:0;background:none;font:inherit;
+  font-size:12.5px;color:var(--t1)}
+.search input::placeholder{color:var(--t3)}
+.search .q{color:var(--accent);font-weight:600}
+.search .kbd{font-size:10.5px;color:var(--t3);border:1px solid var(--outline);
+  border-radius:var(--r-xs);padding:1px 4px;line-height:1.2}
+
+/* 文件树 */
+.tree{flex:1;overflow:auto;padding:0 4px 12px}
+.row{position:relative;display:flex;align-items:center;gap:8px;height:var(--h-row);
+  padding:0 8px;border-radius:var(--r-sm);color:var(--t2);
+  transition:background var(--m-fast) ease,color var(--m-fast) ease}
+.row:hover{background:var(--hover-wash-2);color:var(--t1)}
+.row .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
+.row .meta{font-size:11px;color:var(--t3);opacity:0;transition:opacity var(--m-fast)}
+.row:hover .meta{opacity:1}
+.row.sel{background:var(--accent-soft);color:var(--t1);font-weight:600}
+.row.sel::before{content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);
+  width:2px;height:14px;border-radius:0 2px 2px 0;background:var(--accent)}
+.row.sel svg{color:var(--accent)}
+.row .twisty{width:12px;height:12px;color:var(--t3);transition:transform var(--m-base) ease}
+.row.open .twisty{transform:rotate(90deg)}
+.indent-1{padding-left:22px}
+.indent-2{padding-left:38px}
+.tree-gap{height:6px}
+
+/* 拖拽条：hover 显 1px 琥珀中线 */
+.handle{width:var(--w-handle);flex:none;position:relative;cursor:col-resize;background:var(--canvas)}
+.handle::after{content:"";position:absolute;inset:0 2px;background:transparent;transition:background var(--m-fast)}
+.handle:hover::after{background:var(--accent);opacity:.55}
+
+/* ============================ 编辑器 ============================ */
+.editor{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--surface)}
+.ed-head{height:var(--h-toolbar);flex:none;display:flex;align-items:center;gap:2px;
+  padding:0 12px;border-bottom:1px solid var(--outline-soft)}
+.ed-head .title{font-size:12px;color:var(--t3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ed-head .spacer{flex:1}
+.ed-btn{width:30px;height:30px;display:grid;place-items:center;border-radius:var(--r-md);
+  color:var(--t2);transition:background var(--m-fast),color var(--m-fast)}
+.ed-btn:hover{background:var(--hover-wash-2);color:var(--t1)}
+.ed-btn.on{background:var(--accent-soft);color:var(--accent)}
+
+.ed-scroll{flex:1;overflow:auto;padding:40px 56px 120px}
+.doc{max-width:720px;margin:0 auto;font-size:15px;line-height:1.78;color:var(--t1)}
+.doc h1{font-size:27px;line-height:1.28;font-weight:600;letter-spacing:-.4px;margin:0 0 6px}
+.doc .sub{font-size:12px;color:var(--t3);margin-bottom:28px;display:flex;gap:12px;align-items:center}
+.doc .sub .dot{width:3px;height:3px;border-radius:50%;background:var(--t3)}
+.doc h2{font-size:19px;font-weight:600;letter-spacing:-.2px;margin:34px 0 12px;
+  padding-bottom:8px;border-bottom:1px solid var(--rule)}
+.doc h3{font-size:16px;font-weight:600;margin:24px 0 8px}
+.doc p{margin:0 0 14px;color:var(--t1)}
+.doc .muted{color:var(--t2)}
+.tag{display:inline-flex;align-items:center;gap:3px;padding:1px 6px 1px 5px;
+  border-radius:var(--r-sm);background:var(--accent-soft);color:var(--accent);
+  font-size:12.5px;font-weight:600;cursor:pointer;
+  transition:background var(--m-fast),color var(--m-fast),box-shadow var(--m-fast)}
+.tag:hover{background:var(--accent);color:var(--on-accent)}
+.tag svg{width:11px;height:11px;stroke-width:2}
+.doc code{font-family:var(--mono);font-size:12.5px;padding:1.5px 5px;border-radius:var(--r-xs);
+  background:var(--sunken);color:var(--t1);border:1px solid var(--outline-soft)}
+.doc pre{background:var(--sunken);border:1px solid var(--outline-soft);border-radius:var(--r-lg);
+  padding:14px 16px;overflow:auto;margin:0 0 16px}
+.doc pre code{background:none;border:0;padding:0;font-size:12.5px;line-height:1.7;color:var(--t2)}
+.doc .k{color:var(--accent)}
+.doc .s{color:var(--success)}
+.doc blockquote{margin:0 0 16px;padding:2px 0 2px 14px;border-left:2px solid var(--accent);
+  color:var(--t2);font-style:normal}
+.doc ul,.doc ol{margin:0 0 14px;padding-left:22px;color:var(--t1)}
+.doc li{margin:4px 0}
+.doc li::marker{color:var(--t3)}
+.doc .task{list-style:none;padding-left:0;display:flex;align-items:flex-start;gap:9px;margin:6px 0}
+.doc .box{width:15px;height:15px;flex:none;margin-top:4px;border:1.4px solid var(--outline);
+  border-radius:var(--r-xs);display:grid;place-items:center;color:transparent;transition:all var(--m-fast)}
+.doc .task:hover .box{border-color:var(--t3)}
+.doc .task.done .box{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.doc .task.done span{color:var(--t3);text-decoration:line-through}
+.doc hr{border:0;border-top:1px solid var(--rule);margin:28px 0}
+
+/* ============================ 大纲 ============================ */
+.outline{width:var(--w-outline);flex:none;display:flex;flex-direction:column;
+  background:var(--sidebar);border-left:1px solid var(--outline-soft);min-height:0}
+.ol-list{flex:1;overflow:auto;padding:4px 4px 12px}
+.ol{position:relative;display:flex;align-items:center;height:var(--h-row);padding:0 8px;
+  border-radius:var(--r-sm);color:var(--t2);font-size:12.5px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;transition:background var(--m-fast),color var(--m-fast)}
+.ol:hover{background:var(--hover-wash-2);color:var(--t1)}
+.ol.h1{font-weight:600;color:var(--t1);font-size:13px}
+.ol.h2{padding-left:22px;font-size:12.5px}
+.ol.h3{padding-left:36px;font-size:12px;color:var(--t3)}
+.ol.sel{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.ol.sel::before{content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);
+  width:2px;height:14px;border-radius:0 2px 2px 0;background:var(--accent)}
+
+/* 主题切换：浮在右下角，只是给评审用，不属于界面本身 */
+.theme-toggle{position:fixed;right:16px;bottom:14px;z-index:9;
+  display:flex;align-items:center;gap:6px;height:30px;padding:0 10px;
+  border-radius:var(--r-md);background:var(--raised);color:var(--t2);
+  border:1px solid var(--outline);box-shadow:var(--shadow);
+  font-size:12px;transition:all var(--m-fast)}
+.theme-toggle:hover{color:var(--t1);border-color:var(--t3)}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-dock-left" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9.5 4v16"/><path d="M13.5 10.5 11 13l2.5 2.5"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1a2 2 0 0 1 1.5.7l1 1.2h7.4A2.5 2.5 0 0 1 21 9.4v7.1a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 4.5 4.5"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M11.6 3.6H5.4A1.8 1.8 0 0 0 3.6 5.4v6.2a2 2 0 0 0 .6 1.4l7.4 7.4a2 2 0 0 0 2.8 0l6.2-6.2a2 2 0 0 0 0-2.8L13.2 4.2a2 2 0 0 0-1.6-.6Z"/><circle cx="8.2" cy="8.2" r="1.4"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M12 3.2v2M12 18.8v2M20.8 12h-2M5.2 12h-2M18.2 5.8l-1.4 1.4M7.2 16.8l-1.4 1.4M18.2 18.2l-1.4-1.4M7.2 7.2 5.8 5.8"/></symbol>
+  <symbol id="i-command" viewBox="0 0 24 24"><path d="M9 6.5a2.5 2.5 0 1 0-2.5 2.5H9m0-2.5V9m0-2.5V6a2.5 2.5 0 1 1 2.5 2.5H9m0 0h6m0-2.5A2.5 2.5 0 1 1 17.5 9H15m0 0v6m0 0h2.5A2.5 2.5 0 1 1 15 17.5V15m0 0H9m0 0v2.5A2.5 2.5 0 1 1 6.5 15H9"/></symbol>
+  <symbol id="i-toc" viewBox="0 0 24 24"><path d="M4 6.5h2M4 12h2M4 17.5h2M9.5 6.5H20M9.5 12H20M9.5 17.5H20"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="m5 9 7 7 7-7"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M13.5 3.5H7A2.5 2.5 0 0 0 4.5 6v12A2.5 2.5 0 0 0 7 20.5h10a2.5 2.5 0 0 0 2.5-2.5V9.5z"/><path d="M13.5 3.5v6h6M8 13h8M8 16.5h5"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1.3" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-type" viewBox="0 0 24 24"><path d="M5 6.5V5h14v1.5M12 5v14M9 19h6"/></symbol>
+  <symbol id="i-focus" viewBox="0 0 24 24"><path d="M4 8.5V6a2 2 0 0 1 2-2h2.5M15.5 4H18a2 2 0 0 1 2 2v2.5M20 15.5V18a2 2 0 0 1-2 2h-2.5M8.5 20H6a2 2 0 0 1-2-2v-2.5"/><circle cx="12" cy="12" r="2.2"/></symbol>
+  <symbol id="i-layout" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M9.5 9.5v10"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></symbol>
+  <symbol id="i-sort" viewBox="0 0 24 24"><path d="M4 7h11M4 12h8M4 17h5M17 8v9M17 17l2.5-2.5M17 17l-2.5-2.5"/></symbol>
+  <symbol id="i-hash" viewBox="0 0 24 24"><path d="M9.5 4 7.5 20M16.5 4l-2 16M4.5 9h15M3.5 15h15"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+</defs></svg>
+
+<div class="win">
+
+  <!-- ======================= 标题栏 ======================= -->
+  <header class="titlebar">
+    <div class="tb-left">
+      <button class="bar-btn" title="收起侧边栏"><svg class="i"><use href="#i-dock-left"/></svg></button>
+      <span class="bar-div"></span>
+      <button class="bar-btn on" title="文件"><svg class="i"><use href="#i-folder"/></svg></button>
+      <button class="bar-btn" title="搜索"><svg class="i"><use href="#i-search"/></svg></button>
+    </div>
+
+    <div class="tb-tabs">
+      <div class="tab on">
+        <span class="tab-title">Markdown 语法</span>
+        <button class="tab-x"><svg class="i i-sm"><use href="#i-x"/></svg></button>
+      </div>
+      <div class="tab">
+        <span class="tab-title">读书笔记 · 深度工作</span>
+        <button class="tab-x"><svg class="i i-sm"><use href="#i-x"/></svg></button>
+      </div>
+      <div class="tab">
+        <span class="tab-title">周报 2026-W42</span>
+        <button class="tab-x"><svg class="i i-sm"><use href="#i-x"/></svg></button>
+      </div>
+      <button class="tab-new" title="新建笔记"><svg class="i i-md"><use href="#i-plus"/></svg></button>
+    </div>
+
+    <div class="tb-outline">
+      <button class="bar-btn" title="大纲"><svg class="i"><use href="#i-toc"/></svg></button>
+    </div>
+
+    <div class="tb-caption">
+      <button class="cap" title="最小化"><svg viewBox="0 0 10 10"><path d="M0 5.5h10"/></svg></button>
+      <button class="cap" title="最大化"><svg viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9"/></svg></button>
+      <button class="cap cap-close" title="关闭"><svg viewBox="0 0 10 10"><path d="M.5.5l9 9M9.5.5l-9 9"/></svg></button>
+    </div>
+  </header>
+
+  <div class="body">
+
+    <!-- ======================= 功能栏 ======================= -->
+    <nav class="rail">
+      <button class="rail-btn on" title="文件"><svg class="i i-lg"><use href="#i-folder"/></svg></button>
+      <button class="rail-btn" title="搜索"><svg class="i i-lg"><use href="#i-search"/></svg></button>
+      <button class="rail-btn" title="标签"><svg class="i i-lg"><use href="#i-tag"/></svg></button>
+      <div class="rail-spacer"></div>
+      <button class="rail-btn" title="快速打开  ·  Ctrl+P"><svg class="i i-lg"><use href="#i-command"/></svg></button>
+      <div class="rail-div"></div>
+      <button class="rail-btn" title="设置"><svg class="i i-lg"><use href="#i-settings"/></svg></button>
+    </nav>
+
+    <!-- ======================= 侧边栏 ======================= -->
+    <aside class="sidebar">
+      <div class="panel-head">
+        <span class="label">文件</span>
+        <span class="count">24</span>
+        <span class="spacer"></span>
+        <button class="icon-btn" title="排序"><svg class="i i-sm"><use href="#i-sort"/></svg></button>
+        <button class="icon-btn" title="新建笔记"><svg class="i i-sm"><use href="#i-plus"/></svg></button>
+      </div>
+
+      <div class="search-wrap">
+        <label class="search">
+          <svg class="i i-sm"><use href="#i-search"/></svg>
+          <input value="markdown" spellcheck="false">
+          <span class="kbd">Esc</span>
+        </label>
+      </div>
+
+      <div class="tree">
+        <div class="row open"><svg class="i i-sm twisty"><use href="#i-chev-r"/></svg><svg class="i i-sm"><use href="#i-folder"/></svg><span class="name">日常</span><span class="meta">12</span></div>
+        <div class="row indent-1"><svg class="i i-sm"><use href="#i-file"/></svg><span class="name">2026-10-20 周一</span></div>
+        <div class="row indent-1 sel"><svg class="i i-sm"><use href="#i-file"/></svg><span class="name">Markdown 语法</span></div>
+        <div class="row indent-1"><svg class="i i-sm"><use href="#i-file"/></svg><span class="name">灵感碎片</span></div>
+
+        <div class="tree-gap"></div>
+        <div class="row open"><svg class="i i-sm twisty"><use href="#i-chev-r"/></svg><svg class="i i-sm"><use href="#i-folder"/></svg><span class="name">读书</span><span class="meta">8</span></div>
+        <div class="row indent-1"><svg class="i i-sm"><use href="#i-file"/></svg><span class="name">深度工作</span></div>
+        <div class="row indent-1"><svg class="i i-sm"><use href="#i-file"/></svg><span class="name">如何阅读一本书</span></div>
+        <div class="row indent-1"><svg class="i i-sm"><use href="#i-file"/></svg><span class="name">卡片笔记写作法</span></div>
+
+        <div class="tree-gap"></div>
+        <div class="row"><svg class="i i-sm twisty" style="opacity:0"><use href="#i-chev-r"/></svg><svg class="i i-sm"><use href="#i-folder"/></svg><span class="name">项目</span><span class="meta">4</span></div>
+        <div class="row"><svg class="i i-sm twisty" style="opacity:0"><use href="#i-chev-r"/></svg><svg class="i i-sm"><use href="#i-folder"/></svg><span class="name">归档</span><span class="meta">0</span></div>
+      </div>
+    </aside>
+
+    <div class="handle"></div>
+
+    <!-- ======================= 编辑器 ======================= -->
+    <main class="editor">
+      <div class="ed-head">
+        <span class="title">日常 / Markdown 语法</span>
+        <span class="spacer"></span>
+        <button class="ed-btn on" title="打字机模式"><svg class="i"><use href="#i-type"/></svg></button>
+        <button class="ed-btn" title="专注模式"><svg class="i"><use href="#i-focus"/></svg></button>
+        <button class="ed-btn" title="排版"><svg class="i"><use href="#i-layout"/></svg></button>
+        <button class="ed-btn" title="更多"><svg class="i"><use href="#i-more"/></svg></button>
+      </div>
+
+      <div class="ed-scroll">
+        <article class="doc">
+          <h1>Markdown 语法</h1>
+          <div class="sub">
+            <span>日常</span><span class="dot"></span>
+            <span>10 月 20 日 01:12</span><span class="dot"></span>
+            <span>1 248 字</span>
+          </div>
+
+          <p>这是一份随手记的语法清单。<span class="tag"><svg class="i"><use href="#i-hash"/></svg>入门</span>
+            里的东西都试过一遍了，<span class="tag"><svg class="i"><use href="#i-hash"/></svg>速查</span>
+            留作以后翻。</p>
+
+          <h2>标题与段落</h2>
+          <p class="muted">用 <code>#</code> 到 <code>######</code> 表示六级标题。段落之间空一行，
+            行内换行不产生新段落。</p>
+
+          <h3>强调</h3>
+          <ul>
+            <li><code>**粗体**</code> → <strong>粗体</strong></li>
+            <li><code>*斜体*</code> → <em>斜体</em></li>
+            <li><code>`代码`</code> → <code>代码</code></li>
+          </ul>
+
+          <h2>代码块</h2>
+          <pre><code><span class="k">final</span> hits = notes.<span class="s">searchHits</span>(query);
+<span class="k">for</span> (final hit <span class="k">in</span> hits) {
+  debugPrint(<span class="s">'${hit.note.fileName} · ${hit.matchCount}'</span>);
+}</code></pre>
+
+          <blockquote>写作不是记录想法，而是产生想法。想法只有在被写下来的那一刻才真正存在。</blockquote>
+
+          <h2>任务清单</h2>
+          <div class="task done"><span class="box"><svg class="i" style="width:10px;height:10px;stroke-width:2.4"><use href="#i-check"/></svg></span><span>把手绘标题栏接进 shell</span></div>
+          <div class="task done"><span class="box"><svg class="i" style="width:10px;height:10px;stroke-width:2.4"><use href="#i-check"/></svg></span><span>tab 对齐编辑器左边缘</span></div>
+          <div class="task"><span class="box"></span><span>把 hover 反馈统一成一套</span></div>
+          <div class="task"><span class="box"></span><span>图标收敛到 outlined 一族</span></div>
+
+          <hr>
+          <p class="muted" style="font-size:13px">最后修改于 2 分钟前 · <span class="tag" style="font-size:11.5px"><svg class="i"><use href="#i-hash"/></svg>入门</span></p>
+        </article>
+      </div>
+    </main>
+
+    <!-- ======================= 大纲 ======================= -->
+    <aside class="outline">
+      <div class="panel-head">
+        <span class="label">大纲</span>
+        <span class="count">5</span>
+        <span class="spacer"></span>
+        <button class="icon-btn" title="折叠全部"><svg class="i i-sm"><use href="#i-chev-d"/></svg></button>
+      </div>
+      <div class="ol-list">
+        <div class="ol h1">Markdown 语法</div>
+        <div class="ol h2 sel">标题与段落</div>
+        <div class="ol h3">强调</div>
+        <div class="ol h2">代码块</div>
+        <div class="ol h2">任务清单</div>
+      </div>
+    </aside>
+  </div>
+
+  <button class="theme-toggle" id="theme">浅色</button>
+</div>
+
+<script>
+  // 主题切换：只为看两套色板，与 Flutter 端 ThemeMode 对应
+  const root = document.documentElement;
+  const btn = document.getElementById('theme');
+  btn.addEventListener('click', () => {
+    const dark = root.dataset.theme === 'dark';
+    root.dataset.theme = dark ? 'light' : 'dark';
+    btn.textContent = dark ? '深色' : '浅色';
+  });
+
+  // 侧边栏 / 大纲 / 功能栏选中态演示
+  document.querySelectorAll('.rail-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      if (b.querySelector('use').getAttribute('href') === '#i-command') return;
+      if (b.querySelector('use').getAttribute('href') === '#i-settings') return;
+      document.querySelectorAll('.rail-btn.on').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+    });
+  });
+  document.querySelectorAll('.row').forEach(r => {
+    r.addEventListener('click', () => {
+      if (!r.querySelector('.twisty')) return;
+      if (r.classList.contains('indent-1')) return;
+      r.classList.toggle('open');
+    });
+  });
+  document.querySelectorAll('.tab').forEach(t => {
+    t.addEventListener('click', () => {
+      document.querySelectorAll('.tab.on').forEach(x => x.classList.remove('on'));
+      t.classList.add('on');
+    });
+  });
+  document.querySelector('.search input').addEventListener('focus', e => {
+    e.target.closest('.search').classList.add('focus');
+  });
+  document.querySelector('.search input').addEventListener('blur', e => {
+    e.target.closest('.search').classList.remove('focus');
+  });
+  document.querySelector('.search input').focus();
+</script>
+</body>
+</html>

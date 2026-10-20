@@ -9,6 +9,10 @@ import '../../core/theme/app_tokens.dart';
 /// It holds only what does not fit in the title bar's three regions: the tag
 /// view at the top, and the two window-wide commands — quick open and settings
 /// — pinned to the bottom where they are always in the same place.
+///
+/// Selection is marked the same way here as in every other column: an
+/// `accentSoft` square with a 2px `accent` bar against its left edge. One
+/// language, learned once.
 class AppRail extends StatelessWidget {
   const AppRail({
     super.key,
@@ -32,7 +36,7 @@ class AppRail extends StatelessWidget {
         // The deepest step on screen: the rail reads as the window's own edge,
         // so the sidebar next to it can sit *above* it instead of beside it.
         color: p.canvas,
-        border: Border(right: BorderSide(color: p.outline)),
+        border: Border(right: BorderSide(color: p.outlineSoft)),
       ),
       child: Column(
         children: <Widget>[
@@ -50,7 +54,14 @@ class AppRail extends StatelessWidget {
             shortcut: 'Ctrl+P',
             onPressed: onOpenPalette,
           ),
-          const SizedBox(height: AppSpace.xs),
+          // A hairline, not a gap: without it the two pinned commands read as a
+          // third view that happens to be at the bottom.
+          Container(
+            width: 20,
+            height: 1,
+            margin: const EdgeInsets.symmetric(vertical: AppSpace.xs),
+            color: p.outlineSoft,
+          ),
           _RailButton(
             icon: Icons.settings_outlined,
             tooltip: '设置',
@@ -110,13 +121,42 @@ class _RailButtonState extends State<_RailButton> {
           behavior: HitTestBehavior.opaque,
           child: AnimatedContainer(
             duration: AppMotion.fast,
-            width: 34,
-            height: 34,
+            width: 32,
+            height: 32,
             decoration: BoxDecoration(
               color: background,
-              borderRadius: AppRadius.smAll,
+              borderRadius: AppRadius.mdAll,
             ),
-            child: Icon(widget.icon, size: 17, color: foreground),
+            child: Stack(
+              children: <Widget>[
+                Center(
+                  child: Icon(
+                    widget.icon,
+                    size: AppIconSize.md,
+                    color: foreground,
+                  ),
+                ),
+                // The bar sits on the button's own left edge rather than the
+                // rail's: 6px away from the pill it belongs to, it would read
+                // as a rule on the window instead of a marker on the item.
+                Positioned(
+                  left: 0,
+                  top: 8,
+                  bottom: 8,
+                  child: AnimatedOpacity(
+                    duration: AppMotion.fast,
+                    opacity: widget.selected ? 1 : 0,
+                    child: Container(
+                      width: 2,
+                      decoration: BoxDecoration(
+                        color: p.accent,
+                        borderRadius: BorderRadius.circular(1),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

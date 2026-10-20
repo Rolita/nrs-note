@@ -195,7 +195,7 @@ class _CommandPaletteState extends State<CommandPalette> {
                       children: <Widget>[
                         const SizedBox(width: AppSpace.lg),
                         Icon(
-                          Icons.search_rounded,
+                          Icons.search_outlined,
                           size: 16,
                           color: p.textTertiary,
                         ),

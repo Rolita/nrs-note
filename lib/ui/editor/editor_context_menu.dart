@@ -330,93 +330,93 @@ List<MenuNode> buildEditorMenu({
   return <MenuNode>[
     MenuAction(
       label: '新增链接',
-      icon: Icons.link_rounded,
+      icon: Icons.link_outlined,
       onPressed: () => onApply(insertWikilink()),
     ),
     MenuAction(
       label: '新增外部链接',
-      icon: Icons.open_in_new_rounded,
+      icon: Icons.open_in_new_outlined,
       shortcut: 'Ctrl+K',
       onPressed: () => onApply(insertLink()),
     ),
     const MenuSeparator(),
     MenuSubmenu(
       label: '文本格式',
-      icon: Icons.text_format_rounded,
+      icon: Icons.text_format_outlined,
       children: <MenuNode>[
         MenuAction(
           label: '加粗',
-          icon: Icons.format_bold_rounded,
+          icon: Icons.format_bold_outlined,
           shortcut: 'Ctrl+B',
           onPressed: () => onApply(wrapSelection('**', '**')),
         ),
         MenuAction(
           label: '倾斜',
-          icon: Icons.format_italic_rounded,
+          icon: Icons.format_italic_outlined,
           shortcut: 'Ctrl+I',
           onPressed: () => onApply(wrapSelection('*', '*')),
         ),
         MenuAction(
           label: '删除线',
-          icon: Icons.format_strikethrough_rounded,
+          icon: Icons.format_strikethrough_outlined,
           onPressed: () => onApply(wrapSelection('~~', '~~')),
         ),
         MenuAction(
           label: '高亮',
-          icon: Icons.brush_rounded,
+          icon: Icons.brush_outlined,
           onPressed: () =>
               onApply(wrapSelection('==', '==', placeholder: '高亮')),
         ),
         const MenuSeparator(),
         MenuAction(
           label: '代码',
-          icon: Icons.code_rounded,
+          icon: Icons.code_outlined,
           shortcut: 'Ctrl+E',
           onPressed: () => onApply(wrapSelection('`', '`', placeholder: '代码')),
         ),
         MenuAction(
           label: '数学',
-          icon: Icons.functions_rounded,
+          icon: Icons.functions_outlined,
           onPressed: () =>
               onApply(wrapSelection(r'$', r'$', placeholder: '公式')),
         ),
         // Obsidian's comment syntax, so a note stays portable between the two.
         MenuAction(
           label: '注释',
-          icon: Icons.percent_rounded,
+          icon: Icons.percent_outlined,
           onPressed: () =>
               onApply(wrapSelection('%%', '%%', placeholder: '注释')),
         ),
         const MenuSeparator(),
         MenuAction(
           label: '清除格式',
-          icon: Icons.format_clear_rounded,
+          icon: Icons.format_clear_outlined,
           onPressed: () => onApply(clearFormatting()),
         ),
       ],
     ),
     MenuSubmenu(
       label: '段落设置',
-      icon: Icons.subject_rounded,
+      icon: Icons.subject_outlined,
       children: <MenuNode>[
         style(
           '无序列表',
-          Icons.format_list_bulleted_rounded,
+          Icons.format_list_bulleted_outlined,
           BlockStyle.bullet,
           shortcut: 'Ctrl+Shift+8',
         ),
         style(
           '有序列表',
-          Icons.format_list_numbered_rounded,
+          Icons.format_list_numbered_outlined,
           BlockStyle.ordered,
           shortcut: 'Ctrl+Shift+7',
         ),
-        style('任务列表', Icons.checklist_rounded, BlockStyle.task),
+        style('任务列表', Icons.checklist_outlined, BlockStyle.task),
         const MenuSeparator(),
         for (int level = 1; level <= 6; level++)
           MenuAction(
             label: '$level 级标题',
-            icon: Icons.title_rounded,
+            icon: Icons.title_outlined,
             leading: 'H$level',
             shortcut: level <= 3 ? 'Ctrl+$level' : null,
             checked: current.headingLevel == level,
@@ -429,13 +429,13 @@ List<MenuNode> buildEditorMenu({
         const MenuSeparator(),
         style(
           '正文',
-          Icons.format_clear_rounded,
+          Icons.format_clear_outlined,
           BlockStyle.paragraph,
           shortcut: 'Ctrl+0',
         ),
         style(
           '引用',
-          Icons.format_quote_rounded,
+          Icons.format_quote_outlined,
           BlockStyle.quote,
           shortcut: 'Ctrl+Shift+Q',
         ),
@@ -443,22 +443,22 @@ List<MenuNode> buildEditorMenu({
     ),
     MenuSubmenu(
       label: '插入',
-      icon: Icons.add_rounded,
+      icon: Icons.add,
       children: <MenuNode>[
         MenuAction(
           label: '分割线',
-          icon: Icons.horizontal_rule_rounded,
+          icon: Icons.horizontal_rule_outlined,
           onPressed: () => onApply(insertDivider()),
         ),
         MenuAction(
           label: '代码块',
-          icon: Icons.code_off_rounded,
+          icon: Icons.code_off_outlined,
           shortcut: 'Ctrl+Shift+E',
           onPressed: () => onApply(codeBlock()),
         ),
         MenuAction(
           label: '表格',
-          icon: Icons.grid_on_rounded,
+          icon: Icons.grid_on_outlined,
           onPressed: () => onApply(insertTable()),
         ),
       ],
@@ -467,15 +467,15 @@ List<MenuNode> buildEditorMenu({
     if (inTable) ...<MenuNode>[
       MenuSubmenu(
         label: '表格工具',
-        icon: Icons.table_chart_rounded,
+        icon: Icons.table_chart_outlined,
         children: <MenuNode>[
           MenuSubmenu(
             label: '单元格',
-            icon: Icons.grid_view_rounded,
+            icon: Icons.grid_view_outlined,
             children: <MenuNode>[
               MenuAction(
                 label: '编辑单元格',
-                icon: Icons.edit_rounded,
+                icon: Icons.edit_outlined,
                 shortcut: 'F2',
                 onPressed: active == null ? null : onEditCell,
               ),
@@ -493,7 +493,7 @@ List<MenuNode> buildEditorMenu({
               const MenuSeparator(),
               tableData(
                 '向下填充',
-                Icons.south_rounded,
+                Icons.south_outlined,
                 (TextEditingValue v) =>
                     tableFill(v, down: true, resolve: resolve),
                 enabled: canFillDown,
@@ -501,7 +501,7 @@ List<MenuNode> buildEditorMenu({
               ),
               tableData(
                 '向右填充',
-                Icons.east_rounded,
+                Icons.east_outlined,
                 (TextEditingValue v) =>
                     tableFill(v, down: false, resolve: resolve),
                 enabled: canFillRight,
@@ -510,7 +510,7 @@ List<MenuNode> buildEditorMenu({
               const MenuSeparator(),
               MenuAction(
                 label: '复制所选为制表符文本',
-                icon: Icons.grid_on_rounded,
+                icon: Icons.grid_on_outlined,
                 shortcut: 'Ctrl+Shift+C',
                 onPressed: tsv == null
                     ? null
@@ -534,30 +534,30 @@ List<MenuNode> buildEditorMenu({
           ),
           MenuSubmenu(
             label: '行',
-            icon: Icons.table_rows_rounded,
+            icon: Icons.table_rows_outlined,
             children: <MenuNode>[
               tableData(
                 multiRows ? '上方插入 $selectedRows 行' : '上方插入行',
-                Icons.vertical_align_top_rounded,
+                Icons.vertical_align_top_outlined,
                 (TextEditingValue v) =>
                     tableInsertRows(v, above: true, resolve: resolve),
               ),
               tableData(
                 multiRows ? '下方插入 $selectedRows 行' : '下方插入行',
-                Icons.vertical_align_bottom_rounded,
+                Icons.vertical_align_bottom_outlined,
                 (TextEditingValue v) =>
                     tableInsertRows(v, above: false, resolve: resolve),
               ),
               tableData(
                 multiRows ? '上移 $selectedRows 行' : '上移本行',
-                Icons.arrow_upward_rounded,
+                Icons.arrow_upward_outlined,
                 (TextEditingValue v) =>
                     tableMoveRows(v, delta: -1, resolve: resolve),
                 enabled: rowFrom > 0,
               ),
               tableData(
                 multiRows ? '下移 $selectedRows 行' : '下移本行',
-                Icons.arrow_downward_rounded,
+                Icons.arrow_downward_outlined,
                 (TextEditingValue v) =>
                     tableMoveRows(v, delta: 1, resolve: resolve),
                 enabled:
@@ -567,7 +567,7 @@ List<MenuNode> buildEditorMenu({
               ),
               tableData(
                 multiRows ? '复制 $selectedRows 行到下方' : '复制本行到下方',
-                Icons.content_copy_rounded,
+                Icons.content_copy_outlined,
                 (TextEditingValue v) => tableDuplicateRows(v, resolve: resolve),
                 enabled: !isTableDivider(caretLine) || range != null,
               ),
@@ -576,7 +576,7 @@ List<MenuNode> buildEditorMenu({
               // removed.
               tableData(
                 multiRows ? '删除 $selectedRows 行' : '删除本行',
-                Icons.delete_outline_rounded,
+                Icons.delete_outline,
                 (TextEditingValue v) => tableDeleteRows(v, resolve: resolve),
                 enabled: !isTableDivider(caretLine) || range != null,
               ),
@@ -584,37 +584,37 @@ List<MenuNode> buildEditorMenu({
           ),
           MenuSubmenu(
             label: '列',
-            icon: Icons.view_column_rounded,
+            icon: Icons.view_column_outlined,
             children: <MenuNode>[
               tableData(
                 multiColumns ? '左侧插入 $selectedColumns 列' : '左侧插入列',
-                Icons.keyboard_tab_rounded,
+                Icons.keyboard_tab_outlined,
                 (TextEditingValue v) =>
                     tableInsertColumns(v, right: false, resolve: resolve),
               ),
               tableData(
                 multiColumns ? '右侧插入 $selectedColumns 列' : '右侧插入列',
-                Icons.keyboard_tab_rounded,
+                Icons.keyboard_tab_outlined,
                 (TextEditingValue v) =>
                     tableInsertColumns(v, right: true, resolve: resolve),
               ),
               tableData(
                 multiColumns ? '左移 $selectedColumns 列' : '左移本列',
-                Icons.arrow_back_rounded,
+                Icons.arrow_back_outlined,
                 (TextEditingValue v) =>
                     tableMoveColumns(v, delta: -1, resolve: resolve),
                 enabled: columnFrom > 0,
               ),
               tableData(
                 multiColumns ? '右移 $selectedColumns 列' : '右移本列',
-                Icons.arrow_forward_rounded,
+                Icons.arrow_forward_outlined,
                 (TextEditingValue v) =>
                     tableMoveColumns(v, delta: 1, resolve: resolve),
                 enabled: columnTo >= 0 && columnTo < columns - 1,
               ),
               tableData(
                 multiColumns ? '复制 $selectedColumns 列到右侧' : '复制本列到右侧',
-                Icons.content_copy_rounded,
+                Icons.content_copy_outlined,
                 (TextEditingValue v) =>
                     tableDuplicateColumns(v, resolve: resolve),
               ),
@@ -629,83 +629,83 @@ List<MenuNode> buildEditorMenu({
           ),
           MenuSubmenu(
             label: '对齐',
-            icon: Icons.format_align_left_rounded,
+            icon: Icons.format_align_left_outlined,
             children: <MenuNode>[
-              alignRow('默认对齐', Icons.short_text_rounded, TableAlign.none),
-              alignRow('左对齐', Icons.format_align_left_rounded, TableAlign.left),
+              alignRow('默认对齐', Icons.short_text_outlined, TableAlign.none),
+              alignRow('左对齐', Icons.format_align_left_outlined, TableAlign.left),
               alignRow(
                 '居中',
-                Icons.format_align_center_rounded,
+                Icons.format_align_center_outlined,
                 TableAlign.center,
               ),
               alignRow(
                 '右对齐',
-                Icons.format_align_right_rounded,
+                Icons.format_align_right_outlined,
                 TableAlign.right,
               ),
             ],
           ),
           MenuSubmenu(
             label: '数据',
-            icon: Icons.functions_rounded,
+            icon: Icons.functions_outlined,
             children: <MenuNode>[
               tableData(
                 '按本列升序',
-                Icons.sort_rounded,
+                Icons.sort_outlined,
                 (TextEditingValue v) => sortTable(v, ascending: true),
                 enabled: canSort,
               ),
               tableData(
                 '按本列降序',
-                Icons.sort_rounded,
+                Icons.sort_outlined,
                 (TextEditingValue v) => sortTable(v, ascending: false),
                 enabled: canSort,
               ),
               const MenuSeparator(),
-              tableData('数字列自动右对齐', Icons.straighten_rounded, autoAlignTable),
-              tableData('转置表格', Icons.swap_horiz_rounded, transposeTable),
+              tableData('数字列自动右对齐', Icons.straighten_outlined, autoAlignTable),
+              tableData('转置表格', Icons.swap_horiz_outlined, transposeTable),
               const MenuSeparator(),
               tableData(
                 '追加合计行',
-                Icons.functions_rounded,
+                Icons.functions_outlined,
                 (TextEditingValue v) => summarizeTable(v, TableAggregate.sum),
                 enabled: numericColumn,
               ),
               tableData(
                 '追加平均值行',
-                Icons.balance_rounded,
+                Icons.balance_outlined,
                 (TextEditingValue v) =>
                     summarizeTable(v, TableAggregate.average),
                 enabled: numericColumn,
               ),
               tableData(
                 '追加计数行',
-                Icons.numbers_rounded,
+                Icons.numbers_outlined,
                 (TextEditingValue v) => summarizeTable(v, TableAggregate.count),
               ),
               tableData(
                 '追加最大值行',
-                Icons.arrow_upward_rounded,
+                Icons.arrow_upward_outlined,
                 (TextEditingValue v) => summarizeTable(v, TableAggregate.max),
                 enabled: numericColumn,
               ),
               tableData(
                 '追加最小值行',
-                Icons.arrow_downward_rounded,
+                Icons.arrow_downward_outlined,
                 (TextEditingValue v) => summarizeTable(v, TableAggregate.min),
                 enabled: numericColumn,
               ),
             ],
           ),
           const MenuSeparator(),
-          tableData('删除表格', Icons.delete_outline_rounded, deleteTableAt),
+          tableData('删除表格', Icons.delete_outline, deleteTableAt),
         ],
       ),
       const MenuSeparator(),
     ],
     MenuAction(
       label: '剪切',
-      icon: Icons.content_cut_rounded,
+      icon: Icons.content_cut_outlined,
       shortcut: 'Ctrl+X',
       onPressed: hasSelection
           ? () => cutSelectionCells(
@@ -717,7 +717,7 @@ List<MenuNode> buildEditorMenu({
     ),
     MenuAction(
       label: '复制',
-      icon: Icons.content_copy_rounded,
+      icon: Icons.content_copy_outlined,
       shortcut: 'Ctrl+C',
       onPressed: hasSelection
           ? () => copySelectionCells(
@@ -729,14 +729,14 @@ List<MenuNode> buildEditorMenu({
     ),
     MenuAction(
       label: '粘贴',
-      icon: Icons.content_paste_rounded,
+      icon: Icons.content_paste_outlined,
       shortcut: 'Ctrl+V',
       onPressed: () =>
           unawaited(pasteIntoEditor(state, plain: false, resolve: resolve)),
     ),
     MenuAction(
       label: '以纯文本形式粘贴',
-      icon: Icons.content_paste_off_rounded,
+      icon: Icons.content_paste_off_outlined,
       shortcut: 'Ctrl+Shift+V',
       onPressed: () =>
           unawaited(pasteIntoEditor(state, plain: true, resolve: resolve)),
@@ -744,7 +744,7 @@ List<MenuNode> buildEditorMenu({
     const MenuSeparator(),
     MenuAction(
       label: '全选',
-      icon: Icons.select_all_rounded,
+      icon: Icons.select_all_outlined,
       shortcut: 'Ctrl+A',
       onPressed: () => state.selectAll(SelectionChangedCause.toolbar),
     ),
@@ -1156,7 +1156,7 @@ class _MenuInfoRow extends StatelessWidget {
             width: 20,
             child: Center(
               child: Icon(
-                Icons.functions_rounded,
+                Icons.functions_outlined,
                 size: 13,
                 color: p.textTertiary,
               ),
@@ -1292,14 +1292,14 @@ class _MenuRowState extends State<_MenuRow> {
               if (widget.submenu) ...<Widget>[
                 const SizedBox(width: AppSpace.xs + 2),
                 Icon(
-                  Icons.chevron_right_rounded,
+                  Icons.chevron_right_outlined,
                   size: 14,
                   color: p.textTertiary,
                 ),
               ],
               if (widget.checked) ...<Widget>[
                 const SizedBox(width: AppSpace.xs + 2),
-                Icon(Icons.check_rounded, size: 13, color: p.accent),
+                Icon(Icons.check, size: 13, color: p.accent),
               ],
             ],
           ),

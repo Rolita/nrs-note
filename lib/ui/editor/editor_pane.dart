@@ -457,24 +457,41 @@ class EditorPaneState extends State<EditorPane> {
     NotesController notes,
     SettingsController settings,
   ) {
+    // Where the note lives. The title is the H1 directly below, so repeating it
+    // here would only take room away from the one thing the header can say that
+    // the page cannot: its place in the vault.
+    final String where = note.folderPath.trim().isEmpty
+        ? '笔记库'
+        : note.folderPath.replaceAll(RegExp(r'[/\\]'), ' / ');
+
     return Container(
       height: AppLayout.toolbarHeight,
-      padding: const EdgeInsets.symmetric(horizontal: AppSpace.xs),
+      padding: const EdgeInsets.symmetric(horizontal: AppSpace.sm),
       decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: p.outlineSoft)),
       ),
       child: Row(
         children: <Widget>[
-          const SizedBox(width: AppSpace.xs),
-          const Spacer(),
+          Expanded(
+            child: Text(
+              where,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: AppText.caption,
+                color: p.textTertiary,
+              ),
+            ),
+          ),
+          const SizedBox(width: AppSpace.sm),
           AppIconButton(
-            icon: Icons.vertical_align_center_rounded,
+            icon: Icons.vertical_align_center_outlined,
             tooltip: '打字机模式',
             active: settings.typewriter,
             onPressed: () => settings.typewriter = !settings.typewriter,
           ),
           AppIconButton(
-            icon: Icons.fullscreen_rounded,
+            icon: Icons.fullscreen_outlined,
             tooltip: '专注模式',
             shortcut: 'Ctrl+Shift+F',
             active: settings.focusMode,
@@ -763,7 +780,7 @@ class _TypographyMenu extends StatelessWidget {
       ],
       child: const Padding(
         padding: EdgeInsets.symmetric(horizontal: 2),
-        child: _MenuTrigger(icon: Icons.format_size_rounded, tooltip: '正文字号'),
+        child: _MenuTrigger(icon: Icons.format_size_outlined, tooltip: '正文字号'),
       ),
     );
   }
@@ -845,17 +862,17 @@ class _MoreMenu extends StatelessWidget {
         }
       },
       itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-        _entry(p, 'copy', Icons.content_copy_rounded, '复制 Markdown'),
+        _entry(p, 'copy', Icons.content_copy_outlined, '复制 Markdown'),
         _entry(p, 'duplicate', Icons.copy_all_outlined, '创建副本'),
         if (notes.supportsNativeFiles)
           _entry(p, 'reveal', Icons.folder_open_outlined, '打开笔记库文件夹'),
-        _entry(p, 'reload', Icons.refresh_rounded, '从磁盘重新载入'),
+        _entry(p, 'reload', Icons.refresh, '从磁盘重新载入'),
         const PopupMenuDivider(),
-        _entry(p, 'delete', Icons.delete_outline_rounded, '删除笔记', danger: true),
+        _entry(p, 'delete', Icons.delete_outline, '删除笔记', danger: true),
       ],
       child: const Padding(
         padding: EdgeInsets.symmetric(horizontal: 2),
-        child: _MenuTrigger(icon: Icons.more_horiz_rounded, tooltip: '更多操作'),
+        child: _MenuTrigger(icon: Icons.more_horiz_outlined, tooltip: '更多操作'),
       ),
     );
   }

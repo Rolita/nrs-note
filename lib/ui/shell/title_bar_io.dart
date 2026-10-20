@@ -93,7 +93,7 @@ class _AppTitleBarState extends State<AppTitleBar> with WindowListener {
         leftInset: widget.leftInset,
         rightInset: widget.rightInset,
         grip: const DragToMoveArea(child: SizedBox.expand()),
-        captionWidth: 46 * 3,
+        captionWidth: 44 * 3,
         caption: <Widget>[
           _CaptionButton(
             glyph: _Glyph.minimize,
@@ -121,9 +121,10 @@ class _AppTitleBarState extends State<AppTitleBar> with WindowListener {
 
 /// One of the three caption buttons.
 ///
-/// 46×36 is the Windows caption metric; the close button keeps the system red
-/// in both themes, because "the thing that closes the window" is the one place
-/// where matching the OS beats matching the palette.
+/// 44px wide is the Windows caption metric rounded onto the shell's 4px grid;
+/// the close button keeps the system red in both themes, because "the thing
+/// that closes the window" is the one place where matching the OS beats
+/// matching the palette.
 class _CaptionButton extends StatefulWidget {
   const _CaptionButton({
     required this.glyph,
@@ -190,7 +191,7 @@ class _CaptionButtonState extends State<_CaptionButton> {
           child: AnimatedContainer(
             duration: AppMotion.instant,
             curve: AppMotion.enter,
-            width: 46,
+            width: 44,
             height: double.infinity,
             color: background,
             child: Center(
@@ -210,7 +211,10 @@ enum _Glyph { minimize, maximize, restore, close }
 
 /// Caption glyphs drawn by hand rather than borrowed from Material: at 10px the
 /// icon set's own squares and crosses carry too much optical weight and sit off
-/// the pixel grid, which next to a 36px strip looks like a rendering bug.
+/// the pixel grid, which next to a 40px strip looks like a rendering bug.
+///
+/// 1.1px rather than 1: at 10px a hairline disappears into the canvas on a
+/// high-DPI screen, and the glyph reads as a smudge instead of a line.
 class _GlyphPainter extends CustomPainter {
   const _GlyphPainter(this.glyph, this.color);
 
@@ -222,7 +226,7 @@ class _GlyphPainter extends CustomPainter {
     final Paint paint = Paint()
       ..color = color
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1;
+      ..strokeWidth = 1.1;
 
     switch (glyph) {
       case _Glyph.minimize:

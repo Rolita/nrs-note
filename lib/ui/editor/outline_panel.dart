@@ -61,16 +61,19 @@ class OutlinePanel extends StatelessWidget {
                   Text(
                     '大纲',
                     style: TextStyle(
-                      fontSize: 11.5,
+                      fontSize: AppText.caption,
                       fontWeight: FontWeight.w600,
                       letterSpacing: 0.4,
                       color: p.textTertiary,
                     ),
                   ),
-                  const Spacer(),
+                  const SizedBox(width: AppSpace.xs + 2),
                   Text(
                     '${headings.length}',
-                    style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
+                    style: TextStyle(
+                      fontSize: AppText.caption,
+                      color: p.textTertiary,
+                    ),
                   ),
                 ],
               ),
@@ -83,7 +86,7 @@ class OutlinePanel extends StatelessWidget {
                     child: Text(
                       '用 # 写下标题,\n大纲会出现在这里。',
                       style: TextStyle(
-                        fontSize: 11.5,
+                        fontSize: AppText.caption,
                         height: 1.6,
                         color: p.textTertiary,
                       ),
@@ -95,82 +98,71 @@ class OutlinePanel extends StatelessWidget {
                     itemBuilder: (BuildContext context, int i) {
                       final Heading h = headings[i];
                       final bool selected = i == active;
-                      final double indent =
-                          (h.level - 1) * AppLayout.rowIndent;
+                      final double indent = (h.level - 1) * AppLayout.rowIndent;
+
+                      // Level is carried by weight and colour, not by a bullet:
+                      // at 28px a row can hold one signal, and indentation plus
+                      // a lighter step already say "this is a sub-heading".
+                      final double size = switch (h.level) {
+                        1 => AppText.ui,
+                        2 => 12.5,
+                        _ => AppText.label,
+                      };
+                      final FontWeight weight = h.level == 1
+                          ? FontWeight.w600
+                          : FontWeight.w500;
+                      final Color tone = selected
+                          ? p.textPrimary
+                          : (h.level <= 2 ? p.textSecondary : p.textTertiary);
 
                       return HoverBuilder(
                         cursor: SystemMouseCursors.click,
-                        builder: (BuildContext context, bool hovered) => GestureDetector(
-                          onTap: () => onSelect(h.line),
-                          behavior: HitTestBehavior.opaque,
-                          child: Padding(
-                            padding: EdgeInsets.only(
-                              left: AppSpace.md + indent,
-                              right: AppSpace.sm,
-                            ),
-                            child: AnimatedContainer(
-                              duration: AppMotion.fast,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: AppSpace.sm,
-                                vertical: AppSpace.xs,
-                              ),
-                              decoration: BoxDecoration(
-                                color: selected
-                                    ? p.accentSoft
-                                    : (hovered ? p.surfaceRaised : Colors.transparent),
-                                borderRadius: AppRadius.smAll,
-                                border: selected
-                                    ? Border(
-                                        left: BorderSide(
-                                          color: p.accent,
-                                          width: 2,
-                                        ),
-                                      )
-                                    : null,
-                              ),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: <Widget>[
-                                  if (h.level > 1) ...<Widget>[
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 4.5),
-                                      child: Container(
-                                        width: 4,
-                                        height: 4,
-                                        decoration: BoxDecoration(
-                                          color: p.textTertiary.withValues(
-                                            alpha: 0.6,
-                                          ),
-                                          shape: BoxShape.circle,
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 6),
-                                  ],
-                                  Expanded(
-                                    child: Text(
-                                      h.plainText.isEmpty ? '(空标题)' : h.plainText,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        fontSize: h.level == 1 ? 12.5 : 11.8,
-                                        height: 1.45,
-                                        fontWeight: h.level <= 2
-                                            ? FontWeight.w600
-                                            : FontWeight.w400,
-                                        color: selected
-                                            ? p.textPrimary
-                                            : (h.level <= 2
-                                                  ? p.textSecondary
-                                                  : p.textTertiary),
-                                      ),
+                        builder: (BuildContext context, bool hovered) =>
+                            GestureDetector(
+                              onTap: () => onSelect(h.line),
+                              behavior: HitTestBehavior.opaque,
+                              child: Padding(
+                                padding: EdgeInsets.only(
+                                  left: AppSpace.sm + indent,
+                                  right: AppSpace.xs,
+                                ),
+                                child: AnimatedContainer(
+                                  duration: AppMotion.fast,
+                                  height: AppLayout.rowHeight,
+                                  alignment: Alignment.centerLeft,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: AppSpace.sm,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: selected
+                                        ? p.accentSoft
+                                        : (hovered
+                                              ? p.surfaceRaised
+                                              : Colors.transparent),
+                                    borderRadius: AppRadius.smAll,
+                                    border: selected
+                                        ? Border(
+                                            left: BorderSide(
+                                              color: p.accent,
+                                              width: 2,
+                                            ),
+                                          )
+                                        : null,
+                                  ),
+                                  child: Text(
+                                    h.plainText.isEmpty ? '(空标题)' : h.plainText,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: size,
+                                      height: 1.4,
+                                      fontWeight: weight,
+                                      color: selected ? p.accent : tone,
                                     ),
                                   ),
-                                ],
+                                ),
                               ),
                             ),
-                          ),
-                        ),
                       );
                     },
                   ),

@@ -10,19 +10,19 @@ import '../../data/models/note.dart';
 import '../../state/notes_controller.dart';
 import '../../state/settings_controller.dart';
 
-/// Width of the three leading buttons plus their gaps, measured rather than
 /// Width of the leading buttons plus their gaps, measured rather than guessed.
 ///
-/// Expanded: 4 (left pad) + 32 (collapse) + 17 (divider) + 32 (files) +
-/// 32 (search) + 8 (right pad) = 125.
+/// Expanded: 6 (left pad) + 32 (collapse) + 13 (divider) + 32 (files) +
+/// 4 (gap) + 32 (search) + 6 (right pad) = 125.
 ///
 /// Collapsed: the view buttons are gone with the panel they point at, so only
-/// the toggle is left — 4 + 32 + 8 = 44. The tab strip may never start left of
-/// this, otherwise it would slide under the buttons.
+/// the toggle is left — 6 + 32 + 6 = 44, which is exactly [AppLayout.railWidth].
+/// That equality is the point: collapsed, the tab strip starts on the editor's
+/// left edge with nothing between them.
 const double _kLeadingWidth = 125;
 const double _kLeadingCollapsedWidth = 44;
 
-const double _kBarButtonSize = 30;
+const double _kBarButtonSize = 32;
 
 /// Everything inside the title bar except the OS caption buttons.
 ///
@@ -85,11 +85,11 @@ class TitleBarLayout extends StatelessWidget {
     final Widget leading = Row(
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
-        const SizedBox(width: AppSpace.xs),
+        const SizedBox(width: 6),
         _BarButton(
           icon: collapsed
-              ? Icons.keyboard_double_arrow_right_rounded
-              : Icons.keyboard_double_arrow_left_rounded,
+              ? Icons.keyboard_double_arrow_right_outlined
+              : Icons.keyboard_double_arrow_left_outlined,
           tooltip: collapsed ? '展开侧边栏' : '收起侧边栏',
           shortcut: 'Ctrl+\\',
           onPressed: onToggleSidebar,
@@ -106,6 +106,7 @@ class TitleBarLayout extends StatelessWidget {
             selected: view == SidebarView.files,
             onPressed: () => onSelectView(SidebarView.files),
           ),
+          const SizedBox(width: AppSpace.xs),
           _BarButton(
             icon: SidebarView.search.icon,
             tooltip: SidebarView.search.label,
@@ -113,18 +114,15 @@ class TitleBarLayout extends StatelessWidget {
             onPressed: () => onSelectView(SidebarView.search),
           ),
         ],
-        const SizedBox(width: AppSpace.sm),
+        const SizedBox(width: 6),
       ],
     );
 
     final Widget outlineButton = _BarButton(
-      icon: Icons.account_tree_outlined,
+      icon: Icons.toc_outlined,
       tooltip: '大纲',
       shortcut: 'Ctrl+Shift+O',
       selected: settings.outlineVisible,
-      // Positioned by hand, so it must not carry the 1px side margin the row
-      // buttons use to keep their hover squares apart.
-      margin: 0,
       onPressed: () => settings.outlineVisible = !settings.outlineVisible,
     );
 
@@ -172,7 +170,10 @@ class TitleBarLayout extends StatelessWidget {
               top: 0,
               bottom: 0,
               child: Align(
-                alignment: Alignment.centerLeft,
+                // Tabs hang from the bottom of the bar so the active one can
+                // meet the editor's surface with its 2px underline; centring
+                // them left the underline floating in the middle of the strip.
+                alignment: Alignment.bottomLeft,
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
@@ -207,7 +208,7 @@ class TitleBarLayout extends StatelessWidget {
   }
 }
 
-/// A 30×30 icon button, sized for the 36px strip.
+/// A 32×32 icon button, sized for the 40px strip.
 class _BarButton extends StatefulWidget {
   const _BarButton({
     required this.icon,
@@ -215,7 +216,6 @@ class _BarButton extends StatefulWidget {
     required this.onPressed,
     this.selected = false,
     this.shortcut,
-    this.margin = 1,
   });
 
   final IconData icon;
@@ -223,10 +223,6 @@ class _BarButton extends StatefulWidget {
   final VoidCallback onPressed;
   final bool selected;
   final String? shortcut;
-
-  /// Horizontal breathing room around the hover square. Zero when the button is
-  /// positioned by hand and must sit exactly on a seam.
-  final double margin;
 
   @override
   State<_BarButton> createState() => _BarButtonState();
@@ -261,12 +257,15 @@ class _BarButtonState extends State<_BarButton> {
             duration: AppMotion.fast,
             width: _kBarButtonSize,
             height: _kBarButtonSize,
-            margin: EdgeInsets.symmetric(horizontal: widget.margin),
             decoration: BoxDecoration(
               color: background,
-              borderRadius: AppRadius.smAll,
+              borderRadius: AppRadius.mdAll,
             ),
-            child: Icon(widget.icon, size: 16, color: foreground),
+            child: Icon(
+              widget.icon,
+              size: AppIconSize.sm,
+              color: foreground,
+            ),
           ),
         ),
       ),
@@ -281,16 +280,20 @@ class _BarDivider extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: 1,
-      height: 14,
-      margin: const EdgeInsets.symmetric(horizontal: AppSpace.sm),
-      color: context.palette.outlineSoft,
+      height: 16,
+      margin: const EdgeInsets.symmetric(horizontal: 6),
+      color: context.palette.outline,
     );
   }
 }
 
 /// One open note.
 ///
-/// Width is content-driven up to 168px; when the strip runs out of room the
+/// The active tab is marked by a 2px underline that meets the editor's surface,
+/// not by a filled block: a block turns the strip into a row of buttons, while
+/// an underline keeps the bar flat and still says exactly one thing.
+///
+/// Width is content-driven up to 180px; when the strip runs out of room the
 /// [Flexible] around it shrinks the tab instead of pushing it under the
 /// outline button.
 class _TitleTab extends StatefulWidget {
@@ -321,8 +324,8 @@ class _TitleTabState extends State<_TitleTab> {
         ? '未命名'
         : widget.note.title.trim();
     final Color background = widget.active
-        ? p.surfaceRaised
-        : (_hovered ? p.surfaceRaised.withValues(alpha: 0.55) : Colors.transparent);
+        ? p.surface
+        : (_hovered ? p.surfaceRaised.withValues(alpha: 0.6) : Colors.transparent);
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,
@@ -333,43 +336,77 @@ class _TitleTabState extends State<_TitleTab> {
         behavior: HitTestBehavior.opaque,
         child: AnimatedContainer(
           duration: AppMotion.fast,
-          height: 28,
-          margin: const EdgeInsets.only(right: 4),
-          padding: const EdgeInsets.only(left: 10, right: 3),
-          constraints: const BoxConstraints(maxWidth: 168),
+          height: 32,
+          margin: const EdgeInsets.only(right: 2),
+          constraints: const BoxConstraints(maxWidth: 180),
           decoration: BoxDecoration(
             color: background,
-            borderRadius: AppRadius.smAll,
-            border: Border.all(
-              color: widget.active ? p.outline : Colors.transparent,
+            // Only the top corners: the bottom edge is the editor's edge, and
+            // rounding it would lift the tab off the surface it belongs to.
+            borderRadius: const BorderRadius.vertical(
+              top: Radius.circular(AppRadius.md),
             ),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
+          child: Stack(
+            // Centred, not top-aligned: the stack is what carries the underline,
+            // so without this the label would ride the tab's top edge.
+            alignment: Alignment.centerLeft,
             children: <Widget>[
-              Flexible(
-                child: Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: AppText.label,
-                    fontFamily: AppFonts.ui,
-                    fontFamilyFallback: AppFonts.uiFallback,
-                    color: widget.active ? p.textPrimary : p.textSecondary,
-                  ),
+              Padding(
+                padding: const EdgeInsets.only(left: 12, right: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Flexible(
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: AppText.label,
+                          fontFamily: AppFonts.ui,
+                          fontFamilyFallback: AppFonts.uiFallback,
+                          fontWeight: widget.active
+                              ? FontWeight.w600
+                              : FontWeight.w400,
+                          color: widget.active
+                              ? p.textPrimary
+                              : p.textSecondary,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    // Always laid out, only sometimes visible: hiding it with
+                    // `Opacity` keeps every tab the same width on hover, so the
+                    // strip does not twitch as the pointer sweeps across it.
+                    // `IgnorePointer` then makes sure an invisible × cannot be
+                    // clicked by accident.
+                    IgnorePointer(
+                      ignoring: !(widget.active || _hovered),
+                      child: Opacity(
+                        opacity: widget.active || _hovered ? 1 : 0,
+                        child: _TabCloseButton(onPressed: widget.onClose),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 3),
-              // Always laid out, only sometimes visible: hiding it with
-              // `Opacity` keeps every tab the same width on hover, so the strip
-              // does not twitch as the pointer sweeps across it. `IgnorePointer`
-              // then makes sure an invisible × cannot be clicked by accident.
-              IgnorePointer(
-                ignoring: !(widget.active || _hovered),
-                child: Opacity(
-                  opacity: widget.active || _hovered ? 1 : 0,
-                  child: _TabCloseButton(onPressed: widget.onClose),
+              Positioned(
+                left: 8,
+                right: 8,
+                bottom: 0,
+                child: AnimatedOpacity(
+                  duration: AppMotion.fast,
+                  opacity: widget.active ? 1 : 0,
+                  child: Container(
+                    height: 2,
+                    decoration: BoxDecoration(
+                      color: p.accent,
+                      borderRadius: const BorderRadius.vertical(
+                        top: Radius.circular(2),
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ],
@@ -408,11 +445,11 @@ class _TabCloseButtonState extends State<_TabCloseButton> {
           alignment: Alignment.center,
           decoration: BoxDecoration(
             color: _hovered ? p.surfaceSunken : Colors.transparent,
-            borderRadius: BorderRadius.circular(4),
+            borderRadius: BorderRadius.circular(AppRadius.xs),
           ),
           child: Icon(
-            Icons.close_rounded,
-            size: 12,
+            Icons.close,
+            size: AppIconSize.xs - 2,
             color: _hovered ? p.textPrimary : p.textTertiary,
           ),
         ),
@@ -449,16 +486,18 @@ class _NewTabButtonState extends State<_NewTabButton> {
           onTap: widget.onPressed,
           behavior: HitTestBehavior.opaque,
           child: Container(
-            width: 26,
-            height: 26,
-            margin: const EdgeInsets.only(left: 2),
+            width: 28,
+            height: 28,
+            // Nudged up 2px so its centre matches the 32px tabs it sits beside
+            // rather than hanging below them.
+            margin: const EdgeInsets.only(left: 2, bottom: 2),
             decoration: BoxDecoration(
               color: _hovered ? p.surfaceRaised : Colors.transparent,
-              borderRadius: AppRadius.smAll,
+              borderRadius: AppRadius.mdAll,
             ),
             child: Icon(
-              Icons.add_rounded,
-              size: 16,
+              Icons.add,
+              size: AppIconSize.sm,
               color: _hovered ? p.textPrimary : p.textSecondary,
             ),
           ),

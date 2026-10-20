@@ -33,8 +33,8 @@ enum SortMode {
 /// Which pane the left sidebar is showing.
 enum SidebarView {
   files('文件', Icons.folder_outlined),
-  search('搜索', Icons.search_rounded),
-  tags('标签', Icons.sell_outlined);
+  search('搜索', Icons.search_outlined),
+  tags('标签', Icons.tag_outlined);
 
   const SidebarView(this.label, this.icon);
   final String label;

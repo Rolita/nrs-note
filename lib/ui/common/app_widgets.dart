@@ -39,7 +39,7 @@ class AppIconButton extends StatefulWidget {
     this.active = false,
     this.activeColor,
     this.size = AppLayout.buttonHeight,
-    this.iconSize = 15.5,
+    this.iconSize = AppIconSize.sm,
     this.shortcut,
     this.tone,
   });
@@ -101,7 +101,7 @@ class _AppIconButtonState extends State<AppIconButton> {
             height: widget.size,
             decoration: BoxDecoration(
               color: background,
-              borderRadius: AppRadius.smAll,
+              borderRadius: AppRadius.mdAll,
             ),
             child: Icon(widget.icon, size: widget.iconSize, color: foreground),
           ),
@@ -158,13 +158,13 @@ class _AppTextButtonState extends State<AppTextButton> {
             color: widget.active
                 ? p.accentSoft
                 : (_hovered && enabled ? p.surfaceRaised : Colors.transparent),
-            borderRadius: AppRadius.smAll,
+            borderRadius: AppRadius.mdAll,
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
               if (widget.icon != null) ...<Widget>[
-                Icon(widget.icon, size: 14.5, color: fg),
+                Icon(widget.icon, size: AppIconSize.xs, color: fg),
                 const SizedBox(width: 7),
               ],
               Text(
@@ -259,7 +259,7 @@ class TagPill extends StatelessWidget {
                   const SizedBox(width: AppSpace.xs),
                   GestureDetector(
                     onTap: onRemove,
-                    child: Icon(Icons.close_rounded, size: 11, color: fg),
+                    child: Icon(Icons.close, size: 11, color: fg),
                   ),
                 ],
               ],
@@ -339,8 +339,8 @@ class _SegmentState extends State<_Segment> {
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     final Color fg = widget.selected
-        ? p.textPrimary
-        : (_hovered ? p.textSecondary : p.textTertiary);
+        ? p.accent
+        : (_hovered ? p.textPrimary : p.textSecondary);
     return Tooltip(
       message: widget.label,
       child: MouseRegion(
@@ -354,18 +354,17 @@ class _SegmentState extends State<_Segment> {
             height: widget.compact ? 22 : 24,
             padding: EdgeInsets.symmetric(horizontal: widget.compact ? 7 : 9),
             decoration: BoxDecoration(
-              // The selected segment is marked by its surface, not by a drop
-              // shadow: the shell keeps shadows for genuinely floating layers.
-              color: widget.selected ? p.surfaceRaised : Colors.transparent,
+              // The selected segment speaks the same language as a selected row:
+              // an `accentSoft` fill with an `accent` glyph. Marking it by
+              // surface alone was invisible in the light theme, where
+              // `surfaceRaised` and `surfaceSunken` are three levels apart.
+              color: widget.selected ? p.accentSoft : Colors.transparent,
               borderRadius: AppRadius.smAll,
-              border: widget.selected
-                  ? Border.all(color: p.outline)
-                  : null,
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
-                Icon(widget.icon, size: widget.compact ? 14 : 15, color: fg),
+                Icon(widget.icon, size: widget.compact ? AppIconSize.xs : AppIconSize.sm, color: fg),
                 if (!widget.compact) ...<Widget>[
                   const SizedBox(width: 6),
                   Text(
@@ -446,9 +445,9 @@ class _ResizeHandleState extends State<ResizeHandle> {
               alignment: Alignment.centerRight,
               child: AnimatedContainer(
                 duration: AppMotion.fast,
-                width: lit ? 3 : 1,
+                width: lit ? 2 : 1,
                 decoration: BoxDecoration(
-                  color: lit ? p.accent.withValues(alpha: 0.55) : p.outline,
+                  color: lit ? p.accent.withValues(alpha: 0.8) : p.outline,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),

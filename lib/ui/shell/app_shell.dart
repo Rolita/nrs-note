@@ -65,7 +65,7 @@ class _AppShellState extends State<AppShell> {
         duration: Duration(seconds: onAction == null ? 2 : 6),
         content: Row(
           children: <Widget>[
-            Icon(Icons.check_circle_rounded, size: 15, color: p.success),
+            Icon(Icons.check_circle_outlined, size: 15, color: p.success),
             const SizedBox(width: 10),
             Expanded(child: Text(message)),
           ],
@@ -308,13 +308,13 @@ class _AppShellState extends State<AppShell> {
       actions: <PaletteAction>[
         PaletteAction(
           label: '新建笔记',
-          icon: Icons.add_rounded,
+          icon: Icons.add,
           hint: 'Ctrl + N',
           run: _createNote,
         ),
         PaletteAction(
           label: '搜索笔记',
-          icon: Icons.search_rounded,
+          icon: Icons.search_outlined,
           hint: '切换到搜索视图',
           run: () => _selectView(SidebarView.search),
         ),
@@ -336,18 +336,18 @@ class _AppShellState extends State<AppShell> {
         ),
         PaletteAction(
           label: settings.focusMode ? '退出专注模式' : '进入专注模式',
-          icon: Icons.fullscreen_rounded,
+          icon: Icons.fullscreen_outlined,
           hint: 'Ctrl + Shift + F',
           run: () => settings.focusMode = !settings.focusMode,
         ),
         PaletteAction(
           label: settings.typewriter ? '关闭打字机模式' : '开启打字机模式',
-          icon: Icons.vertical_align_center_rounded,
+          icon: Icons.vertical_align_center_outlined,
           run: () => settings.typewriter = !settings.typewriter,
         ),
         PaletteAction(
           label: '复制当前笔记的 Markdown',
-          icon: Icons.content_copy_rounded,
+          icon: Icons.content_copy_outlined,
           run: () async {
             final String md = notes.exportSelectedMarkdown();
             if (md.isEmpty) return;
@@ -362,7 +362,7 @@ class _AppShellState extends State<AppShell> {
           ),
         PaletteAction(
           label: '从磁盘重新载入',
-          icon: Icons.refresh_rounded,
+          icon: Icons.refresh_outlined,
           run: () => notes.refresh(),
         ),
         PaletteAction(
@@ -565,7 +565,7 @@ class _ErrorBanner extends StatelessWidget {
       color: p.dangerSoft,
       child: Row(
         children: <Widget>[
-          Icon(Icons.error_outline_rounded, size: 15, color: p.danger),
+          Icon(Icons.error_outline, size: 15, color: p.danger),
           const SizedBox(width: AppSpace.sm),
           Expanded(
             child: Text(
@@ -574,7 +574,7 @@ class _ErrorBanner extends StatelessWidget {
             ),
           ),
           AppIconButton(
-            icon: Icons.close_rounded,
+            icon: Icons.close,
             tooltip: '关闭',
             size: 24,
             iconSize: 13,
