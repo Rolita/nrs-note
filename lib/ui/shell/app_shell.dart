@@ -122,7 +122,7 @@ class _AppShellState extends State<AppShell> {
 
     final bool? confirmed = await showDialog<bool>(
       context: context,
-      barrierColor: const Color(0x44000000),
+      barrierColor: p.overlay,
       builder: (BuildContext context) => AlertDialog(
         title: const Text('删除这篇笔记?'),
         content: Column(
@@ -173,9 +173,10 @@ class _AppShellState extends State<AppShell> {
           FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: p.danger,
-              // The dark theme's danger is a light salmon: white on it would be
-              // the one unreadable pair in the whole app.
-              foregroundColor: p.isDark ? p.canvas : Colors.white,
+              // A solid `danger` fill cannot assume anything about the palette:
+              // a deep red wants white text, a light salmon wants black. Let the
+              // actual contrast decide instead of the brightness flag.
+              foregroundColor: AppPalette.readableOn(p.danger),
             ),
             onPressed: () => Navigator.of(context).pop(true),
             child: const Text('删除'),
@@ -221,7 +222,7 @@ class _AppShellState extends State<AppShell> {
 
     final bool? confirmed = await showDialog<bool>(
       context: context,
-      barrierColor: const Color(0x44000000),
+      barrierColor: p.overlay,
       builder: (BuildContext context) => AlertDialog(
         title: Text('删除这 ${targets.length} 篇笔记?'),
         content: SizedBox(
@@ -284,9 +285,10 @@ class _AppShellState extends State<AppShell> {
           FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: p.danger,
-              // The dark theme's danger is a light salmon: white on it would be
-              // the one unreadable pair in the whole app.
-              foregroundColor: p.isDark ? p.canvas : Colors.white,
+              // A solid `danger` fill cannot assume anything about the palette:
+              // a deep red wants white text, a light salmon wants black. Let the
+              // actual contrast decide instead of the brightness flag.
+              foregroundColor: AppPalette.readableOn(p.danger),
             ),
             onPressed: () => Navigator.of(context).pop(true),
             child: const Text('删除'),

@@ -22,7 +22,6 @@ import '../../core/utils/table_model.dart';
 import '../../core/utils/table_selection.dart';
 import 'code_block_painter.dart';
 import 'editor_context_menu.dart';
-import 'heading_rule_painter.dart';
 import 'live_markdown.dart';
 import 'selection_wash.dart';
 
@@ -2953,25 +2952,6 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     final _CellEdit? cell = _cellEdit;
     return Stack(
       children: <Widget>[
-        // The hairline under an `## ` heading. First in the stack because it is
-        // the lowest layer that belongs to the document: below the code slab,
-        // below the wash, below the glyphs.
-        Positioned.fill(
-          child: IgnorePointer(
-            child: CustomPaint(
-              painter: HeadingRulePainter(
-                controller: widget.controller,
-                scrollController: widget.scrollController,
-                editable: _editable,
-                editorBox: () {
-                  final RenderObject? root = context.findRenderObject();
-                  return root is RenderBox && root.hasSize ? root : null;
-                },
-                color: p.rule,
-              ),
-            ),
-          ),
-        ),
         // A fenced block is one rounded slab, painted here because a
         // `TextStyle` background can only cover the run it belongs to — which
         // is what turned a block into a stripe per line. Under the wash, so a

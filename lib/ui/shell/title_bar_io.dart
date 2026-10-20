@@ -143,6 +143,9 @@ class _CaptionButton extends StatefulWidget {
 }
 
 class _CaptionButtonState extends State<_CaptionButton> {
+  /// Windows' own convention for the close button — the same red Explorer,
+  /// Settings and every other window uses. It is OS chrome, not an app colour,
+  /// so it stays hard-coded on purpose: no palette may repaint it.
   static const Color _closeRed = Color(0xFFC42B1C);
   static const Color _closeRedPressed = Color(0xFFB02617);
 

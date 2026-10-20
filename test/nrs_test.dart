@@ -697,6 +697,43 @@ Setext 标题
       expect(outdented.text, 'a\n- b');
       expect(outdented.selection, const TextSelection.collapsed(offset: 5));
     });
+
+    test('renumbers the ordered list it indents into', () {
+      final TextEditingValue indented = indentLines(
+        value('1. a\n2. b\n3. c\n4. d', 12),
+        outdent: false,
+      );
+      expect(indented.text, '1. a\n2. b\n  1. c\n3. d');
+
+      final TextEditingValue back = indentLines(indented, outdent: true);
+      expect(back.text, '1. a\n2. b\n3. c\n4. d');
+      expect(back.selection, const TextSelection.collapsed(offset: 12));
+    });
+
+    test('renumbers an ordered task list', () {
+      final TextEditingValue next = indentLines(
+        value('1. [ ] a\n2. [ ] b\n3. [ ] c', 26),
+        outdent: false,
+      );
+      expect(next.text, '1. [ ] a\n2. [ ] b\n  1. [ ] c');
+    });
+
+    test('keeps the caret beside the digits when a number narrows', () {
+      final TextEditingValue next = indentLines(
+        value('1. a\n   10. b', 13),
+        outdent: true,
+      );
+      expect(next.text, '1. a\n 1. b');
+      expect(next.selection, const TextSelection.collapsed(offset: 10));
+    });
+
+    test('a paragraph is indented but never renumbered', () {
+      final TextEditingValue next = indentLines(
+        value('1. a\n1. b\ntext', 14),
+        outdent: false,
+      );
+      expect(next.text, '1. a\n1. b\n  text');
+    });
   });
 
   group('Syntax highlighter', () {

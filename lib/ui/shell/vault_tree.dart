@@ -543,7 +543,7 @@ class VaultTreeState extends State<VaultTree> {
         .toDouble();
     final String? folder = await showDialog<String>(
       context: context,
-      barrierColor: const Color(0x44000000),
+      barrierColor: p.overlay,
       builder: (BuildContext context) => AlertDialog(
         backgroundColor: p.surfaceRaised,
         title: Text(
@@ -819,7 +819,7 @@ class VaultTreeState extends State<VaultTree> {
               border: Border.all(color: p.outline),
               boxShadow: <BoxShadow>[
                 BoxShadow(
-                  color: const Color(0xFF000000).withValues(alpha: 0.30),
+                  color: p.shadow,
                   blurRadius: 18,
                   offset: const Offset(0, 8),
                 ),

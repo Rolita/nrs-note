@@ -1881,7 +1881,14 @@ void main() {
     int run(_Pixels px, int y) {
       int n = 0;
       for (int x = 0; x < px.width; x++) {
-        if (px.isColor(px.palette.selectionEdge, x, y, tolerance: 24)) n++;
+        if (px.isColor(
+          px.palette.selectionEdge,
+          x,
+          y,
+          tolerance: _Pixels.edgeTolerance,
+        )) {
+          n++;
+        }
       }
       return n;
     }
@@ -2222,6 +2229,18 @@ class _Pixels {
   final ByteData bytes;
   final AppPalette palette;
 
+  /// How far a pixel may drift from the outline's colour and still count as the
+  /// outline. Deliberately tighter than [isColor]'s own default.
+  ///
+  /// The edge is stroked on the pixel grid, so its own pixels land on the exact
+  /// value and need no room at all. A looser window starts reading *ink* as
+  /// edge instead: 石墨素白's accent is a near-black grey (`#2A2A28`) only 15
+  /// levels off `textPrimary` (`#1B1B1A`), and at `tolerance: 24` a row of
+  /// glyphs reached the same pixel count as a real box edge — which is why a
+  /// part-of-a-table selection used to report a phantom band through its middle.
+  /// 16 is where the leak starts, so this sits safely below it.
+  static const int edgeTolerance = 12;
+
   /// Height of one editor line at the test's font size. Everything vertical in
   /// the table tests is expressed in rows, so hard-coding it here keeps the
   /// assertions readable.
@@ -2250,7 +2269,7 @@ class _Pixels {
     for (int y = 0; y < height; y++) {
       int n = 0;
       for (int x = 0; x < width; x++) {
-        if (isColor(color, x, y, tolerance: 24)) n++;
+        if (isColor(color, x, y, tolerance: edgeTolerance)) n++;
       }
       if (n >= minRun) {
         if (run == 0 || bands.last.last != y - 1) {
@@ -2266,14 +2285,14 @@ class _Pixels {
 
   int firstOf(Color color, int y) {
     for (int x = 0; x < width; x++) {
-      if (isColor(color, x, y, tolerance: 24)) return x;
+      if (isColor(color, x, y, tolerance: edgeTolerance)) return x;
     }
     return -1;
   }
 
   int lastOf(Color color, int y) {
     for (int x = width - 1; x >= 0; x--) {
-      if (isColor(color, x, y, tolerance: 24)) return x;
+      if (isColor(color, x, y, tolerance: edgeTolerance)) return x;
     }
     return -1;
   }

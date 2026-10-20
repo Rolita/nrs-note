@@ -2,7 +2,9 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/app_enums.dart';
+import '../core/theme/app_palette.dart';
 import '../core/theme/app_tokens.dart';
+import '../core/theme/theme_presets.dart';
 
 /// User preferences that survive restarts.
 ///
@@ -14,6 +16,8 @@ class SettingsController extends ChangeNotifier {
   final SharedPreferences _prefs;
 
   static const String _kTheme = 'nrs.theme';
+  static const String _kThemePreset = 'nrs.themePreset';
+  static const String _kThemeCustom = 'nrs.themeCustom';
   static const String _kSort = 'nrs.sort';
   static const String _kSidebar = 'nrs.sidebarCollapsed';
   static const String _kOutline = 'nrs.outlineVisible';
@@ -43,6 +47,93 @@ class SettingsController extends ChangeNotifier {
     _prefs.setString(_kTheme, value.name);
     notifyListeners();
   }
+
+  // --------------------------------------------------------- colour scheme
+  //
+  // 「配色方案」 and 「明暗模式」 are two orthogonal axes: the scheme picks which
+  // board, the mode picks which *face* of that board. `_kTheme` above keeps
+  // carrying the mode (system / light / dark); renaming it would throw away an
+  // existing install's light-or-dark choice.
+
+  /// The board the user picked. An unrecognised stored string falls back to
+  /// 石墨素白 — and is deliberately *not* rewritten, so a downgrade still reads.
+  ThemePresetId get themePreset {
+    final String? raw = _prefs.getString(_kThemePreset);
+    return ThemePresetId.values.firstWhere(
+      (ThemePresetId e) => e.name == raw,
+      orElse: () => ThemePresetId.fallback,
+    );
+  }
+
+  set themePreset(ThemePresetId value) {
+    if (themePreset == value) return;
+    _prefs.setString(_kThemePreset, value.name);
+    notifyListeners();
+  }
+
+  /// The user's own board. The in-memory draft wins over what is on disk, so a
+  /// drag under the pointer is reflected the instant it moves.
+  CustomPalette? get customPalette =>
+      _draftCustom ?? CustomPalette.decode(_prefs.getString(_kThemeCustom));
+
+  /// While the pointer is down: update the draft and notify, **do not write**.
+  ///
+  /// On Windows every `setString` rewrites the whole preferences file, so
+  /// committing on each drag frame would be sixty file writes per second.
+  void previewCustomPalette(CustomPalette value) {
+    _draftCustom = value;
+    notifyListeners();
+  }
+
+  /// On pointer-up / on committing a hex field: write it out and drop the draft.
+  void commitCustomPalette(CustomPalette value) {
+    final bool unchanged = _prefs.getString(_kThemeCustom) == value.raw;
+    _draftCustom = null;
+    if (unchanged) return;
+    _prefs.setString(_kThemeCustom, value.raw);
+    notifyListeners();
+  }
+
+  /// Rolls *both* keys back to [snapshot] — the editor's 「取消」.
+  ///
+  /// The snapshot is a whole pair, so a user who was on 石墨素白 with no custom
+  /// board, opened the editor (which switches to `custom`) and cancelled, comes
+  /// back to 石墨素白 with the custom board erased — no residue left behind.
+  void restoreTheme(({ThemePresetId preset, CustomPalette? custom}) snapshot) {
+    _draftCustom = null;
+    if (snapshot.preset == ThemePresetId.fallback) {
+      _prefs.remove(_kThemePreset);
+    } else {
+      _prefs.setString(_kThemePreset, snapshot.preset.name);
+    }
+    if (snapshot.custom == null) {
+      _prefs.remove(_kThemeCustom);
+    } else {
+      _prefs.setString(_kThemeCustom, snapshot.custom!.raw);
+    }
+    notifyListeners();
+  }
+
+  /// The palette in force for a given face of the current scheme.
+  AppPalette paletteFor(Brightness brightness) => ThemePresets.resolve(
+    preset: themePreset,
+    custom: customPalette,
+    brightness: brightness,
+  );
+
+  /// Memo key for the two `ThemeData` objects: any change to either key, or to
+  /// the draft, changes it.
+  String get themeSignature =>
+      '${themePreset.name}|'
+      '${_draftCustom?.raw ?? _prefs.getString(_kThemeCustom) ?? ''}';
+
+  /// True while the editor dialog is open, so `MaterialApp` can drop its theme
+  /// tween: frame-by-frame cross-fades between a colour and the finger that is
+  /// dragging it feel sticky, and mid-tween boards briefly report a stale
+  /// `isDark`.
+  bool themeEditing = false;
+
+  CustomPalette? _draftCustom;
 
   // ------------------------------------------------------------------ sorting
 

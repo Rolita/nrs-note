@@ -2270,6 +2270,12 @@ TextEditingValue? continueListOnEnter(TextEditingValue v) {
 }
 
 /// Tab / Shift+Tab indentation inside lists.
+///
+/// Indenting changes an item's *level*, not its number — the number is literal
+/// source text that the renderer prints as written. Without a renumber pass an
+/// ordered list drifts into `1, 2, 3, 5, 5, 6, 3` after a few Tab round trips,
+/// so every indent renumbers the list block it lands in: one counter per
+/// nesting level, each counting from 1 again.
 TextEditingValue indentLines(TextEditingValue v, {required bool outdent}) {
   final String text = v.text;
   final int firstLine = lineStartOf(text, v.selection.start);
@@ -2291,9 +2297,24 @@ TextEditingValue indentLines(TextEditingValue v, {required bool outdent}) {
     }
     if (i != lines.length - 1) out.write('\n');
   }
-  final String result =
+  final String indented =
       text.substring(0, firstLine) + out.toString() + text.substring(blockEnd);
-  final int delta = result.length - text.length;
+  final int delta = indented.length - text.length;
+  final ({String text, List<({int at, int delta})> shifts}) numbered =
+      _renumberOrderedList(indented, firstLine, blockEnd + delta);
+  final String result = numbered.text;
+
+  // Every number that changed width moves the text after it; the caret and the
+  // selection follow by the sum of the shifts that happen before them.
+  int follow(int offset) {
+    int moved = offset;
+    for (final ({int at, int delta}) shift in numbered.shifts) {
+      if (offset > shift.at) moved += shift.delta;
+    }
+    if (moved < 0) return 0;
+    return moved > result.length ? result.length : moved;
+  }
+
   // Tab is an edit, not a selection. With a plain caret this used to select the
   // whole line, so the next keystroke — or an IME composition — replaced the
   // line instead of editing it. The caret follows its text by the indentation's
@@ -2302,17 +2323,139 @@ TextEditingValue indentLines(TextEditingValue v, {required bool outdent}) {
     return TextEditingValue(
       text: result,
       selection: TextSelection.collapsed(
-        offset: (v.selection.start + delta).clamp(firstLine, result.length),
+        offset: follow(
+          (v.selection.start + delta).clamp(firstLine, indented.length),
+        ),
       ),
     );
   }
   return TextEditingValue(
     text: result,
     selection: TextSelection(
-      baseOffset: firstLine,
-      extentOffset: (blockEnd + delta).clamp(firstLine, result.length),
+      baseOffset: follow(firstLine),
+      extentOffset: follow(
+        (blockEnd + delta).clamp(firstLine, indented.length),
+      ),
     ),
   );
+}
+
+/// Rewrites every ordered item in the list block that holds the lines
+/// `[from]..[to]` of [text], so each nesting level counts 1, 2, 3 again.
+///
+/// A blank line does not end a list (a loose list is still one list); anything
+/// else does. [shifts] reports each number whose width changed, at its offset in
+/// [text], so the caller can keep the caret beside the digits it was next to.
+({String text, List<({int at, int delta})> shifts}) _renumberOrderedList(
+  String text,
+  int from,
+  int to,
+) {
+  const List<({int at, int delta})> none = <({int at, int delta})>[];
+  final List<String> lines = text.split('\n');
+  final List<int> starts = <int>[];
+  int offset = 0;
+  for (final String line in lines) {
+    starts.add(offset);
+    offset += line.length + 1;
+  }
+
+  int lineAt(int position) {
+    final int at = position < 0
+        ? 0
+        : (position > text.length ? text.length : position);
+    int i = 0;
+    while (i + 1 < starts.length && starts[i + 1] <= at) {
+      i++;
+    }
+    return i;
+  }
+
+  bool isList(int i) {
+    final LineMarkerKind kind = scanLineMarker(lines[i]).kind;
+    return kind == LineMarkerKind.bullet ||
+        kind == LineMarkerKind.ordered ||
+        kind == LineMarkerKind.task;
+  }
+
+  bool isBlank(int i) => lines[i].trim().isEmpty;
+
+  int first = lineAt(from);
+  int last = lineAt(to);
+  // Tab on a paragraph is still plain indentation: only an edit that lands on a
+  // list line renumbers anything.
+  bool touchesList = false;
+  for (int i = first; i <= last; i++) {
+    if (isList(i)) {
+      touchesList = true;
+      break;
+    }
+  }
+  if (!touchesList) return (text: text, shifts: none);
+
+  // Widen to the whole list: an indented item changes the siblings above and
+  // below it, not just its own line.
+  while (first > 0 && (isBlank(first - 1) || isList(first - 1))) {
+    first--;
+  }
+  while (last + 1 < lines.length && (isBlank(last + 1) || isList(last + 1))) {
+    last++;
+  }
+
+  /// One counter per nesting level, in the order the levels open.
+  final List<({int indent, int number})> levels =
+      <({int indent, int number})>[];
+  final List<({int at, int delta})> shifts = <({int at, int delta})>[];
+  final RegExp lead = RegExp(r'^(\s*)(\d{1,9})([.)])');
+  bool changed = false;
+
+  for (int i = first; i <= last; i++) {
+    if (isBlank(i)) continue;
+    final LineMarker marker = scanLineMarker(lines[i]);
+    // The lead is read here rather than off [marker]: a task's number is not
+    // exposed for every separator (`1) [ ] x` parses as a task with no number).
+    final Match? m =
+        marker.kind == LineMarkerKind.ordered ||
+            marker.kind == LineMarkerKind.task
+        ? lead.firstMatch(lines[i])
+        : null;
+    if (m == null) {
+      if (marker.kind != LineMarkerKind.bullet &&
+          marker.kind != LineMarkerKind.task) {
+        continue;
+      }
+      // A bullet is a different list, so an ordered item at the same level
+      // after it starts over.
+      while (levels.isNotEmpty && levels.last.indent > marker.indent) {
+        levels.removeLast();
+      }
+      if (levels.isNotEmpty && levels.last.indent == marker.indent) {
+        levels.removeLast();
+      }
+      continue;
+    }
+
+    final int indent = m.group(1)!.length;
+    while (levels.isNotEmpty && levels.last.indent > indent) {
+      levels.removeLast();
+    }
+    final int number;
+    if (levels.isNotEmpty && levels.last.indent == indent) {
+      number = levels.last.number + 1;
+      levels[levels.length - 1] = (indent: indent, number: number);
+    } else {
+      number = 1;
+      levels.add((indent: indent, number: number));
+    }
+
+    final int oldWidth = m.group(2)!.length;
+    if (number == int.parse(m.group(2)!)) continue;
+    shifts.add((at: starts[i] + indent, delta: '$number'.length - oldWidth));
+    lines[i] = lines[i].replaceRange(indent, indent + oldWidth, '$number');
+    changed = true;
+  }
+
+  return (text: changed ? lines.join('\n') : text, shifts: shifts);
 }
 
 bool isInsideFence(String text, int offset) {

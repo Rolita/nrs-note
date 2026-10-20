@@ -15,18 +15,49 @@ abstract final class AppTheme {
           seedColor: p.accent,
           brightness: p.brightness,
         ).copyWith(
+          // Every slot below is set explicitly. `fromSeed` derives a *whole*
+          // tonal palette from the seed, so any slot left unset leaks a colour
+          // derived from the user's accent — a "vivid teal" accent used to tint
+          // `secondary`, `surfaceVariant` and dropdown menus into hues that
+          // belong to no preset. Mapping each slot to a semantic token keeps the
+          // chrome neutral no matter what the accent is.
           primary: p.accent,
           onPrimary: p.onAccent,
           primaryContainer: p.accentSoft,
           onPrimaryContainer: p.textPrimary,
-          surface: p.surface,
-          onSurface: p.textPrimary,
-          surfaceContainerHighest: p.surfaceRaised,
-          outline: p.outline,
-          outlineVariant: p.outlineSoft,
+          secondary: p.textSecondary,
+          onSecondary: p.surfaceRaised,
+          secondaryContainer: p.surfaceSunken,
+          onSecondaryContainer: p.textPrimary,
+          tertiary: p.accentHover,
+          onTertiary: p.onAccent,
+          tertiaryContainer: p.accentSoft,
+          onTertiaryContainer: p.textPrimary,
           error: p.danger,
           onError: p.onAccent,
           errorContainer: p.dangerSoft,
+          onErrorContainer: p.textPrimary,
+          surface: p.surface,
+          onSurface: p.textPrimary,
+          surfaceContainerLowest: p.surface,
+          surfaceContainerLow: p.surface,
+          surfaceContainer: p.surfaceRaised,
+          surfaceContainerHigh: p.surfaceRaised,
+          surfaceContainerHighest: p.surfaceRaised,
+          onSurfaceVariant: p.textSecondary,
+          inverseSurface: p.textPrimary,
+          onInverseSurface: p.surface,
+          inversePrimary: p.accentSoft,
+          outline: p.outline,
+          outlineVariant: p.outlineSoft,
+          shadow: p.shadow,
+          // Material's own scrim is opaque black in both brightnesses; the app
+          // passes `p.overlay` explicitly wherever it opens a dialog, so this is
+          // only a backstop for a component that reaches for the scheme.
+          scrim: const Color(0xFF000000),
+          // Elevation must never tint a surface: the shell separates its panels
+          // with hairlines, and a tinted panel would break that.
+          surfaceTint: Colors.transparent,
         );
 
     final TextTheme text = _textTheme(p);

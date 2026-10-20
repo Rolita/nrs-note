@@ -7,6 +7,13 @@ import 'syntax_highlighter.dart';
 /// Kept in its own file so both the rendered view and the live editor can share
 /// one definition — a code block must not change colour just because the user
 /// moved the caret.
+///
+/// These ten constants are **deliberately** outside the palette system: syntax
+/// highlighting is a discipline of its own (a shifted hue on a keyword is a
+/// different language), and two well-tuned sets keyed off brightness read better
+/// than 25 tokens re-tinted per scheme. The honest cost: a user's custom
+/// palette does not reach code blocks. Revisiting that is a later job, not an
+/// oversight.
 @immutable
 class CodePalette {
   const CodePalette({

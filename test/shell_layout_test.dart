@@ -7,7 +7,6 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:nrs/core/app_enums.dart';
-import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/core/theme/app_theme.dart';
 import 'package:nrs/core/theme/app_tokens.dart';
 import 'package:nrs/data/models/note.dart';
@@ -125,6 +124,9 @@ void main() {
 
     SharedPreferences.setMockInitialValues(<String, Object>{
       'nrs.sort': sort.name,
+      // Deliberately not the default board: the shell must hold up on the new
+      // `paletteFor` path, not just on 石墨素白.
+      'nrs.themePreset': 'vivid',
     });
     final SettingsController settings = await SettingsController.load();
     final Note note = Note(
@@ -147,7 +149,7 @@ void main() {
           ChangeNotifierProvider<NotesController>.value(value: notes),
         ],
         child: MaterialApp(
-          theme: AppTheme.build(AppPalette.light),
+          theme: AppTheme.build(settings.paletteFor(Brightness.light)),
           home: const AppShell(),
         ),
       ),

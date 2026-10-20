@@ -5,15 +5,18 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../core/app_enums.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
+import '../../core/theme/theme_presets.dart';
 import '../../state/notes_controller.dart';
 import '../../state/settings_controller.dart';
 import '../common/app_widgets.dart';
+import '../theme/preset_picker.dart';
+import '../theme/theme_editor_dialog.dart';
 
 /// Preferences, vault status and a keyboard reference in one dialog.
 Future<void> showSettingsDialog(BuildContext context) {
   return showDialog<void>(
     context: context,
-    barrierColor: const Color(0x44000000),
+    barrierColor: context.palette.overlay,
     builder: (BuildContext context) => const _SettingsDialog(),
   );
 }
@@ -28,7 +31,6 @@ class _SettingsDialog extends StatelessWidget {
     final NotesController notes = context.watch<NotesController>();
 
     return Dialog(
-      alignment: Alignment.topCenter,
       insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 48),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 620, maxHeight: 700),
@@ -77,16 +79,54 @@ class _SettingsDialog extends StatelessWidget {
                     _Group(
                       title: '外观',
                       children: <Widget>[
+                        _StackedRow(
+                          label: '配色方案',
+                          hint: '整个应用共用一套色板;「自定义」用你自己的配色,点它右上角的铅笔可以逐个颜色调整',
+                          control: ThemePresetPicker(
+                            value: settings.themePreset,
+                            brightness: Theme.of(context).brightness,
+                            custom: settings.customPalette,
+                            // 自定义 is just another board now: tapping it puts
+                            // the user's own palette in force. The first tap
+                            // seeds one from the scheme in force, so switching
+                            // never changes what is on screen — it only makes
+                            // it editable.
+                            onChanged: (ThemePresetId v) {
+                              if (v == ThemePresetId.custom) {
+                                settings.commitCustomPalette(
+                                  settings.customPalette ??
+                                      ThemePresets.seed(
+                                        settings.themePreset ==
+                                                ThemePresetId.custom
+                                            ? ThemePresetId.fallback
+                                            : settings.themePreset,
+                                      ),
+                                );
+                              }
+                              settings.themePreset = v;
+                            },
+                            onEditCustom: () => showThemeEditorDialog(context),
+                          ),
+                        ),
                         _Row(
-                          label: '主题',
+                          label: '明暗模式',
                           hint: '跟随系统会随 Windows 的浅色/深色模式切换',
                           control: SegmentedToggle<ThemePreference>(
                             value: settings.theme,
-                            onChanged: (ThemePreference v) => settings.theme = v,
-                            items: <({ThemePreference value, IconData icon, String label})>[
-                              for (final ThemePreference t in ThemePreference.values)
-                                (value: t, icon: t.icon, label: t.label),
-                            ],
+                            onChanged: (ThemePreference v) =>
+                                settings.theme = v,
+                            items:
+                                <
+                                  ({
+                                    ThemePreference value,
+                                    IconData icon,
+                                    String label,
+                                  })
+                                >[
+                                  for (final ThemePreference t
+                                      in ThemePreference.values)
+                                    (value: t, icon: t.icon, label: t.label),
+                                ],
                           ),
                         ),
                         _Row(
@@ -160,7 +200,8 @@ class _SettingsDialog extends StatelessWidget {
                           control: _Dropdown<SortMode>(
                             value: settings.sort,
                             items: <SortMode, String>{
-                              for (final SortMode m in SortMode.values) m: m.label,
+                              for (final SortMode m in SortMode.values)
+                                m: m.label,
                             },
                             onChanged: (SortMode v) {
                               settings.sort = v;
@@ -239,7 +280,10 @@ class _SettingsDialog extends StatelessWidget {
                           ),
                         ),
                         Padding(
-                          padding: const EdgeInsets.only(top: AppSpace.sm, left: 2),
+                          padding: const EdgeInsets.only(
+                            top: AppSpace.sm,
+                            left: 2,
+                          ),
                           child: Text(
                             notes.supportsNativeFiles
                                 ? '每篇笔记都是一个独立的 .md 文件,可以用任何编辑器打开、同步或备份。'
@@ -433,6 +477,52 @@ class _Row extends StatelessWidget {
   }
 }
 
+/// A row whose control spans the full width *under* its label.
+///
+/// [_Row] puts the control on the right, which is right for a switch or a
+/// segmented toggle but cannot hold a four-cell gallery of boards.
+class _StackedRow extends StatelessWidget {
+  const _StackedRow({required this.label, required this.control, this.hint});
+
+  final String label;
+  final String? hint;
+  final Widget control;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppSpace.sm),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: AppText.ui,
+              fontWeight: FontWeight.w500,
+              color: p.textPrimary,
+            ),
+          ),
+          if (hint != null) ...<Widget>[
+            const SizedBox(height: 2),
+            Text(
+              hint!,
+              style: TextStyle(
+                fontSize: AppText.caption,
+                height: 1.45,
+                color: p.textTertiary,
+              ),
+            ),
+          ],
+          const SizedBox(height: AppSpace.sm + 2),
+          control,
+        ],
+      ),
+    );
+  }
+}
+
 class _SliderRow extends StatelessWidget {
   const _SliderRow({
     required this.label,
@@ -553,21 +643,15 @@ class _Dropdown<T> extends StatelessWidget {
           isDense: true,
           borderRadius: AppRadius.mdAll,
           dropdownColor: p.surfaceRaised,
-          icon: Icon(
-            LucideIcons.chevronDown,
-            size: 16,
-            color: p.textTertiary,
-          ),
+          icon: Icon(LucideIcons.chevronDown, size: 16, color: p.textTertiary),
           style: TextStyle(fontSize: AppText.ui, color: p.textPrimary),
           onChanged: (T? v) {
             if (v != null) onChanged(v);
           },
           items: items.entries
               .map(
-                (MapEntry<T, String> e) => DropdownMenuItem<T>(
-                  value: e.key,
-                  child: Text(e.value),
-                ),
+                (MapEntry<T, String> e) =>
+                    DropdownMenuItem<T>(value: e.key, child: Text(e.value)),
               )
               .toList(),
         ),
@@ -616,7 +700,10 @@ class _ShortcutTable extends StatelessWidget {
                 const SizedBox(width: AppSpace.md),
                 Text(
                   label,
-                  style: TextStyle(fontSize: AppText.label, color: p.textSecondary),
+                  style: TextStyle(
+                    fontSize: AppText.label,
+                    color: p.textSecondary,
+                  ),
                 ),
               ],
             ),
