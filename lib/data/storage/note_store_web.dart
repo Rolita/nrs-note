@@ -167,6 +167,14 @@ class WebNoteStore with NoteStoreSupport implements NoteStore {
     return true;
   }
 
+  /// Browser storage cannot be changed by another program, so there is no
+  /// change detection to offer.
+  @override
+  Future<List<NoteFileStamp>?> stamps() async => null;
+
+  @override
+  Future<NoteFileStamp?> stampOf(String relativePath) async => null;
+
   @override
   Future<List<Note>> loadAll() async {
     await init();

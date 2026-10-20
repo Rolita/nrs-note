@@ -2,10 +2,16 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/gestures.dart'
-    show kDoubleTapTimeout, kSecondaryMouseButton, kTouchSlop;
+    show
+        PointerDeviceKind,
+        kDoubleTapTimeout,
+        kSecondaryMouseButton,
+        kTouchSlop;
 import 'package:flutter/material.dart' hide TableCell;
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart' show SchedulerPhase;
 import 'package:flutter/services.dart';
 
 import '../../core/theme/app_palette.dart';
@@ -399,19 +405,16 @@ class TableCellBarrierFormatter extends TextInputFormatter {
     // characters: the platform's own replacement would splice text across the
     // pipes. This covers Delete, Backspace, typed text and an IME commit; the
     // helper refuses what it cannot recognise rather than letting it corrupt
-    // the block. Composing text over a range is written into the active cell
-    // and the composition is closed, so the next update continues in that cell.
+    // the block. Composing text over a range is written into the active cell,
+    // and the composition is kept there so each preedit update replaces the
+    // previous one instead of appending to it.
     if (!oldValue.selection.isCollapsed) {
       final TextEditingValue? handled = tableSelectionEdit(
         oldValue,
         newValue,
         resolve: resolve,
       );
-      if (handled != null) {
-        return handled.composing.isValid
-            ? handled.copyWith(composing: TextRange.empty)
-            : handled;
-      }
+      if (handled != null) return handled;
       // The edit was not a rectangle: the selection is anchored on the hidden
       // divider, or it reaches past the block. If it would cut the divider or a
       // row boundary, there is no safe rewrite — the source is not on screen.
@@ -820,8 +823,36 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
   // ------------------------------------------------------------ caret layer
 
+  /// The caret's height on the line it currently sits on.
+  ///
+  /// It is fed back into the field as `cursorHeight`, because
+  /// [RenderEditable] marks itself for layout when that property changes and a
+  /// post-paint change would flash the old height for a frame.
+  double? _caretHeight;
+
+  /// The field's one-space layout template, measured for the caret seat.
+  ///
+  /// [RenderEditable] anchors the caret through this template (its strut box
+  /// supplies `getFullHeightForCaret`), so the seat needs the same numbers.
+  ({double height, double top})? _strutMetrics;
+
+  Object? _strutKey;
+
+  /// Runs [_seatCaret] after the field lays out and before the frame paints.
+  final GlobalKey _caretSeatKey = GlobalKey();
+
+  bool _caretPostFrameScheduled = false;
+
+  /// How much taller the field draws its caret than `cursorHeight` on iOS and
+  /// macOS.
+  double get _caretInset =>
+      defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.macOS
+      ? 2
+      : 0;
+
   /// Pins the caret **above** the text, over the opaque bands the renderer
-  /// paints behind a run.
+  /// paints behind a run, and runs [_seatCaret] on its line.
   ///
   /// Windows (and Android) make [RenderEditable] draw the caret *under* the
   /// glyphs, which is invisible on plain prose but swallows it whole inside an
@@ -830,21 +861,314 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// from the platform and writes the platform value back into the render
   /// object on every rebuild; the render object itself is public and mutable,
   /// so the order is re-asserted after each frame.
+  ///
+  /// The seat cannot run in that callback: it corrects geometry that
+  /// `EditableText` resets on every rebuild, so a post-paint pass would show
+  /// one frame at the native (strut-misaligned) position before snapping.
+  /// Instead the [_CaretSeat] around the field runs it during layout — after
+  /// the new text is laid out, before it is painted.
   void _pinCaretAboveText() {
+    _caretSeatKey.currentContext?.findRenderObject()?.markNeedsLayout();
+    if (_caretPostFrameScheduled) return;
+    _caretPostFrameScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _caretPostFrameScheduled = false;
       if (!mounted) return;
-      _editable()?.paintCursorAboveText = true;
+      final RenderEditable? field = _editable();
+      if (field == null) return;
+      field.paintCursorAboveText = true;
+      // Layout may have changed since the pre-frame measurement (a marker line
+      // revealing its source, a new paragraph): settle the height now that the
+      // new boxes exist.
+      _adoptCaretHeight(field);
     });
+  }
+
+  /// Records the caret's new line as soon as the selection or focus moves.
+  ///
+  /// `EditableText` rebuilds on every move and writes `cursorOffset` back to
+  /// zero, so the height has to be measured and built into the `TextField`
+  /// before that rebuild for the caret to be the right size in its first frame.
+  ///
+  /// A notification can arrive from inside a build — the editor pane re-binds a
+  /// freshly opened note there — and the element tree may not be walked then.
+  /// The seat still runs during the coming layout and the post-frame pass takes
+  /// the height from that layout.
+  void _onCaretMoved() {
+    if (WidgetsBinding.instance.schedulerPhase !=
+        SchedulerPhase.persistentCallbacks) {
+      final RenderEditable? field = _editable();
+      if (field != null) _adoptCaretHeight(field);
+    }
+    _pinCaretAboveText();
+  }
+
+  /// Adopts [field]'s line height as the caret height when it changed.
+  void _adoptCaretHeight(RenderEditable field) {
+    final double? next = _caretHeightFor(field);
+    if (next == null) return;
+    final double current = _caretHeight ?? field.preferredLineHeight;
+    if ((next - current).abs() <= 0.01) return;
+    if (!mounted) return;
+    setState(() => _caretHeight = next);
+  }
+
+  /// The height the caret should have on its current line, or null when the
+  /// line cannot say (no focus, an expanded selection, or hidden source).
+  double? _caretHeightFor(RenderEditable field) {
+    if (!widget.focusNode.hasFocus) return null;
+    final TextSelection selection = widget.controller.selection;
+    if (!selection.isValid || !selection.isCollapsed) return null;
+
+    final String text = widget.controller.text;
+    final int pos = selection.extentOffset;
+    if (pos < 0 || pos > text.length) return null;
+
+    final ({TextSelection? probe, bool phantom}) caret = _caretProbe(
+      text,
+      selection,
+    );
+    final Rect? line = _caretLineBox(field, caret.probe);
+    if (line == null) {
+      // An empty note is one line whose box cannot be selected; the field's
+      // own preferred height is that line.
+      return text.isEmpty ? field.preferredLineHeight : null;
+    }
+    if (caret.phantom) return field.preferredLineHeight;
+    if (line.height < _kMinCaretLine) return null;
+    return math.min(field.preferredLineHeight, line.height);
+  }
+
+  /// The character whose line the caret is drawn next to, and whether the
+  /// caret sits on the empty line after a trailing newline.
+  ///
+  /// At the end of the text there is no character, so the last one is used; an
+  /// upstream caret at a soft wrap belongs to the previous visual line, exactly
+  /// as the painter places it (a newline is the start of the *next* line
+  /// either way).
+  ({TextSelection? probe, bool phantom}) _caretProbe(
+    String text,
+    TextSelection selection,
+  ) {
+    final int pos = selection.extentOffset;
+    final bool phantom =
+        pos == text.length && pos > 0 && text.codeUnitAt(pos - 1) == 0x0A;
+    if (pos == text.length) {
+      return (
+        probe: pos > 0
+            ? TextSelection(baseOffset: pos - 1, extentOffset: pos)
+            : null,
+        phantom: phantom,
+      );
+    }
+    if (selection.affinity == TextAffinity.upstream &&
+        pos > 0 &&
+        text.codeUnitAt(pos - 1) != 0x0A) {
+      return (
+        probe: TextSelection(baseOffset: pos - 1, extentOffset: pos),
+        phantom: false,
+      );
+    }
+    return (
+      probe: TextSelection(baseOffset: pos, extentOffset: pos + 1),
+      phantom: phantom,
+    );
+  }
+
+  /// The paragraph's own line box for [probe], including its line spacing.
+  ///
+  /// `getBoxesForSelection` reads the field's selection height style, which has
+  /// to stay `includeLineSpacingTop` for the wash's seam — borrow it for the
+  /// measurement and hand it straight back.
+  Rect? _caretLineBox(RenderEditable field, TextSelection? probe) {
+    final List<TextBox>? boxes = _caretBoxes(
+      field,
+      probe,
+      ui.BoxHeightStyle.max,
+    );
+    if (boxes == null || boxes.isEmpty) return null;
+    Rect box = boxes.first.toRect();
+    for (final TextBox other in boxes.skip(1)) {
+      final Rect rect = other.toRect();
+      if (rect.height > box.height) box = rect;
+    }
+    return box;
+  }
+
+  /// The strut box the caret is anchored to for [probe], in field coordinates.
+  ///
+  /// [RenderEditable] computes the caret's y through the strut box of the
+  /// character it sits next to (`getOffsetForCaret` → `BoxHeightStyle.strut`),
+  /// and its x through the leading or trailing edge of the same box. Asking
+  /// for that box reproduces the native anchor without touching
+  /// [RenderEditable.size], which may not be read from inside another render
+  /// object's layout.
+  Rect? _caretAnchorBox(
+    RenderEditable field,
+    TextSelection? probe,
+    bool trailing,
+  ) {
+    final List<TextBox>? boxes = _caretBoxes(
+      field,
+      probe,
+      ui.BoxHeightStyle.strut,
+    );
+    if (boxes == null || boxes.isEmpty) return null;
+    return (trailing ? boxes.last : boxes.first).toRect();
+  }
+
+  List<TextBox>? _caretBoxes(
+    RenderEditable field,
+    TextSelection? probe,
+    ui.BoxHeightStyle heightStyle,
+  ) {
+    if (probe == null) return null;
+    final ui.BoxHeightStyle style = field.selectionHeightStyle;
+    field.selectionHeightStyle = heightStyle;
+    final List<TextBox> boxes = field.getBoxesForSelection(probe);
+    field.selectionHeightStyle = style;
+    return boxes;
+  }
+
+  /// The field's one-space layout template: the strut box's height is the
+  /// caret's `fullHeight`, and its top is how far the template's baseline sits
+  /// below the strut box's top.
+  ///
+  /// Built from the field's own style, strut and text settings so it matches
+  /// `TextPainter._createLayoutTemplate` exactly. Cached because the caret seat
+  /// runs on every layout.
+  ({double height, double top}) _caretStrutMetrics(RenderEditable field) {
+    final TextStyle? style = field.text?.style;
+    final Object key = (
+      style,
+      field.strutStyle,
+      field.textScaler,
+      field.textDirection,
+      field.locale,
+      field.textHeightBehavior,
+      field.maxLines,
+    );
+    final ({double height, double top})? cached = _strutMetrics;
+    if (cached != null && _strutKey == key) return cached;
+
+    final TextPainter template = TextPainter(
+      text: TextSpan(text: ' ', style: style),
+      textAlign: TextAlign.left,
+      textDirection: field.textDirection,
+      textScaler: field.textScaler,
+      locale: field.locale,
+      textHeightBehavior: field.textHeightBehavior,
+      strutStyle: field.strutStyle,
+      maxLines: field.maxLines,
+    )..layout();
+    final TextBox box = template
+        .getBoxesForSelection(
+          const TextSelection(baseOffset: 0, extentOffset: 1),
+          boxHeightStyle: ui.BoxHeightStyle.strut,
+        )
+        .single;
+    template.dispose();
+    final ({double height, double top}) metrics = (
+      height: box.bottom - box.top,
+      top: box.top,
+    );
+    _strutKey = key;
+    _strutMetrics = metrics;
+    return metrics;
+  }
+
+  /// Puts the caret's centre on its paragraph line's centre.
+  ///
+  /// The 1px strut (see the field's `strutStyle`) keeps code rows at their own
+  /// 20px instead of the 28px the body style would force on them — but
+  /// [RenderEditable] also measures the caret's line through that strut.
+  /// `getFullHeightForCaret` returns the ~1px strut box, so the caret is
+  /// centred around a line top that is not the line's, and an end-of-text caret
+  /// ends up ~15px above the glyphs it belongs to — typing the last word of a
+  /// note showed the caret floating over the previous line.
+  ///
+  /// Runs inside [_CaretSeat]'s layout, after the field has laid out and
+  /// before the frame is painted. Only `cursorOffset` moves here; the height is
+  /// already on the field through `TextField.cursorHeight`.
+  ///
+  /// The seat cannot ask the field for its caret rect: `getLocalRectForCaret`
+  /// reads [RenderEditable.size], and a render object may not read a
+  /// descendant's size during layout. It reconstructs the native anchor from
+  /// the strut box instead:
+  ///
+  ///  * an ordinary caret is anchored at its character's strut box top, and
+  ///    `getFullHeightForCaret` is the (constant) template strut box, so its
+  ///    centre is that box's top plus half the template height;
+  ///  * an end-of-text caret is anchored at the last line's baseline; the same
+  ///    line's strut box top minus the template's strut box top gives that;
+  ///  * a caret on the empty line after a trailing newline is anchored at that
+  ///    line's top.
+  void _seatCaret(RenderEditable field) {
+    if (!widget.focusNode.hasFocus) return;
+    final TextSelection selection = widget.controller.selection;
+    if (!selection.isValid || !selection.isCollapsed) return;
+
+    final String text = widget.controller.text;
+    final int pos = selection.extentOffset;
+    if (pos < 0 || pos > text.length) return;
+
+    final ({TextSelection? probe, bool phantom}) caret = _caretProbe(
+      text,
+      selection,
+    );
+    final Rect? line = _caretLineBox(field, caret.probe);
+    final ({double height, double top}) strut = _caretStrutMetrics(field);
+    final bool trailing = selection.affinity == TextAffinity.upstream;
+
+    final double center;
+    double nativeCenter;
+    if (line == null) {
+      if (text.isNotEmpty) return;
+      // No paragraph to measure: the engine puts the caret at the field's top
+      // and the template supplies its height.
+      center = field.preferredLineHeight / 2;
+      nativeCenter = strut.height / 2;
+    } else if (caret.phantom) {
+      // The caret sits on the empty line after a trailing newline; that line
+      // has no run and therefore no box, but it starts where the last one ends
+      // and is a body line tall.
+      center = line.bottom + field.preferredLineHeight / 2;
+      nativeCenter = line.bottom + strut.height / 2;
+    } else {
+      if (line.height < _kMinCaretLine) return;
+      center = line.center.dy;
+      final Rect? anchor = _caretAnchorBox(field, caret.probe, trailing);
+      if (anchor == null) return;
+      nativeCenter = anchor.top + strut.height / 2;
+      if (pos == text.length && !trailing) {
+        // End of text without a trailing newline: the engine anchors the caret
+        // on the last line's baseline instead of the character's strut box.
+        // (An upstream caret skips that path and stays on the character.)
+        nativeCenter -= strut.top;
+      }
+    }
+
+    final double dy = center - nativeCenter;
+    field.cursorOffset = Offset(
+      field.cursorOffset.dx,
+      dy.abs() > 0.01 ? dy : 0,
+    );
+  }
+
+  /// [_CaretSeat]'s layout hook: resolves the live field and seats the caret.
+  void _seatCaretNow() {
+    final RenderEditable? field = _editable();
+    if (field != null) _seatCaret(field);
   }
 
   @override
   void initState() {
     super.initState();
-    widget.controller.addListener(_pinCaretAboveText);
+    widget.controller.addListener(_onCaretMoved);
     widget.controller.addListener(_scheduleOverlayRefresh);
     widget.scrollController.addListener(_scheduleOverlayRefresh);
     widget.scrollController.addListener(_reportTopLine);
-    widget.focusNode.addListener(_pinCaretAboveText);
+    widget.focusNode.addListener(_onCaretMoved);
     _pinCaretAboveText();
   }
 
@@ -852,9 +1176,9 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   void didUpdateWidget(MarkdownEditor oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.controller != widget.controller) {
-      oldWidget.controller.removeListener(_pinCaretAboveText);
+      oldWidget.controller.removeListener(_onCaretMoved);
       oldWidget.controller.removeListener(_scheduleOverlayRefresh);
-      widget.controller.addListener(_pinCaretAboveText);
+      widget.controller.addListener(_onCaretMoved);
       widget.controller.addListener(_scheduleOverlayRefresh);
     }
     if (oldWidget.scrollController != widget.scrollController) {
@@ -864,8 +1188,8 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       widget.scrollController.addListener(_reportTopLine);
     }
     if (oldWidget.focusNode != widget.focusNode) {
-      oldWidget.focusNode.removeListener(_pinCaretAboveText);
-      widget.focusNode.addListener(_pinCaretAboveText);
+      oldWidget.focusNode.removeListener(_onCaretMoved);
+      widget.focusNode.addListener(_onCaretMoved);
     }
     _pinCaretAboveText();
     _scheduleOverlayRefresh();
@@ -932,6 +1256,16 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// to be a drag rather than a click.
   Offset? _downPosition;
   bool _gestureMoved = false;
+
+  /// The base offset of a drag that began **outside** the field's box.
+  ///
+  /// The field is exactly as tall as its text, so the paper below the last line
+  /// — and the margins beside the column — are outside its box: its gesture
+  /// recognisers never see the press, and a range started there was lost. A
+  /// desktop mouse drag is still the select gesture out there, so the editor
+  /// drives that range itself. Null when the gesture in flight is an ordinary
+  /// one the field handles.
+  int? _outsideAnchor;
 
   /// True while the gesture in flight started with the **secondary** button.
   ///
@@ -1595,6 +1929,108 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     });
   }
 
+  /// Starts a selection the field cannot start itself.
+  ///
+  /// The field's box ends where its text ends and is only as wide as the prose
+  /// column, so a press on the paper below the last line, or in the margin
+  /// beside it, never reaches the field's recognisers. On a desktop a held
+  /// left button out there still means *select* (see `NrsScrollBehavior` in
+  /// app.dart), so the editor anchors the range itself and [_onPointerMove]
+  /// walks the other end to the pointer.
+  ///
+  /// The anchor is the nearest place the gesture could be coming from: the end
+  /// of the note for the paper below it (which is where a plain click there
+  /// lands the caret anyway), the start for the padding above, the line it sits
+  /// beside for a margin. Mouse only — a finger or stylus dragging in those
+  /// margins is a scroll.
+  void _beginOutsideDrag(Offset position, RenderEditable field) {
+    final TextEditingController c = widget.controller;
+    final Offset topLeft = field.localToGlobal(Offset.zero);
+    final int at;
+    if (position.dy > topLeft.dy + field.size.height) {
+      at = c.text.length;
+    } else if (position.dy < topLeft.dy) {
+      at = 0;
+    } else {
+      at = _visibleEdgeOffset(
+        field,
+        field.getPositionForPoint(position).offset.clamp(0, c.text.length),
+      );
+    }
+    final TextSelection before = c.selection;
+    final bool extend =
+        HardwareKeyboard.instance.isShiftPressed && before.isValid;
+    final int anchor = extend ? before.baseOffset.clamp(0, c.text.length) : at;
+    _outsideAnchor = anchor;
+    _downPosition = position;
+    _gestureMoved = false;
+    _secondaryGesture = false;
+    _caretBeforeCheckboxTap = null;
+    if (c is MarkdownSourceController) {
+      // The same freeze a press on the text takes: the layout under the pointer
+      // must not reflow when the reveal catches up halfway through the drag.
+      c.revealAs = c.paintedSelection ?? c.selection;
+      c.disarmClickGuard();
+    }
+    widget.focusNode.requestFocus();
+    c.selection = extend
+        ? TextSelection(baseOffset: anchor, extentOffset: at)
+        : TextSelection.collapsed(offset: at);
+    // ⛔ The field's `onTapOutside` unfocuses at the end of this very event,
+    // after this listener has run — same trap as the paper click below the
+    // text. Re-assert once the frame is over.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || widget.focusNode.hasFocus) return;
+      widget.focusNode.requestFocus();
+    });
+  }
+
+  /// The source offset a pointer at the visual start of a line means.
+  ///
+  /// While the reveal is frozen, a line's Markdown prefix (`# `, `> `) is
+  /// hidden and has zero width: the first visible glyph starts at the offset
+  /// *after* it, so `getPositionForPoint` over that glyph answers the prefix's
+  /// end. On release the line reveals and the prefix appears — outside the
+  /// wash, which is why 从下往上框选标题时最上面的 `#` 号没有选中。 A drag edge
+  /// that lands on the visual start of a line therefore walks back over the
+  /// prefix; the walk only happens when every character before [offset] paints
+  /// nothing, so a pointer anywhere on painted text is untouched.
+  int _visibleEdgeOffset(RenderEditable field, int offset) {
+    final String text = widget.controller.text;
+    if (offset <= 0 || offset > text.length) return offset;
+    final int lineStart = lineStartOf(text, offset);
+    if (lineStart >= offset) return offset;
+    final bool hidden = field
+        .getBoxesForSelection(
+          TextSelection(baseOffset: lineStart, extentOffset: offset),
+        )
+        .every((TextBox box) => box.right <= box.left);
+    return hidden ? lineStart : offset;
+  }
+
+  /// Applies [_visibleEdgeOffset] to both ends of a finished range.
+  ///
+  /// Only the editor's own outside drag can correct itself while the pointer
+  /// moves; a range the field's recognisers wrote has to wait until the gesture
+  /// is over, still before [_endGesture] lets the reveal go — the frozen tree
+  /// is what tells the edges apart from a genuine mid-line offset.
+  void _snapDragEdges() {
+    final TextEditingController c = widget.controller;
+    final RenderEditable? field = _editable();
+    if (field == null) return;
+    final TextSelection sel = c.selection;
+    if (!sel.isValid || sel.isCollapsed) return;
+    final int base = _visibleEdgeOffset(field, sel.baseOffset);
+    final int extent = _visibleEdgeOffset(field, sel.extentOffset);
+    if (base == sel.baseOffset && extent == sel.extentOffset) return;
+    c.selection = TextSelection(
+      baseOffset: base,
+      extentOffset: extent,
+      affinity: sel.affinity,
+      isDirectional: sel.isDirectional,
+    );
+  }
+
   /// Recorded on *down*: the field moves the caret on pointer-down, so reading
   /// the selection on up would already be too late.
   void _onPointerDown(PointerDownEvent event) {
@@ -1645,6 +2081,19 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
           }
         }
         return;
+      }
+    }
+    // A primary mouse press outside the field's box: the paper below the last
+    // line, the roof above the first, the margin beside the column. The field
+    // never sees these, so the drag-select has to be driven here.
+    if (!secondary && event.kind == PointerDeviceKind.mouse) {
+      final RenderEditable? field = _editable();
+      if (field != null) {
+        final Rect box = field.localToGlobal(Offset.zero) & field.size;
+        if (!box.contains(event.position)) {
+          _beginOutsideDrag(event.position, field);
+          return;
+        }
       }
     }
     // The paper below the last line is nobody's: the field is exactly as tall
@@ -1760,6 +2209,27 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       tableDragPreview.value = _previewFor(grabbed, target);
       return;
     }
+    final int? outside = _outsideAnchor;
+    if (outside != null) {
+      final Offset from = _downPosition ?? event.position;
+      if (!_gestureMoved && (event.position - from).distance > kTouchSlop) {
+        _gestureMoved = true;
+      }
+      if (!_gestureMoved) return;
+      final RenderEditable? field = _editable();
+      if (field == null) return;
+      final TextEditingController c = widget.controller;
+      final TextPosition at = field.getPositionForPoint(event.position);
+      c.selection = TextSelection(
+        baseOffset: outside.clamp(0, c.text.length),
+        extentOffset: _visibleEdgeOffset(
+          field,
+          at.offset.clamp(0, c.text.length),
+        ),
+        affinity: at.affinity,
+      );
+      return;
+    }
     final Offset? from = _downPosition;
     if (from == null || _gestureMoved) return;
     if ((event.position - from).distance <= kTouchSlop) return;
@@ -1805,10 +2275,23 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       _rangeBeforeChromeTap = null;
       return;
     }
+    if (_outsideAnchor != null) {
+      _outsideAnchor = null;
+      _downPosition = null;
+      _gestureMoved = false;
+      _endGesture();
+      return;
+    }
     final TextSelection? saved = _caretBeforeCheckboxTap;
     final bool secondary = _secondaryGesture;
     _caretBeforeCheckboxTap = null;
     _secondaryGesture = false;
+    // A range the field itself drove was mapped against the frozen reveal, so
+    // its edges can sit just past a hidden `# ` (see [_visibleEdgeOffset]).
+    // The outside drag snapped as it moved; this is the same correction, once,
+    // for a drag that started inside the field — and it has to run *before*
+    // [_endGesture], while the frozen tree still hides the prefix.
+    if (!secondary && _gestureMoved) _snapDragEdges();
     _endGesture();
     if (secondary) {
       // Right-click already put the caret where the pointer was, and the menu is
@@ -1856,6 +2339,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   void _onPointerCancel(PointerCancelEvent event) {
     _grabbedRow = null;
     _grabbed = null;
+    _outsideAnchor = null;
     _rangeBeforeChromeTap = null;
     tableDragPreview.value = null;
     _setCursor(_cursorAt(event.position));
@@ -2076,6 +2560,15 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     final ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
     final String? text = data?.text;
     if (text == null || text.isEmpty) return;
+    final String? refusal = pasteGridRefusal(text);
+    if (refusal != null) {
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(
+          context,
+        )?.showSnackBar(SnackBar(content: Text(refusal)));
+      }
+      return;
+    }
     final TextEditingValue next = pasteValue(
       widget.controller.value,
       text,
@@ -2087,11 +2580,11 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
   @override
   void dispose() {
-    widget.controller.removeListener(_pinCaretAboveText);
+    widget.controller.removeListener(_onCaretMoved);
     widget.controller.removeListener(_scheduleOverlayRefresh);
     widget.scrollController.removeListener(_scheduleOverlayRefresh);
     widget.scrollController.removeListener(_reportTopLine);
-    widget.focusNode.removeListener(_pinCaretAboveText);
+    widget.focusNode.removeListener(_onCaretMoved);
     _cellText?.dispose();
     _cellFocus?.dispose();
     // The click guard deliberately outlives the pointer — the platform's word
@@ -2322,116 +2815,123 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                         if (ctrl is MarkdownSourceController) {
                           ctrl.contentWidth = c.maxWidth;
                         }
-                        return Focus(
-                          // Not a tab stop — just a listener this close to the
-                          // field, so table caret keys are decided before the
-                          // platform's line movement (and before Shortcuts).
-                          canRequestFocus: false,
-                          skipTraversal: true,
-                          onKeyEvent: _onTableKey,
-                          child: TextField(
-                            key: const Key('nrs-editor-field'),
-                            controller: widget.controller,
-                            focusNode: widget.focusNode,
-                            undoController: _undoHistory,
-                            readOnly: widget.readOnly,
-                            onChanged: widget.onChanged,
-                            maxLines: null,
-                            expands: false,
-                            autofocus: false,
-                            mouseCursor: fieldCursor,
-                            cursorColor: p.accent,
-                            cursorWidth: 1.8,
-                            cursorRadius: const Radius.circular(1),
-                            keyboardType: TextInputType.multiline,
-                            textInputAction: TextInputAction.newline,
-                            inputFormatters: <TextInputFormatter>[
-                              ListContinuationFormatter(),
-                              // Last, so it sees the text every other formatter has
-                              // already agreed on: a Backspace must never leave the
-                              // cell the caret is in.
-                              TableCellBarrierFormatter(
-                                suspend: () => _navigatingHistory,
-                                resolve: _resolveRange,
+                        return _CaretSeat(
+                          key: _caretSeatKey,
+                          onLayout: _seatCaretNow,
+                          child: Focus(
+                            // Not a tab stop — just a listener this close to the
+                            // field, so table caret keys are decided before the
+                            // platform's line movement (and before Shortcuts).
+                            canRequestFocus: false,
+                            skipTraversal: true,
+                            onKeyEvent: _onTableKey,
+                            child: TextField(
+                              key: const Key('nrs-editor-field'),
+                              controller: widget.controller,
+                              focusNode: widget.focusNode,
+                              undoController: _undoHistory,
+                              readOnly: widget.readOnly,
+                              onChanged: widget.onChanged,
+                              maxLines: null,
+                              expands: false,
+                              autofocus: false,
+                              mouseCursor: fieldCursor,
+                              cursorColor: p.accent,
+                              cursorWidth: 1.8,
+                              cursorHeight: _caretHeight == null
+                                  ? null
+                                  : math.max(1, _caretHeight! - _caretInset),
+                              cursorRadius: const Radius.circular(1),
+                              keyboardType: TextInputType.multiline,
+                              textInputAction: TextInputAction.newline,
+                              inputFormatters: <TextInputFormatter>[
+                                ListContinuationFormatter(),
+                                // Last, so it sees the text every other formatter has
+                                // already agreed on: a Backspace must never leave the
+                                // cell the caret is in.
+                                TableCellBarrierFormatter(
+                                  suspend: () => _navigatingHistory,
+                                  resolve: _resolveRange,
+                                ),
+                              ],
+                              style: style,
+                              // The field's own wash is transparent (see the
+                              // `DefaultSelectionStyle` around `editor`), but these two
+                              // still define the boxes `EditorSelectionPainter` paints
+                              // and the caret is measured from.
+                              //
+                              // Flutter's desktop default is `BoxWidthStyle.max`, which
+                              // makes every fully selected line a band running to the
+                              // right edge of the column — a highlighted *block*, not
+                              // highlighted *text*. Obsidian (and every desktop editor)
+                              // hugs the glyphs, so `tight` it is.
+                              //
+                              // ⛔ Do not drop these two lines "because the default is
+                              // fine": `max` is what turned a Ctrl+A into full-width
+                              // stripes.
+                              //
+                              // The height style has to cover exactly the line box:
+                              // `EditorSelectionPainter` pulls [kSelectionLineGap] out
+                              // of each box to leave the seam, and a shorter box would
+                              // eat into the line's own spacing. `Middle` is shifted
+                              // ~3px down inside the line, so on a table — whose wash
+                              // is painted to the same box — it left a strip of the
+                              // paragraph's own highlight under the rounded bottom
+                              // edge. `…Top` puts the box on the line, and the painter
+                              // adds the seam on purpose.
+                              selectionWidthStyle: ui.BoxWidthStyle.tight,
+                              selectionHeightStyle:
+                                  ui.BoxHeightStyle.includeLineSpacingTop,
+                              // ⛔ Not `null` or `StrutStyle.disabled`: both let
+                              // `EditableText` inherit the base style into the
+                              // strut, and the engine still takes the strut's
+                              // font metrics as a floor. At 15.5px that floor is
+                              // ~23px, so every code row was taller than the
+                              // 20px its own style asked for.
+                              //
+                              // A 1px strut with no forced height is below every
+                              // run's metrics, so each run sets its own line box:
+                              // the code's 20px, the body's 28px, a heading's
+                              // more, and a collapsed marker's none.
+                              strutStyle: const StrutStyle(
+                                fontSize: 1,
+                                height: 1,
+                                leading: 0,
                               ),
-                            ],
-                            style: style,
-                            // The field's own wash is transparent (see the
-                            // `DefaultSelectionStyle` around `editor`), but these two
-                            // still define the boxes `EditorSelectionPainter` paints
-                            // and the caret is measured from.
-                            //
-                            // Flutter's desktop default is `BoxWidthStyle.max`, which
-                            // makes every fully selected line a band running to the
-                            // right edge of the column — a highlighted *block*, not
-                            // highlighted *text*. Obsidian (and every desktop editor)
-                            // hugs the glyphs, so `tight` it is.
-                            //
-                            // ⛔ Do not drop these two lines "because the default is
-                            // fine": `max` is what turned a Ctrl+A into full-width
-                            // stripes.
-                            //
-                            // The height style has to cover exactly the line box:
-                            // `EditorSelectionPainter` pulls [kSelectionLineGap] out
-                            // of each box to leave the seam, and a shorter box would
-                            // eat into the line's own spacing. `Middle` is shifted
-                            // ~3px down inside the line, so on a table — whose wash
-                            // is painted to the same box — it left a strip of the
-                            // paragraph's own highlight under the rounded bottom
-                            // edge. `…Top` puts the box on the line, and the painter
-                            // adds the seam on purpose.
-                            selectionWidthStyle: ui.BoxWidthStyle.tight,
-                            selectionHeightStyle:
-                                ui.BoxHeightStyle.includeLineSpacingTop,
-                            // ⛔ Not `null` or `StrutStyle.disabled`: both let
-                            // `EditableText` inherit the base style into the
-                            // strut, and the engine still takes the strut's
-                            // font metrics as a floor. At 15.5px that floor is
-                            // ~23px, so every code row was taller than the
-                            // 20px its own style asked for.
-                            //
-                            // A 1px strut with no forced height is below every
-                            // run's metrics, so each run sets its own line box:
-                            // the code's 20px, the body's 28px, a heading's
-                            // more, and a collapsed marker's none.
-                            strutStyle: const StrutStyle(
-                              fontSize: 1,
-                              height: 1,
-                              leading: 0,
+                              decoration: InputDecoration(
+                                isDense: true,
+                                filled: false,
+                                border: InputBorder.none,
+                                enabledBorder: InputBorder.none,
+                                focusedBorder: InputBorder.none,
+                                contentPadding: EdgeInsets.zero,
+                              ),
+                              // The one hook that decides whether right-click reaches
+                              // [buildEditorContextMenu] at all. `SelectionOverlay`
+                              // routes the toolbar through `contextMenuBuilder` *only*
+                              // when the controls are a [TextSelectionHandleControls];
+                              // with a plain [TextSelectionControls] it silently falls
+                              // back to the deprecated `toolbarOptions` menu and this
+                              // builder is never called. The handle variant is the same
+                              // Material control — it just says "handles are mine, the
+                              // menu is the app's".
+                              selectionControls:
+                                  materialTextSelectionHandleControls,
+                              contextMenuBuilder:
+                                  (
+                                    BuildContext context,
+                                    EditableTextState state,
+                                  ) {
+                                    return buildEditorContextMenu(
+                                      state: state,
+                                      value: widget.controller.value,
+                                      onApply: _applyEdit,
+                                      onDismiss: state.hideToolbar,
+                                      resolve: _resolveRange,
+                                      onEditCell: _openCellEditor,
+                                    );
+                                  },
                             ),
-                            decoration: InputDecoration(
-                              isDense: true,
-                              filled: false,
-                              border: InputBorder.none,
-                              enabledBorder: InputBorder.none,
-                              focusedBorder: InputBorder.none,
-                              contentPadding: EdgeInsets.zero,
-                            ),
-                            // The one hook that decides whether right-click reaches
-                            // [buildEditorContextMenu] at all. `SelectionOverlay`
-                            // routes the toolbar through `contextMenuBuilder` *only*
-                            // when the controls are a [TextSelectionHandleControls];
-                            // with a plain [TextSelectionControls] it silently falls
-                            // back to the deprecated `toolbarOptions` menu and this
-                            // builder is never called. The handle variant is the same
-                            // Material control — it just says "handles are mine, the
-                            // menu is the app's".
-                            selectionControls:
-                                materialTextSelectionHandleControls,
-                            contextMenuBuilder:
-                                (
-                                  BuildContext context,
-                                  EditableTextState state,
-                                ) {
-                                  return buildEditorContextMenu(
-                                    state: state,
-                                    value: widget.controller.value,
-                                    onApply: _applyEdit,
-                                    onDismiss: state.hideToolbar,
-                                    resolve: _resolveRange,
-                                    onEditCell: _openCellEditor,
-                                  );
-                                },
                           ),
                         );
                       },
@@ -2581,6 +3081,43 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 /// Small on purpose: the padded shell is already 26px wide, and a generous slop
 /// would start swallowing clicks on the text beside it.
 const double _kCheckboxTouchSlop = 4;
+
+/// Runs [onLayout] whenever the field below it has laid out.
+///
+/// This is the only window in which the caret's `cursorOffset` can be corrected
+/// for the *current* layout: `EditableText` resets it during build, and a
+/// post-frame correction would paint one frame at the old position.
+class _CaretSeat extends SingleChildRenderObjectWidget {
+  const _CaretSeat({super.key, required this.onLayout, required super.child});
+
+  final VoidCallback onLayout;
+
+  @override
+  _RenderCaretSeat createRenderObject(BuildContext context) =>
+      _RenderCaretSeat(onLayout);
+
+  @override
+  void updateRenderObject(BuildContext context, _RenderCaretSeat renderObject) {
+    renderObject.onLayout = onLayout;
+  }
+}
+
+class _RenderCaretSeat extends RenderProxyBox {
+  _RenderCaretSeat(this.onLayout);
+
+  VoidCallback onLayout;
+
+  @override
+  void performLayout() {
+    super.performLayout();
+    onLayout();
+  }
+}
+
+/// Line boxes shorter than this are fully hidden source (a fence, a table
+/// divider): the caret there has no visible row to sit on, so it is left to
+/// the field rather than made six pixels tall.
+const double _kMinCaretLine = 10;
 
 /// One open floating cell editor.
 class _CellEdit {

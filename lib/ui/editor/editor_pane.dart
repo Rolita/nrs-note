@@ -308,6 +308,8 @@ class EditorPaneState extends State<EditorPane> {
 
     if (note == null) return _noSelection(p, notes);
 
+    final DraftConflict? conflict = notes.conflict;
+
     _bind(note);
     if (_title.text != note.title && !_titleFocus.hasFocus) {
       _title.text = note.title;
@@ -327,6 +329,8 @@ class EditorPaneState extends State<EditorPane> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             _header(p, note, notes, settings),
+            if (conflict != null && conflict.noteId == note.id)
+              _conflictBar(p, conflict, notes),
             LayoutBuilder(
               builder: (BuildContext context, BoxConstraints c) =>
                   _titleRow(p, notes, _proseSide(c.maxWidth)),
@@ -507,6 +511,71 @@ class EditorPaneState extends State<EditorPane> {
             notes: notes,
             onDelete: () => widget.onDelete(note),
           ),
+        ],
+      ),
+    );
+  }
+
+  /// A quiet strip, not a dialog: the file changed under the note, and the user
+  /// has to pick a side before autosave resumes. Typing keeps working while it
+  /// is visible.
+  Widget _conflictBar(
+    AppPalette p,
+    DraftConflict conflict,
+    NotesController notes,
+  ) {
+    final bool deleted = conflict.isDeleted;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(AppSpace.md, 4, AppSpace.sm, 4),
+      decoration: BoxDecoration(
+        color: p.warningSoft,
+        border: Border(
+          bottom: BorderSide(color: p.warning.withValues(alpha: 0.35)),
+        ),
+      ),
+      child: Row(
+        children: <Widget>[
+          Icon(Icons.sync_problem_outlined, size: 15, color: p.warning),
+          const SizedBox(width: AppSpace.sm),
+          Expanded(
+            child: Text(
+              deleted ? '磁盘上的这篇笔记已被删除。' : '磁盘上的这篇笔记已在外部修改。',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: AppText.caption,
+                color: p.textSecondary,
+              ),
+            ),
+          ),
+          if (deleted) ...<Widget>[
+            AppTextButton(
+              label: '另存为副本',
+              onPressed: () {
+                notes.saveConflictCopy();
+              },
+            ),
+            AppTextButton(
+              label: '放弃我的',
+              onPressed: () {
+                notes.takeTheirs();
+              },
+            ),
+          ] else ...<Widget>[
+            AppTextButton(
+              label: '载入磁盘版本',
+              onPressed: () {
+                notes.takeTheirs();
+              },
+            ),
+            AppTextButton(
+              label: '保留我的',
+              tone: p.accent,
+              onPressed: () {
+                notes.keepMine();
+              },
+            ),
+          ],
         ],
       ),
     );

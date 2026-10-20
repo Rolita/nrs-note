@@ -68,13 +68,6 @@ class NoteListPanelState extends State<NoteListPanel> {
     super.dispose();
   }
 
-  void focusSearch() {
-    if (widget.view != SidebarView.search) {
-      widget.onSwitchView(SidebarView.search);
-    }
-    _focusSearchSoon();
-  }
-
   void _focusSearchSoon() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -84,14 +77,6 @@ class NoteListPanelState extends State<NoteListPanel> {
         extentOffset: _search.text.length,
       );
     });
-  }
-
-  void _openSearch() {
-    if (widget.view == SidebarView.search) {
-      focusSearch();
-    } else {
-      widget.onSwitchView(SidebarView.search);
-    }
   }
 
   /// One click, one folder — the name is picked up later with F2 / 右键重命名,
@@ -219,14 +204,6 @@ class NoteListPanelState extends State<NoteListPanel> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
-          action(
-            Icons.note_add_outlined,
-            '新建笔记',
-            widget.onCreateNote,
-            shortcut: 'Ctrl+N',
-          ),
-          action(Icons.create_new_folder_outlined, '新建文件夹', _createFolder),
-          action(Icons.search_outlined, '搜索笔记', _openSearch),
           _SortButton(settings: settings, notes: notes),
           // One button, two faces: it always offers the opposite of what the
           // tree is showing right now.
@@ -242,6 +219,13 @@ class NoteListPanelState extends State<NoteListPanel> {
                 tree.expandAll();
               }
             },
+          ),
+          action(Icons.create_new_folder_outlined, '新建文件夹', _createFolder),
+          action(
+            Icons.note_add_outlined,
+            '新建笔记',
+            widget.onCreateNote,
+            shortcut: 'Ctrl+N',
           ),
         ],
       ),
@@ -261,33 +245,41 @@ class NoteListPanelState extends State<NoteListPanel> {
         padding: const EdgeInsets.fromLTRB(AppSpace.md, 0, AppSpace.xs, 0),
         child: Row(
           children: <Widget>[
-            // Flexible, because the header's actions are fixed-width and must
-            // win: at the panel's minimum width the label gives up its last
-            // glyph rather than pushing the buttons past the edge.
-            Flexible(
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: AppText.caption,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.4,
-                  color: p.textTertiary,
-                ),
+            // The label and its count share the whole space the actions leave,
+            // inside one Expanded. A bare `Flexible` beside a `Spacer` would
+            // split the free space between them instead — and the label's
+            // unused half would strand the actions ~55px off the right edge.
+            // Flexible inside, because at the panel's minimum width the label
+            // must give up its last glyph rather than push the buttons out.
+            Expanded(
+              child: Row(
+                children: <Widget>[
+                  Flexible(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: AppText.caption,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.4,
+                        color: p.textTertiary,
+                      ),
+                    ),
+                  ),
+                  if (count != null) ...<Widget>[
+                    const SizedBox(width: AppSpace.xs + 2),
+                    Text(
+                      count,
+                      style: TextStyle(
+                        fontSize: AppText.caption,
+                        color: p.textTertiary,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
-            if (count != null) ...<Widget>[
-              const SizedBox(width: AppSpace.xs + 2),
-              Text(
-                count,
-                style: TextStyle(
-                  fontSize: AppText.caption,
-                  color: p.textTertiary,
-                ),
-              ),
-            ],
-            const Spacer(),
             ?trailing,
             if (notes.isFiltered) ...<Widget>[
               const SizedBox(width: AppSpace.sm),

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 import '../models/note.dart';
+import 'atomic_file.dart';
 import 'note_store.dart';
 
 /// Desktop implementation: one real `.md` file per note inside a vault folder
@@ -12,10 +13,15 @@ import 'note_store.dart';
 /// Moving a note by hand therefore moves it in the app, and an empty directory
 /// the user made is still visible after a restart.
 class IoNoteStore with NoteStoreSupport implements NoteStore {
-  IoNoteStore({this.folderName = 'NRS Notes', this.overrideRoot});
+  IoNoteStore({
+    this.folderName = 'NRS Notes',
+    this.overrideRoot,
+    AtomicFileWriter? writer,
+  }) : _writer = writer ?? AtomicFileWriter();
 
   final String folderName;
   final Directory? overrideRoot;
+  final AtomicFileWriter _writer;
 
   Directory? _vault;
   String _location = '';
@@ -46,10 +52,17 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     _vault = dir;
     _location = dir.path;
 
+    // A crash mid-write can leave a backup or a half-written temp behind. Put
+    // the vault back together *before* deciding whether it is empty, otherwise
+    // a recovered note would not count and a welcome note would be seeded on
+    // top of it.
+    await _writer.recover(dir);
+
     final List<File> existing = await _mdFiles();
     if (existing.isEmpty) {
       final Note welcome = Note.welcome();
-      await File(_pathFor(welcome.relativePath)).writeAsString(
+      await _writer.replace(
+        File(_pathFor(welcome.relativePath)),
         welcome.toMarkdown(),
       );
     }
@@ -141,6 +154,42 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
   }
 
   @override
+  Future<List<NoteFileStamp>> stamps() async {
+    final List<NoteFileStamp> stamps = <NoteFileStamp>[];
+    for (final File file in await _mdFiles()) {
+      try {
+        final FileStat stat = await file.stat();
+        stamps.add(
+          NoteFileStamp(
+            relativePath: _relativeOf(file),
+            modifiedAt: stat.modified,
+            size: stat.size,
+          ),
+        );
+      } on FileSystemException {
+        // Vanished mid-scan: it simply is not part of this snapshot.
+      }
+    }
+    return stamps;
+  }
+
+  @override
+  Future<NoteFileStamp?> stampOf(String relativePath) async {
+    final File file = File(_pathFor(relativePath.replaceAll('\\', '/')));
+    try {
+      if (!await file.exists()) return null;
+      final FileStat stat = await file.stat();
+      return NoteFileStamp(
+        relativePath: _relativeOf(file),
+        modifiedAt: stat.modified,
+        size: stat.size,
+      );
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  @override
   Future<List<Note>> loadAll() async {
     final List<File> files = await _mdFiles();
     final List<Note> notes = <Note>[];
@@ -219,14 +268,49 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     final String target = _join(folder, targetName);
     final File targetFile = File(_pathFor(target));
     await targetFile.parent.create(recursive: true);
-    await targetFile.writeAsString(note.toMarkdown(), flush: true);
 
-    if (previousPath == null) return;
-    final String previousRelative =
-        previousPath.replaceAll('\\', '/');
-    if (previousRelative.toLowerCase() != target.toLowerCase()) {
-      await _deleteQuietly(previousRelative);
+    final String? previousRelative = previousPath?.replaceAll('\\', '/');
+    final bool samePath =
+        previousRelative != null &&
+        previousRelative.toLowerCase() == target.toLowerCase();
+    if (samePath) {
+      await _writer.replace(targetFile, note.toMarkdown());
+      return;
     }
+
+    // A different name means this save is a rename or a move. If something
+    // already sits on the target name, it is not ours to write over: the
+    // controller resolves the clash with the same ` 2` rule it uses in memory.
+    if (await targetFile.exists()) {
+      throw NotePathTaken(target);
+    }
+
+    final String contents = note.toMarkdown();
+    final File? previousFile = previousRelative == null
+        ? null
+        : File(_pathFor(previousRelative));
+    final bool hadPrevious =
+        previousFile != null && await previousFile.exists();
+
+    if (hadPrevious) {
+      // Land the new contents on the file we own, then move that file. A crash
+      // between the two leaves the note saved under its old name — never two
+      // copies of the same note on disk.
+      await _writer.replace(previousFile, contents);
+      try {
+        await previousFile.rename(targetFile.path);
+        return;
+      } on FileSystemException {
+        // Renaming can fail across volumes, or because the name appeared in
+        // the meantime. The check below tells the two apart.
+      }
+      if (await targetFile.exists()) {
+        throw NotePathTaken(target);
+      }
+    }
+
+    await _writer.replace(targetFile, contents);
+    if (hadPrevious) await _deleteQuietly(previousRelative!);
   }
 
   @override

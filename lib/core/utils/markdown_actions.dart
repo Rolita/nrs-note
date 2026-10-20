@@ -825,6 +825,14 @@ TextEditingValue tableRangeClear(TableRange range) {
         TableCommands.deleteRows(block, range.firstRow, range.lastRow),
       );
     case TableRangeKind.columns:
+      // A table needs at least one column, so a sweep that would take the
+      // last one is a no-op — the menu row is greyed for the same reason.
+      if (range.columnCount >= block.columns) {
+        return TextEditingValue(
+          text: block.text,
+          selection: range.toTextSelection(),
+        );
+      }
       return _valueOf(
         TableCommands.deleteColumns(
           block,
@@ -969,7 +977,70 @@ TextEditingValue? tableSelectionEdit(
       newValue.selection.baseOffset != before.length + inserted.length) {
     return newValue;
   }
-  return tableRangeReplace(range, inserted);
+  final TextEditingValue replaced = tableRangeReplace(range, inserted);
+  if (!newValue.composing.isValid) return replaced;
+  // Keep the preedit marked inside the active cell. Closing the composition
+  // left the engine with no range to replace, so its next preedit landed next
+  // to the previous one ('n' → 'nni') and the commit inherited the leftovers.
+  final int end = replaced.selection.isCollapsed
+      ? replaced.selection.baseOffset
+      : replaced.selection.extentOffset;
+  return replaced.copyWith(
+    composing: TextRange(start: math.max(0, end - inserted.length), end: end),
+  );
+}
+
+/// The largest grid a single paste may build. Beyond it the edit is refused
+/// whole rather than freezing the editor while a block nobody can read is
+/// parsed, rendered and laid out.
+const int maxPasteGridRows = 500;
+const int maxPasteGridCells = 20000;
+
+/// Why [pasted] would build a grid too large to insert, or `null` when it is
+/// safe (or not a grid at all).
+///
+/// Counted from the text itself: handing a huge clipboard to [_pastedGrid]
+/// would allocate the very grid this guard exists to avoid.
+String? pasteGridRefusal(String pasted) {
+  final List<String> lines = pasted.replaceAll('\r\n', '\n').split('\n');
+  final List<String> meaningful = <String>[
+    for (final String line in lines)
+      if (line.trim().isNotEmpty) line,
+  ];
+  final bool markdown =
+      lines.isNotEmpty &&
+      isTableLine(lines.first) &&
+      ((lines.length > 1 && isDividerLine(lines[1])) ||
+          lines.where(isTableLine).length >= 2);
+  final bool tsv =
+      !markdown &&
+      meaningful.length >= 2 &&
+      meaningful.first.split('\t').length >= 2;
+  if (!markdown && !tsv) return null;
+
+  final int rows;
+  final int columns;
+  if (markdown) {
+    final List<String> rowLines = <String>[];
+    for (final String line in lines) {
+      if (!isTableLine(line)) break;
+      rowLines.add(line);
+    }
+    rows = rowLines.where((String line) => !isDividerLine(line)).length;
+    columns = rowLines.fold<int>(
+      0,
+      (int max, String line) => math.max(max, cellsOfLine(line).length),
+    );
+  } else {
+    rows = meaningful.length;
+    columns = meaningful.first.split('\t').length;
+  }
+
+  if (rows <= maxPasteGridRows && rows * columns <= maxPasteGridCells) {
+    return null;
+  }
+  return '粘贴内容过大：$rows 行 × $columns 列'
+      '（最多 $maxPasteGridRows 行、$maxPasteGridCells 格）';
 }
 
 /// [pasted] with the blank line a **table** needs to stay a table of its own.
@@ -1031,6 +1102,7 @@ TextEditingValue pasteValue(
   String pasted, {
   TableRangeResolver? resolve,
 }) {
+  if (pasteGridRefusal(pasted) != null) return v;
   final String text = v.text;
   final int a = (v.selection.start < 0 ? text.length : v.selection.start).clamp(
     0,

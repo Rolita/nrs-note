@@ -6,6 +6,7 @@ import '../core/app_enums.dart';
 import '../core/utils/debouncer.dart';
 import '../data/models/note.dart';
 import '../data/storage/note_store_factory.dart';
+import 'vault_reconciler.dart';
 
 /// A note that was removed, kept byte-for-byte so "撤销" can put it back.
 typedef DeletedNote = ({String raw, String fileName, String folderPath});
@@ -49,6 +50,28 @@ class SearchSnippet {
 
 enum SaveState { idle, dirty, saving, saved }
 
+enum DraftConflictKind { modified, deleted }
+
+/// The open note changed on disk while it had unsaved edits.
+///
+/// Autosave stops until the user chooses: silently overwriting either side is
+/// exactly the data loss all of this bookkeeping exists to prevent.
+class DraftConflict {
+  const DraftConflict({
+    required this.noteId,
+    required this.kind,
+    this.external,
+  });
+
+  final String noteId;
+  final DraftConflictKind kind;
+
+  /// The version on disk. Null when the file itself was deleted.
+  final Note? external;
+
+  bool get isDeleted => kind == DraftConflictKind.deleted;
+}
+
 /// Owns the vault: loading, filtering, editing and persisting notes.
 ///
 /// List order is deliberately *stable while you type* — a note only moves to the
@@ -83,6 +106,19 @@ class NotesController extends ChangeNotifier {
   SaveState _saveState = SaveState.idle;
   Timer? _savedIndicatorTimer;
 
+  /// The version each note was last read from or written to disk. An external
+  /// edit is only a conflict when it differs from *this*, not from whatever the
+  /// user has typed since.
+  final Map<String, Note> _baselines = <String, Note>{};
+
+  /// The vault as it was at the last load; used to notice changes without
+  /// re-reading every file on every focus.
+  Map<String, NoteFileStamp> _stamps = <String, NoteFileStamp>{};
+
+  DraftConflict? _conflict;
+  bool _syncInFlight = false;
+  int _editRevision = 0;
+
   // -------------------------------------------------------------- filter state
   String _query = '';
   bool _caseSensitive = false;
@@ -96,6 +132,12 @@ class NotesController extends ChangeNotifier {
   List<Note> get allNotes => List<Note>.unmodifiable(_ordered);
   String? get selectedId => _selectedId;
   SaveState get saveState => _saveState;
+
+  /// The unresolved external change for the open note, if any.
+  DraftConflict? get conflict => _conflict;
+
+  bool get _draftHasConflict =>
+      _conflict != null && _conflict!.noteId == _draft?.id;
 
   String get query => _query;
 
@@ -384,13 +426,23 @@ class NotesController extends ChangeNotifier {
   Future<void> refresh({bool keepSelection = true}) async {
     final List<Note> loaded;
     final List<String> folders;
+    final List<NoteFileStamp>? stamps;
     try {
+      // Stamps first: if a file changes while it is being read, the snapshot is
+      // older than the change and the next focus checks it again.
+      stamps = await _store.stamps();
       loaded = await _store.loadAll();
       folders = await _store.listFolders();
     } catch (e) {
       _error = '读取笔记库失败:$e';
       notifyListeners();
       return;
+    }
+    if (stamps != null) {
+      _stamps = <String, NoteFileStamp>{
+        for (final NoteFileStamp stamp in stamps)
+          stamp.relativePath: stamp,
+      };
     }
     _notes = loaded;
     _folders = folders;
@@ -405,15 +457,23 @@ class NotesController extends ChangeNotifier {
       if (_selectedId != null) _rememberTab(_selectedId!);
       _draft = selectedNote;
       _draftOriginalPath = _draft?.relativePath;
+      _rememberBaseline(_draft);
     } else {
       // Re-read the file that is currently open, but never clobber unsaved
       // edits: the draft stays authoritative while it is dirty.
       if (_saveState == SaveState.idle || _saveState == SaveState.saved) {
         _draft = selectedNote;
         _draftOriginalPath = _draft?.relativePath;
+        _rememberBaseline(_draft);
       }
     }
     notifyListeners();
+  }
+
+  void _rememberBaseline(Note? note) {
+    if (note == null) return;
+    if (_conflict?.noteId == note.id) return;
+    _baselines[note.id] = note;
   }
 
   void _resort() {
@@ -569,7 +629,8 @@ class NotesController extends ChangeNotifier {
     _selectedId = id;
     _draft = selectedNote;
     _draftOriginalPath = _draft?.relativePath;
-    _saveState = SaveState.idle;
+    _rememberBaseline(_draft);
+    _saveState = _draftHasConflict ? SaveState.dirty : SaveState.idle;
     notifyListeners();
   }
 
@@ -591,7 +652,8 @@ class NotesController extends ChangeNotifier {
         : _openIds[index.clamp(0, _openIds.length - 1)];
     _draft = selectedNote;
     _draftOriginalPath = _draft?.relativePath;
-    _saveState = SaveState.idle;
+    _rememberBaseline(_draft);
+    _saveState = _draftHasConflict ? SaveState.dirty : SaveState.idle;
     notifyListeners();
   }
 
@@ -640,7 +702,12 @@ class NotesController extends ChangeNotifier {
     _selectedId = note.id;
     _rememberTab(note.id);
     _draft = note;
-    _draftOriginalPath = note.relativePath;
+    // Nothing is on disk yet. Leaving this null makes the first write a
+    // creation, so a file the user dropped into the vault at that name is
+    // reported as a clash instead of being overwritten.
+    _draftOriginalPath = null;
+    _baselines.remove(note.id);
+    _editRevision++;
     _saveState = SaveState.dirty;
     notifyListeners();
     unawaited(_persistDraft());
@@ -691,6 +758,8 @@ class NotesController extends ChangeNotifier {
     _rememberTab(copy.id);
     _draft = copy;
     _draftOriginalPath = null;
+    _baselines.remove(copy.id);
+    _editRevision++;
     _saveState = SaveState.dirty;
     notifyListeners();
     unawaited(_persistDraft());
@@ -723,6 +792,8 @@ class NotesController extends ChangeNotifier {
     try {
       await _writing;
       await _store.save(updated, previousPath: note.relativePath);
+      await _refreshStamp(updated.relativePath, note.relativePath);
+      _baselines[updated.id] = updated;
       if (isDraft) _draftOriginalPath = updated.relativePath;
     } catch (e) {
       _error = '重命名失败:$e';
@@ -768,6 +839,8 @@ class NotesController extends ChangeNotifier {
       await _writing;
       for (final ({Note note, String previousPath}) write in writes) {
         await _store.save(write.note, previousPath: write.previousPath);
+        await _refreshStamp(write.note.relativePath, write.previousPath);
+        _baselines[write.note.id] = write.note;
       }
       if (_draft != null) _draftOriginalPath = _draft!.relativePath;
     } catch (e) {
@@ -857,6 +930,13 @@ class NotesController extends ChangeNotifier {
     _notes = _notes.where((Note n) => !ids.contains(n.id)).toList();
     _ordered = _ordered.where((Note n) => !ids.contains(n.id)).toList();
     _openIds.removeWhere(ids.contains);
+    for (final Note note in targets) {
+      _stamps.remove(note.relativePath);
+      _baselines.remove(note.id);
+    }
+    if (_conflict != null && ids.contains(_conflict!.noteId)) {
+      _conflict = null;
+    }
     if (removingOpen || _selectedId == null) {
       if (openTabIndex >= 0 && _openIds.isNotEmpty) {
         _selectedId = _openIds[openTabIndex.clamp(0, _openIds.length - 1)];
@@ -868,6 +948,7 @@ class NotesController extends ChangeNotifier {
       }
       _draft = selectedNote;
       _draftOriginalPath = _draft?.relativePath;
+      _rememberBaseline(_draft);
       _saveState = SaveState.idle;
     }
     notifyListeners();
@@ -941,16 +1022,20 @@ class NotesController extends ChangeNotifier {
   /// File names are compared case-insensitively because Windows and macOS file
   /// systems are: `周报.md` and `周报.MD` are the same file. Folders are scoped
   /// separately: `工作/周报.md` and `随手/周报.md` are two perfectly good notes.
+  ///
+  /// [among] checks against a freshly read disk list instead of the in-memory
+  /// one; the save path needs that after a file appeared outside the app.
   String _freeName(
     String candidate, {
     String? exceptId,
     String? folderPath,
+    Iterable<Note>? among,
   }) {
     final String folder = Note.normalizeFolderPath(
       folderPath ?? _activeFolder,
     );
     final Set<String> taken = <String>{
-      for (final Note n in _notes)
+      for (final Note n in among ?? _notes)
         if (n.id != exceptId &&
             n.folderPath.toLowerCase() == folder.toLowerCase())
           n.fileName.toLowerCase(),
@@ -981,12 +1066,16 @@ class NotesController extends ChangeNotifier {
   void _applyDraft(Note next) {
     _draft = next;
     _replace(next);
+    _editRevision++;
     _saveState = SaveState.dirty;
     notifyListeners();
-    _autosave.run(_persistDraft);
+    // While a conflict is unresolved the note does not write itself: the next
+    // autosave would answer the other program by silently overwriting it.
+    if (!_draftHasConflict) _autosave.run(_persistDraft);
   }
 
   Future<void> saveNow() async {
+    if (_draftHasConflict) return;
     _autosave.cancel();
     await _persistDraft();
   }
@@ -1008,6 +1097,7 @@ class NotesController extends ChangeNotifier {
   /// a real overlap is queued, and a queued write always writes what the draft
   /// says when it runs, not what it said when the timer fired.
   Future<void> _persistDraft() {
+    if (_draftHasConflict) return Future<void>.value();
     final Future<void> task = _writesQueued == 0
         ? _writeDraft()
         : _writing.then((_) => _writeDraft());
@@ -1043,7 +1133,12 @@ class NotesController extends ChangeNotifier {
     try {
       await _store.save(note, previousPath: previous);
       _draftOriginalPath = note.relativePath;
+      _baselines[note.id] = note;
+      await _refreshStamp(note.relativePath, previous);
       _saveState = SaveState.saved;
+    } on NotePathTaken {
+      final bool retried = await _retryAfterPathTaken(note, previous);
+      _saveState = retried ? SaveState.saved : SaveState.dirty;
     } catch (e) {
       _saveState = SaveState.dirty;
       _error = '保存失败:$e';
@@ -1056,6 +1151,354 @@ class NotesController extends ChangeNotifier {
         notifyListeners();
       }
     });
+  }
+
+  /// Handles the one clash only disk can reveal: a file appeared at the name
+  /// this note wants (made in Explorer, by a sync client, or by another window).
+  ///
+  /// Re-reads the vault, picks the next free name and writes once more, so the
+  /// other file survives and this note becomes ` 2` — the same rule the list
+  /// shows when two notes in one folder share a title.
+  Future<bool> _retryAfterPathTaken(Note note, String? previous) async {
+    final List<Note> disk;
+    try {
+      disk = await _store.loadAll();
+    } catch (e) {
+      _error = '保存失败:$e';
+      return false;
+    }
+    final String free = _freeName(
+      note.fileName,
+      exceptId: note.id,
+      folderPath: note.folderPath,
+      among: disk,
+    );
+    if (free.toLowerCase() == note.fileName.toLowerCase()) {
+      _error = '保存失败:文件名已被占用';
+      return false;
+    }
+
+    final Note renamed = note.copyWith(
+      fileName: free,
+      // A placeholder title (`未命名`) follows its file, as it does on
+      // creation; a title the user typed stays exactly what they typed.
+      title: note.title == Note.titleOfFileName(note.fileName)
+          ? Note.titleOfFileName(free)
+          : note.title,
+    );
+    _draft = renamed;
+    _replace(renamed);
+    try {
+      await _store.save(renamed, previousPath: previous);
+    } catch (e) {
+      _error = '保存失败:$e';
+      return false;
+    }
+    _draftOriginalPath = renamed.relativePath;
+    _baselines[renamed.id] = renamed;
+    // Now that our own file exists too, a reload shows both notes without
+    // losing the draft.
+    await refresh(keepSelection: true);
+    return true;
+  }
+
+  /// Keeps the change-detection baseline in step with the app's own writes, so
+  /// focusing the window does not re-read the vault just to learn that nothing
+  /// changed.
+  Future<void> _refreshStamp(String path, [String? previous]) async {
+    if (previous != null &&
+        previous.toLowerCase() != path.toLowerCase()) {
+      _stamps.remove(previous);
+    }
+    try {
+      final NoteFileStamp? stamp = await _store.stampOf(path);
+      if (stamp == null) {
+        _stamps.remove(path);
+      } else {
+        _stamps[path] = stamp;
+      }
+    } catch (_) {
+      // A missing stamp only costs one extra read on the next focus.
+      _stamps.remove(path);
+    }
+  }
+
+  // -------------------------------------------------------------- vault sync
+
+  /// Re-reads the vault when it changed outside the app.
+  ///
+  /// Called when the window regains focus. Returns a short message for the
+  /// shell to show when a clean note was reloaded; null when nothing visible
+  /// happened.
+  Future<String?> syncFromDisk() async {
+    if (_loading || _syncInFlight || _writesQueued > 0 || _conflict != null) {
+      return null;
+    }
+    final List<NoteFileStamp>? stamps;
+    try {
+      stamps = await _store.stamps();
+    } catch (_) {
+      return null;
+    }
+    if (stamps == null || _sameStamps(stamps, _stamps)) return null;
+
+    _syncInFlight = true;
+    try {
+      final String? draftId = _draft?.id;
+      final int revision = _editRevision;
+      final List<Note> disk;
+      try {
+        disk = await _store.loadAll();
+      } catch (_) {
+        return null;
+      }
+      // The user kept typing while the disk was being read, or a save started.
+      // This round is stale; the next focus asks again.
+      if (_editRevision != revision ||
+          _draft?.id != draftId ||
+          _writesQueued > 0) {
+        return null;
+      }
+      final ReconcileResult result = reconcileVault(
+        current: _notes,
+        disk: disk,
+        draftId: draftId,
+        draftDirty: _saveState == SaveState.dirty,
+        draftBaseline: draftId == null ? null : _baselines[draftId],
+      );
+      // The stamps were taken before the read, so a file that changed during it
+      // is simply looked at again on the next focus.
+      _stamps = <String, NoteFileStamp>{
+        for (final NoteFileStamp stamp in stamps) stamp.relativePath: stamp,
+      };
+      return await _applyReconciliation(result);
+    } finally {
+      _syncInFlight = false;
+    }
+  }
+
+  bool _sameStamps(
+    List<NoteFileStamp> disk,
+    Map<String, NoteFileStamp> known,
+  ) {
+    if (disk.length != known.length) return false;
+    for (final NoteFileStamp stamp in disk) {
+      if (known[stamp.relativePath] != stamp) return false;
+    }
+    return true;
+  }
+
+  Future<String?> _applyReconciliation(ReconcileResult result) async {
+    for (final ({Note note, String previousPath}) repair in result.repairs) {
+      try {
+        await _store.save(repair.note, previousPath: repair.previousPath);
+      } catch (e) {
+        _error = '修复重复笔记失败:$e';
+      }
+      _stamps.remove(repair.previousPath);
+    }
+
+    final Note? oldDraft = _draft;
+    final String? oldSelected = _selectedId;
+    final int oldIndex =
+        oldSelected == null ? -1 : _openIds.indexOf(oldSelected);
+
+    _notes = result.notes;
+    try {
+      _folders = await _store.listFolders();
+    } catch (_) {
+      // Keep the folder list we have; the notes are the important part.
+    }
+    if (_activeFolder.isNotEmpty && !_folderPaths().contains(_activeFolder)) {
+      _activeFolder = '';
+    }
+    _openIds.removeWhere((String id) => _noteById(id) == null);
+    _baselines.removeWhere(
+      (String id, Note _) => !_notes.any((Note n) => n.id == id),
+    );
+    _resort();
+
+    String? notice;
+    switch (result.draftAction) {
+      case DraftAction.untouched:
+        break;
+
+      case DraftAction.adoptDiskPath:
+        final Note? draft = oldDraft;
+        final Note? diskDraft = result.diskDraft;
+        if (draft != null && diskDraft != null) {
+          final Note adopted = draft.copyWith(
+            folderPath: diskDraft.folderPath,
+          );
+          _draft = adopted;
+          _replace(adopted);
+          _draftOriginalPath = diskDraft.relativePath;
+          _baselines[adopted.id] = diskDraft;
+        }
+
+      case DraftAction.reload:
+        final Note? diskDraft = result.diskDraft;
+        if (diskDraft != null) {
+          final bool changed =
+              oldDraft == null ||
+              oldDraft.body != diskDraft.body ||
+              oldDraft.title != diskDraft.title ||
+              oldDraft.relativePath != diskDraft.relativePath;
+          _draft = diskDraft;
+          _draftOriginalPath = diskDraft.relativePath;
+          _baselines[diskDraft.id] = diskDraft;
+          _saveState = SaveState.idle;
+          if (changed) notice = '已载入磁盘上的最新版本';
+        }
+
+      case DraftAction.conflict:
+        final Note? draft = oldDraft;
+        final Note? diskDraft = result.diskDraft;
+        if (draft != null && diskDraft != null) {
+          final Note adopted = draft.copyWith(
+            folderPath: diskDraft.folderPath,
+          );
+          _draft = adopted;
+          _replace(adopted);
+          _draftOriginalPath = diskDraft.relativePath;
+          _conflict = DraftConflict(
+            noteId: adopted.id,
+            kind: DraftConflictKind.modified,
+            external: diskDraft,
+          );
+          _saveState = SaveState.dirty;
+        }
+
+      case DraftAction.orphan:
+        final Note? draft = oldDraft;
+        if (draft != null) {
+          _conflict = DraftConflict(
+            noteId: draft.id,
+            kind: DraftConflictKind.deleted,
+          );
+          _saveState = SaveState.dirty;
+        }
+
+      case DraftAction.removed:
+        _conflict = null;
+        _selectNeighbor(oldIndex);
+    }
+
+    if (result.draftAction != DraftAction.removed &&
+        _selectedId != null &&
+        _noteById(_selectedId!) == null) {
+      _selectNeighbor(oldIndex);
+    }
+
+    notifyListeners();
+    return notice;
+  }
+
+  /// Puts the selection on the tab next to the one at [oldIndex], the way a
+  /// browser does after closing a tab.
+  void _selectNeighbor(int oldIndex) {
+    if (_openIds.isNotEmpty) {
+      _selectedId = _openIds[oldIndex.clamp(0, _openIds.length - 1)];
+    } else if (_ordered.isNotEmpty) {
+      _selectedId = _ordered.first.id;
+      _rememberTab(_selectedId!);
+    } else {
+      _selectedId = null;
+    }
+    _autosave.cancel();
+    _draft = selectedNote;
+    _draftOriginalPath = _draft?.relativePath;
+    _rememberBaseline(_draft);
+    _saveState = SaveState.idle;
+  }
+
+  // --------------------------------------------------------------- conflicts
+
+  /// Keep the local edits, writing them over the version on disk.
+  Future<void> keepMine() async {
+    final DraftConflict? conflict = _conflict;
+    final Note? draft = _draft;
+    if (conflict == null || draft == null || conflict.noteId != draft.id) {
+      return;
+    }
+    if (conflict.isDeleted) {
+      await saveConflictCopy();
+      return;
+    }
+    _conflict = null;
+    final Note toSave = draft.copyWith(updatedAt: DateTime.now());
+    _draft = toSave;
+    _replace(toSave);
+    _saveState = SaveState.dirty;
+    notifyListeners();
+    await _persistDraft();
+  }
+
+  /// Drop the local edits and take the version on disk.
+  Future<void> takeTheirs() async {
+    final DraftConflict? conflict = _conflict;
+    final Note? draft = _draft;
+    if (conflict == null || draft == null || conflict.noteId != draft.id) {
+      return;
+    }
+    if (conflict.isDeleted) {
+      _discardDraft();
+      return;
+    }
+    final Note external = conflict.external!;
+    _conflict = null;
+    _draft = external;
+    _replace(external);
+    _draftOriginalPath = external.relativePath;
+    _baselines[external.id] = external;
+    _saveState = SaveState.idle;
+    _autosave.cancel();
+    notifyListeners();
+  }
+
+  /// The file was deleted outside: keep the unsaved text, but under a free
+  /// name, instead of resurrecting the path someone just cleared.
+  Future<void> saveConflictCopy() async {
+    final DraftConflict? conflict = _conflict;
+    final Note? draft = _draft;
+    if (conflict == null ||
+        draft == null ||
+        conflict.noteId != draft.id ||
+        !conflict.isDeleted) {
+      return;
+    }
+    try {
+      final Note copy = await _store.writeNewMarkdown(
+        draft.toMarkdown(),
+        draft.fileName,
+        folderPath: draft.folderPath,
+      );
+      _conflict = null;
+      _baselines.remove(draft.id);
+      _saveState = SaveState.idle;
+      await refresh(keepSelection: false);
+      select(copy.id);
+    } catch (e) {
+      _error = '另存失败:$e';
+      notifyListeners();
+    }
+  }
+
+  /// Throws away the open note without touching the disk. Used when the file is
+  /// already gone, so there is nothing to delete.
+  void _discardDraft() {
+    final Note? draft = _draft;
+    if (draft == null) return;
+    final int index = _openIds.indexOf(draft.id);
+    _notes = _notes.where((Note n) => n.id != draft.id).toList();
+    _ordered = _ordered.where((Note n) => n.id != draft.id).toList();
+    _openIds.remove(draft.id);
+    _baselines.remove(draft.id);
+    _conflict = null;
+    _saveState = SaveState.idle;
+    _autosave.cancel();
+    _selectNeighbor(index);
+    notifyListeners();
   }
 
   // ------------------------------------------------------------------ export

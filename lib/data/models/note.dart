@@ -54,13 +54,14 @@ class Note {
       body.trim().isEmpty && title.trim().isEmpty && tags.isEmpty;
 
   Note copyWith({
+    String? id,
     String? title,
     String? body,
     DateTime? updatedAt,
     String? fileName,
     String? folderPath,
   }) => Note(
-    id: id,
+    id: id ?? this.id,
     title: title ?? this.title,
     body: body ?? this.body,
     createdAt: createdAt,
@@ -444,7 +445,7 @@ NRS 从左到右分为四块:
 | 编辑器 | 边写边成形;标题下方会显示这篇笔记在笔记库里的相对路径 |
 | 大纲 | 最右侧;点 `#` 标题即可跳转,窗口太窄时会自动让位给正文 |
 
-文件列表顶部可以新建笔记、新建文件夹、搜索、切换排序,以及全部展开 /
+文件列表顶部可以新建笔记、新建文件夹、切换排序,以及全部展开 /
 全部收起。文件夹就是磁盘上的真实目录。
 
 ## 二、写下第一篇
@@ -452,7 +453,6 @@ NRS 从左到右分为四块:
 - [x] 按 `Ctrl + N` 新建一篇笔记
 - [ ] 在标题或正文里直接打字 —— 所见即所得
 - [ ] 按 `Ctrl + S` 保存(平时也会自动保存)
-- [ ] 按 `Ctrl + P` 快速打开别的笔记,或运行命令
 - [ ] 最后删掉这篇,写下你自己的第一行
 
 ## 三、最常用的语法

@@ -258,7 +258,6 @@ class _SettingsDialog extends StatelessWidget {
                         _ShortcutTable(
                           rows: const <(String, String)>[
                             ('Ctrl + N', '新建笔记'),
-                            ('Ctrl + P', '快速打开 / 命令面板'),
                             ('Ctrl + S', '立即保存'),
                             ('Ctrl + K', '插入链接'),
                             ('Ctrl + B / I', '加粗 / 斜体'),

@@ -7,8 +7,8 @@ import '../../core/theme/app_tokens.dart';
 /// The narrow strip on the far left.
 ///
 /// It holds only what does not fit in the title bar's three regions: the tag
-/// view at the top, and the two window-wide commands — quick open and settings
-/// — pinned to the bottom where they are always in the same place.
+/// view at the top, and settings pinned to the bottom where it is always in
+/// the same place.
 ///
 /// Selection is marked the same way here as in every other column: an
 /// `accentSoft` square with a 2px `accent` bar against its left edge. One
@@ -18,13 +18,11 @@ class AppRail extends StatelessWidget {
     super.key,
     required this.view,
     required this.onSelectView,
-    required this.onOpenPalette,
     required this.onOpenSettings,
   });
 
   final SidebarView view;
   final ValueChanged<SidebarView> onSelectView;
-  final VoidCallback onOpenPalette;
   final VoidCallback onOpenSettings;
 
   @override
@@ -48,20 +46,6 @@ class AppRail extends StatelessWidget {
             onPressed: () => onSelectView(SidebarView.tags),
           ),
           const Spacer(),
-          _RailButton(
-            icon: Icons.bolt_outlined,
-            tooltip: '快速打开',
-            shortcut: 'Ctrl+P',
-            onPressed: onOpenPalette,
-          ),
-          // A hairline, not a gap: without it the two pinned commands read as a
-          // third view that happens to be at the bottom.
-          Container(
-            width: 20,
-            height: 1,
-            margin: const EdgeInsets.symmetric(vertical: AppSpace.xs),
-            color: p.outlineSoft,
-          ),
           _RailButton(
             icon: Icons.settings_outlined,
             tooltip: '设置',

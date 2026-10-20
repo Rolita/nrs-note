@@ -10,6 +10,46 @@ class VaultSnapshot {
   final String location;
 }
 
+/// A cheap fingerprint of one note file: enough to decide whether the file
+/// needs to be re-read, without reading it.
+class NoteFileStamp {
+  const NoteFileStamp({
+    required this.relativePath,
+    required this.modifiedAt,
+    required this.size,
+  });
+
+  /// Vault-relative path, `/`-separated.
+  final String relativePath;
+  final DateTime modifiedAt;
+  final int size;
+
+  @override
+  bool operator ==(Object other) =>
+      other is NoteFileStamp &&
+      other.relativePath == relativePath &&
+      other.modifiedAt == modifiedAt &&
+      other.size == size;
+
+  @override
+  int get hashCode => Object.hash(relativePath, modifiedAt, size);
+}
+
+/// Thrown by [NoteStore.save] when the target file already exists and is not
+/// the file this note owns — typically a note the user created outside NRS.
+///
+/// Refusing is the point: two notes with one name would silently become one
+/// note. The controller catches this, re-reads the vault, picks a free name and
+/// retries, which is the same ` 2` rule the UI already promises.
+class NotePathTaken implements Exception {
+  NotePathTaken(this.relativePath);
+
+  final String relativePath;
+
+  @override
+  String toString() => '文件名已被占用:$relativePath';
+}
+
 /// The persistence contract every platform must satisfy.
 ///
 /// NRS stores one `.md` file per note. That is the whole point of the app, so
@@ -29,6 +69,14 @@ abstract class NoteStore {
 
   /// Reads every note in the vault, newest first.
   Future<List<Note>> loadAll();
+
+  /// Fingerprints for every note file, or null where the platform has no way to
+  /// notice changes made outside the app (the browser build).
+  Future<List<NoteFileStamp>?> stamps() async => null;
+
+  /// The fingerprint of one file, or null when it does not exist. Used to keep
+  /// the baseline current after the app's own writes.
+  Future<NoteFileStamp?> stampOf(String relativePath) async => null;
 
   /// Every real folder in the vault, vault-relative and `/`-separated.
   ///

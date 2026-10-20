@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/data/models/note.dart';
+import 'package:nrs/data/storage/note_store.dart';
 import 'package:nrs/data/storage/note_store_io.dart';
 
 /// The desktop vault is the real target, so the file-name contract is checked
@@ -215,5 +216,90 @@ void main() {
       weekly.map((Note n) => n.relativePath).toSet(),
       <String>{'工作/周报.md', '生活/周报.md'},
     );
+  });
+
+  test('a name someone else already took on disk is refused, not clobbered',
+      () async {
+    final IoNoteStore store = IoNoteStore(overrideRoot: root);
+    await store.init();
+    file('外部.md').writeAsStringSync('外部写的正文');
+
+    await expectLater(
+      store.save(Note.blank(title: '外部')),
+      throwsA(isA<NotePathTaken>()),
+    );
+
+    expect(file('外部.md').readAsStringSync(), '外部写的正文');
+  });
+
+  test('renaming onto an occupied name leaves both files alone', () async {
+    final IoNoteStore store = IoNoteStore(overrideRoot: root);
+    await store.init();
+    final Note mine = Note.blank(title: '我的');
+    await store.save(mine);
+    file('别人的.md').writeAsStringSync('别人的正文');
+
+    final Note renamed = mine.copyWith(
+      title: '别人的',
+      fileName: Note.buildFileName('别人的'),
+    );
+    await expectLater(
+      store.save(renamed, previousPath: mine.relativePath),
+      throwsA(isA<NotePathTaken>()),
+    );
+
+    expect(file('别人的.md').readAsStringSync(), '别人的正文');
+    expect(file('我的.md').existsSync(), isTrue, reason: '拒绝覆盖时原文件不能动');
+  });
+
+  test('a successful save leaves no temp or backup file behind', () async {
+    final IoNoteStore store = IoNoteStore(overrideRoot: root);
+    await store.init();
+
+    final Note note = Note.blank(title: '干净');
+    await store.save(note);
+    await store.save(
+      note.copyWith(
+        title: '改名后',
+        fileName: Note.buildFileName('改名后'),
+      ),
+      previousPath: note.relativePath,
+    );
+
+    final List<FileSystemEntity> leftovers = Directory(vault)
+        .listSync(recursive: true)
+        .where(
+          (FileSystemEntity e) =>
+              e.path.contains('.nrs-tmp-') || e.path.endsWith('.nrs-bak'),
+        )
+        .toList();
+    expect(leftovers, isEmpty);
+  });
+
+  test('init brings back a note left only as a backup', () async {
+    file('笔记.md.nrs-bak').writeAsStringSync(
+      Note.blank(title: '笔记').toMarkdown(),
+    );
+
+    final IoNoteStore store = IoNoteStore(overrideRoot: root);
+    await store.init();
+    final List<Note> notes = await store.loadAll();
+
+    expect(file('笔记.md').existsSync(), isTrue);
+    expect(file('笔记.md.nrs-bak').existsSync(), isFalse);
+    expect(notes.any((Note n) => n.title == '笔记'), isTrue);
+  });
+
+  test('init clears a stale temporary file from a crashed write', () async {
+    final File stale = file('笔记.md.nrs-tmp-999-0')
+      ..writeAsStringSync('半截');
+    stale.setLastModifiedSync(
+      DateTime.now().subtract(const Duration(hours: 2)),
+    );
+
+    final IoNoteStore store = IoNoteStore(overrideRoot: root);
+    await store.init();
+
+    expect(stale.existsSync(), isFalse, reason: '过期的半截文件不能永远留在库里');
   });
 }

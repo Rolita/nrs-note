@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -574,6 +575,221 @@ void main() {
     expect(find.text('全选'), findsNothing);
   });
 
+  /// The field's box is exactly as tall as its text, so a drag that starts on
+  /// the paper below it never reaches the field's gesture recognisers: 从空白处
+  /// 从下往上框选选不中，只有在盒子内起手才有效。On a desktop a held left
+  /// button is the select gesture anywhere in the editing surface, so the
+  /// editor anchors at the nearest text and drives the range itself.
+  testWidgets(
+    'dragging up from the paper below selects to the end of the note',
+    (WidgetTester tester) async {
+      final FocusNode focus = FocusNode();
+      addTearDown(focus.dispose);
+      final MarkdownSourceController controller = await pump(
+        tester,
+        '第一行文字\n第二行文字\n第三行文字',
+        focusNode: focus,
+      );
+      final Rect field = tester.getRect(
+        find.byKey(const Key('nrs-editor-field')),
+      );
+      final RenderEditable re = editable(tester);
+      final int second = controller.text.indexOf('第二');
+      final Rect glyph = re
+          .getBoxesForSelection(
+            TextSelection(baseOffset: second, extentOffset: second + 1),
+          )
+          .first
+          .toRect()
+          .shift(re.localToGlobal(Offset.zero));
+      final Offset target = glyph.centerLeft + const Offset(1, 0);
+      final int expected = re.getPositionForPoint(target).offset;
+
+      final TestGesture drag = await tester.createGesture(
+        kind: PointerDeviceKind.mouse,
+      );
+      await drag.down(Offset(field.center.dx, field.bottom + 80));
+      await tester.pump();
+      await drag.moveTo(target);
+      await tester.pump();
+      await drag.up();
+      await tester.pumpAndSettle();
+
+      expect(focus.hasFocus, isTrue, reason: '从空白处开始拖选也要拿到焦点');
+      expect(
+        controller.selection.baseOffset,
+        controller.text.length,
+        reason: '从文末下方起手，锚点应该在文末',
+      );
+      expect(
+        controller.selection.extentOffset,
+        expected,
+        reason: '选区应该跟着指针走到第二行，而不是原地不动',
+      );
+      expect(controller.revealAs, isNull, reason: '松手后要把 reveal 交还给实时选区');
+    },
+  );
+
+  /// The same box rule sideways: the prose column is narrower than the pane, so
+  /// a press to the right of a line is outside the field too. Dragging from
+  /// there selects from the end of that line toward the pointer.
+  testWidgets('dragging from the margin beside a line selects from it', (
+    WidgetTester tester,
+  ) async {
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
+    final MarkdownSourceController controller = await pump(
+      tester,
+      '第一行文字\n第二行文字\n第三行文字',
+      focusNode: focus,
+    );
+    final Rect field = tester.getRect(
+      find.byKey(const Key('nrs-editor-field')),
+    );
+    final RenderEditable re = editable(tester);
+    final Rect secondLineGlyph = re
+        .getBoxesForSelection(
+          TextSelection(
+            baseOffset: controller.text.indexOf('第二'),
+            extentOffset: controller.text.indexOf('第二') + 1,
+          ),
+        )
+        .first
+        .toRect()
+        .shift(re.localToGlobal(Offset.zero));
+    final Offset start = Offset(field.right + 20, secondLineGlyph.center.dy);
+    final int anchor = re.getPositionForPoint(start).offset;
+    final Offset target = Offset(
+      field.left + 1,
+      re
+          .getBoxesForSelection(
+            const TextSelection(baseOffset: 0, extentOffset: 1),
+          )
+          .first
+          .toRect()
+          .shift(re.localToGlobal(Offset.zero))
+          .center
+          .dy,
+    );
+    final int expected = re.getPositionForPoint(target).offset;
+
+    final TestGesture drag = await tester.createGesture(
+      kind: PointerDeviceKind.mouse,
+    );
+    await drag.down(start);
+    await tester.pump();
+    await drag.moveTo(target);
+    await tester.pump();
+    await drag.up();
+    await tester.pumpAndSettle();
+
+    expect(controller.selection.end, anchor, reason: '从第二行右侧起手，锚点应该停在第二行行末');
+    expect(controller.selection.start, expected, reason: '选区应该跟着指针走到第一行');
+  });
+
+  /// While the reveal is frozen a heading's `# ` is hidden and zero-width, so
+  /// the pointer at the visual start of the line maps to the offset *after* the
+  /// prefix. On release the line reveals and the `#` shows up — outside the
+  /// wash. Dragging up from the paper below has to take the whole heading.
+  testWidgets('dragging up to a heading start selects its hidden marker', (
+    WidgetTester tester,
+  ) async {
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
+    final MarkdownSourceController controller = await pump(
+      tester,
+      '# 入门\n\n正文第一段\n正文第二段',
+      focusNode: focus,
+    );
+    final Rect field = tester.getRect(
+      find.byKey(const Key('nrs-editor-field')),
+    );
+    final RenderEditable re = editable(tester);
+    final Offset origin = re.localToGlobal(Offset.zero);
+    // "入" — the first visible glyph of the heading, at the line's left edge
+    // while the `# ` has no width.
+    final Rect firstGlyph = re
+        .getBoxesForSelection(
+          const TextSelection(baseOffset: 2, extentOffset: 3),
+        )
+        .first
+        .toRect()
+        .shift(origin);
+
+    final TestGesture drag = await tester.createGesture(
+      kind: PointerDeviceKind.mouse,
+    );
+    await drag.down(Offset(field.center.dx, field.bottom + 60));
+    await tester.pump();
+    await drag.moveTo(Offset(origin.dx + 2, firstGlyph.center.dy));
+    await tester.pump();
+    await drag.up();
+    await tester.pumpAndSettle();
+
+    expect(
+      controller.selection.baseOffset,
+      controller.text.length,
+      reason: '从文末下方起手，锚点应该在文末',
+    );
+    expect(
+      controller.selection.extentOffset,
+      0,
+      reason: '框到标题行首时，零宽的 `# ` 前缀也应该计入选区',
+    );
+    final Rect marker = re
+        .getBoxesForSelection(
+          const TextSelection(baseOffset: 0, extentOffset: 1),
+        )
+        .first
+        .toRect();
+    expect(marker.width, greaterThan(0), reason: '松手后标题应该展开，`#` 应该被覆盖');
+  });
+
+  /// The same correction for a range the field's own recognisers wrote: it was
+  /// measured against the frozen reveal too, so it is fixed on release, while
+  /// the prefix is still hidden.
+  testWidgets('dragging inside the field up to a heading start keeps the #', (
+    WidgetTester tester,
+  ) async {
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
+    final MarkdownSourceController controller = await pump(
+      tester,
+      '# 入门\n\n正文第一段\n正文第二段',
+      focusNode: focus,
+    );
+    final RenderEditable re = editable(tester);
+    final Offset origin = re.localToGlobal(Offset.zero);
+    final Rect firstGlyph = re
+        .getBoxesForSelection(
+          const TextSelection(baseOffset: 2, extentOffset: 3),
+        )
+        .first
+        .toRect()
+        .shift(origin);
+    final int lastChar = controller.text.lastIndexOf('段');
+    final Rect lastGlyph = re
+        .getBoxesForSelection(
+          TextSelection(baseOffset: lastChar, extentOffset: lastChar + 1),
+        )
+        .first
+        .toRect()
+        .shift(origin);
+
+    final TestGesture drag = await tester.createGesture(
+      kind: PointerDeviceKind.mouse,
+    );
+    await drag.down(lastGlyph.center);
+    await tester.pump();
+    await drag.moveTo(Offset(origin.dx + 2, firstGlyph.center.dy));
+    await tester.pump();
+    await drag.up();
+    await tester.pumpAndSettle();
+
+    expect(controller.selection.start, 0, reason: '盒内拖到标题行首时，`# ` 前缀也应该计入选区');
+    expect(controller.selection.isCollapsed, isFalse);
+  });
+
   /// A click is a click, however fast it is repeated.
   ///
   /// Flutter counts clicks for us and is generous about it: two taps within
@@ -763,6 +979,174 @@ void main() {
           '${widest.toStringAsFixed(0)}px（整列宽 ${re.size.width.toStringAsFixed(0)}px）'
           '—— 又把整行铺满了',
     );
+  });
+
+  /// The caret belongs to the line its offset points at, not to a line anchor
+  /// measured through the 1px strut.
+  ///
+  /// That strut is what keeps a code row at its own 20px, but [RenderEditable]
+  /// also measures the caret's line with it: an end-of-text caret was painted
+  /// ~15px above its paragraph, and every other line sat a few pixels off.
+  /// The editor re-seats the caret on the paragraph's own line box after each
+  /// move; this holds that shape on every kind of line.
+  testWidgets('the caret sits on its own line', (WidgetTester tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    try {
+      const String text = '第一段\n\n```\ncode\n```\n\n## 标题\n\n最后一段';
+      final FocusNode focus = FocusNode();
+      addTearDown(focus.dispose);
+      final MarkdownSourceController controller = await pump(
+        tester,
+        text,
+        focusNode: focus,
+      );
+      focus.requestFocus();
+      await tester.pumpAndSettle();
+      final RenderEditable re = editable(tester);
+
+      Future<void> expectSeated(int pos, String where) async {
+        controller.selection = TextSelection.collapsed(offset: pos);
+        await tester.pumpAndSettle();
+
+        // The same box `_seatCaret` seats the caret on: the paragraph's line.
+        // A range is needed because a collapsed selection has no boxes.
+        final ui.BoxHeightStyle style = re.selectionHeightStyle;
+        re.selectionHeightStyle = ui.BoxHeightStyle.max;
+        final List<TextBox> boxes = pos == text.length
+            ? re.getBoxesForSelection(
+                TextSelection(baseOffset: pos - 1, extentOffset: pos),
+              )
+            : re.getBoxesForSelection(
+                TextSelection(baseOffset: pos, extentOffset: pos + 1),
+              );
+        re.selectionHeightStyle = style;
+        expect(boxes, isNotEmpty, reason: '$where：没测到行盒');
+
+        final Rect line = boxes.first.toRect();
+        final Rect caret = re.getLocalRectForCaret(TextPosition(offset: pos));
+        final double wanted = math.min(re.preferredLineHeight, line.height);
+        expect(
+          caret.height,
+          closeTo(wanted, 1.0),
+          reason: '$where：光标高 ${caret.height}，期望 $wanted',
+        );
+        expect(
+          caret.center.dy,
+          closeTo(line.center.dy, 1.0),
+          reason: '$where：光标中心 ${caret.center.dy}，行中心 ${line.center.dy}',
+        );
+      }
+
+      await expectSeated(1, '正文行中');
+      await expectSeated(3, '正文行尾');
+      await expectSeated(4, '空行');
+      final int code = text.indexOf('code');
+      await expectSeated(code + 4, '代码行');
+      await expectSeated(text.indexOf('标题') + 2, '标题行');
+      await expectSeated(text.length, '文末');
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  /// Seating the caret after the frame painted it was a visible jump: every
+  /// move first drew the native (strut-misaligned) position and then snapped to
+  /// the line — 「第一次在偏移的位置显示，然后再回到正确位置，有点抖动」.
+  ///
+  /// The seat now runs during the field's layout, before the frame is painted,
+  /// so the very first frame must already equal the settled one. This watches
+  /// that first frame on every kind of line, including the empty line after a
+  /// trailing newline (where the caret has no character box of its own).
+  testWidgets('the caret is seated in the frame it moves', (
+    WidgetTester tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    try {
+      Future<void> expectFirstFrame(
+        String text,
+        List<(int, String)> cases,
+      ) async {
+        final FocusNode focus = FocusNode();
+        addTearDown(focus.dispose);
+        final MarkdownSourceController controller = await pump(
+          tester,
+          text,
+          focusNode: focus,
+        );
+        focus.requestFocus();
+        await tester.pumpAndSettle();
+        final RenderEditable re = editable(tester);
+
+        Rect lineBoxAt(int pos) {
+          final ui.BoxHeightStyle style = re.selectionHeightStyle;
+          re.selectionHeightStyle = ui.BoxHeightStyle.max;
+          final List<TextBox> boxes = pos == text.length
+              ? re.getBoxesForSelection(
+                  TextSelection(baseOffset: pos - 1, extentOffset: pos),
+                )
+              : re.getBoxesForSelection(
+                  TextSelection(baseOffset: pos, extentOffset: pos + 1),
+                );
+          re.selectionHeightStyle = style;
+          expect(boxes, isNotEmpty, reason: 'pos $pos：没测到行盒');
+          return boxes.first.toRect();
+        }
+
+        for (final (int pos, String where) in cases) {
+          controller.selection = TextSelection.collapsed(offset: pos);
+          // Exactly one frame: the frame the move is painted in.
+          await tester.pump();
+
+          final Rect line = lineBoxAt(pos);
+          final bool phantom =
+              pos == text.length && text.codeUnitAt(pos - 1) == 0x0A;
+          final double wanted = phantom
+              ? line.bottom + re.preferredLineHeight / 2
+              : line.center.dy;
+          final Rect first = re.getLocalRectForCaret(TextPosition(offset: pos));
+          expect(
+            first.center.dy,
+            closeTo(wanted, 1.0),
+            reason:
+                '$where：第一帧光标中心 ${first.center.dy}，'
+                '期望 $wanted（行 ${line.top}..${line.bottom}）',
+          );
+
+          await tester.pumpAndSettle();
+          final Rect settled = re.getLocalRectForCaret(
+            TextPosition(offset: pos),
+          );
+          expect(
+            settled.center.dy,
+            closeTo(first.center.dy, 0.01),
+            reason:
+                '$where：光标在第一帧后又动了 '
+                '${settled.center.dy - first.center.dy}px',
+          );
+          expect(
+            settled.height,
+            closeTo(first.height, 0.01),
+            reason:
+                '$where：光标高度在第一帧后又变了 '
+                '${first.height} → ${settled.height}',
+          );
+        }
+      }
+
+      const String mixed = '第一段\n\n```\ncode\n```\n\n## 标题\n\n最后一段';
+      await expectFirstFrame(mixed, <(int, String)>[
+        (1, '正文行中'),
+        (mixed.indexOf('code') + 4, '代码行'),
+        (mixed.indexOf('标题') + 2, '标题行'),
+        (mixed.length, '文末'),
+      ]);
+      const String trailing = '第一段\n\n最后一段\n';
+      await expectFirstFrame(trailing, <(int, String)>[
+        (trailing.length, '尾随换行后的空行'),
+      ]);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
   });
 
   /// An empty line contains no glyphs, so a tight selection gives it a box of
@@ -1595,10 +1979,10 @@ void main() {
         px.isColor(px.palette.surfaceSunken, x, y, tolerance: 8);
 
     // The widest filled row of the band around the code is the one to measure:
-// it runs end to end, while the rounded rows at the band's top and bottom
-// are inset by the corner radius — and a row of the glyphs themselves is
-// punched through by the ink. The window reaches past the box the field
-// reports: that box is the *line's*, and the chip hangs inside it.
+    // it runs end to end, while the rounded rows at the band's top and bottom
+    // are inset by the corner radius — and a row of the glyphs themselves is
+    // punched through by the ink. The window reaches past the box the field
+    // reports: that box is the *line's*, and the chip hangs inside it.
     int bandY = -1;
     int widest = 0;
     for (int y = code.top.round() - 12; y < code.bottom.round(); y++) {

@@ -165,20 +165,27 @@ void main() {
     expect(find.byType(NoteListPanel), findsOneWidget);
     expect(find.byType(OutlinePanel), findsOneWidget);
 
-    // The file panel names itself, and its five actions share that 32px header
-    // rather than taking a second row of their own.
+    // The file panel names itself, and its four actions sit as one group at the
+    // header's right edge — 排序、展开 / 收起、新建文件夹、新建笔记, left to right.
     expect(find.text('文件'), findsOneWidget);
-    for (final String tooltip in <String>[
-      '新建笔记  ·  Ctrl+N',
-      '新建文件夹',
-      '搜索笔记',
+    const List<String> actions = <String>[
       '排序方式',
       // One expand/collapse button, showing 全部收起 while everything is open.
       '全部收起',
-    ]) {
+      '新建文件夹',
+      '新建笔记  ·  Ctrl+N',
+    ];
+    double previousRight = double.negativeInfinity;
+    for (final String tooltip in actions) {
       expect(find.byTooltip(tooltip), findsOneWidget, reason: tooltip);
+      final Rect rect = tester.getRect(find.byTooltip(tooltip));
+      expect(rect.left, greaterThanOrEqualTo(previousRight), reason: tooltip);
+      previousRight = rect.right;
     }
     expect(find.byTooltip('全部展开'), findsNothing);
+    // Nothing sits to their right: the group ends at the panel's own edge.
+    final Rect panel = tester.getRect(find.byType(NoteListPanel));
+    expect(panel.right - previousRight, lessThanOrEqualTo(AppSpace.xs));
     expect(find.text('一篇笔记'), findsWidgets);
   });
 
@@ -188,8 +195,8 @@ void main() {
     await pumpShell(tester);
 
     // Two boundaries are draggable: sidebar|editor and editor|outline. The
-    // rail is a fixed strip again (tags, quick open, settings), so the file
-    // list starts right after it.
+    // rail is a fixed strip (tags, settings), so the file list starts right
+    // after it.
     expect(find.byType(ResizeHandle), findsNWidgets(2));
     final Rect rail = tester.getRect(find.byType(AppRail));
     final Rect panel = tester.getRect(find.byType(NoteListPanel));

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/app_enums.dart';
+import '../../core/platform/vault_sync.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../core/utils/markdown_outline.dart';
@@ -12,7 +13,6 @@ import '../../state/settings_controller.dart';
 import '../common/app_widgets.dart';
 import '../editor/editor_pane.dart';
 import '../editor/outline_panel.dart';
-import 'command_palette.dart';
 import 'function_rail.dart';
 import 'note_list_panel.dart';
 import 'settings_dialog.dart';
@@ -36,6 +36,7 @@ class _AppShellState extends State<AppShell> {
 
   SidebarView _view = SidebarView.files;
   int _cursorLine = 0;
+  VoidCallback? _stopVaultSync;
 
   @override
   void initState() {
@@ -47,12 +48,23 @@ class _AppShellState extends State<AppShell> {
         notes.select(notes.allNotes.first.id);
       }
     });
+    // Coming back to the window is when an edit made in another program can be
+    // picked up. Autosave keeps the draft authoritative while it is dirty.
+    _stopVaultSync = startVaultSync(_pullFromDisk);
   }
 
   @override
   void dispose() {
+    _stopVaultSync?.call();
     _shellFocus.dispose();
     super.dispose();
+  }
+
+  Future<void> _pullFromDisk() async {
+    if (!mounted) return;
+    final String? notice = await context.read<NotesController>().syncFromDisk();
+    if (!mounted || notice == null) return;
+    _toast(notice);
   }
 
   void _toast(String message, {String? actionLabel, VoidCallback? onAction}) {
@@ -295,92 +307,11 @@ class _AppShellState extends State<AppShell> {
     context.read<NotesController>().createNote();
   }
 
-  void _openPalette() {
-    final NotesController notes = context.read<NotesController>();
-    final SettingsController settings = context.read<SettingsController>();
-    CommandPalette.show(
-      context,
-      notes: notes.allNotes,
-      onSelectNote: (Note note) {
-        notes.setActiveFolder(note.folderPath);
-        notes.select(note.id);
-      },
-      actions: <PaletteAction>[
-        PaletteAction(
-          label: '新建笔记',
-          icon: Icons.add,
-          hint: 'Ctrl + N',
-          run: _createNote,
-        ),
-        PaletteAction(
-          label: '搜索笔记',
-          icon: Icons.search_outlined,
-          hint: '切换到搜索视图',
-          run: () => _selectView(SidebarView.search),
-        ),
-        PaletteAction(
-          label: '切换主题',
-          icon: Icons.brightness_6_outlined,
-          hint: '当前:${settings.theme.label}',
-          run: () {
-            final int next =
-                (settings.theme.index + 1) % ThemePreference.values.length;
-            settings.theme = ThemePreference.values[next];
-          },
-        ),
-        PaletteAction(
-          label: settings.outlineVisible ? '隐藏大纲' : '显示大纲',
-          icon: Icons.account_tree_outlined,
-          hint: 'Ctrl + Shift + O',
-          run: () => settings.outlineVisible = !settings.outlineVisible,
-        ),
-        PaletteAction(
-          label: settings.focusMode ? '退出专注模式' : '进入专注模式',
-          icon: Icons.fullscreen_outlined,
-          hint: 'Ctrl + Shift + F',
-          run: () => settings.focusMode = !settings.focusMode,
-        ),
-        PaletteAction(
-          label: settings.typewriter ? '关闭打字机模式' : '开启打字机模式',
-          icon: Icons.vertical_align_center_outlined,
-          run: () => settings.typewriter = !settings.typewriter,
-        ),
-        PaletteAction(
-          label: '复制当前笔记的 Markdown',
-          icon: Icons.content_copy_outlined,
-          run: () async {
-            final String md = notes.exportSelectedMarkdown();
-            if (md.isEmpty) return;
-            await Clipboard.setData(ClipboardData(text: md));
-          },
-        ),
-        if (notes.supportsNativeFiles)
-          PaletteAction(
-            label: '打开笔记库文件夹',
-            icon: Icons.folder_open_outlined,
-            run: () => notes.revealVault(),
-          ),
-        PaletteAction(
-          label: '从磁盘重新载入',
-          icon: Icons.refresh_outlined,
-          run: () => notes.refresh(),
-        ),
-        PaletteAction(
-          label: '打开设置',
-          icon: Icons.settings_outlined,
-          hint: 'Ctrl + ,',
-          run: () => showSettingsDialog(context),
-        ),
-      ],
-    );
-  }
-
   Map<ShortcutActivator, VoidCallback> _globalShortcuts() {
     final NotesController notes = context.read<NotesController>();
     final SettingsController settings = context.read<SettingsController>();
     return <ShortcutActivator, VoidCallback>{
       const SingleActivator(LogicalKeyboardKey.keyN, control: true): _createNote,
-      const SingleActivator(LogicalKeyboardKey.keyP, control: true): _openPalette,
       const SingleActivator(LogicalKeyboardKey.comma, control: true): () =>
           showSettingsDialog(context),
       const SingleActivator(LogicalKeyboardKey.backslash, control: true):
@@ -479,12 +410,11 @@ class _AppShellState extends State<AppShell> {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: <Widget>[
                         // The rail keeps only what has no place in the caption:
-                        // the tag view, quick open and settings.
+                        // the tag view and settings.
                         if (!zen)
                           AppRail(
                             view: _view,
                             onSelectView: _selectView,
-                            onOpenPalette: _openPalette,
                             onOpenSettings: () => showSettingsDialog(context),
                           ),
                         // The panes each get a handle on the edge that faces the

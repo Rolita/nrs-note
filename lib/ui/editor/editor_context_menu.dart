@@ -841,6 +841,14 @@ Future<void> pasteIntoEditor(
   final ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
   final String? text = data?.text;
   if (text == null || text.isEmpty) return;
+  if (!state.mounted) return;
+  final String? refusal = pasteGridRefusal(text);
+  if (refusal != null) {
+    ScaffoldMessenger.maybeOf(
+      state.context,
+    )?.showSnackBar(SnackBar(content: Text(refusal)));
+    return;
+  }
 
   state.userUpdateTextEditingValue(
     pasteValue(state.textEditingValue, text, resolve: resolve),

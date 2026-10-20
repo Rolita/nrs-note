@@ -9,9 +9,39 @@ import 'package:nrs/state/notes_controller.dart';
 /// It extends rather than implements, so the `reveal` / `importMarkdown`
 /// defaults come along and the fake stays about the four methods that matter.
 class _MemoryStore extends NoteStore {
-  _MemoryStore([List<Note>? seed]) : notes = <Note>[...?seed];
+  _MemoryStore([List<Note>? seed]) : notes = <Note>[...?seed] {
+    for (final Note note in notes) {
+      _touch(note);
+    }
+  }
 
   final List<Note> notes;
+  final Map<String, NoteFileStamp> _stamps = <String, NoteFileStamp>{};
+  int _clock = 0;
+
+  void _touch(Note note) {
+    _stamps[note.relativePath] = NoteFileStamp(
+      relativePath: note.relativePath,
+      modifiedAt: DateTime(2026, 1, 1).add(Duration(seconds: ++_clock)),
+      size: note.toMarkdown().length,
+    );
+  }
+
+  /// A save made by another program, before the controller notices.
+  void writeExternally(Note next) {
+    final int index = notes.indexWhere((Note n) => n.id == next.id);
+    if (index >= 0) {
+      _stamps.remove(notes[index].relativePath);
+      notes.removeAt(index);
+    }
+    notes.insert(0, next);
+    _touch(next);
+  }
+
+  void deleteExternally(Note note) {
+    notes.removeWhere((Note n) => n.id == note.id);
+    _stamps.remove(note.relativePath);
+  }
 
   @override
   Future<void> init() async {}
@@ -26,6 +56,13 @@ class _MemoryStore extends NoteStore {
   Future<List<Note>> loadAll() async => List<Note>.of(notes);
 
   @override
+  Future<List<NoteFileStamp>?> stamps() async => _stamps.values.toList();
+
+  @override
+  Future<NoteFileStamp?> stampOf(String relativePath) async =>
+      _stamps[relativePath.replaceAll('\\', '/')];
+
+  @override
   Future<void> save(Note note, {String? previousPath}) async {
     notes.removeWhere(
       (Note n) =>
@@ -34,12 +71,59 @@ class _MemoryStore extends NoteStore {
               n.relativePath.toLowerCase() ==
                   previousPath.replaceAll('\\', '/').toLowerCase()),
     );
+    if (previousPath != null) {
+      _stamps.remove(previousPath.replaceAll('\\', '/'));
+    }
     notes.insert(0, note);
+    _touch(note);
   }
 
   @override
   Future<void> delete(Note note) async {
     notes.removeWhere((Note n) => n.id == note.id);
+    _stamps.remove(note.relativePath);
+  }
+
+  @override
+  Future<Note> writeNewMarkdown(
+    String raw,
+    String fileName, {
+    String folderPath = '',
+  }) async {
+    final String folder = Note.normalizeFolderPath(folderPath);
+    final String base = fileName.split(RegExp(r'[\\/]')).last;
+    final String withExtension = base.toLowerCase().endsWith('.md')
+        ? base
+        : '$base.md';
+    final Note parsed = Note.fromMarkdown(
+      raw,
+      withExtension,
+      DateTime.now(),
+      folderPath: folder,
+    );
+    final Note note = parsed.copyWith(
+      fileName: _uniqueName(folder, Note.buildFileName(parsed.title)),
+    );
+    await save(note);
+    return note;
+  }
+
+  String _uniqueName(String folder, String wanted) {
+    final Set<String> taken = <String>{
+      for (final Note n in notes)
+        if (n.folderPath.toLowerCase() == folder.toLowerCase())
+          n.fileName.toLowerCase(),
+    };
+    if (!taken.contains(wanted.toLowerCase())) return wanted;
+    final String stem = wanted.replaceAll(
+      RegExp(r'\.md$', caseSensitive: false),
+      '',
+    );
+    for (int i = 2; i < 1000; i++) {
+      final String next = '$stem $i.md';
+      if (!taken.contains(next.toLowerCase())) return next;
+    }
+    return wanted;
   }
 }
 
@@ -419,6 +503,138 @@ void main() {
     expect(notes.childFoldersOf(''), contains('工作'));
     expect(notes.childFoldersOf('工作'), contains('工作/周报'));
   });
+
+  test('a file that appeared on disk turns the new note into 未命名 2', () async {
+    final _CollidingStore store = _CollidingStore();
+    final NotesController notes = await _open(store);
+
+    final Note created = notes.createNote();
+    expect(created.fileName, '未命名.md');
+    await notes.saveNow();
+
+    expect(notes.draft?.fileName, '未命名 2.md');
+    expect(notes.draft?.title, '未命名 2', reason: '占位名要跟着文件名走');
+    final Note external = store.notes.firstWhere(
+      (Note n) => n.fileName == '未命名.md',
+    );
+    expect(external.body, '外部写的正文', reason: '外部文件必须原样保留');
+    expect(
+      store.notes.where((Note n) => n.fileName == '未命名 2.md'),
+      hasLength(1),
+    );
+    expect(
+      notes.allNotes.map((Note n) => n.fileName),
+      containsAll(<String>['未命名.md', '未命名 2.md']),
+      reason: '重试之后,两篇笔记都要出现在列表里',
+    );
+  });
+
+  test('focusing the window reloads a clean note changed outside', () async {
+    final Note original = _note('随笔', body: '第一行');
+    final _MemoryStore store = _MemoryStore(<Note>[original]);
+    final NotesController notes = await _open(store);
+
+    store.writeExternally(original.copyWith(body: '外部改过'));
+    final String? notice = await notes.syncFromDisk();
+
+    expect(notice, isNotNull);
+    expect(notes.draft?.body, '外部改过');
+    expect(notes.saveState, SaveState.idle);
+  });
+
+  test('an external edit while typing opens a conflict and stops autosave',
+      () async {
+    final Note original = _note('随笔', body: '第一行');
+    final _MemoryStore store = _MemoryStore(<Note>[original]);
+    final NotesController notes = await _open(store);
+
+    notes.updateBody('本地改过');
+    store.writeExternally(original.copyWith(body: '外部改过'));
+    await notes.syncFromDisk();
+
+    expect(notes.conflict?.kind, DraftConflictKind.modified);
+    expect(notes.draft?.body, '本地改过', reason: '冲突不能吞掉本地输入');
+
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+    expect(
+      store.notes.single.body,
+      '外部改过',
+      reason: '冲突未解决前,自动保存必须停下',
+    );
+
+    await notes.keepMine();
+    expect(notes.conflict, isNull);
+    expect(store.notes.single.body, '本地改过');
+    expect(notes.saveState, SaveState.saved);
+  });
+
+  test('taking the disk version drops the local edits', () async {
+    final Note original = _note('随笔', body: '第一行');
+    final _MemoryStore store = _MemoryStore(<Note>[original]);
+    final NotesController notes = await _open(store);
+
+    notes.updateBody('本地改过');
+    store.writeExternally(original.copyWith(body: '外部改过'));
+    await notes.syncFromDisk();
+    await notes.takeTheirs();
+
+    expect(notes.conflict, isNull);
+    expect(notes.draft?.body, '外部改过');
+    expect(store.notes.single.body, '外部改过');
+  });
+
+  test('a note deleted outside keeps the draft as a copy, not a loss', () async {
+    final Note original = _note('随笔', body: '第一行');
+    final _MemoryStore store = _MemoryStore(<Note>[original]);
+    final NotesController notes = await _open(store);
+
+    notes.updateBody('本地改过');
+    store.deleteExternally(original);
+    await notes.syncFromDisk();
+
+    expect(notes.conflict?.isDeleted, isTrue);
+    expect(
+      notes.allNotes,
+      hasLength(1),
+      reason: '文件没了,但没保存的文字不能跟着消失',
+    );
+
+    await notes.saveConflictCopy();
+    expect(notes.conflict, isNull);
+    expect(store.notes, hasLength(1));
+    expect(store.notes.single.body, '本地改过');
+  });
+
+  test('a file moved outside is followed, and the edits are kept', () async {
+    final Note original = _note('随笔', body: '第一行');
+    final _MemoryStore store = _MemoryStore(<Note>[original]);
+    final NotesController notes = await _open(store);
+
+    notes.updateBody('本地改过');
+    store.writeExternally(original.copyWith(folderPath: '工作'));
+    await notes.syncFromDisk();
+
+    expect(notes.conflict, isNull, reason: '只是挪了位置,不是内容冲突');
+    expect(notes.draft?.body, '本地改过');
+    expect(notes.draft?.folderPath, '工作');
+
+    await notes.saveNow();
+    expect(store.notes.single.relativePath, '工作/随笔.md');
+    expect(store.notes.single.body, '本地改过');
+  });
+
+  test('a clean note deleted outside closes its tab', () async {
+    final Note original = _note('随笔');
+    final _MemoryStore store = _MemoryStore(<Note>[original]);
+    final NotesController notes = await _open(store);
+
+    store.deleteExternally(original);
+    await notes.syncFromDisk();
+
+    expect(notes.allNotes, isEmpty);
+    expect(notes.draft, isNull);
+    expect(notes.conflict, isNull);
+  });
 }
 
 /// An in-memory vault whose writes take real time, so overlap is visible.
@@ -435,6 +651,32 @@ class _SlowStore extends _MemoryStore {
     await Future<void>.delayed(const Duration(milliseconds: 20));
     await super.save(note, previousPath: previousPath);
     _inFlight--;
+  }
+}
+
+/// A vault that grows a file behind the controller's back exactly when it
+/// first tries to create `未命名.md` — the Explorer case.
+class _CollidingStore extends _MemoryStore {
+  _CollidingStore() : super();
+
+  bool _collided = false;
+
+  @override
+  Future<void> save(Note note, {String? previousPath}) async {
+    if (!_collided && note.fileName == '未命名.md') {
+      _collided = true;
+      notes.add(
+        Note(
+          id: Note.newId(),
+          title: '未命名',
+          body: '外部写的正文',
+          createdAt: DateTime(2026, 1, 1),
+          updatedAt: DateTime(2026, 1, 1),
+        ),
+      );
+      throw NotePathTaken(note.relativePath);
+    }
+    await super.save(note, previousPath: previousPath);
   }
 }
 
