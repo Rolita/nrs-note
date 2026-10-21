@@ -13,10 +13,10 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // On the web the browser's own right-click menu wins by default, and Flutter
-  // then refuses to hand right-clicks to `contextMenuBuilder` — which would
-  // leave the editor with no formatting surface at all, since the ribbon is
-  // gone. Turning the browser menu off is what makes the editor's menu the only
-  // one there, exactly as on the desktop build.
+  // then never delivers the right-click to the app — which would leave the
+  // editor with no formatting surface at all, since the ribbon is gone.
+  // Turning the browser menu off is what makes the editor's menu the only one
+  // there, exactly as on the desktop build.
   if (kIsWeb) {
     unawaited(BrowserContextMenu.disableContextMenu());
   }

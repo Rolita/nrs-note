@@ -16,6 +16,7 @@ import 'package:nrs/state/settings_controller.dart';
 import 'package:nrs/ui/common/app_widgets.dart';
 import 'package:nrs/ui/editor/editor_context_menu.dart';
 import 'package:nrs/ui/editor/editor_pane.dart';
+import 'package:nrs/ui/editor/line_layout/line_editable_text.dart';
 import 'package:nrs/ui/editor/markdown_editor.dart';
 import 'package:nrs/ui/editor/outline_panel.dart';
 import 'package:nrs/ui/shell/app_shell.dart';
@@ -1048,10 +1049,10 @@ void main() {
       await tester.tapAt(Offset(field.center.dx, field.bottom + 80));
       await tester.pumpAndSettle();
 
-      final TextField body = tester.widget<TextField>(
+      final LineEditableText body = tester.widget<LineEditableText>(
         find.byKey(const Key('nrs-editor-field')),
       );
-      expect(body.focusNode!.hasFocus, isTrue, reason: '第一次点击空白处就该拿到光标，不该点两次');
+      expect(body.focusNode.hasFocus, isTrue, reason: '第一次点击空白处就该拿到光标，不该点两次');
 
       // Let the save debounce and the "已保存" timer run out before the tree goes.
       await tester.pump(const Duration(seconds: 3));

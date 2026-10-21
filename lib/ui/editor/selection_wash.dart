@@ -1,5 +1,6 @@
-import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
+
+import 'line_layout/render_line_editable.dart';
 
 /// Width of the wash an empty line gets while it is part of a selection.
 ///
@@ -53,18 +54,18 @@ List<int> selectedBlankLineStarts(String text, TextSelection selection) {
 ///
 /// The main field's own selection colour is transparent (`MarkdownEditor`),
 /// because its boxes tile: every line's band touches the next one, so a
-/// multi-line selection is one solid block. Meanwhile those boxes are still the
-/// geometry the caret, the table's row chrome, and the blank-line bar are
-/// measured from — so this painter asks the field for exactly those boxes and
-/// only takes [kSelectionLineGap] out of each one, half at the top and half at
-/// the bottom. A selection therefore keeps its tight width, its whole-pixel
-/// line grid and its blank-line bars, and gains the seam Obsidian shows.
+/// multi-line selection is one solid block. Meanwhile the bands themselves come
+/// from the line engine ([RenderLineEditable.selectionBands]) — one box per
+/// visual line, tight to the glyphs — so this painter only takes
+/// [kSelectionLineGap] out of each one, half at the top and half at the bottom.
+/// A selection therefore keeps its tight width, its whole-pixel line grid and
+/// its blank-line bars, and gains the seam Obsidian shows.
 ///
 /// It sits under the field: glyphs, inline-code slabs and the table's opaque
 /// row paint stay on top. It repaints straight off the controller, the scroll
 /// position and the focus node, so selecting, scrolling and focusing need no
-/// widget rebuild. Hidden while the field is unfocused, which is what
-/// `TextField` does with its own selection.
+/// widget rebuild. Hidden while the field is unfocused, which is what the
+/// field's own selection does.
 class EditorSelectionPainter extends CustomPainter {
   EditorSelectionPainter({
     required this.controller,
@@ -89,7 +90,7 @@ class EditorSelectionPainter extends CustomPainter {
   /// Both are looked up at paint time: the render objects are replaced across
   /// rebuilds, and either can be legitimately absent while the pane is being
   /// assembled.
-  final RenderEditable? Function() editable;
+  final RenderLineEditable? Function() editable;
   final RenderBox? Function() editorBox;
 
   final Color color;
@@ -100,7 +101,7 @@ class EditorSelectionPainter extends CustomPainter {
     if (!focusNode.hasFocus || !selection.isValid || selection.isCollapsed) {
       return;
     }
-    final RenderEditable? field = editable();
+    final RenderLineEditable? field = editable();
     final RenderBox? box = editorBox();
     if (field == null || box == null) return;
 
@@ -122,8 +123,8 @@ class EditorSelectionPainter extends CustomPainter {
       canvas.drawRect(visible, paint);
     }
 
-    /// A row's box, pulled in by the half-seam at each end.
-    Rect bandOf(TextBox glyph, {double? width}) {
+    /// A row's band, pulled in by the half-seam at each end.
+    Rect bandOf(Rect glyph, {double? width}) {
       final double top = glyph.top + kSelectionLineGap / 2;
       final double bottom = glyph.bottom - kSelectionLineGap / 2;
       if (bottom <= top) return Rect.zero;
@@ -135,24 +136,22 @@ class EditorSelectionPainter extends CustomPainter {
       );
     }
 
-    // Every ordinary run in the selection. A zero-width box is a newline, and
-    // a zero-height one is a collapsed marker (a table divider): neither has
-    // pixels of its own to wash.
-    for (final TextBox glyph in field.getBoxesForSelection(selection)) {
-      if (glyph.right <= glyph.left) continue;
+    // Every ordinary run in the selection. A zero-width band is a newline —
+    // the engine reports one for every line the selection only brushes — and
+    // has no pixels of its own to wash.
+    for (final Rect glyph in field.selectionBands(selection)) {
+      if (glyph.width <= 0) continue;
       drawBand(bandOf(glyph));
     }
 
-    // An empty line's newline box has the right height but no width, so the
-    // loop above leaves it out. Give it the narrow bar instead.
+    // An empty line has no glyphs at all, so it gets the narrow bar instead.
     for (final int start in selectedBlankLineStarts(
       controller.text,
       selection,
     )) {
-      final List<TextBox> boxes = field.getBoxesForSelection(
+      for (final Rect glyph in field.selectionBands(
         TextSelection(baseOffset: start, extentOffset: start + 1),
-      );
-      for (final TextBox glyph in boxes) {
+      )) {
         drawBand(bandOf(glyph, width: kBlankLineSelectionWidth));
       }
     }

@@ -54,9 +54,24 @@ TextStyle _codeLine(TextStyle base, AppPalette p) {
 /// Horizontal padding inside an inline code chip, carried by the two backticks.
 const double _kInlineCodePad = 4;
 
+/// A fenced block's horizontal padding: the sheet's `pre { padding: 0 16px }`.
+///
+/// 卡片底色铺满正文列，代码行由按行引擎把这 16px 退进卡片内部
+/// （`LineInsetResolver`）。以前没有「一行自己的内边距」这个出口，画笔只能把
+/// 卡片画得比正文列宽 16px 来伪造空气；有了按行排版，卡片就能老实待在列内。
+const double kCodeBlockInset = 16;
+
 /// Corner radius of a code chip's rounded ends. Small on purpose — at this
 /// height anything rounder turns a one-character span into a pill.
 const double _kInlineCodeRadius = 3;
+
+/// `#tag` 胶囊的圆角与左右内边距，对齐设计稿 `.tag`：
+/// `padding: 1px 6px 1px 5px; border-radius: var(--r-sm)`（5px）。
+///
+/// 标签没有反引号那样的隐藏端帽可用，内边距只能由渲染层把底片向两侧多铺
+/// 一点——多铺的部分会盖到相邻的空格上。
+const double kTagRadius = 5;
+const double kTagPadX = 6;
 
 TextStyle _inlineCode(TextStyle base, AppPalette p, [Color? fill]) =>
     _inlineCodeSource(base, p).copyWith(
@@ -124,6 +139,21 @@ TextStyle _struck(TextStyle base) => base.copyWith(
 TextStyle _tagText(TextStyle base, AppPalette p) =>
     base.copyWith(color: p.accent);
 
+/// 标签胶囊里的字：12.5px / w600 / 强调色，对齐设计稿 `.tag`（正文 15px，
+/// `font-size: 12.5px; font-weight: 600`）。
+///
+/// [hovered] 时用设计稿 `.tag:hover` 的前景色：`accent` → `on-accent`。
+TextStyle _tagChipText(TextStyle base, AppPalette p, {bool hovered = false}) {
+  final double size = (base.fontSize ?? 15).clamp(11.0, 15.0) * 0.84;
+  return base.copyWith(
+    fontSize: size,
+    height: 1.36,
+    fontWeight: FontWeight.w600,
+    letterSpacing: 0,
+    color: hovered ? p.onAccent : p.accent,
+  );
+}
+
 TextStyle _wikiText(TextStyle base, AppPalette p) => base.copyWith(
   color: p.accent,
   decoration: TextDecoration.underline,
@@ -167,3 +197,41 @@ TextStyle _collapsed(TextStyle base) => base.copyWith(
 /// caret landing on it stays visible and clickable.
 TextStyle _invisible(TextStyle base) =>
     base.copyWith(color: Colors.transparent);
+
+// ------------------------------------------------- 按行渲染器（line_layout）入口
+//
+// `line_layout` 一个源码行一个 `TextPainter`，所以它需要「这一行用什么样式」
+// 和「这一行固定多高」两个答案，而不是整篇一棵 span 树。下面的公开函数就是
+// 那两个答案的唯一来源：样式只在 typography.dart 里定义一次，按行排版和
+// 段落排版不会各自漂移。
+
+/// 标题行的排版样式（H1–H6）。
+TextStyle liveHeadingStyle(TextStyle base, AppPalette p, int level) =>
+    _headingStyle(base, p, level);
+
+/// 围栏代码块里一行的排版样式（等宽、小一号）。
+TextStyle liveCodeLineStyle(TextStyle base, AppPalette p) =>
+    _codeLine(base, p);
+
+/// 折叠行：语法字符不落墨，但仍在文本里占着原来的偏移。
+TextStyle liveCollapsedStyle(TextStyle base) => _collapsed(base);
+
+/// 光标所在行上展开的语法字符：可见，但比正文后退一档。
+TextStyle liveMarkerStyle(
+  TextStyle base,
+  AppPalette p, {
+  bool accented = false,
+}) => _markerVisible(base, p, accented: accented);
+
+/// 只保留行高、不落墨的行（setext 下划线、表格分隔行）。
+TextStyle liveInvisibleStyle(TextStyle base) => _invisible(base);
+
+/// 有序列表序号的样式：强调色、半粗、等宽数字。
+TextStyle liveNumberStyle(TextStyle base, AppPalette p) => _numberStyle(base, p);
+
+/// 已完成任务项的正文：降一档颜色并划掉。
+TextStyle liveTaskDoneStyle(TextStyle base, AppPalette p) =>
+    _struck(base.copyWith(color: p.textSecondary));
+
+/// 折叠代码块的「卡片头」高度：开围栏行就是这一行。
+double get liveCodeHeaderHeight => _kCodeHeaderHeight;

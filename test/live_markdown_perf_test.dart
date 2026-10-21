@@ -77,14 +77,11 @@ void main() {
 
   test('100 × 10 table', () {
     final String text = tableDocument(100, 10);
-    final List<TableGeometry> tables = <TableGeometry>[];
-    buildLiveSpans(
+    final List<TableGeometry> tables = measureTables(
       text: text,
       base: base,
       p: palette,
-      selection: const TextSelection.collapsed(offset: -1),
       contentWidth: 680,
-      tables: tables,
     );
     expect(tables.length, 1);
     expect(tables.single.rows.length, 101);

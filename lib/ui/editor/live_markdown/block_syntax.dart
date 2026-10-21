@@ -47,8 +47,6 @@ final RegExp _ruleRe = RegExp(r'^ {0,3}(?:[-*_]\s*){3,}$');
 /// do. Use `##` for a level-2 heading.
 final RegExp _setextRe = RegExp(r'^ {0,3}(=+)\s*$');
 
-final RegExp _spaceRe = RegExp(r'\s');
-
 /// The font size used for punctuation that is hidden. Zero, not "very small":
 /// a proportional font at 0.1px still has a non-zero advance, and those slivers
 /// add up into a visible wobble.

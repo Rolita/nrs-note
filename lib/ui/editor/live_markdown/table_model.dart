@@ -95,6 +95,41 @@ class _RowData {
   final List<_CellData> data = <_CellData>[];
 }
 
+/// One inline code token in a cell, as range data for the cell painter.
+///
+/// [start] and [end] count characters in the cell's painted text (the source
+/// the span tree carries), so they can be fed straight to
+/// [TextPainter.getBoxesForSelection]. [style] is the run's own style — the
+/// painter measures it to get the band's height and baseline — and [fill]
+/// already has the selection tint mixed in.
+///
+/// 行内代码与 `#标签` 共用这个出口：只有圆角与左右外扩（[radius]/[padX]）
+/// 不同。标签没有反引号那样的隐藏端帽可用，所以它的内边距只能由画笔把底片
+/// 向两侧多铺几个像素。
+class _CellCode {
+  const _CellCode({
+    required this.start,
+    required this.end,
+    required this.probe,
+    required this.style,
+    required this.fill,
+    this.radius = _kInlineCodeRadius,
+    this.padX = 0,
+  });
+
+  final int start;
+  final int end;
+  final String probe;
+  final TextStyle style;
+  final Color fill;
+
+  /// 底片圆角；标签用 [kTagRadius]，代码用 [_kInlineCodeRadius]。
+  final double radius;
+
+  /// 底片在文字两侧额外铺出的宽度（标签的内边距）。
+  final double padX;
+}
+
 /// A cell with its measured and allocated geometry.
 class _CellData {
   _CellData({

@@ -7,6 +7,7 @@ import 'package:nrs/core/utils/markdown_actions.dart';
 import 'package:nrs/core/utils/table_model.dart';
 import 'package:nrs/core/utils/table_selection.dart';
 import 'package:nrs/ui/editor/editor_context_menu.dart';
+import 'package:nrs/ui/editor/line_layout/line_editable_text.dart';
 import 'package:nrs/ui/editor/live_markdown.dart';
 import 'package:nrs/ui/editor/markdown_editor.dart';
 
@@ -873,11 +874,11 @@ void main() {
         '| b | 2 | y |\n'
         '| c | 3 | z |';
 
-    late EditableTextState state;
+    late LineEditableTextState state;
 
     Future<void> mount(WidgetTester tester) async {
       await pumpEditor(tester, menuTable);
-      state = tester.state<EditableTextState>(find.byType(EditableText));
+      state = tester.state<LineEditableTextState>(find.byType(LineEditableText));
     }
 
     Map<String, MenuAction> actionsFor(

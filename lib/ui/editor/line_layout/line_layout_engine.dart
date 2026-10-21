@@ -1,0 +1,927 @@
+/// 按行排版的几何引擎。
+///
+/// 一个源码行 = 一个 `TextPainter`。这样做的代价是每行一次布局，收益是
+/// **软换行只发生在这一行内部**：第二行的起点由这一行的正文列决定，而不是
+/// 整个段落的左边缘。列表的悬挂缩进因此是像素级的，不需要在段落层面
+/// 补空格或假装对齐。
+///
+/// 引擎只产出几何：每行的顶部/高度、正文列、视觉行、光标落点、选区盒子。
+/// 它不构建 span、不画字、不认识主题色；调用方用 `styleFor`/`heightFor`
+/// 决定每行用什么样式、占多高（折叠的围栏行就是靠后者压成 16px / 0）。
+library;
+
+import 'dart:math' as math;
+import 'dart:ui' show BoxHeightStyle, BoxWidthStyle;
+
+import 'package:flutter/painting.dart';
+
+import 'line_block_view.dart';
+import 'line_layout_model.dart';
+
+export 'line_block_view.dart';
+export 'line_layout_model.dart';
+
+/// 一行的文字样式。实时 Markdown 会在这里返回标题/代码/正文样式。
+typedef LineStyleResolver = TextStyle Function(SourceLine line);
+
+/// 一行的固定高度，`null` 表示按测量结果。
+///
+/// 折叠的围栏行是唯一的例子：开围栏只留 16px 的卡片标题行，闭围栏压成 0。
+typedef LineHeightResolver = double? Function(SourceLine line);
+
+/// 一行的 span 树，`null` 表示用纯文本 + [LineStyleResolver] 的样式。
+///
+/// 行内样式（加粗、行内代码、链接）走这个入口。返回的 `toPlainText()` 必须与
+/// `line.text.substring(line.paintStart, line.end - line.start)` 逐字符相同，
+/// 否则偏移映射会错位——引擎会校验，对不上就退回纯文本。
+typedef LineSpanResolver = InlineSpan? Function(SourceLine line);
+
+/// 一行的左右内边距，`null` 表示贴住正文列边缘。
+///
+/// 代码块卡片是唯一的例子：卡片的底色铺满整列，而代码要退进去 16px，否则
+/// 字会贴着卡片的边。以前这个内边距由画笔「把卡片画宽 16px」来伪造——那
+/// 要求卡片越出正文列；现在按行排版能把正文起点右移，卡片就能老实铺在列内。
+typedef LineInsetResolver = EdgeInsets Function(SourceLine line);
+
+/// 一行里要铺圆角底片的行内片段（行内代码、`#标签`）。
+///
+/// `TextStyle.backgroundColor` 只能是紧贴字形的直角矩形，内边距和圆角都做不
+/// 出来；一行一个 `TextPainter` 又承载不了 widget 端帽。所以底片由渲染层按
+/// 这个出口自己画：先铺一块圆角矩形，再把这一行的字画在上面。
+class LineFillRun {
+  const LineFillRun({
+    required this.from,
+    required this.to,
+    required this.fill,
+    required this.radius,
+    required this.probe,
+    required this.style,
+    this.padX = 0,
+  });
+
+  /// 片段在这一行**排出来的文字**里的起止偏移（`paintStart` 起算，含两侧
+  /// 反引号——端帽本身就是内边距）。
+  final int from;
+  final int to;
+
+  /// 底片颜色。
+  final Color fill;
+
+  /// 底片的圆角半径。由样式层给，渲染层不认识「代码胶囊」「标签胶囊」。
+  final double radius;
+
+  /// 底片在文字左右额外铺出的宽度。
+  ///
+  /// 行内代码靠反引号的字宽顶出内边距，标签没有这种隐藏字符可用，只能把底片
+  /// 向两侧多画几个像素（样式层给的 `kTagPadX`）。
+  final double padX;
+
+  /// 量底片高度用的样本（代码正文）。
+  final String probe;
+
+  /// 片段字体；只用来量底片的高度与基线位置。
+  final TextStyle style;
+}
+
+/// 按行取圆角底片；`null` 表示这一行没有底片。
+typedef LineFillResolver = List<LineFillRun> Function(SourceLine line);
+
+/// 正文字形在行盒里整体下沉的量。
+///
+/// 行高把行距均分在基线上下的行盒里，而汉字与数字的墨迹都落在基线以上，
+/// 所以文字的视觉中线总比行盒中心低；复选框/圆点按行盒中心摆放。把文字
+/// 上提相同的量，三者才共用同一条视觉中线。行高与字号可变，按实际度量
+/// 计算而不是写死像素：汉字墨迹中心约在基线往上 `0.33em`（实测雅黑
+/// 15px 时墨迹中心比行盒中心低约 3.1px，1.5px 明显不够）。
+double lineTextRise(LaidOutLine line) {
+  final double baseline = line.painter.computeDistanceToActualBaseline(
+    TextBaseline.alphabetic,
+  );
+  if (!baseline.isFinite) return 0;
+  final double height = line.visuals.isEmpty
+      ? line.height
+      : line.visuals.first.height;
+  final double size = line.painter.text?.style?.fontSize ?? 15;
+  final double rise = baseline - height / 2 - size * 0.33;
+  return rise.isFinite ? rise.clamp(0.0, size * 0.3) : 0;
+}
+
+/// 一行排完版的结果。
+class LaidOutLine {
+  LaidOutLine({
+    required this.source,
+    required this.top,
+    required this.height,
+    required this.slot,
+    required this.painter,
+    required this.visuals,
+    this.insets = EdgeInsets.zero,
+    this.block,
+    this.fills = const <LineFillRun>[],
+    int? paintedFrom,
+  }) : paintedFrom = paintedFrom ?? source.paintStart;
+
+  final SourceLine source;
+
+  /// 交给 [painter] 的第一个字符的文档偏移。
+  ///
+  /// 平时等于 [SourceLine.paintStart]；标记摊进正文时退回行首，因为 `- ` /
+  /// `1. ` 这时是真实文字，参与排版、可以被点击和编辑。
+  final int paintedFrom;
+
+  /// 行顶在文档坐标里的 y。
+  final double top;
+
+  final double height;
+
+  /// 列表标记槽位；非列表行是 [MarkerSlot.none]。
+  final MarkerSlot slot;
+
+  /// 这一行的左右内边距（代码块卡片），坐标从正文列边缘起算。
+  final EdgeInsets insets;
+
+  /// 这一行的文字（列表行只含正文）。渲染层把它画在 `(gutter, top)`。
+  final TextPainter painter;
+
+  final List<VisualLine> visuals;
+
+  /// 这一行的自绘内容（实时表格行）；`null` 表示照常画 [painter]。
+  ///
+  /// 有它时 [painter] 是空的：绘制、命中、光标落点全部由 [block] 回答。
+  final LineBlockView? block;
+
+  /// 这一行要铺在文字下面的圆角底片（行内代码），坐标相对 [painter]。
+  final List<LineFillRun> fills;
+
+  double get bottom => top + height;
+
+  /// 正文列（文档坐标里的 x）。续行从这里开始。
+  ///
+  /// 列表行的正文列在标记之后，代码行的正文列在卡片内边距之后——两者都是
+  /// 「这一行的字从哪里起笔」，所以续行、光标、命中统一读这个值。
+  double get gutter => insets.left + slot.width;
+
+  /// [localY]（相对行顶）落在第几条视觉行。
+  int visualIndexAtY(double localY) {
+    for (int i = visuals.length - 1; i >= 0; i--) {
+      if (localY >= visuals[i].top) return i;
+    }
+    return 0;
+  }
+
+  @override
+  String toString() =>
+      'LaidOutLine(${source.index}, top=$top, h=$height, gutter=$gutter)';
+}
+
+/// 整篇文档的行布局结果。
+///
+/// 文档坐标：原点在正文左上角，y 沿行累积，x 从正文左边缘起算。
+class LineDocumentLayout {
+  LineDocumentLayout._({
+    required this.text,
+    required this.lines,
+    required this.laidOut,
+    required this.width,
+    required this.height,
+    required this.metrics,
+  });
+
+  final String text;
+  final List<SourceLine> lines;
+  final List<LaidOutLine> laidOut;
+  final double width;
+  final double height;
+  final LineLayoutMetrics metrics;
+
+  bool _disposed = false;
+
+  /// 光标在 [offset] 处的几何。
+  ///
+  /// 标记没摊开时（列表行 `[start, paintStart)`）光标统一吸附到正文列起点：
+  /// 槽位里的圆点/复选框不是字形，用字宽去插值只会让光标在标记里乱跳。
+  /// 标记摊进正文后它就是字形，偏移按普通字符映射。
+  CaretGeometry caretGeometryAt(int offset) {
+    final int o = offset.clamp(0, text.length);
+    final int lineIndex = _lineIndexAtOffset(o);
+    final LaidOutLine line = laidOut[lineIndex];
+    final SourceLine source = line.source;
+
+    final LineBlockView? block = line.block;
+    if (block != null) {
+      final Rect rect = block.caretRectAt(o);
+      return CaretGeometry(
+        offset: o,
+        origin: Offset(rect.left, line.top + rect.top),
+        height: rect.height > 0 ? rect.height : line.visuals.first.height,
+        lineIndex: lineIndex,
+        visualIndex: 0,
+      );
+    }
+
+    if (o < line.paintedFrom) {
+      return CaretGeometry(
+        offset: o,
+        origin: Offset(line.gutter, line.top),
+        height: line.visuals.first.height,
+        lineIndex: lineIndex,
+        visualIndex: 0,
+      );
+    }
+
+    final int local = (o - line.paintedFrom).clamp(
+      0,
+      source.end - line.paintedFrom,
+    );
+    final TextPosition position = TextPosition(offset: local);
+    final Offset caret = line.painter.getOffsetForCaret(position, Rect.zero);
+    final double measured = line.painter.getFullHeightForCaret(
+      position,
+      Rect.zero,
+    );
+    final int visual = line.visualIndexAtY(caret.dy);
+    return CaretGeometry(
+      offset: o,
+      origin: Offset(line.gutter + caret.dx, line.top + caret.dy),
+      height: measured > 0 ? measured : line.visuals[visual].height,
+      lineIndex: lineIndex,
+      visualIndex: visual,
+    );
+  }
+
+  /// 文档坐标 [point] 对应的源码偏移。
+  ///
+  /// 标记没摊开时，落在标记区/缩进区会返回正文起点——点列表的圆点会像点行首
+  /// 一样，光标进到正文第一字前面，而不是钻到标记字符之间。标记摊进正文后
+  /// 槽位宽度为零，这里就只在真的落在行首左侧时才钳到行首。
+  int offsetAtPoint(Offset point) {
+    if (point.dy < 0) return 0;
+    if (point.dy >= height) return text.length;
+    final int lineIndex = _lineIndexAtY(point.dy);
+    final LaidOutLine line = laidOut[lineIndex];
+    final LineBlockView? block = line.block;
+    if (block != null) {
+      return block
+          .offsetAt(Offset(point.dx, point.dy - line.top))
+          .clamp(0, text.length);
+    }
+    final double localX = point.dx - line.gutter;
+    if (localX < 0) return line.paintedFrom;
+    final double maxWidth = math.max(
+      1.0,
+      width - line.gutter - line.insets.right,
+    );
+    final int local = line.painter
+        .getPositionForOffset(
+          Offset(
+            math.min(localX, maxWidth),
+            point.dy - line.top + lineTextRise(line),
+          ),
+        )
+        .offset;
+    return (line.paintedFrom + local).clamp(line.paintedFrom, line.source.end);
+  }
+
+  /// 源码行 [index] 的顶部（文档坐标）；越界时夹到首/末行。
+  ///
+  /// 大纲跳转要的是「这一行在第几个像素」，而每行的高度由它自己的字号决定
+  /// （标题、代码、正文各不相同），用正文行高乘行数会一路累积误差。
+  double lineTop(int index) {
+    if (laidOut.isEmpty) return 0;
+    final int i = index.clamp(0, laidOut.length - 1);
+    return laidOut[i].top;
+  }
+
+  /// 选区 `[baseOffset, extentOffset)` 的高亮盒子。
+  ///
+  /// 每个视觉行一块：横向贴着字形（`BoxWidthStyle.tight`，Typora / Obsidian
+  /// 的观感），纵向铺满整条视觉行——上下两行的盒子因此首尾相接，行与行之间
+  /// 的缝隙由画笔（`EditorSelectionPainter`）统一扣出来，而不是靠行距留白。
+  /// 从行首选起的选区还会盖住左侧标记槽位。
+  List<Rect> selectionRects(int baseOffset, int extentOffset) {
+    int a = baseOffset.clamp(0, text.length);
+    int b = extentOffset.clamp(0, text.length);
+    if (a > b) {
+      final int swap = a;
+      a = b;
+      b = swap;
+    }
+    if (a == b) return const <Rect>[];
+
+    final List<Rect> out = <Rect>[];
+    for (final LaidOutLine line in laidOut) {
+      final SourceLine source = line.source;
+      // 自绘行（表格）按格子成块选中：这一行没有字形盒子可量，矩形由它
+      // 自己回答，引擎只负责换算到文档坐标。
+      final LineBlockView? block = line.block;
+      if (block != null) {
+        if (line.height <= 0) continue;
+        final int from = math.max(a, source.start);
+        final int to = math.min(b, source.end);
+        if (to <= from) continue;
+        for (final Rect rect in block.highlightRects(from, to)) {
+          out.add(rect.shift(Offset(line.gutter, line.top)));
+        }
+        continue;
+      }
+      // 换行符属于它结束的那一行，所以右端要算到 end + 1。
+      final int from = math.max(a, source.start);
+      final int to = math.min(b, source.end + 1);
+      if (to <= from) continue;
+      if (line.height <= 0) continue;
+
+      final int paintedFrom = math.max(from, line.paintedFrom);
+      final int paintedTo = math.min(to, source.end);
+      List<TextBox> boxes = const <TextBox>[];
+      if (paintedTo > paintedFrom) {
+        boxes = line.painter.getBoxesForSelection(
+          TextSelection(
+            baseOffset: paintedFrom - line.paintedFrom,
+            extentOffset: paintedTo - line.paintedFrom,
+          ),
+          boxHeightStyle: BoxHeightStyle.tight,
+          boxWidthStyle: BoxWidthStyle.tight,
+        );
+      }
+
+      if (boxes.isEmpty) {
+        // 空行，或者选区只碰到了换行符：给一条零宽的高亮，落在这一行的起笔处。
+        // 列表行从行首选起时连标记槽位一起洗；有内边距的行（代码块）只洗到
+        // 正文起点，否则卡片的内边距会被涂成一条色带。
+        final VisualLine visual = line.visuals.last;
+        final bool fromLineStart = from <= source.start;
+        final double left = fromLineStart && source.isList ? 0 : line.gutter;
+        out.add(
+          Rect.fromLTRB(
+            left,
+            line.top + visual.top,
+            left,
+            line.top + visual.top + visual.height,
+          ),
+        );
+        continue;
+      }
+
+      for (int i = 0; i < boxes.length; i++) {
+        final TextBox box = boxes[i];
+        final VisualLine visual = _visualAt(line, box.top);
+        double left = line.gutter + box.left;
+        // 从行首选起：第一块把手伸进标记槽位（只有列表行有槽位）。
+        if (i == 0 && from <= source.start && source.isList) left = 0;
+        out.add(
+          Rect.fromLTRB(
+            left,
+            line.top + visual.top,
+            math.max(left, line.gutter + box.right),
+            line.top + visual.top + visual.height,
+          ),
+        );
+      }
+    }
+    return out;
+  }
+
+  /// 源码区间 `[start, end)` 覆盖的整行矩形（文档坐标）。
+  ///
+  /// 只有一个矩形，因为调用方（代码块卡片）要的是「这一段占了几行、从哪到
+  /// 哪」，而不是每一行的字形盒子。零高的行（折叠的闭围栏）不参与，否则卡片
+  /// 底部会多出一整行空白。
+  Rect? blockRect(int start, int end) {
+    int a = start.clamp(0, text.length);
+    int b = end.clamp(0, text.length);
+    if (a > b) {
+      final int swap = a;
+      a = b;
+      b = swap;
+    }
+    if (a == b) return null;
+
+    double top = double.infinity;
+    double bottom = -double.infinity;
+    for (final LaidOutLine line in laidOut) {
+      if (line.source.end < a || line.source.start >= b) continue;
+      if (line.height <= 0) continue;
+      for (final VisualLine visual in line.visuals) {
+        if (visual.height <= 0) continue;
+        top = math.min(top, line.top + visual.top);
+        bottom = math.max(bottom, line.top + visual.top + visual.height);
+      }
+    }
+    if (!top.isFinite || bottom <= top) return null;
+    return Rect.fromLTRB(0, top, width, bottom);
+  }
+
+  /// [localTop]（相对行顶）落在哪条视觉行。
+  VisualLine _visualAt(LaidOutLine line, double localTop) {
+    VisualLine found = line.visuals.first;
+    for (final VisualLine visual in line.visuals) {
+      if (visual.top > localTop + 0.01) break;
+      found = visual;
+    }
+    return found;
+  }
+
+  int _lineIndexAtOffset(int offset) {
+    int lo = 0;
+    int hi = laidOut.length - 1;
+    while (lo < hi) {
+      final int mid = (lo + hi + 1) >> 1;
+      if (laidOut[mid].source.start <= offset) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return lo;
+  }
+
+  int _lineIndexAtY(double y) {
+    int lo = 0;
+    int hi = laidOut.length - 1;
+    while (lo < hi) {
+      final int mid = (lo + hi + 1) >> 1;
+      if (laidOut[mid].top <= y) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return lo;
+  }
+
+  /// 释放所有行的 [TextPainter]。布局对象作废后不能再调用任何几何方法。
+  ///
+  /// 自绘行（表格）的资源不在这里释放：那些视图由宿主缓存、跨多轮排版
+  /// 复用，只有宿主知道什么时候该丢。
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    for (final LaidOutLine line in laidOut) {
+      line.painter.dispose();
+    }
+  }
+}
+
+/// 对 [text] 做一次按行布局。
+///
+/// [contentWidth] 是正文列（不是整行）的可用宽度；列表行的实际排版宽度
+/// 会再减去标记槽位，代码行再减去 [LineInsetResolver] 给的卡片内边距。
+LineDocumentLayout layoutLines({
+  required String text,
+  required TextStyle baseStyle,
+  required double contentWidth,
+  TextScaler textScaler = TextScaler.noScaling,
+  TextDirection textDirection = TextDirection.ltr,
+  LineStyleResolver? styleFor,
+  LineHeightResolver? heightFor,
+  LineSpanResolver? spanFor,
+  LineFillResolver? fillFor,
+  LineInsetResolver? insetFor,
+  LineBlockResolver? blockFor,
+  int? markerRevealLine,
+  LineLayoutMetrics metrics = const LineLayoutMetrics(),
+}) {
+  final List<SourceLine> sources = scanSourceLines(text);
+  final List<LaidOutLine> out = <LaidOutLine>[];
+  final LineBlockContext blockContext = LineBlockContext(
+    contentWidth: contentWidth,
+    textScaler: textScaler,
+    textDirection: textDirection,
+  );
+  double top = 0;
+
+  // 每一级最近一个列表项的标记中心，供下一层导轨对齐。空行不清栈，这样
+  // 松散列表（条目之间隔一行）的竖线仍是连贯的一根。
+  final List<double?> railCentres = List<double?>.filled(6, null);
+
+  for (int i = 0; i < sources.length; i++) {
+    final SourceLine source = sources[i];
+    final TextStyle style = styleFor?.call(source) ?? baseStyle;
+    final MarkerSlot bare = _slotOf(
+      source,
+      style,
+      text,
+      textScaler,
+      textDirection,
+      metrics,
+      const <double>[],
+    );
+    final List<double> rails = _railsFor(
+      source,
+      sources,
+      i,
+      railCentres,
+      bare,
+      metrics,
+    );
+    // 只有用户明确点开的那一行才把标记摊进正文；光标恰好停在行首（刚绑定
+    // 笔记、Ctrl+Home）不算——那会让第一行是列表的笔记一打开就露出源码。
+    final bool markersInline =
+        source.isList &&
+        markerRevealLine != null &&
+        markerRevealLine == source.start;
+    final MarkerSlot slot = MarkerSlot(
+      level: bare.level,
+      indent: bare.indent,
+      marker: bare.marker,
+      digitWidth: bare.digitWidth,
+      ownRailAbove:
+          source.isList && bare.level > 0 && railCentres[bare.level] != null,
+      railXs: rails,
+      revealedMarkers: markersInline,
+    );
+    _updateRailCentres(source, slot, railCentres, metrics);
+    final LineBlockView? block = blockFor?.call(source, blockContext);
+    final EdgeInsets insets = block == null
+        ? (insetFor?.call(source) ?? EdgeInsets.zero)
+        : EdgeInsets.zero;
+    final double maxWidth = math.max(
+      1.0,
+      contentWidth - insets.horizontal - slot.width,
+    );
+    final int paintedFrom = markersInline ? source.start : source.paintStart;
+    final String painted = text.substring(paintedFrom, source.end);
+    final InlineSpan? custom = block == null ? spanFor?.call(source) : null;
+    final InlineSpan? usable = custom != null && custom.toPlainText() == painted
+        ? custom
+        : null;
+    // 底片的偏移是相对这一行排出来的文字算的，span 树退回纯文本时那些偏移
+    // 也就不成立了（端帽的内边距会跟着消失），所以只在 span 可用时铺底片。
+    final List<LineFillRun> fills = block == null && usable != null
+        ? (fillFor?.call(source) ?? const <LineFillRun>[])
+        : const <LineFillRun>[];
+    final TextPainter painter = TextPainter(
+      text: block != null
+          ? TextSpan(text: '', style: style)
+          : (usable ?? TextSpan(text: painted, style: style)),
+      textDirection: textDirection,
+      textScaler: textScaler,
+    )..layout(maxWidth: maxWidth);
+
+    final double rowHeight = _rowHeight(style);
+    final double? override = block != null ? null : heightFor?.call(source);
+    final double height =
+        block?.height ?? override ?? math.max(painter.height, rowHeight);
+    final List<VisualLine> visuals = block != null
+        ? <VisualLine>[
+            VisualLine(
+              index: 0,
+              top: 0,
+              height: block.height,
+              start: source.start,
+              end: source.end,
+              width: block.width,
+            ),
+          ]
+        : _visualsOf(
+            source,
+            painter,
+            height,
+            override != null,
+            maxWidth,
+            paintedFrom,
+          );
+
+    out.add(
+      LaidOutLine(
+        source: source,
+        top: top,
+        height: height,
+        slot: slot,
+        insets: insets,
+        painter: painter,
+        visuals: visuals,
+        block: block,
+        fills: fills,
+        paintedFrom: paintedFrom,
+      ),
+    );
+    top += height;
+  }
+
+  return LineDocumentLayout._(
+    text: text,
+    lines: sources,
+    laidOut: out,
+    width: contentWidth,
+    height: top,
+    metrics: metrics,
+  );
+}
+
+/// 一段样式的整行高度。
+///
+/// 空行没有任何字形，`TextPainter` 可能报 0 高；一行不能因此塌掉，
+/// 否则空行上的光标和点击都会失效。
+double _rowHeight(TextStyle style) {
+  final double size = style.fontSize ?? 15;
+  final double height = style.height ?? 1.2;
+  return (size * height).roundToDouble();
+}
+
+/// 把一行的 [TextPainter] 切成视觉行。
+List<VisualLine> _visualsOf(
+  SourceLine source,
+  TextPainter painter,
+  double height,
+  bool fixedHeight,
+  double maxWidth,
+  int paintedFrom,
+) {
+  final int paintedLength = source.end - paintedFrom;
+  if (fixedHeight || paintedLength == 0) {
+    return <VisualLine>[
+      VisualLine(
+        index: 0,
+        top: 0,
+        height: height,
+        start: paintedFrom,
+        end: source.end,
+        width: 0,
+      ),
+    ];
+  }
+
+  final List<LineMetrics> metrics = painter.computeLineMetrics();
+  if (metrics.isEmpty) {
+    return <VisualLine>[
+      VisualLine(
+        index: 0,
+        top: 0,
+        height: height,
+        start: paintedFrom,
+        end: source.end,
+        width: painter.width,
+      ),
+    ];
+  }
+
+  final List<VisualLine> out = <VisualLine>[];
+  double top = 0;
+  int cursor = 0;
+  for (int i = 0; i < metrics.length; i++) {
+    final line = metrics[i];
+    final boundary = painter.getLineBoundary(TextPosition(offset: cursor));
+    int from = boundary.start;
+    int to = boundary.end;
+    if (from < cursor) from = cursor;
+    if (to <= from) {
+      // 行尾空白被折行裁掉时 getLineBoundary 可能不前进。用右侧探测点兜底，
+      // 至少保证视觉行区间单调递增，否则 offset↔point 会来回跳。
+      final int probe = painter
+          .getPositionForOffset(
+            Offset(math.max(0, maxWidth - 0.01), top + line.height / 2),
+          )
+          .offset;
+      to = probe.clamp(cursor + 1, paintedLength);
+      from = cursor;
+    }
+    if (to > paintedLength) to = paintedLength;
+    out.add(
+      VisualLine(
+        index: i,
+        top: top,
+        height: line.height,
+        start: paintedFrom + from,
+        end: paintedFrom + to,
+        width: line.width,
+      ),
+    );
+    top += line.height;
+    cursor = to;
+    if (cursor >= paintedLength) break;
+  }
+
+  // 最后一条视觉行必须覆盖到行尾，否则行尾的光标会落到不存在的区间。
+  if (out.isNotEmpty && out.last.end < source.end) {
+    final VisualLine last = out.last;
+    out[out.length - 1] = VisualLine(
+      index: last.index,
+      top: last.top,
+      height: last.height,
+      start: last.start,
+      end: source.end,
+      width: last.width,
+    );
+  }
+  return out;
+}
+
+/// 一行的导轨 x。
+///
+/// 导轨对齐**标记的中心**（圆点、复选框、有序序号各自的中心），竖线从数字
+/// 中间穿过去，而不是贴着左边把它切开。空行不打断列表栈，同级项被空行
+/// 隔开时也把这一列接上。
+List<double> _railsFor(
+  SourceLine source,
+  List<SourceLine> sources,
+  int index,
+  List<double?> centres,
+  MarkerSlot slot,
+  LineLayoutMetrics metrics,
+) {
+  double fallback(int level) =>
+      level * metrics.indentStep + metrics.markerCentre;
+
+  if (source.isList) {
+    final int level = source.nestLevel;
+    return <double>[
+      for (int k = 0; k < level; k++) centres[k] ?? fallback(k),
+      // 同级自己这一列：有同级项时接住条目之间的空档；有子项时从本项
+      // 一直连到子项（长条目折行时第二行也要有线）。顶层的同级之间不画，
+      // 免得整份文档在根层拖出一条长线。
+      if ((level > 0 && _hasSiblingAtLevel(sources, index, level, centres)) ||
+          _hasChildAtLevel(sources, index, level))
+        _markerCentre(source, slot, metrics),
+    ];
+  }
+
+  if (source.text.trim().isEmpty) {
+    final int? next = _nextListLevel(sources, index);
+    if (next == null) return const <double>[];
+    // 空行把上下两项隔开时，竖线要一直延续到**同级**那一列：同级项自己
+    // 的列就是它下面子项的导轨，断了会正好缺在 1. 和 2. 之间。
+    int count = 0;
+    for (int k = 0; k < centres.length; k++) {
+      if (centres[k] != null) count = k + 1;
+    }
+    return <double>[for (int k = 0; k < count; k++) centres[k] ?? fallback(k)];
+  }
+
+  // 带缩进的非列表行是列表项自己的续行，不结束列表；只有顶格的行才把
+  // 列表收起来，后面的空行不再继承导轨。
+  if (source.text.startsWith(RegExp(r'\s'))) return const <double>[];
+  centres.fillRange(0, centres.length, null);
+  return const <double>[];
+}
+
+/// 记录本行标记的中心，供下一层导轨对齐；更深的兄弟层级就此结束。
+///
+/// 有序任务对齐**序号**的中心，不是复选框：复选框在序号右边 10px 开外，
+/// 线画到那里会明显偏右、离开数字所在的列。
+void _updateRailCentres(
+  SourceLine source,
+  MarkerSlot slot,
+  List<double?> centres,
+  LineLayoutMetrics metrics,
+) {
+  if (!source.isList) return;
+  final int level = source.nestLevel;
+  centres[level] = _markerCentre(source, slot, metrics);
+  for (int k = level + 1; k < centres.length; k++) {
+    centres[k] = null;
+  }
+}
+
+/// 标记的中心 x。
+///
+/// 有序标记对齐的是**数字本身**的中心，不是整个前缀（`1. ` 含空白和点）
+/// 的中心，也不是复选框中心——后者在序号右边 10px 开外。
+double _markerCentre(
+  SourceLine source,
+  MarkerSlot slot,
+  LineLayoutMetrics metrics,
+) {
+  final double digit = slot.digitWidth > 0 ? slot.digitWidth / 2 : 0;
+  return switch (source.kind) {
+    LineBlockKind.bullet => slot.indent + 2 + 2.5,
+    LineBlockKind.ordered =>
+      slot.indent + (digit > 0 ? digit : slot.marker / 2),
+    LineBlockKind.task =>
+      source.number == null
+          ? slot.indent + metrics.markerCentre
+          : slot.indent +
+                (digit > 0 ? digit : (slot.marker - metrics.taskWidth) / 2),
+    _ => slot.indent + metrics.markerCentre,
+  };
+}
+
+/// 同一层是否还有别的列表项：前面已经记过同级中心，或后面还能遇到同级项。
+///
+/// 往下扫时跳过空行和带缩进的续行；遇到更深的层继续找（子项后面可能
+/// 还有同级的 `2.`），遇到更浅的层或顶格的非列表行就说明这一组结束了。
+bool _hasSiblingAtLevel(
+  List<SourceLine> sources,
+  int index,
+  int level,
+  List<double?> centres,
+) {
+  if (centres[level] != null) return true;
+  for (int i = index + 1; i < sources.length; i++) {
+    final SourceLine line = sources[i];
+    if (line.text.trim().isEmpty) continue;
+    if (line.isList) {
+      if (line.nestLevel < level) return false;
+      if (line.nestLevel == level) return true;
+      continue;
+    }
+    if (line.text.startsWith(RegExp(r'\s'))) continue;
+    return false;
+  }
+  return false;
+}
+
+/// 本项下面是否挂着子项：往下扫到的第一个列表行比它更深。
+bool _hasChildAtLevel(List<SourceLine> sources, int index, int level) {
+  for (int i = index + 1; i < sources.length; i++) {
+    final SourceLine line = sources[i];
+    if (line.text.trim().isEmpty) continue;
+    if (line.isList) return line.nestLevel > level;
+    if (line.text.startsWith(RegExp(r'\s'))) continue;
+    return false;
+  }
+  return false;
+}
+
+/// 跳过空行，看下一条非空行是不是列表；不是就返回 `null`。
+int? _nextListLevel(List<SourceLine> sources, int from) {
+  for (int i = from + 1; i < sources.length; i++) {
+    final SourceLine line = sources[i];
+    if (!line.isList && line.text.trim().isEmpty) continue;
+    return line.isList ? line.nestLevel : null;
+  }
+  return null;
+}
+
+/// 一行的标记槽位；非列表行没有槽位，但空行可以带导轨。
+MarkerSlot _slotOf(
+  SourceLine source,
+  TextStyle style,
+  String text,
+  TextScaler textScaler,
+  TextDirection textDirection,
+  LineLayoutMetrics metrics,
+  List<double> railXs,
+) {
+  if (!source.isList) return MarkerSlot(railXs: railXs);
+
+  final int level = source.nestLevel;
+  final double indent = level * metrics.indentStep;
+  double marker;
+  double digitWidth = 0;
+  switch (source.kind) {
+    case LineBlockKind.bullet:
+      marker = metrics.bulletWidth;
+    case LineBlockKind.ordered:
+      marker = _measure(
+        text.substring(source.markerStart, source.markerEnd),
+        style,
+        textScaler,
+        textDirection,
+      );
+      digitWidth = _measure(
+        source.number?.toString() ?? '',
+        style,
+        textScaler,
+        textDirection,
+      );
+    case LineBlockKind.task:
+      if (source.number == null) {
+        marker = metrics.taskWidth;
+      } else {
+        // 有序任务：数字 + 空白 + 复选框。`leadEnd` 是 `[` 的位置。
+        marker =
+            _measure(
+              text.substring(source.markerStart, source.leadEnd),
+              style,
+              textScaler,
+              textDirection,
+            ) +
+            metrics.taskWidth;
+        digitWidth = _measure(
+          source.number?.toString() ?? '',
+          style,
+          textScaler,
+          textDirection,
+        );
+      }
+    default:
+      marker = 0;
+  }
+
+  return MarkerSlot(
+    level: level,
+    indent: indent,
+    marker: marker,
+    digitWidth: digitWidth,
+    railXs: railXs,
+  );
+}
+
+/// 量一段标记源码的宽度。标记不属于正文，量完立即释放。
+double _measure(
+  String text,
+  TextStyle style,
+  TextScaler textScaler,
+  TextDirection textDirection,
+) {
+  if (text.isEmpty) return 0;
+  final TextPainter painter = TextPainter(
+    text: TextSpan(text: text, style: style),
+    textDirection: textDirection,
+    textScaler: textScaler,
+  )..layout();
+  final double width = painter.width;
+  painter.dispose();
+  return width;
+}

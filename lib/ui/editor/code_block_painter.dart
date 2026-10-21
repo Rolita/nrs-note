@@ -1,25 +1,9 @@
-import 'dart:math' as math;
-
-import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
+import 'line_layout/render_line_editable.dart';
 import 'live_markdown.dart';
-
-/// How far the slab bleeds past the text column on each side.
-///
-/// The code cannot be moved — it is a `TextField`, and its glyphs start on the
-/// column's left edge — so the slab is drawn *wider* than the column instead.
-/// The block's inner padding, and the reason it has to be a bleed.
-///
-/// The sheet gets its `pre { padding: 14px 16px }` from CSS. Here the code *is*
-/// the paragraph: its glyphs start on the column's left edge and a `TextField`
-/// has no way to indent one line. So the only way to put air between the code
-/// and the block's edge is to draw the block 16px wider than the column on each
-/// side. Zero bleed (flush edges, code glued to the border) is the alternative,
-/// and it is worse — the block stops reading as a card at all.
-const double kCodeSlabBleed = 16;
 
 /// Air above the header row and below the last line of code.
 ///
@@ -27,6 +11,9 @@ const double kCodeSlabBleed = 16;
 /// card only needs a couple of pixels above it. The bottom has no line of its
 /// own: the closing fence is collapsed, and all of the breathing room below the
 /// last code row lives here.
+///
+/// 左右的内边距不在这里：它由按行引擎的 `LineInsetResolver` 退进卡片内部
+/// （见 [kCodeBlockInset]），卡片本身铺满正文列，不再越出列外。
 const double kCodeSlabTopPad = 1;
 const double kCodeSlabBottomPad = 12;
 
@@ -55,9 +42,9 @@ Color codeSlabFill(AppPalette p) =>
 /// block used to come out as one stripe per line — indented lines narrower than
 /// their neighbours, every row separated by the leading. The block has to be
 /// one shape, which means paint: this sits under the field, in the same
-/// coordinates the selection wash uses, and asks the field for the boxes of the
-/// block's own source range so the slab lands on the rows that are really
-/// painted there.
+/// coordinates the selection wash uses, and asks the line engine
+/// ([RenderLineEditable.blockRectFor]) for the rows the block covers — the
+/// slab therefore lands on exactly the lines that are painted there.
 ///
 /// The label lives here for the same reason. A `WidgetSpan` label would be a
 /// line of the paragraph, and that line pushed the first code row a full header
@@ -81,7 +68,7 @@ class CodeBlockPainter extends CustomPainter {
 
   /// Resolves the live field and the box this canvas belongs to, both at paint
   /// time: the render objects are replaced across rebuilds.
-  final RenderEditable? Function() editable;
+  final RenderLineEditable? Function() editable;
   final RenderBox? Function() editorBox;
 
   final Color fill;
@@ -96,7 +83,7 @@ class CodeBlockPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final RenderEditable? field = editable();
+    final RenderLineEditable? field = editable();
     final RenderBox? box = editorBox();
     if (field == null || box == null) return;
 
@@ -112,23 +99,16 @@ class CodeBlockPainter extends CustomPainter {
     canvas.save();
     canvas.clipRect(bounds);
     for (final CodeBlockRange range in ranges) {
-      final List<TextBox> boxes = field.getBoxesForSelection(
-        TextSelection(baseOffset: range.start, extentOffset: range.end),
-      );
-      double top = double.infinity;
-      double bottom = -double.infinity;
-      for (final TextBox glyph in boxes) {
-        if (glyph.bottom <= glyph.top) continue;
-        top = math.min(top, glyph.top);
-        bottom = math.max(bottom, glyph.bottom);
-      }
-      if (!top.isFinite || bottom <= top) continue;
+      // 卡片要的是「这个围栏块占了几行、从哪到哪」，行引擎直接给整行矩形；
+      // 不再逐字形求包围盒——那需要把每一行的盒子逐一取回来再并起来。
+      final Rect? rows = field.blockRectFor(range.start, range.end);
+      if (rows == null) continue;
 
       final Rect local = Rect.fromLTRB(
-        -kCodeSlabBleed,
-        top - kCodeSlabTopPad,
-        field.size.width + kCodeSlabBleed,
-        bottom + kCodeSlabBottomPad,
+        0,
+        rows.top - kCodeSlabTopPad,
+        field.size.width,
+        rows.bottom + kCodeSlabBottomPad,
       );
       final Rect slab = Rect.fromPoints(
         box.globalToLocal(field.localToGlobal(local.topLeft)),

@@ -128,33 +128,6 @@ double textHeightAbove({
   return measured + correction;
 }
 
-bool _isHiddenStyle(TextStyle? style) =>
-    style != null && style.fontSize == _kHiddenFontSize;
-
-/// The last character of the document must never be hidden.
-///
-/// `RenderEditable` anchors the end-of-text caret on the **last glyph's** box
-/// (`TextPainter._computeEndOfTextCaretAnchorOffset`), and asserts that box is
-/// non-empty. A hidden space has a zero-width box — so typing `- `, `# `, `> `
-/// or `- [ ] ` as the very last thing in a note made the caret collapse to
-/// nothing (and threw the assert in debug). Handing that one character the body
-/// style costs nothing visible — it is a space — and it is last, so its width
-/// cannot move anything else.
-void _unhideLastGlyph(List<InlineSpan> spans, TextStyle base) {
-  if (spans.isEmpty) return;
-  final InlineSpan last = spans.last;
-  if (last is! TextSpan || last.children != null) return;
-  final String? text = last.text;
-  if (text == null || text.isEmpty) return;
-  if (!_isHiddenStyle(last.style)) return;
-  if (!_spaceRe.hasMatch(text[text.length - 1])) return;
-  spans[spans.length - 1] = TextSpan(
-    text: text.substring(0, text.length - 1),
-    style: last.style,
-  );
-  spans.add(TextSpan(text: text[text.length - 1], style: base));
-}
-
 _Fence? _blockAt(List<_Fence> blocks, int index) =>
     index >= 0 && index < blocks.length ? blocks[index] : null;
 

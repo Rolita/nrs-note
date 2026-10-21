@@ -98,6 +98,8 @@ class _AppShellState extends State<AppShell> {
     final SettingsController settings = context.read<SettingsController>();
     setState(() => _view = view);
     if (settings.sidebarCollapsed) settings.sidebarCollapsed = false;
+    // 专注模式把两侧面板都藏起来了，切到某个视图却看不到它等于没切。
+    if (settings.focusMode) settings.focusMode = false;
   }
 
   void _toggleSidebar() {

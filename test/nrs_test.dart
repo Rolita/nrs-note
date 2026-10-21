@@ -5,6 +5,8 @@ import 'package:nrs/core/theme/app_tokens.dart';
 import 'package:nrs/core/utils/markdown_actions.dart';
 import 'package:nrs/core/utils/markdown_outline.dart';
 import 'package:nrs/data/models/note.dart';
+import 'package:nrs/ui/editor/line_layout/line_layout_engine.dart';
+import 'package:nrs/ui/editor/line_layout/live_line_style.dart';
 import 'package:nrs/ui/editor/live_markdown.dart';
 import 'package:nrs/ui/editor/markdown_editor.dart';
 import 'package:nrs/ui/preview/code_palette.dart';
@@ -960,19 +962,20 @@ final x = 1;
       }
     });
 
-    test('the very last character is never hidden', () {
-      // `RenderEditable` anchors the end-of-text caret on the last glyph's box
-      // and asserts it is non-empty; a hidden space has a zero-width box, so a
-      // note ending in `- ` used to lose (or misplace) the caret entirely.
+    test('the very last character is never left with a zero-height caret', () {
+      // List markers are painted collapsed (zero size) so they can be revealed
+      // the moment the caret enters the line. 按行排版后末尾光标的高度由行引擎
+      // 给出：它必须退回到这一行的行高，而不是钉在一个零宽的字形盒上。
       for (final String tail in <String>['- ', '# ', '> ', '- [ ] ']) {
-        final List<InlineSpan> spans = render('一句话\n$tail', caret: 0);
-        final InlineSpan last = spans.last;
-        expect(last, isA<TextSpan>(), reason: 'tail "$tail"');
-        expect(
-          (last as TextSpan).style!.fontSize,
-          base.fontSize,
-          reason: 'tail "$tail" left a hidden glyph at the end',
+        final String text = '一句话\n$tail';
+        final LineDocumentLayout layout = layoutLines(
+          text: text,
+          baseStyle: base,
+          contentWidth: 680,
         );
+        addTearDown(layout.dispose);
+        final CaretGeometry caret = layout.caretGeometryAt(text.length);
+        expect(caret.height, greaterThan(0), reason: 'tail "$tail"');
       }
     });
 
@@ -1387,42 +1390,56 @@ final x = 1;
     });
 
     test('collapses a table divider instead of shouting it', () {
+      // `| --- | --- |` 只服务于对齐与加列，读的时候它是噪音：行高压成 0，
+      // 字也压成零号。光标停上去时才显形，否则没法编辑那一行。
       const String text = '| a | b |\n| --- | --- |\n| 1 | 2 |\n';
-      final List<InlineSpan> spans = render(text);
-      expectFaithful(text, spans, 'table');
-      final TextSpan divider = spans.whereType<TextSpan>().firstWhere(
-        (TextSpan s) => s.text == '| --- | --- |',
+      final LiveLineStyle away = LiveLineStyle(
+        base: base,
+        palette: palette,
+        reveal: () => const TextSelection.collapsed(offset: 0),
       );
-      expect(divider.style!.color, Colors.transparent);
-      expect(
-        divider.style!.fontSize,
-        0,
-        reason:
-            'zero height, or the divider would hold a whole line open '
-            'between the header and the first body row',
+      final SourceLine divider = scanSourceLines(
+        text,
+      ).firstWhere((SourceLine l) => l.kind == LineBlockKind.tableDivider);
+      expect(away.heightFor(divider), 0);
+      expect(away.styleFor(divider).fontSize, 0);
+
+      final LiveLineStyle onCaret = LiveLineStyle(
+        base: base,
+        palette: palette,
+        reveal: () =>
+            TextSelection.collapsed(offset: divider.start + 1),
       );
+      expect(onCaret.heightFor(divider), isNull);
+      expect(onCaret.styleFor(divider).fontSize, base.fontSize);
     });
 
     test('the header sits flush on the first body row', () {
-      // The divider's line break is a source character like any other, so it
-      // cannot simply be dropped — it is replaced by a zero-size widget. The
-      // tree must still be exactly as long as the source, and the divider must
-      // not introduce a line of its own.
+      // The divider keeps its source line but occupies no pixels, so the header
+      // and the first body row share an edge instead of leaving a body row of
+      // paper between them.
       const String text = '| 区域 | 事 |\n| --- | --- |\n| 侧栏 | 记 |\n';
-      final List<InlineSpan> spans = render(text);
-      expectFaithful(text, spans, 'table');
-      bool hasSoftBreak = false;
-      for (final InlineSpan s in spans) {
-        if (s is WidgetSpan && s.child is SizedBox) {
-          final SizedBox box = s.child as SizedBox;
-          if (box.width == 0 && box.height == 0) hasSoftBreak = true;
-        }
-      }
-      expect(
-        hasSoftBreak,
-        isTrue,
-        reason: 'the newline before the divider must be a zero-size box',
+      final LiveLineStyle live = LiveLineStyle(
+        base: base,
+        palette: palette,
+        reveal: () => const TextSelection.collapsed(offset: 0),
       );
+      final LineDocumentLayout layout = layoutLines(
+        text: text,
+        baseStyle: base,
+        contentWidth: 680,
+        styleFor: live.styleFor,
+        heightFor: live.heightFor,
+      );
+      addTearDown(layout.dispose);
+      final LaidOutLine header = layout.laidOut.firstWhere(
+        (LaidOutLine l) => l.source.kind == LineBlockKind.tableHeader,
+      );
+      final LaidOutLine body = layout.laidOut.firstWhere(
+        (LaidOutLine l) =>
+            l.source.kind == LineBlockKind.table && l.source.start > text.indexOf('---'),
+      );
+      expect(header.bottom, body.top, reason: '表头与第一行正文之间不能空出一行');
     });
 
     test('an inline code span never swallows its own backticks', () {
@@ -1638,9 +1655,9 @@ final x = 1;
       expect(out.selection.baseOffset, 6);
     });
 
-    test('Enter in the middle of an item is just a line break', () {
-      // The newline lands mid-line, not at the line's end: nothing to continue.
-      expect(enter('- 甲乙', 3).text, '- 甲\n乙');
+    test('Enter in the middle of an item splits it into two items', () {
+      // 后半段不是一条没有标记的裸行：它接着成为同一个列表的下一条。
+      expect(enter('- 甲乙', 3).text, '- 甲\n- 乙');
     });
 
     test('an empty quote ends the quote', () {
@@ -1700,6 +1717,177 @@ final x = 1;
     test('Enter in a fenced block is still a line break', () {
       // Pipes inside ``` are code samples, not a table.
       expect(enter('```\n| a | b |\n```', 13).text, '```\n| a | b |\n\n```');
+    });
+  });
+
+  /// 增删整行之后，有序列表的序号必须自己接上：删掉 16 那一条，下面的 17
+  /// 变回 16；在 15 后面回车插一条，后面的序号依次后移。
+  ///
+  /// 这里按输入框里真实的 formatter 顺序调用（续行 → 重编号），old/new 的形状
+  /// 也和平台送来的一致：前者是编辑前的值，后者是续行格式化器处理后的值。
+  group('Ordered list renumbering after a line change', () {
+    final ListContinuationFormatter enter = ListContinuationFormatter();
+    final OrderedListRenumberFormatter renumber =
+        OrderedListRenumberFormatter();
+
+    TextEditingValue after(TextEditingValue old, TextEditingValue next) =>
+        renumber.formatEditUpdate(old, enter.formatEditUpdate(old, next));
+
+    TextEditingValue enterAt(String text, int caret) => after(
+      TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: caret),
+      ),
+      TextEditingValue(
+        text: '${text.substring(0, caret)}\n${text.substring(caret)}',
+        selection: TextSelection.collapsed(offset: caret + 1),
+      ),
+    );
+
+    /// 删掉 [text] 里从 [start] 到 [end]（含行尾换行）的一整行。
+    TextEditingValue deleteRange(String text, int start, int end) => after(
+      TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: end),
+      ),
+      TextEditingValue(
+        text: text.substring(0, start) + text.substring(end),
+        selection: TextSelection.collapsed(offset: start),
+      ),
+    );
+
+    test('Enter in the middle of a list pushes the numbers below down', () {
+      const String text = '15. [ ] 甲\n16. [ ] 乙\n17. [ ] 丙';
+      final TextEditingValue out = enterAt(text, text.indexOf('\n'));
+      expect(out.text, '15. [ ] 甲\n16. [ ] \n17. [ ] 乙\n18. [ ] 丙');
+      expect(
+        out.text.substring(0, out.selection.baseOffset),
+        endsWith('16. [ ] '),
+        reason: 'caret belongs after the new item\'s marker',
+      );
+    });
+
+    test('行中回车把后半段拆成下一个序号', () {
+      const String text = '15. [ ] 序号排列问题\n16. [ ] 乙';
+      final TextEditingValue out = enterAt(text, text.indexOf('问题'));
+      expect(out.text, '15. [ ] 序号排列\n16. [ ] 问题\n17. [ ] 乙');
+      expect(
+        out.text.substring(0, out.selection.baseOffset),
+        endsWith('16. [ ] '),
+        reason: 'caret belongs after the new item\'s marker',
+      );
+    });
+
+    test('deleting an item closes the gap it left', () {
+      const String text = '15. [ ] 甲\n16. [ ] 乙\n17. [ ] 丙';
+      final TextEditingValue out = deleteRange(
+        text,
+        text.indexOf('16.'),
+        text.indexOf('\n17.') + 1,
+      );
+      expect(out.text, '15. [ ] 甲\n16. [ ] 丙');
+    });
+
+    test('a plain ordered list renumbers the same way', () {
+      const String text = '15. 甲\n16. 乙\n17. 丙';
+      final TextEditingValue out = deleteRange(
+        text,
+        text.indexOf('16.'),
+        text.indexOf('\n17.') + 1,
+      );
+      expect(out.text, '15. 甲\n16. 丙');
+    });
+
+    test('the block keeps the number it starts at', () {
+      // 15 是用户自己的起始序号，不能被重排成 1。
+      const String text = '15. 甲\n16. 乙';
+      final TextEditingValue out = deleteRange(
+        text,
+        text.indexOf('\n16.'),
+        text.length,
+      );
+      expect(out.text, '15. 甲');
+    });
+
+    test('a narrower number pulls the caret back with it', () {
+      const String text = '8. 甲\n9. 乙\n10. 丙';
+      final TextEditingValue out = deleteRange(
+        text,
+        text.indexOf('9.'),
+        text.indexOf('\n10.') + 1,
+      );
+      expect(out.text, '8. 甲\n9. 丙');
+      expect(out.selection.baseOffset, '8. 甲\n'.length);
+    });
+
+    test('typing inside an item does not renumber', () {
+      const String text = '15. 甲\n16. 乙';
+      final TextEditingValue next = TextEditingValue(
+        text: '15. 甲乙\n16. 乙',
+        selection: TextSelection.collapsed(offset: 5),
+      );
+      expect(
+        renumber
+            .formatEditUpdate(
+              TextEditingValue(
+                text: text,
+                selection: TextSelection.collapsed(offset: 4),
+              ),
+              next,
+            )
+            .text,
+        next.text,
+      );
+    });
+
+    test('a paragraph next to a list is not renumbered', () {
+      const String text = '15. 甲\n16. 乙\n\n正文';
+      final TextEditingValue next = TextEditingValue(
+        text: '15. 甲\n16. 乙\n\n正',
+        selection: TextSelection.collapsed(offset: text.length - 1),
+      );
+      expect(
+        renumber
+            .formatEditUpdate(
+              TextEditingValue(
+                text: text,
+                selection: TextSelection.collapsed(offset: text.length),
+              ),
+              next,
+            )
+            .text,
+        next.text,
+      );
+    });
+
+    test('pasting several lines keeps the numbers it brought', () {
+      const String text = '15. 甲';
+      const String pasted = '15. 甲\n1. x\n2. y';
+      expect(
+        renumber
+            .formatEditUpdate(
+              const TextEditingValue(
+                text: text,
+                selection: TextSelection.collapsed(offset: 5),
+              ),
+              const TextEditingValue(
+                text: pasted,
+                selection: TextSelection.collapsed(offset: 16),
+              ),
+            )
+            .text,
+        pasted,
+      );
+    });
+
+    test('numbers inside a fence are code, not a list', () {
+      const String text = '```\n1. 甲\n2. 乙\n3. 丙\n```';
+      final TextEditingValue out = deleteRange(
+        text,
+        text.indexOf('2. '),
+        text.indexOf('\n3.') + 1,
+      );
+      expect(out.text, '```\n1. 甲\n3. 丙\n```');
     });
   });
 
@@ -1790,18 +1978,12 @@ final x = 1;
     const AppPalette palette = AppPalette.light;
     // `| a | b |` forms; the divider makes the row above it the header.
     const String doc = '| 想要 | 就写 |\n| --- | --- |\n| **加粗** | `Ctrl + B` |\n';
-    List<TableGeometry> measure(String text) {
-      final List<TableGeometry> tables = <TableGeometry>[];
-      buildLiveSpans(
-        text: text,
-        base: base,
-        p: palette,
-        selection: const TextSelection.collapsed(offset: -1),
-        contentWidth: 680,
-        tables: tables,
-      );
-      return tables;
-    }
+    List<TableGeometry> measure(String text) => measureTables(
+      text: text,
+      base: base,
+      p: palette,
+      contentWidth: 680,
+    );
 
     test('a table block is measured once, with every row', () {
       final List<TableGeometry> tables = measure(doc);
@@ -1860,69 +2042,67 @@ final x = 1;
 
     test('a caret in a cell leaves the table rendered', () {
       // Obsidian never turns a table back into `| 侧栏 | 全部笔记 |` because the
-      // caret is inside it — you type in the cell and the grid stays a grid.
-      // The skeleton under each row puts every character where its glyph is
-      // painted, so nothing has to be revealed for the caret to be honest.
-      final List<InlineSpan> spans = buildLiveSpans(
-        text: doc,
+      // caret is inside it. 按行排版把整行交给自绘块：光标停在格子里时，
+      // 每一行仍然是一个块，没有一行退回源码文本。
+      final LiveTableBlocks blocks = LiveTableBlocks(
         base: base,
-        p: palette,
-        selection: const TextSelection.collapsed(offset: 2),
-        contentWidth: 680,
+        palette: palette,
+        text: () => doc,
+        selection: () => const TextSelection.collapsed(offset: 2),
       );
-      int rowViews = 0;
-      int pipes = 0;
-      void walk(InlineSpan s) {
-        if (s is WidgetSpan &&
-            s.child.runtimeType.toString() == '_TableRowView') {
-          rowViews++;
-        }
-        if (s is TextSpan &&
-            s.text != null &&
-            s.text!.contains('|') &&
-            s.style?.fontSize != 0) {
-          pipes += s.text!.split('|').length - 1;
-        }
-        for (final InlineSpan c
-            in (s is TextSpan ? s.children : null) ?? const <InlineSpan>[]) {
-          walk(c);
-        }
-      }
-
-      for (final InlineSpan s in spans) {
-        walk(s);
-      }
-      expect(pipes, 0, reason: 'no row may fall back to its source');
-      expect(rowViews, 2, reason: 'every row of the table stays rendered');
+      addTearDown(blocks.dispose);
+      final LineDocumentLayout layout = layoutLines(
+        text: doc,
+        baseStyle: base,
+        contentWidth: 680,
+        blockFor: blocks.blockFor,
+      );
+      addTearDown(layout.dispose);
+      final List<LaidOutLine> rows = layout.laidOut
+          .where(
+            (LaidOutLine l) =>
+                l.source.kind == LineBlockKind.table ||
+                l.source.kind == LineBlockKind.tableHeader,
+          )
+          .toList();
+      expect(rows, hasLength(2));
+      expect(
+        rows.every((LaidOutLine l) => l.block != null),
+        isTrue,
+        reason: 'no row may fall back to its source',
+      );
     });
 
     test('a selection across cells leaves the table rendered', () {
-      final List<InlineSpan> spans = buildLiveSpans(
-        text: doc,
+      final LiveTableBlocks blocks = LiveTableBlocks(
         base: base,
-        p: palette,
-        selection: TextSelection(
+        palette: palette,
+        text: () => doc,
+        selection: () => TextSelection(
           baseOffset: 2,
           extentOffset: doc.indexOf('加粗') + 2,
         ),
-        contentWidth: 680,
       );
-      int rowViews = 0;
-      void walk(InlineSpan s) {
-        if (s is WidgetSpan &&
-            s.child.runtimeType.toString() == '_TableRowView') {
-          rowViews++;
-        }
-        for (final InlineSpan c
-            in (s is TextSpan ? s.children : null) ?? const <InlineSpan>[]) {
-          walk(c);
-        }
-      }
-
-      for (final InlineSpan s in spans) {
-        walk(s);
-      }
-      expect(rowViews, 2, reason: 'both rows stay rendered under a range');
+      addTearDown(blocks.dispose);
+      final LineDocumentLayout layout = layoutLines(
+        text: doc,
+        baseStyle: base,
+        contentWidth: 680,
+        blockFor: blocks.blockFor,
+      );
+      addTearDown(layout.dispose);
+      final List<LaidOutLine> rows = layout.laidOut
+          .where(
+            (LaidOutLine l) =>
+                l.source.kind == LineBlockKind.table ||
+                l.source.kind == LineBlockKind.tableHeader,
+          )
+          .toList();
+      expect(
+        rows.where((LaidOutLine l) => l.block != null).length,
+        2,
+        reason: 'both rows stay rendered under a range',
+      );
     });
 
     // ------------------------------------------------------- what copy takes

@@ -12,6 +12,8 @@ class _Ctx {
     this.direction = TextDirection.ltr,
     this.textScaler = TextScaler.noScaling,
     this.plain = false,
+    this.hoverA = -1,
+    this.hoverB = -1,
     this.onTagTap,
     this.onWikilinkTap,
   });
@@ -39,21 +41,26 @@ class _Ctx {
   /// (a table cell): chips need a [BuildContext] to build, so inside a cell
   /// every inline token falls back to its plain styled text instead.
   final bool plain;
+
+  /// 指针悬停的标签区间（这一行内部偏移）。按行排版没有 widget 可以接
+  /// `MouseRegion`，悬停状态由编辑器命中后传进来，只影响标签的颜色。
+  final int hoverA;
+  final int hoverB;
   final void Function(String tag)? onTagTap;
   final void Function(String target)? onWikilinkTap;
 
   /// True when the caret (or the reveal selection) overlaps `[a, b]`.
   bool touched(int a, int b) => caretA >= 0 && caretB >= a && caretA <= b;
 
+  /// [a, b] 是否就是指针悬停的那一个标签。
+  bool hovered(int a, int b) =>
+      hoverA >= 0 && hoverA <= a && hoverB >= b;
+
   /// True when a **range** of the live selection intersects `[a, b]`.
   bool selected(int a, int b) => selA >= 0 && selB > selA && selB > a && selA < b;
 }
 
 /// Builds the styled span tree for live mode.
-///
-/// [tables] is filled with the geometry of every table block, so the pointer
-/// layer can map a press on a rendered table back to the cell under it. The
-/// renderer is the only thing that knows how wide a column came out.
 ///
 /// [liveSelection] is the selection the wash follows when it differs from
 /// [selection]: a pointer gesture freezes [selection] to keep markers from
@@ -68,7 +75,6 @@ List<InlineSpan> buildLiveSpans({
   double contentWidth = 680,
   TextScaler textScaler = TextScaler.noScaling,
   TextDirection direction = TextDirection.ltr,
-  List<TableGeometry>? tables,
   void Function(String tag)? onTagTap,
   void Function(String target)? onWikilinkTap,
 }) {
@@ -183,10 +189,6 @@ List<InlineSpan> buildLiveSpans({
     }
   }
 
-  /// True when the selection is just a caret, which is the only case where a
-  /// block collapsed to zero size (a table's divider row) may open a line of its
-  /// own for editing — a range selection that merely *covers* it must not.
-  final bool caretOnly = caretA >= 0 && caretA == caretB;
   final Set<int> revealedFences = <int>{};
   for (final int i in active) {
     if (fences[i] >= 0) revealedFences.add(fences[i]);
@@ -223,97 +225,6 @@ List<InlineSpan> buildLiveSpans({
     textScaler: textScaler,
     onTagTap: onTagTap,
     onWikilinkTap: onWikilinkTap,
-  );
-
-  /// The same context, but for text a render object will repaint (table
-  /// cells): chips need a build context, so cells fall back to plain text.
-  ///
-  /// `caretA: -1` keeps every cell rendered by default. The cell the caret
-  /// sits in is rebuilt with its source revealed (see [editAt]); that tree is
-  /// both painted and laid out invisibly as the skeleton, so the caret still
-  /// lands on the glyph under it. Revealing a cell would be fatal if the two
-  /// trees disagreed — a `**` that expanded in only one of them would push the
-  /// glyphs out of alignment with the caret.
-  final _Ctx plainCtx = _Ctx(
-    p: p,
-    caretA: -1,
-    caretB: -1,
-    selA: bandA,
-    selB: bandB,
-    contentWidth: contentWidth,
-    direction: direction,
-    textScaler: textScaler,
-    plain: true,
-    onTagTap: onTagTap,
-    onWikilinkTap: onWikilinkTap,
-  );
-
-  /// Absolute offset of the caret the **live** selection puts in a table, or
-  /// `-1` when the selection is a range.
-  ///
-  /// A rendered table is edited cell by cell: the cell under the caret opens
-  /// its Markdown source while every other cell stays rendered. A range is a
-  /// selection gesture — revealing source inside it would reflow glyphs under
-  /// the pointer and make the drag impossible to aim — so it keeps the whole
-  /// table rendered.
-  final int editAt = bandsSel.isValid && bandsSel.isCollapsed
-      ? bandsSel.start.clamp(0, text.length)
-      : -1;
-
-  final List<int> tableOf = List<int>.filled(n, -1);
-  final List<_Table> tableBlocks = <_Table>[];
-  for (int i = 0; i < n; i++) {
-    if (tableOf[i] >= 0 || !_isTableKind(kinds[i])) continue;
-    int last = i;
-    while (last + 1 < n && _isTableKind(kinds[last + 1])) {
-      last++;
-    }
-    int divider = -1;
-    for (int k = i; k <= last; k++) {
-      if (kinds[k] == _Kind.tableDivider) {
-        divider = k;
-        break;
-      }
-    }
-    final _Table t = _measureTable(
-      lines: lines,
-      starts: starts,
-      first: i,
-      last: last,
-      divider: divider,
-      base: base,
-      ctx: plainCtx,
-      editAt: editAt,
-      direction: direction,
-    );
-    for (int k = i; k <= last; k++) {
-      tableOf[k] = tableBlocks.length;
-    }
-    tableBlocks.add(t);
-  }
-  tables?.clear();
-  tables?.addAll(<TableGeometry>[
-    for (final _Table t in tableBlocks) t.geometry,
-  ]);
-
-  /// A table is only knocked back to its source while the **caret** is in it —
-  /// `active` already says which line that is. A *range* leaves it rendered
-  /// instead: a selection across cells is how you copy a block of the table,
-  /// and expanding the table the moment the pointer moved would make that
-  /// gesture impossible to finish. (A range that is typed over collapses to a
-  /// caret on the first keystroke, which reveals as usual.)
-
-  /// Where the selection sits inside each table, computed once per block.
-  ///
-  /// A cell is painted by a render object, so the wash cannot be the
-  /// paragraph's own highlight — that one is a full-width stripe over the
-  /// skeleton, which is exactly what made a partly selected table look like a
-  /// selected *row*. The band has to be measured from the same glyphs the row
-  /// paints, which means a `TextPainter` per cell; hence the cache.
-  final Map<int, List<_RowBand?>> bandCache = <int, List<_RowBand?>>{};
-  List<_RowBand?> bandsOf(int tableId) => bandCache.putIfAbsent(
-    tableId,
-    () => _bandsOfTable(tableBlocks[tableId], bandA, bandB),
   );
 
   // ---------------------------------------------------------------- pass two
@@ -375,7 +286,7 @@ List<InlineSpan> buildLiveSpans({
             style: style,
             children: tokens == null
                 ? <InlineSpan>[TextSpan(text: line)]
-                : _highlight(tokens, p.isDark),
+                : codeHighlightSpans(tokens, p.isDark),
           ),
         );
 
@@ -591,148 +502,19 @@ List<InlineSpan> buildLiveSpans({
 
       case _Kind.tableHeader:
       case _Kind.table:
-        final _Table? table = tableOf[i] < 0
-            ? null
-            : (tableOf[i] < tableBlocks.length
-                  ? tableBlocks[tableOf[i]]
-                  : null);
-        final List<_CellData>? cells =
-            (table != null && table.lineOfRow.containsKey(i))
-            ? table.cellsOf(i)
-            : null;
-        if (cells == null || cells.isEmpty) {
-          // The block is malformed: raw source, pipes and all.
-          out.addAll(_tableRowSource(line, base, at, ctx));
-          break;
-        }
-        // ⛔ A table row is **never** folded back to its source just because
-        // the caret is in it. Clicking a cell used to turn the row into
-        // `| 侧栏 | 全部笔记 |` mid-table, which is the one thing Obsidian never
-        // does: the caret edits the cell in place, and the grid stays a grid
-        // while you type. The skeleton below puts every character exactly under
-        // its painted glyph, so the caret and the hit-testing agree without the
-        // source ever being on screen.
-        final bool isLastRow = table!.rows.last.line == i;
-        // Where this row's share of the selection is. Only the cells the
-        // selection actually reaches are washed, and each of them **whole**:
-        // touching part of a cell selects that cell, the way a table is meant
-        // to be selected. Washing whole rows (which is what this used to do)
-        // meant selecting two cells out of three lit up the third one too, and
-        // the user's only way to select part of a table was to select all of
-        // it — user: 「表格让我可以只选取其中一部分」.
-        //
-        // The neighbouring bands come along for the ride because they decide
-        // which edges are *outward*: a corner is rounded only where the shape
-        // turns, so a stack of identical bands is still one rounded rectangle
-        // instead of one ring per row.
-        final int rowIndex = table.lineOfRow[i]!;
-        final List<_RowBand?> bands = bandsOf(tableOf[i]);
-        final _RowBand? band = rowIndex < bands.length ? bands[rowIndex] : null;
-        final _RowBand? above = rowIndex > 0 && rowIndex - 1 < bands.length
-            ? bands[rowIndex - 1]
-            : null;
-        final _RowBand? below = rowIndex + 1 < bands.length
-            ? bands[rowIndex + 1]
-            : null;
-        out.add(
-          _decoration(
-            _TableRowView(
-              cells: <_PaintCell>[
-                for (final _CellData d in cells)
-                  _PaintCell(
-                    spans: d.spans,
-                    cell: TableCellGeometry(
-                      start: d.cell.offset,
-                      end: d.cell.offset + d.cell.text.length,
-                      x: d.x,
-                      width: d.boxWidth,
-                    ),
-                    style: d.style,
-                    dx: d.textX,
-                    codeRuns: d.codeRuns,
-                  ),
-              ],
-              palette: p,
-              rowHeight: table.rowHeight,
-              tableWidth: table.width,
-              dyShift: table.dyShift,
-              header: kinds[i] == _Kind.tableHeader,
-              last: isLastRow,
-              band: band,
-              above: above,
-              below: below,
-              tableId: table.rows.first.start,
-              sourceStart: at,
-              rowIndex: rowIndex,
-              rowCount: table.rows.length,
-              textScaler: ctx.textScaler,
-              direction: direction,
-            ),
-          ),
-        );
-        // The skeleton: the same characters, invisible, with the advances the
-        // painted row has. It carries no paint — its whole job is to give the
-        // paragraph real positions, so a click or a drag inside the painted
-        // table lands on the character under the pointer without any custom hit
-        // testing.
-        out.addAll(_tableRowSkeleton(line, base, at, cells));
-        break;
-
       case _Kind.tableDivider:
-        // The divider row carries no pixels of its own — the header's bottom
-        // border is drawn by the row above it. Collapsing it to a zero-size run
-        // is what makes the header sit *flush* on the first body row; left at
-        // body size it would leave a whole empty line between them, which is
-        // how a rendered table ended up looking like two disconnected strips.
-        // Its own source is only on screen while the **caret** is on that line.
-        // A range selection must not reveal it: selecting a table is the most
-        // common thing you do to a table, and `| --- | --- |` lighting up in the
-        // middle of the wash tears one block into two strips.
-        final bool caretHere = on && ctx.caretA == ctx.caretB;
-        out.add(
-          TextSpan(
-            text: line,
-            style: caretHere
-                ? base.copyWith(color: p.textTertiary.withValues(alpha: 0.5))
-                : _collapsed(base),
-          ),
-        );
+        // 实时表格不在段落里排版：整行由 `LiveTableBlocks` 自绘（见
+        // `line_layout/line_block_view.dart`），段落里只剩源码。这条分支只服务
+        // 旧接口与行内语法测试，表格在编辑器里不会走到这里。
+        out.add(TextSpan(text: line, style: base));
 
       case _Kind.paragraph:
         out.addAll(_inline(line, base, at, ctx));
     }
 
-    // The divider row must not hold a line of its own open.
-    //
-    // Its characters are collapsed to zero size — but a *blank* line still gets
-    // the paragraph's default height, so leaving the break at body size put a
-    // 28px hole between the header and the first body row and the table read as
-    // two disconnected strips.
-    //
-    // So the break *before* the divider is replaced by a zero-size widget. A
-    // `WidgetSpan` stands in for exactly one source character, so the newline is
-    // still at its own offset — the tree is unchanged in length and order — it
-    // just does not break the line. The divider's characters then ride along at
-    // the end of the header's row, where they cost nothing, and the divider's
-    // own collapsed break ends that line.
-    //
-    // The one exception is a caret parked **on the divider line**: there the
-    // user is editing `| --- | --- |` and needs to see it, on a line of its own.
-    // A range selection is not that — it only *covers* the divider, and giving
-    // it a line would put a 28px hole through the middle of a selected table.
-    final bool softBreak =
-        i + 1 < n &&
-        kinds[i + 1] == _Kind.tableDivider &&
-        !(active.contains(i + 1) && caretOnly);
     if (i != n - 1) {
-      out.add(
-        softBreak
-            ? _decoration(const SizedBox(width: 0, height: 0))
-            : TextSpan(text: '\n', style: breakStyle ?? base),
-      );
+      out.add(TextSpan(text: '\n', style: breakStyle ?? base));
     }
   }
-
-  _unhideLastGlyph(out, base);
   return out;
 }

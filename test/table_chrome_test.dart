@@ -6,6 +6,8 @@ import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/core/theme/app_theme.dart';
 import 'package:nrs/core/utils/markdown_actions.dart';
 import 'package:nrs/core/utils/table_selection.dart';
+import 'package:nrs/ui/editor/line_layout/line_editable_text.dart';
+import 'package:nrs/ui/editor/line_layout/render_line_editable.dart';
 import 'package:nrs/ui/editor/live_markdown.dart';
 import 'package:nrs/ui/editor/markdown_editor.dart';
 
@@ -18,6 +20,7 @@ import 'package:nrs/ui/editor/markdown_editor.dart';
 /// They are also **hover-only** — nothing is drawn until the pointer is at the
 /// edge — which is why every test here either moves the pointer position or
 /// accepts that it is clicking blind (a real mouse always hovers first).
+
 void main() {
   Future<MarkdownSourceController> pump(
     WidgetTester tester,
@@ -55,10 +58,13 @@ void main() {
   }
 
   List<TableRowChrome> rows(WidgetTester tester) =>
-      tester.allRenderObjects.whereType<TableRowChrome>().toList()..sort(
-        (TableRowChrome a, TableRowChrome b) =>
-            a.chromeRowIndex.compareTo(b.chromeRowIndex),
-      );
+      tester.allRenderObjects.whereType<RenderLineEditable>().first
+          .tableRows()
+          .toList()
+        ..sort(
+          (TableRowChrome a, TableRowChrome b) =>
+              a.chromeRowIndex.compareTo(b.chromeRowIndex),
+        );
 
   List<TableChromeTarget> chrome(WidgetTester tester) => <TableChromeTarget>[
     for (final TableRowChrome r in rows(tester)) ...r.chromeTargets(),
@@ -191,8 +197,9 @@ void main() {
     // dots.
     const String text = '| a | b |\n| --- | --- |\n| c | d |';
     await pump(tester, text, caret: 0);
-    TextField field() =>
-        tester.widget<TextField>(find.byKey(const Key('nrs-editor-field')));
+    LineEditableText field() => tester.widget<LineEditableText>(
+      find.byKey(const Key('nrs-editor-field')),
+    );
     final TestPointer mouse = TestPointer(1, PointerDeviceKind.mouse);
     final Rect table = rows(tester).first.chromeBounds();
 

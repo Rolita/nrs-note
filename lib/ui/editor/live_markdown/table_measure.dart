@@ -1,99 +1,5 @@
 part of '../live_markdown.dart';
 
-/// A revealed table row: raw source, pipes dimmed, cells still inline-styled.
-List<InlineSpan> _tableRowSource(
-  String line,
-  TextStyle base,
-  int absStart,
-  _Ctx ctx,
-) {
-  final List<InlineSpan> spans = <InlineSpan>[];
-  int start = 0;
-  for (int i = 0; i < line.length; i++) {
-    if (line[i] != '|') continue;
-    if (i > start) {
-      spans.addAll(
-        _inline(line.substring(start, i), base, absStart + start, ctx),
-      );
-    }
-    spans.add(TextSpan(text: '|', style: _collapsed(base)));
-    start = i + 1;
-  }
-  if (start < line.length) {
-    spans.addAll(_inline(line.substring(start), base, absStart + start, ctx));
-  }
-  return spans;
-}
-
-/// The invisible skeleton of a rendered row.
-///
-/// Every character of the line is still in the tree (the length invariant), but
-/// only the cells' text runs have their natural advance; the pipes and the
-/// spaces around them are zero-size runs whose `letterSpacing` is set so that
-/// each run ends exactly where the *next* cell's text begins.
-///
-/// That gap arithmetic is the whole trick: the painted cell text starts at
-/// `cell.x + _kCellPad` (or wherever [ _CellData.textX ] puts it), so the
-/// skeleton has to carry the same offset. Left as plain collapsed whitespace,
-/// every column would drift 8px to the left of its painted glyphs — and a click
-/// on the third column would put the caret on the second one.
-List<InlineSpan> _tableRowSkeleton(
-  String line,
-  TextStyle base,
-  int absStart,
-  List<_CellData> cells,
-) {
-  final List<InlineSpan> spans = <InlineSpan>[];
-  // The row widget stands on the leading pipe and is `_kCellPad` wide, so the
-  // first cell's text starts exactly where it is painted.
-  double x = _kCellPad;
-
-  /// Fills the source characters `[from, to)` of the line with something that
-  /// advances exactly up to [target].
-  ///
-  /// ⛔ The width goes into a **widget**, not into a `letterSpacing`. A collapsed
-  /// run carrying 300px of tracking makes the paragraph push that trailing
-  /// spacing onto the next line, which silently doubles the height of the row —
-  /// measured, not guessed: a gap of 195 made the header row 56px tall in a
-  /// 28px document. A zero-height box has no such failure mode and lands on the
-  /// same pixel.
-  void gap(int from, int to, double target) {
-    if (to <= from) return;
-    final double width = math.max(0, target - x);
-    spans.add(_decoration(SizedBox(width: width, height: 0)));
-    if (to - from > 1) {
-      spans.add(
-        TextSpan(text: line.substring(from + 1, to), style: _collapsed(base)),
-      );
-    }
-    x += width;
-  }
-
-  int cursor = 1; // the row's first character carries the row widget
-  for (final _CellData d in cells) {
-    final int from = d.cell.offset - absStart;
-    gap(cursor, from, d.textX);
-    spans.add(TextSpan(style: d.style, children: _transparent(d.spans)));
-    x += d.advance;
-    cursor = from + d.cell.text.length;
-  }
-  // The last cell can be **wider than its text**: an empty cell still gets the
-  // column minimum, and an aligned cell gets slop. If the skeleton stopped at
-  // the text plus padding, a click on the blank half of that last cell landed
-  // past the end of the paragraph line — on the collapsed divider source, which
-  // the soft break parks right behind it. The caret then looked like it was in
-  // the header while typing edited `| --- | --- |`. The skeleton spans the
-  // whole painted box so every click in the cell resolves inside its own line.
-  gap(
-    cursor,
-    line.length,
-    cells.isEmpty ? x + _kCellPad : cells.last.x + cells.last.boxWidth,
-  );
-  return spans;
-}
-
-/// One cell handed to the row renderer: its inline spans, where its box sits
-/// in the table, and where its text starts inside that box.
 /// Where one row's share of the selection sits, in the table's coordinates.
 ///
 /// `left`/`right` are always **cell edges**, never glyph edges. A table is
@@ -296,31 +202,6 @@ List<InlineSpan> _squeeze(
     ..._spaced(spans.skip(1).toList(), extra),
   ];
 }
-
-/// The same tree, invisible. This is what the paragraph lays out underneath a
-/// painted row, so its advances place the caret exactly where the glyphs are.
-/// The same tree, painted with nothing visible.
-///
-/// ⛔ A transparent **colour** is not enough. The skeleton shares the paragraph's
-/// line with the row that actually paints it, and any *box* the style draws —
-/// the inline-code band, the `==高亮==` background, an underline — is still
-/// painted at the paragraph's own metrics. Those boxes are a full line tall
-/// (28px), while the row's cells are painted at the font's height (~20px), so
-/// one `` `code` `` in a cell bled down over the table's bottom border and over
-/// the caret: 「md 的代码挡住了输入光标，也挡住了表格的边框」.
-///
-/// Nothing here affects layout — only what is drawn — so dropping the background
-/// and the decoration leaves the advances, the glyph boxes and the caret mapping
-/// exactly as they were.
-List<InlineSpan> _transparent(List<InlineSpan> spans) => _restyle(
-  spans,
-  (TextStyle s) => s.copyWith(
-    color: Colors.transparent,
-    backgroundColor: Colors.transparent,
-    decoration: TextDecoration.none,
-    decorationColor: Colors.transparent,
-  ),
-);
 
 /// Column alignment, read off the divider row (`:---`, `:-:`, `---:`).
 ///
@@ -597,3 +478,73 @@ _Table _measureTable({
     ),
   );
 }
+
+/// 测量一份源码里的每张表，按出现顺序返回。
+///
+/// 编辑器里这份测量由 `LiveTableBlocks` 自己做（它还要缓存每个格子的
+/// `TextPainter`）。这里是同一套测量的纯函数出口：没有 BuildContext、没有
+/// 渲染对象，给测试和调试用。
+List<TableGeometry> measureTables({
+  required String text,
+  required TextStyle base,
+  required AppPalette p,
+  double contentWidth = 680,
+  TextScaler textScaler = TextScaler.noScaling,
+  TextDirection direction = TextDirection.ltr,
+}) {
+  final List<String> lines = text.split('\n');
+  final List<int> starts = List<int>.filled(lines.length + 1, 0);
+  for (int i = 0; i < lines.length; i++) {
+    starts[i + 1] = starts[i] + lines[i].length + 1;
+  }
+  final _Ctx ctx = _Ctx(
+    p: p,
+    caretA: -1,
+    caretB: -1,
+    selA: -1,
+    selB: -1,
+    contentWidth: contentWidth,
+    direction: direction,
+    textScaler: textScaler,
+    plain: true,
+  );
+  final List<TableGeometry> out = <TableGeometry>[];
+  int i = 0;
+  while (i < lines.length) {
+    if (!_looksLikeTableLine(lines[i])) {
+      i++;
+      continue;
+    }
+    int last = i;
+    while (last + 1 < lines.length &&
+        _looksLikeTableLine(lines[last + 1])) {
+      last++;
+    }
+    int divider = -1;
+    for (int k = i; k <= last; k++) {
+      if (isTableDivider(lines[k])) {
+        divider = k;
+        break;
+      }
+    }
+    out.add(
+      _measureTable(
+        lines: lines,
+        starts: starts,
+        first: i,
+        last: last,
+        divider: divider,
+        base: base,
+        ctx: ctx,
+        editAt: -1,
+        direction: direction,
+      ).geometry,
+    );
+    i = last + 1;
+  }
+  return out;
+}
+
+/// 这一行是否属于表格块（与扫描器 `scanSourceLines` 的判定一致）。
+bool _looksLikeTableLine(String line) => line.trimLeft().startsWith('|');
+

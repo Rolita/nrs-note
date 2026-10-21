@@ -53,6 +53,12 @@ class EditorPaneState extends State<EditorPane> {
   int _cursorLine = 0;
   int _cursorColumn = 1;
 
+  /// 同一个笔记 id 的正文被整段替换过几次。
+  ///
+  /// 它参与正文输入框的重建 key：外部版本覆盖草稿后，撤销栈里还留着替换
+  /// 前的旧正文，Ctrl+Z 会把它恢复回来，自动保存再写回磁盘——还是覆盖。
+  int _bodyEpoch = 0;
+
   /// The line the outline is highlighting. It follows the caret while the user
   /// writes, and the top of the viewport while the user only scrolls.
   int _outlineLine = 0;
@@ -67,6 +73,10 @@ class EditorPaneState extends State<EditorPane> {
   bool _jumping = false;
 
   double _contentWidth = AppLayout.proseMaxWidth;
+
+  /// 「源码行 → 文档坐标 y」，由编辑器注册；未挂载时为 `null`。
+  double? Function(int line)? _lineTopProbe;
+
   bool _binding = false;
 
   TextEditingController get bodyController => _body;
@@ -150,7 +160,10 @@ class EditorPaneState extends State<EditorPane> {
   // ---------------------------------------------------------------- binding
 
   void _bind(Note note) {
-    if (_boundNoteId == note.id) return;
+    if (_boundNoteId == note.id) {
+      _syncBoundBody(note);
+      return;
+    }
     _boundNoteId = note.id;
     _binding = true;
     _title.text = note.title;
@@ -185,22 +198,50 @@ class EditorPaneState extends State<EditorPane> {
     }
   }
 
+  /// 同一个 id 不等于同一份内容：磁盘上的版本可能被外部改过，控制器也可能
+  /// 刚「采用磁盘版本」（见 `refresh` 的 reload 分支与 `takeTheirs`）。
+  ///
+  /// 只按 id 判断是否绑定，编辑器就会一直显示旧正文，下一次敲键又把旧正文存
+  /// 回去，覆盖掉外部更新；所以正文不同就整段换成这份笔记的正文，并清掉撤销
+  /// 栈（[_bodyEpoch] 参与输入框的重建 key）。
+  void _syncBoundBody(Note note) {
+    if (note.body == _body.text) return;
+    final TextSelection selection = _body.selection;
+    final bool fits =
+        selection.isValid &&
+        selection.baseOffset <= note.body.length &&
+        selection.extentOffset <= note.body.length;
+    final TextSelection nextSelection = fits
+        ? selection
+        : TextSelection.collapsed(offset: note.body.length);
+    _binding = true;
+    try {
+      _body.value = TextEditingValue(text: note.body, selection: nextSelection);
+    } finally {
+      _binding = false;
+    }
+    _bodyEpoch++;
+    // `_binding` 挡住了 `_onBodyChanged`，这里自己把状态栏的行列数算回去。
+    final int caret = nextSelection.baseOffset.clamp(0, note.body.length);
+    _cursorLine = '\n'.allMatches(note.body.substring(0, caret)).length;
+    _cursorColumn = caret - lineStartOf(note.body, caret) + 1;
+  }
+
   // ------------------------------------------------------------ navigation
 
   /// Height of the laid-out text above `line`.
   ///
-  /// Measured by the renderer itself ([textHeightAbove]) so it carries the
-  /// heading line boxes: a heading is not a body row, and treating it as one
-  /// used to land a jump short by a margin that grew with every heading above
-  /// the target. Wrapped paragraphs come out exact; a wrapped heading and an
-  /// inline image stay approximate.
-  double _lineTop(int line, TextStyle style) => textHeightAbove(
-    text: _body.text,
-    base: style,
-    p: context.palette,
-    line: line,
-    contentWidth: _contentWidth,
-  );
+  /// 行高由行引擎按每行自己的字号量出来（标题、代码、正文各不相同），宿主
+  /// 推算会一路累积误差；只有编辑器还没排版时（首帧）才退回旧推算。
+  double _lineTop(int line, TextStyle style) =>
+      _lineTopProbe?.call(line) ??
+      textHeightAbove(
+        text: _body.text,
+        base: style,
+        p: context.palette,
+        line: line,
+        contentWidth: _contentWidth,
+      );
 
   Future<void> _scrollToLine(
     int line, {
@@ -275,29 +316,6 @@ class EditorPaneState extends State<EditorPane> {
     });
   }
 
-  /// Clicking a `#tag` in the text searches for it.
-  ///
-  /// The tag becomes a `tag:#name` query rather than a hidden filter, so the
-  /// search box shows what is being filtered and the user can keep typing after
-  /// it. Switching the sidebar to search is part of the gesture: setting a query
-  /// nobody can see, in a panel that is showing the file tree, looks like the
-  /// click did nothing.
-  void _openTag(String tag) {
-    context.read<NotesController>().setQuery('tag:#$tag');
-    widget.onOpenSearch?.call();
-  }
-
-  /// Follows a `[[wikilink]]`, writing the note when nothing matches its title.
-  ///
-  /// A link to a note that does not exist yet is the normal way to start one, so
-  /// the click creates it and drops you in — with an empty body, ready to type.
-  /// Searching for the title instead left the link dead and the name to be
-  /// retyped by hand.
-  void _openWikilink(String target) {
-    if (target.trim().isEmpty) return;
-    context.read<NotesController>().openOrCreateByTitle(target);
-  }
-
   // ------------------------------------------------------------------ build
 
   @override
@@ -316,38 +334,40 @@ class EditorPaneState extends State<EditorPane> {
       _title.text = note.title;
     }
 
-    // The task checkboxes, tag pills and wikilinks drawn by the live renderer
-    // write straight back into the draft and the filters.
+    // The task checkboxes drawn by the live renderer write straight back into
+    // the draft.
     _body.onExternalChange = notes.updateBody;
-    _body.onTagTap = _openTag;
-    _body.onWikilinkTap = _openWikilink;
 
-    return Shortcuts(
-      shortcuts: _editorShortcuts(),
-      child: Container(
-        color: p.surface,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            _header(p, note, notes, settings),
-            if (conflict != null && conflict.noteId == note.id)
-              _conflictBar(p, conflict, notes),
-            LayoutBuilder(
-              builder: (BuildContext context, BoxConstraints c) =>
-                  _titleRow(p, notes, _proseSide(c.maxWidth)),
+    return Container(
+      color: p.surface,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          _header(p, note, notes, settings),
+          if (conflict != null && conflict.noteId == note.id)
+            _conflictBar(p, conflict, notes),
+          LayoutBuilder(
+            builder: (BuildContext context, BoxConstraints c) => _titleRow(
+              p,
+              note,
+              notes,
+              _proseSide(c.maxWidth),
             ),
-            // No formatting ribbon: every action lives in the editor's own
-            // right-click menu now, and the shortcuts are unchanged.
-            Expanded(
-              child: LayoutBuilder(
-                builder: (BuildContext context, BoxConstraints c) {
-                  return _workspace(notes, c.maxWidth);
-                },
-              ),
+          ),
+          // No formatting ribbon: every action lives in the editor's own
+          // right-click menu now, and the shortcuts are unchanged.
+          // ⛔ 快捷键只包住正文编辑器：包住整个面板会把标题框的 Ctrl+Z 也
+          // 抢去撤销正文，正文里存的是没按标题改过的内容，自动保存再写回
+          // 文件就是一次覆盖。
+          Expanded(
+            child: LayoutBuilder(
+              builder: (BuildContext context, BoxConstraints c) {
+                return _workspace(notes, c.maxWidth);
+              },
             ),
-            _statusBar(p, note, notes, settings),
-          ],
-        ),
+          ),
+          _statusBar(p, note, notes, settings),
+        ],
       ),
     );
   }
@@ -582,7 +602,12 @@ class EditorPaneState extends State<EditorPane> {
     );
   }
 
-  Widget _titleRow(AppPalette p, NotesController notes, double side) {
+  Widget _titleRow(
+    AppPalette p,
+    Note note,
+    NotesController notes,
+    double side,
+  ) {
     // H1, as the live renderer draws it: body size scaled by 1.74 with the
     // same tracking and weight (see `_headingStyle` in live_markdown.dart).
     // The title field *is* the note's H1 — there is no separate file-name row.
@@ -590,40 +615,46 @@ class EditorPaneState extends State<EditorPane> {
 
     return Padding(
       padding: EdgeInsets.fromLTRB(side, AppSpace.md, side, AppSpace.sm),
-      child: TextField(
-        controller: _title,
-        focusNode: _titleFocus,
-        onChanged: notes.updateTitle,
-        cursorColor: p.accent,
-        cursorWidth: 1.8,
-        // Same rule as the body: highlight the title's glyphs, not the
-        // whole field width (Flutter's desktop default is `max`).
-        selectionWidthStyle: ui.BoxWidthStyle.tight,
-        style: TextStyle(
-          fontFamily: AppFonts.prose,
-          fontFamilyFallback: AppFonts.proseFallback,
-          fontSize: h1Size,
-          height: snapLineHeight(h1Size, 1.3),
-          fontWeight: FontWeight.w600,
-          letterSpacing: -0.45,
-          color: p.textPrimary,
-        ),
-        decoration: InputDecoration(
-          isDense: true,
-          filled: false,
-          border: InputBorder.none,
-          enabledBorder: InputBorder.none,
-          focusedBorder: InputBorder.none,
-          contentPadding: EdgeInsets.zero,
-          hintText: '未命名',
-          hintStyle: TextStyle(
+      // ⛔ 标题框的撤销栈也必须随笔记清空：它由同一个控制器跨笔记复用，
+      // Ctrl+Z 会把上一份笔记的标题恢复进当前标题，`updateTitle` 随即按旧
+      // 标题重命名当前文件，等于拿旧名字覆盖一条文件记录。
+      child: KeyedSubtree(
+        key: ValueKey<String>('title-${note.id}'),
+        child: TextField(
+          controller: _title,
+          focusNode: _titleFocus,
+          onChanged: notes.updateTitle,
+          cursorColor: p.accent,
+          cursorWidth: 1.8,
+          // Same rule as the body: highlight the title's glyphs, not the
+          // whole field width (Flutter's desktop default is `max`).
+          selectionWidthStyle: ui.BoxWidthStyle.tight,
+          style: TextStyle(
             fontFamily: AppFonts.prose,
             fontFamilyFallback: AppFonts.proseFallback,
             fontSize: h1Size,
             height: snapLineHeight(h1Size, 1.3),
             fontWeight: FontWeight.w600,
             letterSpacing: -0.45,
-            color: p.textTertiary.withValues(alpha: 0.5),
+            color: p.textPrimary,
+          ),
+          decoration: InputDecoration(
+            isDense: true,
+            filled: false,
+            border: InputBorder.none,
+            enabledBorder: InputBorder.none,
+            focusedBorder: InputBorder.none,
+            contentPadding: EdgeInsets.zero,
+            hintText: '未命名',
+            hintStyle: TextStyle(
+              fontFamily: AppFonts.prose,
+              fontFamilyFallback: AppFonts.proseFallback,
+              fontSize: h1Size,
+              height: snapLineHeight(h1Size, 1.3),
+              fontWeight: FontWeight.w600,
+              letterSpacing: -0.45,
+              color: p.textTertiary.withValues(alpha: 0.5),
+            ),
           ),
         ),
       ),
@@ -659,16 +690,28 @@ class EditorPaneState extends State<EditorPane> {
     );
     _contentWidth = contentWidth;
 
-    return Actions(
-      actions: _editorActions(notes),
-      child: MarkdownEditor(
-        controller: _body,
-        focusNode: _bodyFocus,
-        scrollController: _editorScroll,
-        fontSize: context.read<SettingsController>().proseSize,
-        padding: padding,
-        onChanged: notes.updateBody,
-        onTopLineChanged: _onTopLine,
+    return Shortcuts(
+      shortcuts: _editorShortcuts(),
+      child: Actions(
+        actions: _editorActions(notes),
+        child: MarkdownEditor(
+          controller: _body,
+          focusNode: _bodyFocus,
+          scrollController: _editorScroll,
+          fontSize: context.read<SettingsController>().proseSize,
+          padding: padding,
+          // 带上 [_bodyEpoch]：id 相同但正文被外部整段替换时，输入框也要
+          // 重建，撤销栈才不会把替换前的正文恢复回来。
+          documentId: '${(notes.draft ?? notes.selectedNote)?.id}#$_bodyEpoch',
+          onChanged: notes.updateBody,
+          onTopLineChanged: _onTopLine,
+          onLineTopProbe: (double? Function(int line)? probe) =>
+              _lineTopProbe = probe,
+          onTagTap: (String tag) {
+            notes.toggleTag(tag);
+            widget.onOpenSearch?.call();
+          },
+        ),
       ),
     );
   }

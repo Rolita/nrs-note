@@ -10,6 +10,7 @@ import '../../core/theme/app_tokens.dart';
 import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/table_model.dart';
 import '../../core/utils/table_selection.dart';
+import 'line_layout/line_editable_text.dart';
 
 // --------------------------------------------------------------- layout rules
 //
@@ -115,36 +116,9 @@ class MenuSeparator extends MenuNode {
 
 // ------------------------------------------------------------- entry points
 
-/// The editor's right-click menu, ready to be returned from a [TextField]'s
-/// `contextMenuBuilder`.
-///
-/// [state] is used for two things only: the anchors that say where the pointer
-/// went down, and the clipboard / select-all commands, which are the platform's
-/// own and must not be re-implemented here.
-Widget buildEditorContextMenu({
-  required EditableTextState state,
-  required TextEditingValue value,
-  required ValueChanged<MarkdownEditFn> onApply,
-  required VoidCallback onDismiss,
-  TableRangeResolver? resolve,
-  VoidCallback? onEditCell,
-}) {
-  return _EditorContextMenu(
-    entries: buildEditorMenu(
-      value: value,
-      onApply: onApply,
-      state: state,
-      resolve: resolve,
-      onEditCell: onEditCell,
-    ),
-    anchor: state.contextMenuAnchors.primaryAnchor,
-    onDismiss: onDismiss,
-  );
-}
-
 /// Shows [entries] at [globalPosition] — the same panel the editor opens on a
-/// right-click, for the parts of the app that are not a `TextField` (the vault
-/// tree, and the editor's own paper below its last line).
+/// right-click, for the parts of the app that are not the editing surface (the
+/// vault tree, and the editor's own paper below its last line).
 ///
 /// The menu is a route, so Escape closes it and it paints above everything the
 /// way a menu should. [keepFocus] is for the editor: pushing a route moves the
@@ -199,7 +173,7 @@ Future<void> showAppMenu(
 List<MenuNode> buildEditorMenu({
   required TextEditingValue value,
   required ValueChanged<MarkdownEditFn> onApply,
-  required EditableTextState state,
+  required LineEditableTextState state,
   TableRangeResolver? resolve,
   VoidCallback? onEditCell,
 }) {
@@ -765,7 +739,7 @@ List<MenuNode> buildEditorMenu({
 /// the characters between them — see [tableSelectionMarkdown]. Everything else
 /// is the field's own copy, so an ordinary text selection is untouched.
 void copySelectionCells(
-  EditableTextState state,
+  LineEditableTextState state,
   SelectionChangedCause cause, {
   TableRangeResolver? resolve,
 }) {
@@ -792,7 +766,7 @@ void copySelectionCells(
 /// the clipboard and the **same rectangle** leaves the document: cleared in
 /// place, or removed row-wise when the sweep covered every column.
 void cutSelectionCells(
-  EditableTextState state,
+  LineEditableTextState state,
   SelectionChangedCause cause, {
   TableRangeResolver? resolve,
 }) {
@@ -833,7 +807,7 @@ void cutSelectionCells(
 /// the clipboard here and go through [pasteValue], which is the only place that
 /// rule can be applied and the only way Ctrl+V and this menu can agree.
 Future<void> pasteIntoEditor(
-  EditableTextState state, {
+  LineEditableTextState state, {
   // Kept so the two menu entries stay distinct at the call site — a
   // format-aware paste would hang its behaviour here.
   required bool plain,
@@ -889,13 +863,38 @@ class _EditorContextMenuState extends State<_EditorContextMenu> {
   /// the row whose submenu is showing. Empty means only the root panel is up.
   List<int> _open = const <int>[];
 
-  // Escape is deliberately *not* handled here. It is already wired — `WidgetsApp`
-  // binds it to a `DismissIntent`, which pops the menu's own route — and a
-  // second handler on the raw keyboard cannot get in front of that: the return
-  // value of a `HardwareKeyboard` handler only orders the handlers, it does not
-  // stop the event reaching the focus tree. Backing out one panel at a time
-  // would mean taking focus off the field, and the field has to keep it: the
-  // caret, the selection colour and the clipboard rows all depend on it.
+  @override
+  void initState() {
+    super.initState();
+    HardwareKeyboard.instance.addHandler(_onKey);
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onKey);
+    super.dispose();
+  }
+
+  /// Escape closes the menu.
+  ///
+  /// `WidgetsApp` already binds Escape to a `DismissIntent`, but that action is
+  /// only found when the primary focus sits inside the menu's route — and this
+  /// menu deliberately keeps the focus on the field, so the caret, the
+  /// selection colour and the clipboard rows stay alive underneath it. The
+  /// field's own `DismissIntent` action (hide the selection toolbar) is what the
+  /// focus tree finds instead, so the menu has to close itself.
+  ///
+  /// A raw handler is enough: returning `true` only orders the handlers, it does
+  /// not stop the event from reaching the focus tree, so the field still sees
+  /// the key and keeps its own behaviour.
+  bool _onKey(KeyEvent event) {
+    if (event is! KeyDownEvent ||
+        event.logicalKey != LogicalKeyboardKey.escape) {
+      return false;
+    }
+    widget.onDismiss();
+    return true;
+  }
 
   /// The first [level] entries of the open chain — always a fresh growable list,
   /// because every caller goes on to push an entry onto it. (Handing back

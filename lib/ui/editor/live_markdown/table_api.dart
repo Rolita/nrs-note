@@ -1,20 +1,9 @@
 part of '../live_markdown.dart';
 
-/// One of the small controls a live table hangs around itself: a grip to drag a
-/// whole row or column, and a `+` to add one in that direction.
-enum TableChromeKind { rowHandle, columnHandle, addRow, addColumn }
-
-/// A painted chrome control, in **global** coordinates.
-class TableChromeTarget {
-  const TableChromeTarget(this.kind, this.rect, this.index);
-
-  final TableChromeKind kind;
-  final Rect rect;
-
-  /// The row or column the control belongs to. `-1` for the two `+` buttons,
-  /// whose direction ("below", "right") is what they mean.
-  final int index;
-}
+// `TableChromeKind` / `TableChromeTarget` / `TableRowChrome` 三件套定义在
+// `line_layout/line_block_view.dart`：按行排版的自绘行由渲染对象持有，而
+// 渲染对象只在 `line_layout/` 里，两边得看到同一份契约。这里只留下纯粹的
+// 指针状态。
 
 /// The drop the pointer is currently proposing, so every row of that table can
 /// show it without the whole span tree being rebuilt for a mouse move.
@@ -67,31 +56,3 @@ final ValueNotifier<Offset?> tablePointerPosition = ValueNotifier<Offset?>(
 /// pixel accuracy; narrow enough that the band never reaches the cells' text
 /// (the grips start 5px outside the table, so 6px of slop ends on its border).
 const double kTableChromeSlop = 6;
-
-/// What the pointer layer needs from one rendered table row.
-abstract class TableRowChrome {
-  /// Identity of the table block this row belongs to (its first line's offset).
-  int get chromeTableId;
-
-  /// Absolute source offset of this row's first character.
-  int get chromeSourceStart;
-
-  /// Index of this row among the block's non-divider rows.
-  int get chromeRowIndex;
-  int get chromeRowCount;
-
-  /// The row's painted box, in global coordinates — the whole table's width.
-  Rect chromeBounds();
-
-  /// The cells' global boxes, left to right.
-  List<Rect> chromeCells();
-
-  /// Every handle and `+` this row *can* paint, in global coordinates. Hit
-  /// testing uses these: the pointer can only reach one of them by hovering it,
-  /// which is also what makes it visible.
-  List<TableChromeTarget> chromeTargets();
-
-  /// The subset actually painted right now — hover-only, and the drag target
-  /// during a drag. What the user can see is exactly what these are.
-  List<TableChromeTarget> chromeVisible();
-}

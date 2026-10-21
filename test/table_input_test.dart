@@ -5,6 +5,8 @@ import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/core/theme/app_theme.dart';
 import 'package:nrs/core/utils/markdown_actions.dart';
 import 'package:nrs/core/utils/table_model.dart';
+import 'package:nrs/ui/editor/line_layout/line_editable_text.dart';
+import 'package:nrs/ui/editor/line_layout/render_line_editable.dart';
 import 'package:nrs/ui/editor/live_markdown.dart';
 import 'package:nrs/ui/editor/markdown_editor.dart';
 
@@ -16,6 +18,7 @@ import 'package:nrs/ui/editor/markdown_editor.dart';
 /// a **pointer click** (not a programmatic offset), because the skeleton's job
 /// is to turn a pixel into a source offset; a test that sets `selection` by
 /// hand would skip exactly the part that can be wrong.
+
 void main() {
   Future<MarkdownSourceController> pump(
     WidgetTester tester,
@@ -48,15 +51,17 @@ void main() {
   }
 
   List<TableRowChrome> rows(WidgetTester tester) =>
-      tester.allRenderObjects.whereType<TableRowChrome>().toList()..sort(
-        (TableRowChrome a, TableRowChrome b) =>
-            a.chromeRowIndex.compareTo(b.chromeRowIndex),
-      );
+      tester.allRenderObjects.whereType<RenderLineEditable>().first
+          .tableRows()
+          .toList()
+        ..sort(
+          (TableRowChrome a, TableRowChrome b) =>
+              a.chromeRowIndex.compareTo(b.chromeRowIndex),
+        );
 
-  FocusNode fieldFocus(WidgetTester tester) =>
-      tester
-          .widget<TextField>(find.byKey(const Key('nrs-editor-field')))
-          .focusNode!;
+  FocusNode fieldFocus(WidgetTester tester) => tester
+      .widget<LineEditableText>(find.byKey(const Key('nrs-editor-field')))
+      .focusNode;
 
   /// The engine's replacement of the current selection with [insert] — what a
   /// keystroke or an IME commit looks like to the formatters.
@@ -601,6 +606,37 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.delete);
     await tester.pumpAndSettle();
     expect(controller.text, text);
+  });
+
+  testWidgets('点得中展开成源码的分隔行（未展开时它是零高）', (
+    WidgetTester tester,
+  ) async {
+    const String text = '| ab | cd |\n| --- | --- |\n| ef | gh |';
+    final MarkdownSourceController controller = await pump(tester, text);
+    final TableBlock block = TableBlock.parse(text, 0)!;
+    final divider = block.rows.firstWhere((r) => r.divider);
+
+    // 分隔行平时压成 0 高，指针没有可以落下的地方；光标停上去才展开成一行
+    // 源码。展开之后它必须像普通文字一样可点，否则用户只能靠方向键进来。
+    park(controller, divider.start + 4);
+    await tester.pumpAndSettle();
+
+    final RenderLineEditable field = tester.allRenderObjects
+        .whereType<RenderLineEditable>()
+        .first;
+    final Rect local = field.getLocalRectForCaret(
+      TextPosition(offset: divider.start + 4),
+    );
+    final Rect caret = field.localToGlobal(local.topLeft) & local.size;
+    expect(caret.height, greaterThan(0), reason: '揭示后的分隔行应该有一行高');
+
+    await tester.tapAt(caret.center);
+    await tester.pumpAndSettle();
+    expect(
+      controller.selection.baseOffset,
+      inInclusiveRange(divider.start, divider.end),
+      reason: '点在分隔行的源码上，光标却落到了别的行',
+    );
   });
 
   testWidgets('a paragraph break right above a table is not deleted into it', (

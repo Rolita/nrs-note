@@ -36,7 +36,6 @@ library;
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/theme/app_palette.dart';
@@ -45,9 +44,14 @@ import '../../core/utils/markdown_outline.dart';
 import '../../core/theme/app_tokens.dart';
 import '../preview/code_palette.dart';
 import '../preview/syntax_highlighter.dart';
+import 'line_layout/line_layout_engine.dart';
+
+// 表格抓手/单元格的契约（`TableRowChrome` 三件套）定义在行引擎那边，但使用者
+// 是这个库的宿主与测试，所以从这里再导出一份。
+export 'line_layout/line_block_view.dart';
 
 // Layer direction: block_syntax → typography → widgets → table_model →
-// table_measure / table_render → spans. Every part shares this library's
+// table_measure → table_block → spans. Every part shares this library's
 // private scope on purpose, so the arrow is a convention, not a compiler
 // guarantee: a lower layer reaching up is a sign the symbol belongs elsewhere.
 part 'live_markdown/block_syntax.dart';
@@ -57,7 +61,7 @@ part 'live_markdown/inline.dart';
 part 'live_markdown/typography.dart';
 part 'live_markdown/table_model.dart';
 part 'live_markdown/table_measure.dart';
-part 'live_markdown/table_render.dart';
 part 'live_markdown/table_api.dart';
+part 'live_markdown/table_block.dart';
 part 'live_markdown/widgets.dart';
 part 'live_markdown/widgets_render.dart';

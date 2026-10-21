@@ -2340,17 +2340,97 @@ TextEditingValue indentLines(TextEditingValue v, {required bool outdent}) {
   );
 }
 
+/// 增删整行之后，把受影响的整段有序列表重新编号。
+///
+/// 删掉 `16.` 那一条，下面的 `17.` 要变回 `16.`；在中间回车插进一条，后面的
+/// 序号依次后移。只在“行数变了”时动手：逐字输入、只改一条内容都不重编号；
+/// 粘贴整段列表时插入的不是单个换行，也保留原来的序号。
+TextEditingValue renumberAfterLineChange(
+  TextEditingValue oldValue,
+  TextEditingValue newValue,
+) {
+  if (newValue.text == oldValue.text || !newValue.selection.isValid) {
+    return newValue;
+  }
+  final int oldLines = '\n'.allMatches(oldValue.text).length;
+  final int newLines = '\n'.allMatches(newValue.text).length;
+  if (oldLines == newLines) return newValue;
+
+  // 本次编辑的公共前后缀，用来定位它落在哪几行上。
+  final int shorter = oldValue.text.length < newValue.text.length
+      ? oldValue.text.length
+      : newValue.text.length;
+  int prefix = 0;
+  while (prefix < shorter &&
+      oldValue.text.codeUnitAt(prefix) == newValue.text.codeUnitAt(prefix)) {
+    prefix++;
+  }
+  int suffix = 0;
+  while (suffix < shorter - prefix &&
+      oldValue.text.codeUnitAt(oldValue.text.length - 1 - suffix) ==
+          newValue.text.codeUnitAt(newValue.text.length - 1 - suffix)) {
+    suffix++;
+  }
+  final int newChangedEnd = newValue.text.length - suffix;
+
+  if (newLines > oldLines) {
+    // 只认“敲了一个回车”。粘贴多行时插入片段里不止一个换行，序号原样保留。
+    final String inserted = newValue.text.substring(prefix, newChangedEnd);
+    if ('\n'.allMatches(inserted).length != 1) return newValue;
+  }
+
+  // 代码块里的 `1. ` 是代码，不是列表。
+  if (isInsideFence(oldValue.text, prefix) ||
+      isInsideFence(newValue.text, prefix)) {
+    return newValue;
+  }
+
+  final ({String text, List<({int at, int delta})> shifts}) numbered =
+      _renumberOrderedList(
+        newValue.text,
+        prefix,
+        newChangedEnd,
+        continueFromFirst: true,
+      );
+  if (numbered.text == newValue.text) return newValue;
+
+  // 序号变宽变窄会推动它后面的文字，光标按同一个位移跟着走。
+  int follow(int offset) {
+    int moved = offset;
+    for (final ({int at, int delta}) shift in numbered.shifts) {
+      if (offset > shift.at) moved += shift.delta;
+    }
+    return moved.clamp(0, numbered.text.length);
+  }
+
+  final TextSelection selection = newValue.selection;
+  return TextEditingValue(
+    text: numbered.text,
+    selection: TextSelection(
+      baseOffset: follow(selection.baseOffset),
+      extentOffset: follow(selection.extentOffset),
+      affinity: selection.affinity,
+    ),
+  );
+}
+
 /// Rewrites every ordered item in the list block that holds the lines
 /// `[from]..[to]` of [text], so each nesting level counts 1, 2, 3 again.
 ///
 /// A blank line does not end a list (a loose list is still one list); anything
 /// else does. [shifts] reports each number whose width changed, at its offset in
 /// [text], so the caller can keep the caret beside the digits it was next to.
+///
+/// [continueFromFirst] keeps the number the block already starts at and counts
+/// up from there, instead of restarting every level at 1. Deleting an item is
+/// exactly that case: a list that starts at `15.` must stay at 15 and close the
+/// gap the deletion left, not turn into `1.`.
 ({String text, List<({int at, int delta})> shifts}) _renumberOrderedList(
   String text,
   int from,
-  int to,
-) {
+  int to, {
+  bool continueFromFirst = false,
+}) {
   const List<({int at, int delta})> none = <({int at, int delta})>[];
   final List<String> lines = text.split('\n');
   final List<int> starts = <int>[];
@@ -2444,7 +2524,7 @@ TextEditingValue indentLines(TextEditingValue v, {required bool outdent}) {
       number = levels.last.number + 1;
       levels[levels.length - 1] = (indent: indent, number: number);
     } else {
-      number = 1;
+      number = continueFromFirst ? int.parse(m.group(2)!) : 1;
       levels.add((indent: indent, number: number));
     }
 

@@ -106,8 +106,9 @@ void main() {
   test('every decoration is a WidgetSpan at its own source position', () {
     final List<WidgetSpan> widgets = collect<WidgetSpan>();
     // A fixture with one new decoration should make this number change on
-    // purpose, which is exactly what a structure guard is for.
-    expect(widgets.length, 23);
+    // purpose, which is exactly what a structure guard is for. 表格行不再是
+    // 装饰：整行由行引擎自绘，不占段落里的字符位。
+    expect(widgets.length, 13);
     expect(
       widgets.where((WidgetSpan w) => w.child is MarkdownTodoCheckbox).length,
       2,
@@ -131,23 +132,17 @@ void main() {
 
     expect(paintedStyle('main')?.fontFamily, AppFonts.mono);
 
-    // Table cells are painted by the row widget, not by a styled ancestor in
-    // the span tree; the row carries each cell's style.
-    final List<WidgetSpan> rows = collect<WidgetSpan>()
-        .where((WidgetSpan w) => w.child.runtimeType.toString() == '_TableRowView')
-        .toList();
-    expect(rows.length, 3);
-    final dynamic header = rows.first.child;
-    expect(header.header, isTrue);
-    expect(
-      (header.cells as List<dynamic>).first.style.fontWeight,
-      FontWeight.w700,
+    // 表格不在段落里排版：整行由 `LiveTableBlocks` 自绘，所以这里改为断言
+    // 同一套测量仍然把这块切成「表头 + 两行正文」，且首行仍认作表头。
+    final List<TableGeometry> tables = measureTables(
+      text: document,
+      base: base,
+      p: palette,
+      contentWidth: 680,
     );
-    final dynamic body = rows[1].child;
-    expect(body.header, isFalse);
-    expect(
-      (body.cells as List<dynamic>).first.style.fontWeight,
-      FontWeight.w400,
-    );
+    expect(tables, hasLength(1));
+    expect(tables.single.rows, hasLength(3));
+    expect(tables.single.rows.first.header, isTrue);
+    expect(tables.single.rows[1].header, isFalse);
   });
 }

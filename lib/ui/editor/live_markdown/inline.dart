@@ -50,7 +50,11 @@ String? _codeLabel(String language) {
   return language[0].toUpperCase() + language.substring(1);
 }
 
-List<InlineSpan> _highlight(List<CodeToken> tokens, bool isDark) {
+/// 把一段代码的 token 转成带颜色的 span 子节点。
+///
+/// 按行排版与旧的段落排版共用：颜色只由明暗决定，代码块不会因为光标移动而
+/// 换色。
+List<InlineSpan> codeHighlightSpans(List<CodeToken> tokens, bool isDark) {
   final CodePalette c = CodePalette.forDark(isDark);
   return <InlineSpan>[
     for (final CodeToken t in tokens)
@@ -119,7 +123,27 @@ List<InlineSpan> _inline(
 
     if (token.startsWith('#')) {
       final String tag = token.substring(1);
-      if (open || ctx.plain || ctx.onTagTap == null) {
+      if (open) {
+        // 编辑态：胶囊撤掉，露出源码（强调色的 `#标签`）。
+        spans.add(TextSpan(text: token, style: _tagText(style, p)));
+      } else if (ctx.plain) {
+        // 按行排版没有 widget 胶囊：字换成胶囊内部的字号/字重；底片（accentSoft
+        // 圆角块）由渲染层按同一区间铺——区间和 span 树同出一次扫描。
+        final bool lit = ctx.hovered(m.start, m.end);
+        final TextStyle chip = _tagChipText(style, p, hovered: lit);
+        spans.add(TextSpan(text: token, style: chip));
+        codeRuns?.add(
+          _CellCode(
+            start: m.start,
+            end: m.end,
+            probe: token,
+            style: chip,
+            fill: lit ? p.accent : p.accentSoft,
+            radius: kTagRadius,
+            padX: kTagPadX,
+          ),
+        );
+      } else if (ctx.onTagTap == null) {
         spans.add(TextSpan(text: token, style: _tagText(style, p)));
       } else {
         spans.add(_tagChip(p, tag, style, ctx.onTagTap!));
@@ -325,11 +349,6 @@ _Ctx _cellEditCtx(_Ctx ctx, int from, int to) => _Ctx(
   onWikilinkTap: ctx.onWikilinkTap,
 );
 
-bool _isTableKind(_Kind kind) =>
-    kind == _Kind.table ||
-    kind == _Kind.tableHeader ||
-    kind == _Kind.tableDivider;
-
 // ------------------------------------------------------------- inline widgets
 
 /// The dot in front of a bullet item.
@@ -415,6 +434,9 @@ final Map<String, double> _kMarkerAdvances = <String, double>{};
 /// painted behind the field (see `CodeBlockPainter`); this is only the fence
 /// line's own row — an empty spacer that reserves the card's header, or nothing
 /// at all for the closing fence.
+///
+/// 这条腿只剩单段落排版还在用（按行排版的行高由 `heightFor` 给）。它同时顶着
+/// 围栏行的第一个反引号字符位，所以要删它得先改 [_swallowed] 的字符账。
 WidgetSpan _codeFenceSpacer(double width, double height) => _decoration(
   SizedBox(
     // A few pixels short of the column: the widget plus whatever it swapped out
@@ -423,3 +445,101 @@ WidgetSpan _codeFenceSpacer(double width, double height) => _decoration(
     height: height,
   ),
 );
+
+// ------------------------------------------------- 按行渲染器（line_layout）入口
+
+/// 一行正文的行内样式树，供按行排版的 `TextPainter` 使用。
+///
+/// 和 [buildLiveSpans] 共用同一套扫描器，唯一区别是 `plain: true`：chip 一律
+/// 降级成等长的 [TextSpan]，因为一个只负责自己这一行的 `TextPainter` 承载不了
+/// widget。标记字符仍然发出，只是被 `_collapsed` 压成零宽，所以
+/// `toPlainText()` 与 [text] 逐字符相同 —— 按行排版的偏移映射靠这个前提。
+///
+/// [caretA] / [caretB] 是**这一行内部**的揭示范围（已经减掉行首偏移），传
+/// `-1` 表示没有光标在这一行，所有标记都折叠、这一行看起来是完成的。
+InlineSpan buildLiveInlineSpan(
+  String text, {
+  required TextStyle base,
+  required AppPalette p,
+  int caretA = -1,
+  int caretB = -1,
+  int hoverA = -1,
+  int hoverB = -1,
+  double contentWidth = 680,
+  TextScaler textScaler = TextScaler.noScaling,
+  TextDirection direction = TextDirection.ltr,
+}) {
+  if (text.isEmpty) return TextSpan(text: '', style: base);
+  return TextSpan(
+    style: base,
+    children: _inline(
+      text,
+      base,
+      0,
+      _Ctx(
+        p: p,
+        caretA: caretA,
+        caretB: caretB,
+        selA: -1,
+        selB: -1,
+        contentWidth: contentWidth,
+        direction: direction,
+        textScaler: textScaler,
+        plain: true,
+        hoverA: hoverA,
+        hoverB: hoverB,
+      ),
+    ),
+  );
+}
+
+/// 一行里行内代码与 `#标签` 的圆角底片区间（行内偏移，含两侧反引号）。
+///
+/// 和 [buildLiveInlineSpan] 用的是同一个扫描器、同一份 `plain` 上下文，所以
+/// 「哪些反引号算代码」「哪些 `#` 算标签」「光标落在里面时退回源码」这些规则
+/// 只有一处实现：底片不会和 span 树各说各话。
+List<LineFillRun> inlineFills(
+  String text, {
+  required TextStyle base,
+  required AppPalette p,
+  int caretA = -1,
+  int caretB = -1,
+  int hoverA = -1,
+  int hoverB = -1,
+}) {
+  if (!text.contains('`') && !text.contains('#')) {
+    return const <LineFillRun>[];
+  }
+  final List<_CellCode> runs = <_CellCode>[];
+  _inline(
+    text,
+    base,
+    0,
+    _Ctx(
+      p: p,
+      caretA: caretA,
+      caretB: caretB,
+      selA: -1,
+      selB: -1,
+      contentWidth: 680,
+      direction: TextDirection.ltr,
+      textScaler: TextScaler.noScaling,
+      plain: true,
+      hoverA: hoverA,
+      hoverB: hoverB,
+    ),
+    codeRuns: runs,
+  );
+  return <LineFillRun>[
+    for (final _CellCode run in runs)
+      LineFillRun(
+        from: run.start,
+        to: run.end,
+        fill: run.fill,
+        radius: run.radius,
+        padX: run.padX,
+        probe: run.probe,
+        style: run.style,
+      ),
+  ];
+}

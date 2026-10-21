@@ -2,16 +2,14 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/gestures.dart'
     show
         PointerDeviceKind,
         kDoubleTapTimeout,
         kSecondaryMouseButton,
         kTouchSlop;
-import 'package:flutter/material.dart' hide TableCell;
+import 'package:flutter/material.dart' hide TableCell, TableRow;
 import 'package:flutter/rendering.dart';
-import 'package:flutter/scheduler.dart' show SchedulerPhase;
 import 'package:flutter/services.dart';
 
 import '../../core/theme/app_palette.dart';
@@ -22,34 +20,25 @@ import '../../core/utils/table_model.dart';
 import '../../core/utils/table_selection.dart';
 import 'code_block_painter.dart';
 import 'editor_context_menu.dart';
+import 'line_layout/line_editable_text.dart';
+import 'line_layout/line_layout_engine.dart';
+import 'line_layout/live_line_style.dart';
+import 'line_layout/render_line_editable.dart';
 import 'live_markdown.dart';
 import 'selection_wash.dart';
 
 /// The one and only NRS editing surface: a plain [TextEditingController] whose
-/// text *is* the Markdown, and whose painting makes that Markdown look finished.
+/// text *is* the Markdown.
 ///
-/// The invariant that matters: the painted span tree is exactly as long as the
-/// controller's text — every hidden marker keeps its character slots and every
-/// decoration stands in for exactly one of them. Break that and the caret
-/// drifts, clicks land a line off, and selection stops matching what you see.
+/// 排版不在这里发生。按行引擎（`RenderLineEditable`）逐行取样式、按源码偏移
+/// 上屏，所以这个控制器只负责源码本身、揭示选区（[revealAs]）和表格手势；
+/// 过去那棵「画出来的 span 树」只服务于单段落排版，已经随那条路径退场。
 class MarkdownSourceController extends TextEditingController {
   MarkdownSourceController({super.text});
-
-  /// Usable width of the text column, measured by the widget itself. The
-  /// renderer needs it for the few places that draw a *real* widget — a code
-  /// band, inline images — because a [WidgetSpan] inside a text line cannot ask
-  /// for "the rest of the line".
-  double contentWidth = AppLayout.proseMaxWidth;
 
   /// Fired when the user flips a task checkbox from inside the editor, so the
   /// draft — and the debounced auto-save — can pick the new text up.
   void Function(String newText)? onExternalChange;
-
-  /// Fired when a `#tag` pill is clicked.
-  void Function(String tag)? onTagTap;
-
-  /// Fired when a `[[wikilink]]` is clicked.
-  void Function(String target)? onWikilinkTap;
 
   /// The selection the *painting* should treat as the caret while a drag is in
   /// flight, instead of the live one.
@@ -62,15 +51,6 @@ class MarkdownSourceController extends TextEditingController {
   /// them to the right. Holding the reveal still for the whole gesture keeps the
   /// geometry exactly as the user saw it when they pressed.
   TextSelection? revealAs;
-
-  /// The selection the tree currently on screen was built for.
-  ///
-  /// A pointer-down reaches the field's own recogniser *and* the pane's
-  /// [Listener], and the order of the two is not something to rely on — the
-  /// caret may already have moved by the time the listener runs. "What the user
-  /// was looking at" is therefore read from the painting, not from [value].
-  TextSelection? get paintedSelection => _painted;
-  TextSelection? _painted;
 
   /// The rectangle a **grip** selected, held until the document changes.
   ///
@@ -198,137 +178,6 @@ class MarkdownSourceController extends TextEditingController {
     _clickGuard?.cancel();
     super.dispose();
   }
-
-  String? _cacheKey;
-  TextSpan? _cache;
-
-  @override
-  TextSpan buildTextSpan({
-    required BuildContext context,
-    TextStyle? style,
-    required bool withComposing,
-  }) {
-    final TextEditingValue v = value;
-    final AppPalette p = context.palette;
-    final TextStyle base = style ?? const TextStyle();
-
-    // `buildTextSpan` runs on *every* frame, so keep the last tree. The key
-    // covers everything the tree depends on, including the column width (the
-    // rule and code band are sized from it) and the palette (colours).
-    final bool composingMark =
-        withComposing && v.isComposingRangeValid && !v.composing.isCollapsed;
-    final TextSelection? frozen = revealAs;
-    final String key =
-        '${v.text}\u0000'
-        '${v.selection.baseOffset}:${v.selection.extentOffset}\u0000'
-        '${frozen?.baseOffset}:${frozen?.extentOffset}\u0000'
-        '${v.composing.start}:${v.composing.end}\u0000'
-        '$composingMark\u0000${base.hashCode}\u0000${p.hashCode}\u0000'
-        '$contentWidth';
-    final TextSpan? cached = _cache;
-    if (cached != null && key == _cacheKey) return cached;
-
-    final TextSelection reveal = frozen ?? v.selection;
-    _painted = reveal;
-    List<InlineSpan> spans = buildLiveSpans(
-      text: v.text,
-      base: base,
-      p: p,
-      selection: reveal,
-      // Marker reveal freezes for the gesture, the wash does not: a drag over a
-      // table has to keep the table reading as one selected block while the
-      // pointer moves.
-      liveSelection: v.selection,
-      contentWidth: contentWidth,
-      onTagTap: onTagTap,
-      onWikilinkTap: onWikilinkTap,
-    );
-
-    // An open IME composition must **not** knock the document back to raw
-    // Markdown. That used to happen because we handed the whole thing to
-    // `super.buildTextSpan`, which paints plain text — so the moment you started
-    // typing pinyin the styling vanished. Underline the uncommitted range
-    // instead, the way the default controller would, and keep painting.
-    if (composingMark) {
-      spans = _underlineComposing(spans, v.composing, p, base);
-    }
-
-    final TextSpan span = TextSpan(style: base, children: spans);
-    _cacheKey = key;
-    _cache = span;
-    return span;
-  }
-}
-
-/// How many character positions a span occupies in the laid-out paragraph.
-///
-/// A [WidgetSpan] is one — the object-replacement character `\uFFFC`. That is
-/// the whole reason every decoration in `live_markdown.dart` has to consume
-/// exactly one source character.
-int _spanLength(InlineSpan span) => span.toPlainText().length;
-
-/// Rebuilds [spans] with the IME's in-progress range underlined.
-///
-/// The span list is a forest of `TextSpan`s with optional children, so the
-/// composing range is threaded through it with a running offset and every span
-/// that straddles the boundary is split in three.
-List<InlineSpan> _underlineComposing(
-  List<InlineSpan> spans,
-  TextRange composing,
-  AppPalette p,
-  TextStyle base,
-) {
-  if (!composing.isValid || composing.isCollapsed) return spans;
-  final TextStyle mark = base.copyWith(
-    decoration: TextDecoration.underline,
-    decorationColor: p.accent.withValues(alpha: 0.9),
-  );
-  final int start = composing.start;
-  final int end = composing.end;
-
-  InlineSpan wrap(InlineSpan span, int at) {
-    final int spanEnd = at + _spanLength(span);
-    if (spanEnd <= start || at >= end) return span;
-    // A widget occupies a slot we can neither split nor restyle.
-    if (span is! TextSpan) return span;
-
-    final List<InlineSpan>? kids = span.children;
-    if (kids != null) {
-      final List<InlineSpan> next = <InlineSpan>[];
-      int childAt = at;
-      for (final InlineSpan child in kids) {
-        next.add(wrap(child, childAt));
-        childAt += _spanLength(child);
-      }
-      return TextSpan(style: span.style, children: next);
-    }
-
-    final String? text = span.text;
-    if (text == null || text.isEmpty) return span;
-    final int a = (start - at).clamp(0, text.length);
-    final int b = (end - at).clamp(0, text.length);
-    if (a >= b) return span;
-    return TextSpan(
-      style: span.style,
-      children: <InlineSpan>[
-        if (a > 0) TextSpan(text: text.substring(0, a), style: span.style),
-        TextSpan(
-          text: text.substring(a, b),
-          style: (span.style ?? base).merge(mark),
-        ),
-        if (b < text.length)
-          TextSpan(text: text.substring(b), style: span.style),
-      ],
-    );
-  }
-
-  final List<InlineSpan> out = <InlineSpan>[];
-  int at = 0;
-  for (final InlineSpan span in spans) {
-    out.add(wrap(span, at));
-    at += _spanLength(span);
-  }
-  return out;
 }
 
 /// The range [newText] deleted from [oldText], or `null` when the edit is not a
@@ -562,14 +411,19 @@ class ListContinuationFormatter extends TextInputFormatter {
         newValue.selection.baseOffset != at + 1) {
       return newValue;
     }
-    // Only a **line-end** Enter continues a list. "Is the caret at the end of
-    // its line" is `caret == lineEndOf(...)`, *not* "does the rest of the text
-    // contain a newline" — the newline that ends the line the caret is on sits
-    // at the caret itself, so the looser question answers "yes, mid-line" for
-    // every line that has anything after it. That inverted test is why
-    // continuation only ever worked on the last line of a document.
+    // "Is the caret at the end of its line" is `caret == lineEndOf(...)`,
+    // *not* "does the rest of the text contain a newline" — the newline that
+    // ends the line the caret is on sits at the caret itself, so the looser
+    // question answers "yes, mid-line" for every line that has anything after
+    // it. That inverted test is why continuation only ever worked on the last
+    // line of a document.
+    //
+    // 行中回车在列表里同样要接上：`15. [ ] 序号排列|问题` 在竖线处回车，
+    // 后半段要成为新的 `16.` 条目，而不是一条没有标记的裸行。只有“在行尾
+    // 把空条目带走”这类收尾动作必须留在行尾。
     final int lineStart = lineStartOf(oldValue.text, at);
     final int lineEnd = lineEndOf(oldValue.text, at);
+    final bool atLineEnd = at == lineEnd;
 
     // Enter in a table adds a row; it never breaks the row. A bare newline here
     // would slice `| a | b |` into two lines, and the renderer — which only
@@ -584,12 +438,12 @@ class ListContinuationFormatter extends TextInputFormatter {
     );
     if (row != null) return row;
 
-    if (at != lineEnd) return newValue;
     final String line = oldValue.text.substring(lineStart, at);
 
     final Match? quote = _quoteRe.firstMatch(line);
-    if (quote != null && quote.group(3)!.trim().isEmpty) {
-      // Enter on an empty `> ` ends the quote.
+    if (atLineEnd && quote != null && quote.group(3)!.trim().isEmpty) {
+      // Enter on an empty `> ` ends the quote. 行中回车时标点后面还有正文，
+      // 收走标记会把它们一起吞掉。
       return _dropMarker(newValue, lineStart, at - lineStart, at);
     }
 
@@ -602,8 +456,11 @@ class ListContinuationFormatter extends TextInputFormatter {
     final String content = m.group(4) ?? '';
 
     if (content.trim().isEmpty) {
-      // An empty item means "I am done with this list" — take the marker back
-      // off instead of nesting one level deeper, so the user can leave.
+      // An empty item at the end of its line means "I am done with this list":
+      // take the marker back off instead of nesting one level deeper, so the
+      // user can leave. 行中回车时标记后面还有正文，删标记会把后半段一起
+      // 删掉，这里只换行。
+      if (!atLineEnd) return newValue;
       return _dropMarker(newValue, lineStart, at - lineStart, at);
     }
 
@@ -659,6 +516,27 @@ class ListContinuationFormatter extends TextInputFormatter {
         offset: (at + 1 - removeLength).clamp(0, text.length),
       ),
     );
+  }
+}
+
+/// 增删整行后把有序列表的序号接上：删掉 `16.` 那一条，下面的 `17.` 变回
+/// `16.`；在中间回车插进一条，后面的序号依次后移。
+///
+/// 只看“行数变没变”：逐字输入不会改行数；粘贴多行会被
+/// [renumberAfterLineChange] 里的单个换行判断挡掉，序号原样保留。
+class OrderedListRenumberFormatter extends TextInputFormatter {
+  OrderedListRenumberFormatter({this.suspend});
+
+  /// 撤销/重做送进来的是记下来的状态，不是一次编辑，不能借机重排。
+  final bool Function()? suspend;
+
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    if (suspend?.call() ?? false) return newValue;
+    return renumberAfterLineChange(oldValue, newValue);
   }
 }
 
@@ -759,6 +637,9 @@ class MarkdownEditor extends StatefulWidget {
     this.maxWidth = AppLayout.proseMaxWidth,
     this.onChanged,
     this.onTopLineChanged,
+    this.onLineTopProbe,
+    this.onTagTap,
+    this.documentId,
     this.readOnly = false,
   });
 
@@ -773,6 +654,26 @@ class MarkdownEditor extends StatefulWidget {
   /// Reports the source line at the top of the viewport on every scroll, so a
   /// reader who is only scrolling still gets the right section in the outline.
   final ValueChanged<int>? onTopLineChanged;
+
+  /// 把「源码行 → 文档坐标里的 y」交给宿主（大纲跳转用）。
+  ///
+  /// 每行高度由行引擎按自己的字号量出来，宿主推算不出来；这个口子在挂载时
+  /// 注册、卸载时注销，调用时再向渲染对象取当前排版结果。
+  final ValueChanged<double? Function(int line)?>? onLineTopProbe;
+
+  /// 点击 `#标签` 胶囊时回调，参数是不带 `#` 的标签名。
+  ///
+  /// 标签胶囊是渲染层画出来的，没有 widget 可以挂手势；点击由编辑器自己
+  /// 在指针抬起时命中判定，命中后才通知宿主去切换搜索。
+  final ValueChanged<String>? onTagTap;
+
+  /// 当前正文的身份：笔记 id，外加宿主自己的版本号。
+  ///
+  /// 撤销栈跟着 [controller] 走，切笔记时控制器被整段改写；不在这里清栈，
+  /// 一次 Ctrl+Z 就会把**上一份笔记**的正文恢复进来，而自动保存会把它写回
+  /// 现在这份文件——等于用旧内容覆盖文件。换文档必须从空历史开始；同一个
+  /// 笔记的正文被外部版本整段替换时，宿主也会换一个值，效果相同。
+  final String? documentId;
 
   final bool readOnly;
 
@@ -820,364 +721,113 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   TextEditingController? _cellText;
   FocusNode? _cellFocus;
 
-  // ------------------------------------------------------------ caret layer
+  // ------------------------------------------------------------ line style
+  //
+  // 按行排版的光标不再需要任何修正层：`RenderLineEditable` 的
+  // `getLocalRectForCaret` 直接按「这一行」的高度给出矩形，光标高度、基线、
+  // 绘制顺序都由它自己负责。旧实现里围绕 `RenderEditable` 单段假设搭起来的
+  // 那一整套（`_CaretSeat` / `_pinCaretAboveText` / strut 模板测量）随之退场。
 
-  /// The caret's height on the line it currently sits on.
+  /// 按行排版的样式解析器，按（正文样式 + 调色板 + 悬停标签）缓存。
   ///
-  /// It is fed back into the field as `cursorHeight`, because
-  /// [RenderEditable] marks itself for layout when that property changes and a
-  /// post-paint change would flash the old height for a frame.
-  double? _caretHeight;
+  /// 不能每次 build 都新建：渲染层用值相等判断是否需要重排，而方法 tear-off
+  /// 的相等性依赖接收者实例，新实例会让每一帧都重排整篇。
+  LiveLineStyle? _lineStyle;
 
-  /// The field's one-space layout template, measured for the caret seat.
+  /// 指针当前悬停的标签（文档偏移）。按行排版没有 widget 胶囊可以接
+  /// `MouseRegion`，所以悬停由这里命中后写进样式解析器。
+  TextRange? _hoverTag;
+
+  /// 按下时命中的标签胶囊，等指针抬起再决定是不是一次点击。
   ///
-  /// [RenderEditable] anchors the caret through this template (its strut box
-  /// supplies `getFullHeightForCaret`), so the seat needs the same numbers.
-  ({double height, double top})? _strutMetrics;
+  /// 必须在按下时就取：输入框会把光标落在标签里，胶囊随即退回源码、底片消失，
+  /// 等到抬起再命中就什么也找不到了。
+  TextRange? _tagBeforeTap;
 
-  Object? _strutKey;
-
-  /// Runs [_seatCaret] after the field lays out and before the frame paints.
-  final GlobalKey _caretSeatKey = GlobalKey();
-
-  bool _caretPostFrameScheduled = false;
-
-  /// How much taller the field draws its caret than `cursorHeight` on iOS and
-  /// macOS.
-  double get _caretInset =>
-      defaultTargetPlatform == TargetPlatform.iOS ||
-          defaultTargetPlatform == TargetPlatform.macOS
-      ? 2
-      : 0;
-
-  /// Pins the caret **above** the text, over the opaque bands the renderer
-  /// paints behind a run, and runs [_seatCaret] on its line.
+  /// 按下标签前的光标位置。
   ///
-  /// Windows (and Android) make [RenderEditable] draw the caret *under* the
-  /// glyphs, which is invisible on plain prose but swallows it whole inside an
-  /// inline-code band, a `==高亮==` or a code block — 「行内代码挡住了输入光标」.
-  /// `EditableText` can paint the caret last, but `TextField` derives that flag
-  /// from the platform and writes the platform value back into the render
-  /// object on every rebuild; the render object itself is public and mutable,
-  /// so the order is re-asserted after each frame.
-  ///
-  /// The seat cannot run in that callback: it corrects geometry that
-  /// `EditableText` resets on every rebuild, so a post-paint pass would show
-  /// one frame at the native (strut-misaligned) position before snapping.
-  /// Instead the [_CaretSeat] around the field runs it during layout — after
-  /// the new text is laid out, before it is painted.
-  void _pinCaretAboveText() {
-    _caretSeatKey.currentContext?.findRenderObject()?.markNeedsLayout();
-    if (_caretPostFrameScheduled) return;
-    _caretPostFrameScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _caretPostFrameScheduled = false;
-      if (!mounted) return;
-      final RenderEditable? field = _editable();
-      if (field == null) return;
-      field.paintCursorAboveText = true;
-      // Layout may have changed since the pre-frame measurement (a marker line
-      // revealing its source, a new paragraph): settle the height now that the
-      // new boxes exist.
-      _adoptCaretHeight(field);
-    });
-  }
+  /// 标签是链接不是文字：一次点击只跳转，不应把光标留在标签里、让它在回来时
+  /// 还是展开的源码。抬起时把这份光标还回去，胶囊原样保留。
+  TextSelection? _caretBeforeTagTap;
 
-  /// Records the caret's new line as soon as the selection or focus moves.
-  ///
-  /// `EditableText` rebuilds on every move and writes `cursorOffset` back to
-  /// zero, so the height has to be measured and built into the `TextField`
-  /// before that rebuild for the caret to be the right size in its first frame.
-  ///
-  /// A notification can arrive from inside a build — the editor pane re-binds a
-  /// freshly opened note there — and the element tree may not be walked then.
-  /// The seat still runs during the coming layout and the post-frame pass takes
-  /// the height from that layout.
-  void _onCaretMoved() {
-    if (WidgetsBinding.instance.schedulerPhase !=
-        SchedulerPhase.persistentCallbacks) {
-      final RenderEditable? field = _editable();
-      if (field != null) _adoptCaretHeight(field);
+  LiveLineStyle _resolveLineStyle(TextStyle style, AppPalette palette) {
+    final LiveLineStyle? cached = _lineStyle;
+    final String source = _currentText();
+    if (cached != null &&
+        cached.base == style &&
+        cached.palette == palette &&
+        cached.hoverTag == _hoverTag &&
+        cached.source == source &&
+        cached.markerRevealLine == _markerReveal?.start) {
+      return cached;
     }
-    _pinCaretAboveText();
-  }
-
-  /// Adopts [field]'s line height as the caret height when it changed.
-  void _adoptCaretHeight(RenderEditable field) {
-    final double? next = _caretHeightFor(field);
-    if (next == null) return;
-    final double current = _caretHeight ?? field.preferredLineHeight;
-    if ((next - current).abs() <= 0.01) return;
-    if (!mounted) return;
-    setState(() => _caretHeight = next);
-  }
-
-  /// The height the caret should have on its current line, or null when the
-  /// line cannot say (no focus, an expanded selection, or hidden source).
-  double? _caretHeightFor(RenderEditable field) {
-    if (!widget.focusNode.hasFocus) return null;
-    final TextSelection selection = widget.controller.selection;
-    if (!selection.isValid || !selection.isCollapsed) return null;
-
-    final String text = widget.controller.text;
-    final int pos = selection.extentOffset;
-    if (pos < 0 || pos > text.length) return null;
-
-    final ({TextSelection? probe, bool phantom}) caret = _caretProbe(
-      text,
-      selection,
+    return _lineStyle = LiveLineStyle(
+      base: style,
+      palette: palette,
+      reveal: _revealSelection,
+      hoverTag: _hoverTag,
+      source: source,
+      markerRevealLine: _markerReveal?.start,
     );
-    final Rect? line = _caretLineBox(field, caret.probe);
-    if (line == null) {
-      // An empty note is one line whose box cannot be selected; the field's
-      // own preferred height is that line.
-      return text.isEmpty ? field.preferredLineHeight : null;
+  }
+
+  /// 实时表格行的自绘内容，缓存规则同 [_resolveLineStyle]。
+  ///
+  /// 一份实例带着整张表的测量（列宽、行高、每个格子的 `TextPainter`），换掉
+  /// 就要重新测量，所以只在正文样式或主题变化时重建。
+  LiveTableBlocks? _tableBlocks;
+
+  LiveTableBlocks _resolveTableBlocks(TextStyle style, AppPalette palette) {
+    final LiveTableBlocks? cached = _tableBlocks;
+    if (cached != null && cached.base == style && cached.palette == palette) {
+      return cached;
     }
-    if (caret.phantom) return field.preferredLineHeight;
-    if (line.height < _kMinCaretLine) return null;
-    return math.min(field.preferredLineHeight, line.height);
-  }
-
-  /// The character whose line the caret is drawn next to, and whether the
-  /// caret sits on the empty line after a trailing newline.
-  ///
-  /// At the end of the text there is no character, so the last one is used; an
-  /// upstream caret at a soft wrap belongs to the previous visual line, exactly
-  /// as the painter places it (a newline is the start of the *next* line
-  /// either way).
-  ({TextSelection? probe, bool phantom}) _caretProbe(
-    String text,
-    TextSelection selection,
-  ) {
-    final int pos = selection.extentOffset;
-    final bool phantom =
-        pos == text.length && pos > 0 && text.codeUnitAt(pos - 1) == 0x0A;
-    if (pos == text.length) {
-      return (
-        probe: pos > 0
-            ? TextSelection(baseOffset: pos - 1, extentOffset: pos)
-            : null,
-        phantom: phantom,
-      );
-    }
-    if (selection.affinity == TextAffinity.upstream &&
-        pos > 0 &&
-        text.codeUnitAt(pos - 1) != 0x0A) {
-      return (
-        probe: TextSelection(baseOffset: pos - 1, extentOffset: pos),
-        phantom: false,
-      );
-    }
-    return (
-      probe: TextSelection(baseOffset: pos, extentOffset: pos + 1),
-      phantom: phantom,
+    cached?.dispose();
+    return _tableBlocks = LiveTableBlocks(
+      base: style,
+      palette: palette,
+      text: _currentText,
+      selection: _currentSelection,
     );
   }
 
-  /// The paragraph's own line box for [probe], including its line spacing.
+  String _currentText() => widget.controller.text;
+
+  /// 表格选区洗色要跟着**光标**走，而不是拖选期间冻结的那份揭示选区：
+  /// 冻结是为了不让标记在指针底下闪，和选中色带无关。
+  TextSelection? _currentSelection() => widget.controller.selection;
+
+  /// 按行排版用来展开标记的选区：`revealAs` 优先（拖动期间被冻结）。
   ///
-  /// `getBoxesForSelection` reads the field's selection height style, which has
-  /// to stay `includeLineSpacingTop` for the wash's seam — borrow it for the
-  /// measurement and hand it straight back.
-  Rect? _caretLineBox(RenderEditable field, TextSelection? probe) {
-    final List<TextBox>? boxes = _caretBoxes(
-      field,
-      probe,
-      ui.BoxHeightStyle.max,
-    );
-    if (boxes == null || boxes.isEmpty) return null;
-    Rect box = boxes.first.toRect();
-    for (final TextBox other in boxes.skip(1)) {
-      final Rect rect = other.toRect();
-      if (rect.height > box.height) box = rect;
-    }
-    return box;
-  }
-
-  /// The strut box the caret is anchored to for [probe], in field coordinates.
-  ///
-  /// [RenderEditable] computes the caret's y through the strut box of the
-  /// character it sits next to (`getOffsetForCaret` → `BoxHeightStyle.strut`),
-  /// and its x through the leading or trailing edge of the same box. Asking
-  /// for that box reproduces the native anchor without touching
-  /// [RenderEditable.size], which may not be read from inside another render
-  /// object's layout.
-  Rect? _caretAnchorBox(
-    RenderEditable field,
-    TextSelection? probe,
-    bool trailing,
-  ) {
-    final List<TextBox>? boxes = _caretBoxes(
-      field,
-      probe,
-      ui.BoxHeightStyle.strut,
-    );
-    if (boxes == null || boxes.isEmpty) return null;
-    return (trailing ? boxes.last : boxes.first).toRect();
-  }
-
-  List<TextBox>? _caretBoxes(
-    RenderEditable field,
-    TextSelection? probe,
-    ui.BoxHeightStyle heightStyle,
-  ) {
-    if (probe == null) return null;
-    final ui.BoxHeightStyle style = field.selectionHeightStyle;
-    field.selectionHeightStyle = heightStyle;
-    final List<TextBox> boxes = field.getBoxesForSelection(probe);
-    field.selectionHeightStyle = style;
-    return boxes;
-  }
-
-  /// The field's one-space layout template: the strut box's height is the
-  /// caret's `fullHeight`, and its top is how far the template's baseline sits
-  /// below the strut box's top.
-  ///
-  /// Built from the field's own style, strut and text settings so it matches
-  /// `TextPainter._createLayoutTemplate` exactly. Cached because the caret seat
-  /// runs on every layout.
-  ({double height, double top}) _caretStrutMetrics(RenderEditable field) {
-    final TextStyle? style = field.text?.style;
-    final Object key = (
-      style,
-      field.strutStyle,
-      field.textScaler,
-      field.textDirection,
-      field.locale,
-      field.textHeightBehavior,
-      field.maxLines,
-    );
-    final ({double height, double top})? cached = _strutMetrics;
-    if (cached != null && _strutKey == key) return cached;
-
-    final TextPainter template = TextPainter(
-      text: TextSpan(text: ' ', style: style),
-      textAlign: TextAlign.left,
-      textDirection: field.textDirection,
-      textScaler: field.textScaler,
-      locale: field.locale,
-      textHeightBehavior: field.textHeightBehavior,
-      strutStyle: field.strutStyle,
-      maxLines: field.maxLines,
-    )..layout();
-    final TextBox box = template
-        .getBoxesForSelection(
-          const TextSelection(baseOffset: 0, extentOffset: 1),
-          boxHeightStyle: ui.BoxHeightStyle.strut,
-        )
-        .single;
-    template.dispose();
-    final ({double height, double top}) metrics = (
-      height: box.bottom - box.top,
-      top: box.top,
-    );
-    _strutKey = key;
-    _strutMetrics = metrics;
-    return metrics;
-  }
-
-  /// Puts the caret's centre on its paragraph line's centre.
-  ///
-  /// The 1px strut (see the field's `strutStyle`) keeps code rows at their own
-  /// 20px instead of the 28px the body style would force on them — but
-  /// [RenderEditable] also measures the caret's line through that strut.
-  /// `getFullHeightForCaret` returns the ~1px strut box, so the caret is
-  /// centred around a line top that is not the line's, and an end-of-text caret
-  /// ends up ~15px above the glyphs it belongs to — typing the last word of a
-  /// note showed the caret floating over the previous line.
-  ///
-  /// Runs inside [_CaretSeat]'s layout, after the field has laid out and
-  /// before the frame is painted. Only `cursorOffset` moves here; the height is
-  /// already on the field through `TextField.cursorHeight`.
-  ///
-  /// The seat cannot ask the field for its caret rect: `getLocalRectForCaret`
-  /// reads [RenderEditable.size], and a render object may not read a
-  /// descendant's size during layout. It reconstructs the native anchor from
-  /// the strut box instead:
-  ///
-  ///  * an ordinary caret is anchored at its character's strut box top, and
-  ///    `getFullHeightForCaret` is the (constant) template strut box, so its
-  ///    centre is that box's top plus half the template height;
-  ///  * an end-of-text caret is anchored at the last line's baseline; the same
-  ///    line's strut box top minus the template's strut box top gives that;
-  ///  * a caret on the empty line after a trailing newline is anchored at that
-  ///    line's top.
-  void _seatCaret(RenderEditable field) {
-    if (!widget.focusNode.hasFocus) return;
-    final TextSelection selection = widget.controller.selection;
-    if (!selection.isValid || !selection.isCollapsed) return;
-
-    final String text = widget.controller.text;
-    final int pos = selection.extentOffset;
-    if (pos < 0 || pos > text.length) return;
-
-    final ({TextSelection? probe, bool phantom}) caret = _caretProbe(
-      text,
-      selection,
-    );
-    final Rect? line = _caretLineBox(field, caret.probe);
-    final ({double height, double top}) strut = _caretStrutMetrics(field);
-    final bool trailing = selection.affinity == TextAffinity.upstream;
-
-    final double center;
-    double nativeCenter;
-    if (line == null) {
-      if (text.isNotEmpty) return;
-      // No paragraph to measure: the engine puts the caret at the field's top
-      // and the template supplies its height.
-      center = field.preferredLineHeight / 2;
-      nativeCenter = strut.height / 2;
-    } else if (caret.phantom) {
-      // The caret sits on the empty line after a trailing newline; that line
-      // has no run and therefore no box, but it starts where the last one ends
-      // and is a body line tall.
-      center = line.bottom + field.preferredLineHeight / 2;
-      nativeCenter = line.bottom + strut.height / 2;
-    } else {
-      if (line.height < _kMinCaretLine) return;
-      center = line.center.dy;
-      final Rect? anchor = _caretAnchorBox(field, caret.probe, trailing);
-      if (anchor == null) return;
-      nativeCenter = anchor.top + strut.height / 2;
-      if (pos == text.length && !trailing) {
-        // End of text without a trailing newline: the engine anchors the caret
-        // on the last line's baseline instead of the character's strut box.
-        // (An upstream caret skips that path and stays on the character.)
-        nativeCenter -= strut.top;
-      }
-    }
-
-    final double dy = center - nativeCenter;
-    field.cursorOffset = Offset(
-      field.cursorOffset.dx,
-      dy.abs() > 0.01 ? dy : 0,
-    );
-  }
-
-  /// [_CaretSeat]'s layout hook: resolves the live field and seats the caret.
-  void _seatCaretNow() {
-    final RenderEditable? field = _editable();
-    if (field != null) _seatCaret(field);
+  /// 做成稳定的方法引用，渲染层才能按值相等判断要不要重排。列表标记不归这里
+  /// 管——它们按 [_markerReveal] 单独摊开，见 `markerRevealLine`。
+  TextSelection? _revealSelection() {
+    final TextEditingController c = widget.controller;
+    return c is MarkdownSourceController
+        ? (c.revealAs ?? c.selection)
+        : c.selection;
   }
 
   @override
   void initState() {
     super.initState();
-    widget.controller.addListener(_onCaretMoved);
     widget.controller.addListener(_scheduleOverlayRefresh);
     widget.scrollController.addListener(_scheduleOverlayRefresh);
     widget.scrollController.addListener(_reportTopLine);
-    widget.focusNode.addListener(_onCaretMoved);
-    _pinCaretAboveText();
+    widget.onLineTopProbe?.call(_lineTopOf);
   }
+
+  /// 源码行在文档坐标里的顶部；渲染对象还没排版时为 `null`。
+  double? _lineTopOf(int line) => _editable()?.lineTopFor(line);
 
   @override
   void didUpdateWidget(MarkdownEditor oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // 换文档时撤销栈必须从空开始，否则 Ctrl+Z 会恢复上一份笔记的正文。
+    // `UndoHistory` 没有公开的清栈接口，栈属于输入框自己的 State，所以下面
+    // 用 [documentId] 作 KeyedSubtree 的 key，整块重建输入框来丢弃历史。
     if (oldWidget.controller != widget.controller) {
-      oldWidget.controller.removeListener(_onCaretMoved);
       oldWidget.controller.removeListener(_scheduleOverlayRefresh);
-      widget.controller.addListener(_onCaretMoved);
       widget.controller.addListener(_scheduleOverlayRefresh);
     }
     if (oldWidget.scrollController != widget.scrollController) {
@@ -1186,60 +836,99 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       widget.scrollController.addListener(_scheduleOverlayRefresh);
       widget.scrollController.addListener(_reportTopLine);
     }
-    if (oldWidget.focusNode != widget.focusNode) {
-      oldWidget.focusNode.removeListener(_onCaretMoved);
-      widget.focusNode.addListener(_onCaretMoved);
-    }
-    _pinCaretAboveText();
     _scheduleOverlayRefresh();
   }
 
   // ------------------------------------------------------ task checkboxes
   //
-  // ⛔ The boxes are deliberately *not* `GestureDetector`s. A widget inside a
-  // `WidgetSpan` is hit-tested through the `TextPainter`'s placeholder box, which
-  // drifts from where the widget is actually painted as soon as the row wraps or
-  // the marker column holds more than one element; the symptom is "the box on
-  // the first line works and the others do not". Instead we listen to raw
-  // pointers — a `Listener` never joins the gesture arena, so the field's own
-  // "click to place the caret" still works — and hit-test each shell's **real
-  // paint rect**, which is by definition where the user sees the box.
+  // ⛔ The boxes are deliberately *not* `GestureDetector`s — they are not
+  // widgets at all: the renderer paints them into the marker slot (see
+  // `RenderLineEditable.checkboxRectOf`). A widget would have to sit in a
+  // `WidgetSpan` and be positioned through the paragraph's placeholder box,
+  // which drifts from where the widget is actually painted as soon as the row
+  // wraps or the marker column holds more than one element; the symptom is
+  // "the box on the first line works and the others do not". Instead we listen
+  // to raw pointers — a `Listener` never joins the gesture arena — and
+  // hit-test the renderer's **own paint rect**, which is by definition where
+  // the user sees the box.
 
   /// The source offset of the checkbox under [globalPosition], if any.
+  ///
+  /// 复选框现在是渲染层画出来的图形，没有 widget 可走：命中直接问渲染对象拿到
+  /// 的矩形，和它画出来的地方逐像素一致。
   int? _checkboxAt(Offset globalPosition) {
-    final BuildContext? root = _fieldKey.currentContext;
-    if (root == null) return null;
-    int? found;
-    void visit(Element element) {
-      if (found != null) return;
-      final Widget w = element.widget;
-      if (w is MarkdownTodoCheckbox) {
-        final RenderObject? ro = element.renderObject;
-        if (ro is RenderBox && ro.hasSize && ro.attached) {
-          final Rect rect = ro.localToGlobal(Offset.zero) & ro.size;
-          if (rect.inflate(_kCheckboxTouchSlop).contains(globalPosition)) {
-            found = w.sourceOffset;
-          }
-        }
-        return; // The shell only wraps the box; no need to descend.
-      }
-      element.visitChildElements(visit);
-    }
+    final RenderLineEditable? field = _editable();
+    if (field == null) return null;
+    return field.taskCheckboxAt(globalPosition, slop: _kCheckboxTouchSlop);
+  }
 
-    root.visitChildElements(visit);
-    return found;
+  /// 指针下压着的 `#标签` 胶囊（文档偏移区间），没有则为 `null`。
+  ///
+  /// 只认胶囊真正覆盖的那块矩形：`positionAt` 会把段落右侧的空白吸附到行末，
+  /// 若只看偏移，鼠标停在整行右边也会点亮最后一个标签。矩形取的是渲染层算
+  /// 选区时用的同一份字形几何，横向再放开标签的内边距（[kTagPadX]）。
+  TextRange? _tagAt(Offset globalPosition) {
+    final RenderLineEditable? field = _editable();
+    final LiveLineStyle? style = _lineStyle;
+    if (field == null || style == null) return null;
+
+    final int offset = field.positionAt(globalPosition).offset;
+    final LineDocumentLayout? layout = field.lineLayout;
+    if (layout == null) return null;
+    SourceLine? target;
+    for (final SourceLine line in layout.lines) {
+      if (offset >= line.start && offset <= line.end) {
+        target = line;
+        break;
+      }
+    }
+    if (target == null || !target.text.contains('#')) return null;
+
+    for (final LineFillRun run in style.fillsFor(target)) {
+      if (run.radius != kTagRadius) continue; // 只认标签胶囊，行内代码不点亮
+      final TextRange range = TextRange(
+        start: target.paintStart + run.from,
+        end: target.paintStart + run.to,
+      );
+      for (final Rect local in field.selectionBands(
+        TextSelection(baseOffset: range.start, extentOffset: range.end),
+      )) {
+        final Rect rect = Rect.fromLTRB(
+          local.left - kTagPadX,
+          local.top,
+          local.right + kTagPadX,
+          local.bottom,
+        );
+        if (rect
+            .shift(field.localToGlobal(Offset.zero))
+            .contains(globalPosition)) {
+          return range;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// 悬停标签变了才重建：颜色是烤进每一行 `TextPainter` 的，必须让渲染层
+  /// 重排（值相等判断在 [LiveLineStyle] 上），光重画改不了字形颜色。
+  void _setHoverTag(TextRange? next) {
+    if (next == _hoverTag) return;
+    setState(() => _hoverTag = next);
   }
 
   /// The field's own render object — the only thing that can turn a screen point
   /// into a text offset exactly the way the field itself does.
-  RenderEditable? _editable() {
+  ///
+  /// 只认按行排版的 [RenderLineEditable]：它的几何出口与画面对齐，而基类
+  /// `RenderEditable` 的单段假设在列表行、代码围栏上都会偏。
+  RenderLineEditable? _editable() {
     final BuildContext? root = _fieldKey.currentContext;
     if (root == null) return null;
-    RenderEditable? found;
+    RenderLineEditable? found;
     void visit(Element element) {
       if (found != null) return;
       final RenderObject? ro = element.renderObject;
-      if (ro is RenderEditable) {
+      if (ro is RenderLineEditable) {
         found = ro;
         return;
       }
@@ -1247,7 +936,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     }
 
     root.visitChildElements(visit);
-    final RenderEditable? re = found;
+    final RenderLineEditable? re = found;
     return re != null && re.hasSize && re.attached ? re : null;
   }
 
@@ -1255,6 +944,31 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// to be a drag rather than a click.
   Offset? _downPosition;
   bool _gestureMoved = false;
+
+  /// 按下时落下的选区基点，拖选时作为范围的起点。
+  ///
+  /// 按行渲染的输入框是裸 `EditableText`，不带 `TextField` 那层手势识别，
+  /// 所以拖选范围由编辑器自己从这一点拉到指针当前位置。
+  int? _dragAnchor;
+
+  /// 用户点开了哪一行的列表标记（[start] 行首，[paintStart] 标记结束）。
+  ///
+  /// 只靠光标位置判断是不够的：光标停在 0 是常见状态（刚绑定笔记、Ctrl+Home），
+  /// 第一行恰好是列表时就会无缘无故把 `- ` 摊出来。所以展开与否由“是不是点了
+  /// 标记”决定，点别处就收起。
+  ({int start, int paintStart})? _markerReveal;
+
+  /// 点开标记的那一次按下的光标位置。
+  ///
+  /// 裸 `EditableText` 在抬手时还会按槽位把光标吸附回正文起点（它只认字形），
+  /// 所以这里记一份，在同一个事件末尾用微任务还回去——和复选框的处理一致。
+  int? _markerCaret;
+
+  /// 按在了哪一行的标记区（抬手时还停在原地才算一次点击）。
+  ///
+  /// 按下就摊开会让整行在手指还没动的时候重排，也会把「按在标记上、拖到复选框」
+  /// 这类手势的命中结果换掉——所以只记下来，抬手再决定。
+  ({int start, int paintStart, bool revealed})? _pendingMarker;
 
   /// The base offset of a drag that began **outside** the field's box.
   ///
@@ -1297,10 +1011,10 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     Offset globalPosition, {
     bool keepSelection = false,
   }) {
-    final RenderEditable? editable = _editable();
+    final RenderLineEditable? editable = _editable();
     if (editable == null) return;
     int offset = editable
-        .getPositionForPoint(globalPosition)
+        .positionAt(globalPosition)
         .offset
         .clamp(0, c.text.length);
     final ({TableBlock block, int row, int column, TableCell cell})? cell =
@@ -1331,14 +1045,15 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
   /// The field's own state, for the menu rows that are the platform's commands
   /// (copy, cut, paste, select all).
-  EditableTextState? _editableTextState() {
+  LineEditableTextState? _editableTextState() {
     final BuildContext? root = _fieldKey.currentContext;
     if (root == null) return null;
-    EditableTextState? found;
+    LineEditableTextState? found;
     void visit(Element element) {
       if (found != null) return;
-      if (element is StatefulElement && element.state is EditableTextState) {
-        found = element.state as EditableTextState;
+      if (element is StatefulElement &&
+          element.state is LineEditableTextState) {
+        found = element.state as LineEditableTextState;
         return;
       }
       element.visitChildElements(visit);
@@ -1350,10 +1065,10 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
   /// Opens the editor's right-click menu at [globalPosition].
   ///
-  /// Only the press that lands outside the field's box needs this; a press on
-  /// the text is answered by the field's own `contextMenuBuilder`.
+  /// 按行渲染的字段没有 `TextField` 的手势层，所以文本上的右键也由这里直接开
+  /// 菜单；字段之外的纸面走的是同一条路。
   void _showMenuAt(Offset globalPosition) {
-    final EditableTextState? state = _editableTextState();
+    final LineEditableTextState? state = _editableTextState();
     if (state == null) return;
     unawaited(
       showAppMenu(
@@ -1379,7 +1094,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// The field ends where its text ends, so the rest of the sheet belongs to
   /// the scroll view alone; the editor treats a press there as "end of note".
   bool _belowText(Offset globalPosition) {
-    final RenderEditable? re = _editable();
+    final RenderLineEditable? re = _editable();
     if (re == null) return false;
     final Offset bottom = re.localToGlobal(Offset(0, re.size.height));
     return globalPosition.dy > bottom.dy;
@@ -1388,19 +1103,19 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// Reports the source line the viewport starts on, whenever it is scrolled.
   ///
   /// Asked of the render object rather than measured: one pixel below the
-  /// pane's top edge, `getPositionForPoint` answers exactly the line a reader
-  /// sees first — wrapped paragraphs and heading line boxes included — for the
+  /// pane's top edge, `positionAt` answers exactly the line a reader sees
+  /// first — wrapped paragraphs and heading line boxes included — for the
   /// price of a hit test.
   void _reportTopLine() {
     final ValueChanged<int>? report = widget.onTopLineChanged;
     if (report == null) return;
-    final RenderEditable? re = _editable();
+    final RenderLineEditable? re = _editable();
     final RenderObject? root = context.findRenderObject();
     if (re == null || root is! RenderBox || !root.hasSize) return;
     final Offset top = root.localToGlobal(Offset.zero);
     final String text = widget.controller.text;
     final int offset = re
-        .getPositionForPoint(Offset(top.dx + 2, top.dy + 1))
+        .positionAt(Offset(top.dx + 2, top.dy + 1))
         .offset
         .clamp(0, text.length);
     report('\n'.allMatches(text.substring(0, offset)).length);
@@ -1534,42 +1249,55 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       return;
     }
     if (c.selection.isCollapsed) return;
-    final RenderEditable? editable = _editable();
+    final RenderLineEditable? editable = _editable();
     if (editable == null) return;
-    final TextPosition at = editable.getPositionForPoint(globalPosition);
-    c.selection = TextSelection.collapsed(
-      offset: at.offset.clamp(0, c.text.length),
-      affinity: at.affinity,
-    );
+    final int at = editable.positionAt(globalPosition).offset;
+    c.selection = TextSelection.collapsed(offset: at.clamp(0, c.text.length));
+  }
+
+  /// 记下/清掉“哪一行的标记摊开”。
+  ///
+  /// 必须自己发起重建：点标记时光标常常已经停在行首，选区没有变化就不会有
+  /// 通知，光改字段的话 `markerRevealLine` 传不到渲染层。
+  void _setMarkerReveal(({int start, int paintStart})? value) {
+    if (_markerReveal == value) return;
+    setState(() => _markerReveal = value);
+  }
+
+  /// 把点标记时定下的光标还给输入框。
+  ///
+  /// 裸 `EditableText` 会在同一次抬手事件里按槽位把光标吸附回正文起点，而它
+  /// 的写入发生在监听器之后；微任务是同一帧里的最后一句话，光标不会先闪到
+  /// 正文再跳回序号。
+  void _restoreMarkerCaret(TextEditingController c) {
+    final int? caret = _markerCaret;
+    _markerCaret = null;
+    if (caret == null || _gestureMoved) return;
+    scheduleMicrotask(() {
+      if (!mounted) return;
+      c.selection = TextSelection.collapsed(
+        offset: caret.clamp(0, c.text.length),
+      );
+    });
   }
 
   // ---------------------------------------------------------- table chrome
   //
   // The grips and the plus buttons a live table paints around itself are
-  // *painted*, not widgets (see `_RenderTableRow`), so they are found the same
-  // way the checkbox shells are: by walking the field's element tree for the
-  // render objects and asking them where they drew what. A raw `Listener`
-  // never joins the gesture arena, so the editor hears every press; a
-  // `_ChromeShield` then keeps the ones that land on a control away from the
-  // field below, whose own drag recognizer would otherwise start selecting the
-  // text behind the grip.
+  // *painted*, not widgets (see `_TableLineBlock`), so they are found the same
+  // way the checkbox shells are: by asking the render object where it drew
+  // what. A raw `Listener` never joins the gesture arena, so the editor hears
+  // every press; a `_ChromeShield` then keeps the ones that land on a control
+  // away from the field below, whose own drag recognizer would otherwise start
+  // selecting the text behind the grip.
 
   /// Every rendered table row currently on screen.
-  List<TableRowChrome> _tableRows() {
-    final BuildContext? root = _fieldKey.currentContext;
-    if (root == null) return const <TableRowChrome>[];
-    final List<TableRowChrome> rows = <TableRowChrome>[];
-    void visit(Element element) {
-      final RenderObject? ro = element.renderObject;
-      // The cast is not redundant: `TableRowChrome` is an unrelated interface,
-      // so `is` cannot promote a `RenderObject?` into it.
-      if (ro is TableRowChrome) rows.add(ro as TableRowChrome);
-      element.visitChildElements(visit);
-    }
-
-    root.visitChildElements(visit);
-    return rows;
-  }
+  ///
+  /// 按行排版后表格行不是 element 树里的渲染对象，而是行布局里的一块自绘
+  /// 内容，所以直接问渲染对象要——它会先把每行的全局原点写进去，返回的矩形
+  /// 与指针事件在同一个坐标系里。
+  List<TableRowChrome> _tableRows() =>
+      _editable()?.tableRows() ?? const <TableRowChrome>[];
 
   /// The grip or plus button under [globalPosition], with the row that painted
   /// it.
@@ -1589,8 +1317,12 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     return null;
   }
 
-  /// The painted cell under [globalPosition] — resolved through the rectangles
-  /// the pointer sees, not through the text skeleton.
+  /// The cell under [globalPosition] — resolved through the geometry the
+  /// pointer sees, not through the text skeleton.
+  ///
+  /// 实时表格的骨架行会自己报出画出来的单元格矩形，有就优先用它；按行排版把
+  /// 整行源码交给行引擎后，骨架行不存在，落点改问 [RenderLineEditable.positionAt]
+  /// 拿到源码偏移，再由表格模型换算出单元格。
   ({TableBlock block, int row, int column, TableCell cell})? _paintedCellAt(
     Offset globalPosition,
   ) {
@@ -1618,7 +1350,29 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
         );
       }
     }
-    return null;
+
+    final RenderLineEditable? field = _editable();
+    if (field == null) return null;
+    final String text = widget.controller.text;
+    final int offset = field
+        .positionAt(globalPosition)
+        .offset
+        .clamp(0, text.length);
+    final TableBlock? block = TableBlock.parse(text, offset);
+    if (block == null) return null;
+    // 分隔符行不属于任何单元格：它折叠着，点击时应该把光标留在原处。
+    for (final TableRow line in block.rows) {
+      if (offset >= line.start && offset <= line.end) {
+        if (line.divider) return null;
+        break;
+      }
+    }
+    final int row = block.rowAt(offset);
+    if (row < 0) return null;
+    final List<TableCell> rows = block.bodyRows[row].cells;
+    final int column = block.columnAt(row, offset);
+    if (column < 0 || column >= rows.length) return null;
+    return (block: block, row: row, column: column, cell: rows[column]);
   }
 
   /// A caret read off the invisible skeleton, constrained to the cell the
@@ -1692,16 +1446,22 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// avoid. It only changes when the *kind* of thing under the pointer changes.
   MouseCursor _pointerCursor = SystemMouseCursors.text;
 
-  MouseCursor _cursorAt(Offset? position) {
+  MouseCursor _cursorAt(Offset? position, {TextRange? tag}) {
     if (position == null) return SystemMouseCursors.text;
     final (TableRowChrome, TableChromeTarget)? hit = _chromeAt(position);
-    if (hit == null) return SystemMouseCursors.text;
-    return switch (hit.$2.kind) {
-      TableChromeKind.rowHandle ||
-      TableChromeKind.columnHandle => SystemMouseCursors.basic,
-      TableChromeKind.addRow ||
-      TableChromeKind.addColumn => SystemMouseCursors.click,
-    };
+    if (hit != null) {
+      return switch (hit.$2.kind) {
+        TableChromeKind.rowHandle ||
+        TableChromeKind.columnHandle => SystemMouseCursors.basic,
+        TableChromeKind.addRow ||
+        TableChromeKind.addColumn => SystemMouseCursors.click,
+      };
+    }
+    // 复选框是一次勾选而不是一段文字：悬停时给普通箭头，别让人以为能打字。
+    if (_checkboxAt(position) != null) return SystemMouseCursors.basic;
+    // 标签胶囊是一次跳转而不是一段文字：手指光标是它唯一的静态提示。
+    if (tag != null && widget.onTagTap != null) return SystemMouseCursors.click;
+    return SystemMouseCursors.text;
   }
 
   void _setCursor(MouseCursor next) {
@@ -1715,13 +1475,17 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   void _onPointerHover(PointerHoverEvent event) {
     tablePointerPosition.value = event.position;
     if (_grabbedRow != null) return; // a drag owns the cursor until release
-    _setCursor(_cursorAt(event.position));
+    // 一次命中同时决定两件事：光标形状和标签的悬停配色。
+    final TextRange? tag = _tagAt(event.position);
+    _setCursor(_cursorAt(event.position, tag: tag));
+    _setHoverTag(tag);
   }
 
   void _onPointerExit(PointerExitEvent event) {
     if (_grabbedRow != null) return;
     tablePointerPosition.value = null;
     _setCursor(SystemMouseCursors.text);
+    _setHoverTag(null);
   }
 
   /// Runs whatever the chrome control meant. Returns whether an edit landed.
@@ -1942,7 +1706,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// lands the caret anyway), the start for the padding above, the line it sits
   /// beside for a margin. Mouse only — a finger or stylus dragging in those
   /// margins is a scroll.
-  void _beginOutsideDrag(Offset position, RenderEditable field) {
+  void _beginOutsideDrag(Offset position, RenderLineEditable field) {
     final TextEditingController c = widget.controller;
     final Offset topLeft = field.localToGlobal(Offset.zero);
     final int at;
@@ -1953,7 +1717,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     } else {
       at = _visibleEdgeOffset(
         field,
-        field.getPositionForPoint(position).offset.clamp(0, c.text.length),
+        field.positionAt(position).offset.clamp(0, c.text.length),
       );
     }
     final TextSelection before = c.selection;
@@ -1968,7 +1732,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     if (c is MarkdownSourceController) {
       // The same freeze a press on the text takes: the layout under the pointer
       // must not reflow when the reveal catches up halfway through the drag.
-      c.revealAs = c.paintedSelection ?? c.selection;
+      c.revealAs = c.selection;
       c.disarmClickGuard();
     }
     widget.focusNode.requestFocus();
@@ -1988,22 +1752,22 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   ///
   /// While the reveal is frozen, a line's Markdown prefix (`# `, `> `) is
   /// hidden and has zero width: the first visible glyph starts at the offset
-  /// *after* it, so `getPositionForPoint` over that glyph answers the prefix's
+  /// *after* it, so `positionAt` over that glyph answers the prefix's
   /// end. On release the line reveals and the prefix appears — outside the
   /// wash, which is why 从下往上框选标题时最上面的 `#` 号没有选中。 A drag edge
   /// that lands on the visual start of a line therefore walks back over the
   /// prefix; the walk only happens when every character before [offset] paints
   /// nothing, so a pointer anywhere on painted text is untouched.
-  int _visibleEdgeOffset(RenderEditable field, int offset) {
+  int _visibleEdgeOffset(RenderLineEditable field, int offset) {
     final String text = widget.controller.text;
     if (offset <= 0 || offset > text.length) return offset;
     final int lineStart = lineStartOf(text, offset);
     if (lineStart >= offset) return offset;
     final bool hidden = field
-        .getBoxesForSelection(
+        .selectionBands(
           TextSelection(baseOffset: lineStart, extentOffset: offset),
         )
-        .every((TextBox box) => box.right <= box.left);
+        .every((Rect band) => band.width <= 0);
     return hidden ? lineStart : offset;
   }
 
@@ -2015,7 +1779,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// is what tells the edges apart from a genuine mid-line offset.
   void _snapDragEdges() {
     final TextEditingController c = widget.controller;
-    final RenderEditable? field = _editable();
+    final RenderLineEditable? field = _editable();
     if (field == null) return;
     final TextSelection sel = c.selection;
     if (!sel.isValid || sel.isCollapsed) return;
@@ -2033,7 +1797,16 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// Recorded on *down*: the field moves the caret on pointer-down, so reading
   /// the selection on up would already be too late.
   void _onPointerDown(PointerDownEvent event) {
+    _dragAnchor = null;
     final bool secondary = event.buttons & kSecondaryMouseButton != 0;
+    // 标签胶囊只在按下这一刻还铺着底片：输入框马上会把光标落进标签、退回
+    // 源码，等到抬起再命中就找不到它了。悬停命中的区间是同一块胶囊的兜底，
+    // 防止按下时输入框已经把光标挪进去。
+    _tagBeforeTap = (secondary || widget.onTagTap == null)
+        ? null
+        : (_tagAt(event.position) ?? _hoverTag);
+    final TextSelection caret = widget.controller.selection;
+    _caretBeforeTagTap = _tagBeforeTap != null && caret.isValid ? caret : null;
     if (!secondary) {
       final (TableRowChrome, TableChromeTarget)? hit = _chromeAt(
         event.position,
@@ -2086,7 +1859,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     // line, the roof above the first, the margin beside the column. The field
     // never sees these, so the drag-select has to be driven here.
     if (!secondary && event.kind == PointerDeviceKind.mouse) {
-      final RenderEditable? field = _editable();
+      final RenderLineEditable? field = _editable();
       if (field != null) {
         final Rect box = field.localToGlobal(Offset.zero) & field.size;
         if (!box.contains(event.position)) {
@@ -2126,17 +1899,13 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       _gestureMoved = false;
       return;
     }
-    // The caret to hand back is read from the **painting**, not from the value:
-    // the field's own gesture handling can write a word selection during this
-    // very event, either side of this handler, and a range that arrived that way
-    // must not be mistaken for the selection the user had. `paintedSelection` is
-    // the one honest "this is what was on screen when the button went down".
+    // The caret to hand back is the one on screen: `revealAs` is cleared on
+    // release, so at pointer-down the controller's selection and the painted
+    // layout still agree.
     final TextEditingController anchor = widget.controller;
     _caretBeforeCheckboxTap = _checkboxAt(event.position) == null
         ? null
-        : (anchor is MarkdownSourceController
-              ? (anchor.paintedSelection ?? anchor.selection)
-              : anchor.selection);
+        : anchor.selection;
     _downPosition = event.position;
     _gestureMoved = false;
     _secondaryGesture = secondary;
@@ -2149,8 +1918,12 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     // cases — the menu is opened while editing, with the field already focused.
     if (secondary) {
       c.revealAs = null;
+      _setMarkerReveal(null);
       c.disarmClickGuard();
       _placeCaret(c, event.position, keepSelection: true);
+      // 右键菜单由编辑器自己开：按行渲染的输入框不转给 `contextMenuBuilder`
+      //（那个入口已经在阶段 4 删掉了），这条路由必须在这里接上。
+      _showMenuAt(event.position);
       return;
     }
 
@@ -2159,23 +1932,64 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     // the markers appear the instant the button goes down reflows the line under
     // a hand that has not moved yet, which is how a drag over 「编辑器」 ends up
     // selecting 「编辑」. The reveal catches up on release.
-    c.revealAs = c.paintedSelection ?? c.selection;
+    c.revealAs = c.selection;
     // A click must stay a click. The guard has to live in the controller rather
     // than here — see [MarkdownSourceController.armClickGuard] — and the anchor
     // is taken *now*, while the reveal is still frozen, so it refers to the
     // layout the user is actually pointing at.
     c.disarmClickGuard();
-    if (_checkboxAt(event.position) != null) return;
-    final RenderEditable? editable = _editable();
+    // 点正文或别处一律收起展开的标记；标记本身留到抬手再摊开——按下就摊会让
+    // 整行在手指还没动的时候重排（见上面冻结揭示选区的理由）。
+    _markerCaret = null;
+    _pendingMarker = null;
+    if (_checkboxAt(event.position) != null) {
+      _setMarkerReveal(null);
+      return;
+    }
+    final RenderLineEditable? editable = _editable();
     if (editable == null) return;
-    int at = editable
-        .getPositionForPoint(event.position)
-        .offset
-        .clamp(0, c.text.length);
+    // 只有按在文字框里的指针才移动光标。页面两侧的留白属于外层的滚动视图：
+    // 在那里拖动是滚动，硬把光标放过去会让「光标可得见」把滚动位置拽回原处，
+    // 一段长笔记就再也拖不动了。
+    final Rect fieldBox = editable.localToGlobal(Offset.zero) & editable.size;
+    if (!fieldBox.contains(event.position)) return;
+    int at = editable.positionAt(event.position).offset.clamp(0, c.text.length);
+    // 点在列表标记槽位里：把 `- ` / `1. ` / `[ ] ` 摊进正文，并把光标放到标记
+    // 起点。落在正文上时 listMarkerAt 返回 null，行为完全不变。
+    final ({int start, int paintStart, bool revealed})? marker = editable
+        .listMarkerAt(event.position);
+    _pendingMarker = marker;
+    if (marker == null) {
+      _setMarkerReveal(null);
+    } else if (!marker.revealed) {
+      // 换行才收起；同一行押着不动它，抬手时还要接着摊开。
+      if (_markerReveal?.start != marker.start) _setMarkerReveal(null);
+      at = marker.start;
+      _markerCaret = marker.start;
+    }
     final ({TableBlock block, int row, int column, TableCell cell})? cell =
         _paintedCellAt(event.position);
     if (cell != null) at = _caretInCell(cell.cell, at);
     c.armClickGuard(at);
+    // 按行渲染的输入框没有 `TextField` 的手势层：落点、Shift 扩选、拖选都由这里
+    // 直接驱动。`positionAt` 就是渲染对象自己的命中，和画面对齐。
+    widget.focusNode.requestFocus();
+    final TextSelection before = c.selection;
+    final bool extend =
+        HardwareKeyboard.instance.isShiftPressed &&
+        before.isValid &&
+        before.baseOffset != at;
+    if (extend) {
+      // 扩选是刻意的范围，不能被“点击守卫”折回光标。
+      c.disarmClickGuard();
+      c.selection = TextSelection(
+        baseOffset: before.baseOffset,
+        extentOffset: at,
+      );
+    } else {
+      c.selection = TextSelection.collapsed(offset: at);
+    }
+    _dragAnchor = extend ? before.baseOffset : at;
     if (cell != null && !HardwareKeyboard.instance.isShiftPressed) {
       // The field's own tap handler writes the skeleton offset on the way down;
       // a microtask is the last word on the event. A drag then extends from
@@ -2215,31 +2029,49 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
         _gestureMoved = true;
       }
       if (!_gestureMoved) return;
-      final RenderEditable? field = _editable();
+      final RenderLineEditable? field = _editable();
       if (field == null) return;
       final TextEditingController c = widget.controller;
-      final TextPosition at = field.getPositionForPoint(event.position);
+      final int at = field.positionAt(event.position).offset;
       c.selection = TextSelection(
         baseOffset: outside.clamp(0, c.text.length),
-        extentOffset: _visibleEdgeOffset(
-          field,
-          at.offset.clamp(0, c.text.length),
-        ),
-        affinity: at.affinity,
+        extentOffset: _visibleEdgeOffset(field, at.clamp(0, c.text.length)),
       );
       return;
     }
     final Offset? from = _downPosition;
-    if (from == null || _gestureMoved) return;
-    if ((event.position - from).distance <= kTouchSlop) return;
-    _gestureMoved = true;
-    // It turned out to be a drag, and a range is exactly what a drag means:
-    // let the guard go before the first move asks for one.
+    if (from == null) return;
+    if (!_gestureMoved) {
+      if ((event.position - from).distance <= kTouchSlop) return;
+      _gestureMoved = true;
+      // It turned out to be a drag, and a range is exactly what a drag means:
+      // let the guard go before the first move asks for one.
+      final TextEditingController c = widget.controller;
+      if (c is MarkdownSourceController) c.disarmClickGuard();
+    }
+    // 拖选：从按下时记下的落点拉到当前指针。裸输入框不再替我们做这件事。
+    final int? anchor = _dragAnchor;
+    if (anchor == null) return;
+    final RenderLineEditable? field = _editable();
+    if (field == null) return;
     final TextEditingController c = widget.controller;
-    if (c is MarkdownSourceController) c.disarmClickGuard();
+    final int at = field.positionAt(event.position).offset;
+    c.selection = TextSelection(
+      baseOffset: anchor.clamp(0, c.text.length),
+      extentOffset: at.clamp(0, c.text.length),
+    );
   }
 
   void _onPointerUp(PointerUpEvent event) {
+    _dragAnchor = null;
+    final TextRange? tappedTag = _tagBeforeTap;
+    final TextSelection? tappedTagCaret = _caretBeforeTagTap;
+    _tagBeforeTap = null;
+    _caretBeforeTagTap = null;
+    // 按下时命中的列表标记：只有“按下和抬手都在原地”的那一次点击才摊开它。
+    final ({int start, int paintStart, bool revealed})? pendingMarker =
+        _pendingMarker;
+    _pendingMarker = null;
     final TableRowChrome? grabbed = _grabbedRow;
     final TableChromeTarget? target = _grabbed;
     if (grabbed != null && target != null) {
@@ -2300,11 +2132,39 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       _downPosition = null;
       return;
     }
+    // A tag chip is a link, not text: a plain click on it opens the search
+    // instead of dropping a caret. Dragging off a chip is still a drag.
+    if (tappedTag != null && !_gestureMoved) {
+      final String text = widget.controller.text;
+      if (tappedTag.end <= text.length) {
+        final String token = text.substring(tappedTag.start, tappedTag.end);
+        _downPosition = null;
+        if (tappedTagCaret != null) {
+          // 输入框会在这次事件之后才落光标，所以归还也要晚一拍；同帧内完成，
+          // 画面不会先露出源码再跳走。
+          scheduleMicrotask(() {
+            if (mounted) widget.controller.selection = tappedTagCaret;
+          });
+        }
+        widget.onTagTap?.call(
+          token.startsWith('#') ? token.substring(1) : token,
+        );
+      }
+      return;
+    }
     final int? at = _checkboxAt(event.position);
     if (at == null) {
+      // 抬手还在标记上：这才是“点了标记”，现在把源码摊进正文。
+      if (pendingMarker != null && !_gestureMoved) {
+        _setMarkerReveal((
+          start: pendingMarker.start,
+          paintStart: pendingMarker.paintStart,
+        ));
+      }
       // Whatever a fast click-talk let the platform select on the way *up*.
       final TextEditingController c = widget.controller;
       if (c is MarkdownSourceController) _clickCaret(c, event.position);
+      _restoreMarkerCaret(c);
       _downPosition = null;
       return;
     }
@@ -2336,10 +2196,15 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   }
 
   void _onPointerCancel(PointerCancelEvent event) {
+    _dragAnchor = null;
+    _markerCaret = null;
+    _pendingMarker = null;
     _grabbedRow = null;
     _grabbed = null;
     _outsideAnchor = null;
     _rangeBeforeChromeTap = null;
+    _tagBeforeTap = null;
+    _caretBeforeTagTap = null;
     tableDragPreview.value = null;
     _setCursor(_cursorAt(event.position));
     _endGesture();
@@ -2579,11 +2444,10 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
   @override
   void dispose() {
-    widget.controller.removeListener(_onCaretMoved);
     widget.controller.removeListener(_scheduleOverlayRefresh);
     widget.scrollController.removeListener(_scheduleOverlayRefresh);
     widget.scrollController.removeListener(_reportTopLine);
-    widget.focusNode.removeListener(_onCaretMoved);
+    widget.onLineTopProbe?.call(null);
     _cellText?.dispose();
     _cellFocus?.dispose();
     // The click guard deliberately outlives the pointer — the platform's word
@@ -2600,11 +2464,11 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
   @override
   Widget build(BuildContext context) {
-    // A rebuild of this widget rebuilds the field's span tree, which is exactly
-    // when the framework writes the platform caret order back.
-    _pinCaretAboveText();
     final AppPalette p = context.palette;
     final TextStyle style = editorProseStyle(p, widget.fontSize);
+    // 按行排版：每行按源码种类取样式与行高，列表标记由渲染层画。
+    final LiveLineStyle lineStyle = _resolveLineStyle(style, p);
+    final LiveTableBlocks tableBlocks = _resolveTableBlocks(style, p);
     // The field's own region is deeper than the editor's, so its cursor wins
     // wherever it covers the chrome — which is why a column grip used to show
     // the I-beam. Hand it the editor's cursor explicitly.
@@ -2732,6 +2596,10 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
           ),
           _HistoryIntent: CallbackAction<_HistoryIntent>(
             onInvoke: (_HistoryIntent intent) {
+              // 撤销/重做会把“记录那一刻的选区”一起还原；栈里最早的那条是
+              // 绑定笔记时写入的 selection=0，照单全收就会让光标跳回文首。
+              // 取用户按下快捷键时的位置，再夹进还原后的正文里。
+              final TextSelection before = widget.controller.selection;
               _navigatingHistory = true;
               try {
                 if (intent.undo) {
@@ -2741,6 +2609,12 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                 }
               } finally {
                 _navigatingHistory = false;
+              }
+              if (before.isValid) {
+                final String text = widget.controller.text;
+                widget.controller.selection = TextSelection.collapsed(
+                  offset: before.extentOffset.clamp(0, text.length),
+                );
               }
               return null;
             },
@@ -2805,135 +2679,95 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                 child: Center(
                   child: ConstrainedBox(
                     constraints: BoxConstraints(maxWidth: widget.maxWidth),
-                    // The column width is measured here rather than guessed by the
-                    // pane: the renderer sizes code bands and inline images from it,
-                    // and a widget one pixel wider than the line makes it wrap.
-                    child: LayoutBuilder(
-                      builder: (BuildContext context, BoxConstraints c) {
-                        final TextEditingController ctrl = widget.controller;
-                        if (ctrl is MarkdownSourceController) {
-                          ctrl.contentWidth = c.maxWidth;
-                        }
-                        return _CaretSeat(
-                          key: _caretSeatKey,
-                          onLayout: _seatCaretNow,
-                          child: Focus(
-                            // Not a tab stop — just a listener this close to the
-                            // field, so table caret keys are decided before the
-                            // platform's line movement (and before Shortcuts).
-                            canRequestFocus: false,
-                            skipTraversal: true,
-                            onKeyEvent: _onTableKey,
-                            child: TextField(
-                              key: const Key('nrs-editor-field'),
-                              controller: widget.controller,
-                              focusNode: widget.focusNode,
-                              undoController: _undoHistory,
-                              readOnly: widget.readOnly,
-                              onChanged: widget.onChanged,
-                              maxLines: null,
-                              expands: false,
-                              autofocus: false,
-                              mouseCursor: fieldCursor,
-                              cursorColor: p.accent,
-                              cursorWidth: 1.8,
-                              cursorHeight: _caretHeight == null
-                                  ? null
-                                  : math.max(1, _caretHeight! - _caretInset),
-                              cursorRadius: const Radius.circular(1),
-                              keyboardType: TextInputType.multiline,
-                              textInputAction: TextInputAction.newline,
-                              inputFormatters: <TextInputFormatter>[
-                                ListContinuationFormatter(),
-                                // Last, so it sees the text every other formatter has
-                                // already agreed on: a Backspace must never leave the
-                                // cell the caret is in.
-                                TableCellBarrierFormatter(
-                                  suspend: () => _navigatingHistory,
-                                  resolve: _resolveRange,
-                                ),
-                              ],
-                              style: style,
-                              // The field's own wash is transparent (see the
-                              // `DefaultSelectionStyle` around `editor`), but these two
-                              // still define the boxes `EditorSelectionPainter` paints
-                              // and the caret is measured from.
-                              //
-                              // Flutter's desktop default is `BoxWidthStyle.max`, which
-                              // makes every fully selected line a band running to the
-                              // right edge of the column — a highlighted *block*, not
-                              // highlighted *text*. Obsidian (and every desktop editor)
-                              // hugs the glyphs, so `tight` it is.
-                              //
-                              // ⛔ Do not drop these two lines "because the default is
-                              // fine": `max` is what turned a Ctrl+A into full-width
-                              // stripes.
-                              //
-                              // The height style has to cover exactly the line box:
-                              // `EditorSelectionPainter` pulls [kSelectionLineGap] out
-                              // of each box to leave the seam, and a shorter box would
-                              // eat into the line's own spacing. `Middle` is shifted
-                              // ~3px down inside the line, so on a table — whose wash
-                              // is painted to the same box — it left a strip of the
-                              // paragraph's own highlight under the rounded bottom
-                              // edge. `…Top` puts the box on the line, and the painter
-                              // adds the seam on purpose.
-                              selectionWidthStyle: ui.BoxWidthStyle.tight,
-                              selectionHeightStyle:
-                                  ui.BoxHeightStyle.includeLineSpacingTop,
-                              // ⛔ Not `null` or `StrutStyle.disabled`: both let
-                              // `EditableText` inherit the base style into the
-                              // strut, and the engine still takes the strut's
-                              // font metrics as a floor. At 15.5px that floor is
-                              // ~23px, so every code row was taller than the
-                              // 20px its own style asked for.
-                              //
-                              // A 1px strut with no forced height is below every
-                              // run's metrics, so each run sets its own line box:
-                              // the code's 20px, the body's 28px, a heading's
-                              // more, and a collapsed marker's none.
-                              strutStyle: const StrutStyle(
-                                fontSize: 1,
-                                height: 1,
-                                leading: 0,
-                              ),
-                              decoration: InputDecoration(
-                                isDense: true,
-                                filled: false,
-                                border: InputBorder.none,
-                                enabledBorder: InputBorder.none,
-                                focusedBorder: InputBorder.none,
-                                contentPadding: EdgeInsets.zero,
-                              ),
-                              // The one hook that decides whether right-click reaches
-                              // [buildEditorContextMenu] at all. `SelectionOverlay`
-                              // routes the toolbar through `contextMenuBuilder` *only*
-                              // when the controls are a [TextSelectionHandleControls];
-                              // with a plain [TextSelectionControls] it silently falls
-                              // back to the deprecated `toolbarOptions` menu and this
-                              // builder is never called. The handle variant is the same
-                              // Material control — it just says "handles are mine, the
-                              // menu is the app's".
-                              selectionControls:
-                                  materialTextSelectionHandleControls,
-                              contextMenuBuilder:
-                                  (
-                                    BuildContext context,
-                                    EditableTextState state,
-                                  ) {
-                                    return buildEditorContextMenu(
-                                      state: state,
-                                      value: widget.controller.value,
-                                      onApply: _applyEdit,
-                                      onDismiss: state.hideToolbar,
-                                      resolve: _resolveRange,
-                                      onEditCell: _openCellEditor,
-                                    );
-                                  },
+                    child: Focus(
+                      // Not a tab stop — just a listener this close to the
+                      // field, so table caret keys are decided before the
+                      // platform's line movement (and before Shortcuts).
+                      canRequestFocus: false,
+                      skipTraversal: true,
+                      onKeyEvent: _onTableKey,
+                      child: KeyedSubtree(
+                        // 文档一变，整块输入框重建：撤销栈随之清空。
+                        key: ValueKey<String?>('doc-${widget.documentId}'),
+                        child: LineEditableText(
+                          key: const Key('nrs-editor-field'),
+                          controller: widget.controller,
+                          focusNode: widget.focusNode,
+                          undoController: _undoHistory,
+                          readOnly: widget.readOnly,
+                          onChanged: widget.onChanged,
+                          maxLines: null,
+                          expands: false,
+                          autofocus: false,
+                          mouseCursor: fieldCursor,
+                          cursorColor: p.accent,
+                          backgroundCursorColor: p.accent,
+                          cursorWidth: 1.8,
+                          cursorRadius: const Radius.circular(1),
+                          keyboardType: TextInputType.multiline,
+                          textInputAction: TextInputAction.newline,
+                          inputFormatters: <TextInputFormatter>[
+                            ListContinuationFormatter(),
+                            // 行数一变就把有序列表的序号接上：删掉 16 那一条，
+                            // 下面的 17 变回 16；回车插进去的条目也会让后面的
+                            // 序号依次后移。
+                            OrderedListRenumberFormatter(
+                              suspend: () => _navigatingHistory,
                             ),
+                            // Last, so it sees the text every other formatter has
+                            // already agreed on: a Backspace must never leave the
+                            // cell the caret is in.
+                            TableCellBarrierFormatter(
+                              suspend: () => _navigatingHistory,
+                              resolve: _resolveRange,
+                            ),
+                          ],
+                          style: style,
+                          // 选区盒子的形状不再由这两个参数决定：
+                          // `RenderLineEditable.getBoxesForSelection` 直接转发按行
+                          // 引擎的 `selectionBands`（横向贴字形、纵向铺满视觉行），
+                          // 传进来的 `BoxWidthStyle` / `BoxHeightStyle` 会被忽略。
+                          // 字段的底色依旧是透明的（见 `editor` 外层的
+                          // `DefaultSelectionStyle`），洗色由 `EditorSelectionPainter`
+                          // 自己画。
+                          //
+                          // 行高由按行引擎给（见 `lineHeightFor`）；这个 strut 只
+                          // 留给继承来的那套单段排版做几何兜底，压到 1px 才不会被
+                          // 正文字号撑成所有行共用的最小行高。
+                          strutStyle: const StrutStyle(
+                            fontSize: 1,
+                            height: 1,
+                            leading: 0,
                           ),
-                        );
-                      },
+                          // 按行排版：每行按源码种类取样式、行高与 span 树。
+                          lineStyleFor: lineStyle.styleFor,
+                          lineHeightFor: lineStyle.heightFor,
+                          lineSpanFor: lineStyle.spanFor,
+                          // 行内代码的圆角底片：一行一个 `TextPainter` 没有
+                          // widget 端帽，铺底由渲染层按这份区间自己画。
+                          lineFillFor: lineStyle.fillsFor,
+                          // 代码块卡片的内边距：卡片铺满正文列，代码行由引擎
+                          // 左右各退 16px，不必再把卡片画到列外。
+                          lineInsetFor: lineStyle.insetFor,
+                          // 表格整行不是一行文字：行高、网格、抓手都由
+                          // `LiveTableBlocks` 自己画，引擎只负责 y 定位。
+                          lineBlockFor: tableBlocks.blockFor,
+                          // 选区变了要重排（`# `、`**` 的显隐会改行宽）；拖动期间
+                          // 冻结在按下时的那一份。
+                          revealSelection: _revealSelection,
+                          // 点开的这一行把标记摊进正文，其余行仍然由渲染层把
+                          // 圆点 / 序号 / 复选框画在左侧槽位里。
+                          markerRevealLine: _markerReveal?.start,
+                          // 列表标记（圆点 / 序号 / 复选框 / 导轨）由渲染层
+                          // 画在正文左侧的槽位里，源码里的 `- ` 不再上屏。
+                          markerStyle: lineStyle.markers,
+                          // 交给继承来的单段排版（`super.performLayout` 与
+                          // `getWordBoundary` 都读它）的仍是纯源码：装饰树里的
+                          // U+FFFC 会让那些按整段算的方法错位。行内样式只走
+                          // `lineSpanFor`，两者互不影响。
+                          plainTextSpan: true,
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -3058,46 +2892,9 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
 /// How far around a checkbox still counts as hitting it (logical pixels).
 ///
-/// Small on purpose: the padded shell is already 26px wide, and a generous slop
+/// Small on purpose: the marker slot is already 26px wide, and a generous slop
 /// would start swallowing clicks on the text beside it.
 const double _kCheckboxTouchSlop = 4;
-
-/// Runs [onLayout] whenever the field below it has laid out.
-///
-/// This is the only window in which the caret's `cursorOffset` can be corrected
-/// for the *current* layout: `EditableText` resets it during build, and a
-/// post-frame correction would paint one frame at the old position.
-class _CaretSeat extends SingleChildRenderObjectWidget {
-  const _CaretSeat({super.key, required this.onLayout, required super.child});
-
-  final VoidCallback onLayout;
-
-  @override
-  _RenderCaretSeat createRenderObject(BuildContext context) =>
-      _RenderCaretSeat(onLayout);
-
-  @override
-  void updateRenderObject(BuildContext context, _RenderCaretSeat renderObject) {
-    renderObject.onLayout = onLayout;
-  }
-}
-
-class _RenderCaretSeat extends RenderProxyBox {
-  _RenderCaretSeat(this.onLayout);
-
-  VoidCallback onLayout;
-
-  @override
-  void performLayout() {
-    super.performLayout();
-    onLayout();
-  }
-}
-
-/// Line boxes shorter than this are fully hidden source (a fence, a table
-/// divider): the caret there has no visible row to sit on, so it is left to
-/// the field rather than made six pixels tall.
-const double _kMinCaretLine = 10;
 
 /// One open floating cell editor.
 class _CellEdit {
