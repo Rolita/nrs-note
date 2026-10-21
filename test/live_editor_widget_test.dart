@@ -276,6 +276,35 @@ void main() {
     expect(cursor(), SystemMouseCursors.text);
   });
 
+  testWidgets('only the painted marker itself opens a list line', (
+    WidgetTester tester,
+  ) async {
+    await pump(tester, '4. [ ]\n正文\n');
+    final RenderLineEditable f = tester.allRenderObjects
+        .whereType<RenderLineEditable>()
+        .first;
+    LaidOutLine line() => f.lineLayout!.laidOut.first;
+    final Offset origin = f.localToGlobal(Offset.zero);
+    final double middle = line().visuals.first.height / 2;
+    final double number = line().slot.indent + 4;
+
+    // 方框下方的空白：行高比字形高，这一截什么都不算，别把标记摊开。
+    await tester.tapAt(origin + Offset(number, line().height - 1));
+    await tester.pump();
+    expect(line().slot.revealedMarkers, isFalse);
+
+    // 点在序号上：这里才是「4. [ ]」本身，摊成可编辑源码。
+    await tester.tapAt(origin + Offset(number, middle));
+    await tester.pump();
+    expect(line().slot.revealedMarkers, isTrue);
+
+    // 点右侧正文：收起，回到渲染态。摊开后的正文列从 0 起算，落点要放到
+    // 内联前缀（`4. [ ]`）右边。
+    await tester.tapAt(origin + Offset(number + 60, middle));
+    await tester.pump();
+    expect(line().slot.revealedMarkers, isFalse);
+  });
+
   testWidgets('a rule is a line across the column, not three hyphens', (
     WidgetTester tester,
   ) async {

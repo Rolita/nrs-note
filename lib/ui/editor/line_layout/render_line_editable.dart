@@ -951,6 +951,14 @@ class RenderLineEditable extends RenderEditable {
     for (final LaidOutLine line in layout.laidOut) {
       if (line.height <= 0 || !line.source.isList) continue;
       if (local.dy < line.top || local.dy >= line.top + line.height) continue;
+      // 槽位是一条从行首通到行尾的竖带，可画出来的只有中间那一截字形
+      // （圆点、序号、方框）。点在字形上下的空白里不该把这一行摊成源码——
+      // 只有点标记本身才算。
+      final VisualLine first = line.visuals.first;
+      final double size = line.painter.text?.style?.fontSize ?? 15;
+      final double middle = line.top + first.top + first.height / 2;
+      final double half = size * 0.42 + 2;
+      if ((local.dy - middle).abs() > half) continue;
       if (local.dx < 0) continue;
       final bool revealed = line.slot.revealedMarkers;
       double markerWidth = line.slot.indent + line.slot.marker;
