@@ -86,47 +86,6 @@ List<Heading> extractHeadings(String source) {
 /// draws both, so every helper that hunts for checkboxes has to see both.
 final RegExp _taskPrefix = RegExp(r'^(\s*(?:[-*+]|\d{1,9}[.)])\s+\[)([ xX])(\])');
 
-/// Source line numbers (0-based) of every task-list item, in document order.
-///
-/// The rendered preview uses this to map a clicked checkbox back to the exact
-/// line of Markdown that produced it.
-List<int> taskLineNumbers(String source) {
-  final List<int> lines = <int>[];
-  final List<String> split = source.split('\n');
-  String? fence;
-  for (int i = 0; i < split.length; i++) {
-    final String line = split[i];
-    final Match? fenceMatch = RegExp(r'^\s{0,3}(`{3,}|~{3,})').firstMatch(line);
-    if (fenceMatch != null) {
-      final String marker = fenceMatch.group(1)!;
-      if (fence == null) {
-        fence = marker[0];
-      } else if (marker[0] == fence) {
-        fence = null;
-      }
-      continue;
-    }
-    if (fence != null) continue;
-    if (_taskPrefix.hasMatch(line)) {
-      lines.add(i);
-    }
-  }
-  return lines;
-}
-
-/// Flips `- [ ]` ⇄ `- [x]` on a single source line.
-String toggleTaskOnLine(String source, int lineIndex, bool done) {
-  final List<String> lines = source.split('\n');
-  if (lineIndex < 0 || lineIndex >= lines.length) return source;
-  final String line = lines[lineIndex];
-  if (!_taskPrefix.hasMatch(line)) return source;
-  lines[lineIndex] = line.replaceFirstMapped(
-    _taskPrefix,
-    (Match m) => '${m.group(1)}${done ? 'x' : ' '}${m.group(3)}',
-  );
-  return lines.join('\n');
-}
-
 /// Flips the checkbox on whichever line contains [offset], and returns the new
 /// full text (unchanged if that line is not a task).
 ///

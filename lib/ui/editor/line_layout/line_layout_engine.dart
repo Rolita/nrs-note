@@ -13,6 +13,7 @@ library;
 import 'dart:math' as math;
 import 'dart:ui' show BoxHeightStyle, BoxWidthStyle;
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/painting.dart';
 
 import 'line_block_view.dart';
@@ -118,10 +119,17 @@ class LaidOutLine {
     this.insets = EdgeInsets.zero,
     this.block,
     this.fills = const <LineFillRun>[],
+    this.fromCache = false,
     int? paintedFrom,
   }) : paintedFrom = paintedFrom ?? source.paintStart;
 
   final SourceLine source;
+
+  /// [painter] 是否由 [LineLayoutCache] 持有。
+  ///
+  /// 持有时不能在 `dispose()` 里释放：同一个 painter 会被下一轮布局继续
+  /// 复用，释放权归缓存池。
+  final bool fromCache;
 
   /// 交给 [painter] 的第一个字符的文档偏移。
   ///
@@ -235,15 +243,14 @@ class LineDocumentLayout {
     );
     final TextPosition position = TextPosition(offset: local);
     final Offset caret = line.painter.getOffsetForCaret(position, Rect.zero);
-    final double measured = line.painter.getFullHeightForCaret(
-      position,
-      Rect.zero,
-    );
     final int visual = line.visualIndexAtY(caret.dy);
     return CaretGeometry(
       offset: o,
       origin: Offset(line.gutter + caret.dx, line.top + caret.dy),
-      height: measured > 0 ? measured : line.visuals[visual].height,
+      // 光标高度跟这一整条视觉行，不用字形量出来的高度：行尾是空格时
+      // `getFullHeightForCaret` 量的是空格自己的字形盒（比行高矮一截），
+      // 光标会突然变短。整条视觉行的高度对正文、标题、加粗行都一致。
+      height: line.visuals[visual].height,
       lineIndex: lineIndex,
       visualIndex: visual,
     );
@@ -457,9 +464,101 @@ class LineDocumentLayout {
     if (_disposed) return;
     _disposed = true;
     for (final LaidOutLine line in laidOut) {
-      line.painter.dispose();
+      if (!line.fromCache) line.painter.dispose();
     }
   }
+}
+
+/// 一轮布局的 `TextPainter` 池。
+///
+/// 长文档每次击键都会整篇重排，但除改动行之外，绝大多数行的文字、样式、
+/// 可用宽度都没变。导航、标记槽位与表格仍逐行重算（它们便宜且依赖上下文），
+/// 这里只复用真正昂贵的 `TextPainter.layout()` 结果。
+///
+/// 键不含行号，而按行号存放：在中间插入换行会让后续行号整体移动，那些行
+/// 本轮先 miss，下一轮重新稳定下来即可命中。带行内样式的行、表格块行不进
+/// 缓存，避免 span 树或块资源被错误共享。
+class LineLayoutCache {
+  final Map<int, _MeasuredLine> _lines = <int, _MeasuredLine>{};
+  int _generation = 0;
+
+  void _begin() {
+    _generation++;
+  }
+
+  _MeasuredLine? _take(int index, _LineKey key) {
+    final _MeasuredLine? line = _lines[index];
+    if (line == null || line.key != key) return null;
+    line.generation = _generation;
+    return line;
+  }
+
+  void _put(
+    int index,
+    _LineKey key,
+    TextPainter painter,
+    double height,
+    int base,
+    List<VisualLine> visuals,
+  ) {
+    final _MeasuredLine? old = _lines[index];
+    if (old != null && !identical(old.painter, painter)) {
+      old.painter.dispose();
+    }
+    _lines[index] = _MeasuredLine(
+      key: key,
+      painter: painter,
+      height: height,
+      base: base,
+      visuals: visuals,
+      generation: _generation,
+    );
+  }
+
+  void _end() {
+    _lines.removeWhere((int _, _MeasuredLine line) {
+      if (line.generation == _generation) return false;
+      line.painter.dispose();
+      return true;
+    });
+  }
+
+  /// 释放池里所有 painter。只能在整个渲染对象销毁时调用一次。
+  void dispose() {
+    for (final _MeasuredLine line in _lines.values) {
+      line.painter.dispose();
+    }
+    _lines.clear();
+  }
+}
+
+typedef _LineKey = (
+  String painted,
+  TextStyle style,
+  double maxWidth,
+  TextScaler textScaler,
+  TextDirection textDirection,
+  double? override,
+);
+
+class _MeasuredLine {
+  _MeasuredLine({
+    required this.key,
+    required this.painter,
+    required this.height,
+    required this.base,
+    required this.visuals,
+    required this.generation,
+  });
+
+  final _LineKey key;
+  final TextPainter painter;
+  final double height;
+
+  /// 缓存 [visuals] 时它们的文档偏移以哪个位置为 0。
+  final int base;
+  final List<VisualLine> visuals;
+  int generation;
 }
 
 /// 对 [text] 做一次按行布局。
@@ -480,7 +579,9 @@ LineDocumentLayout layoutLines({
   LineBlockResolver? blockFor,
   int? markerRevealLine,
   LineLayoutMetrics metrics = const LineLayoutMetrics(),
+  LineLayoutCache? cache,
 }) {
+  cache?._begin();
   final List<SourceLine> sources = scanSourceLines(text);
   final List<LaidOutLine> out = <LaidOutLine>[];
   final LineBlockContext blockContext = LineBlockContext(
@@ -550,37 +651,63 @@ LineDocumentLayout layoutLines({
     final List<LineFillRun> fills = block == null && usable != null
         ? (fillFor?.call(source) ?? const <LineFillRun>[])
         : const <LineFillRun>[];
-    final TextPainter painter = TextPainter(
-      text: block != null
-          ? TextSpan(text: '', style: style)
-          : (usable ?? TextSpan(text: painted, style: style)),
-      textDirection: textDirection,
-      textScaler: textScaler,
-    )..layout(maxWidth: maxWidth);
-
-    final double rowHeight = _rowHeight(style);
     final double? override = block != null ? null : heightFor?.call(source);
-    final double height =
-        block?.height ?? override ?? math.max(painter.height, rowHeight);
-    final List<VisualLine> visuals = block != null
-        ? <VisualLine>[
-            VisualLine(
-              index: 0,
-              top: 0,
-              height: block.height,
-              start: source.start,
-              end: source.end,
-              width: block.width,
-            ),
-          ]
-        : _visualsOf(
-            source,
-            painter,
-            height,
-            override != null,
-            maxWidth,
-            paintedFrom,
-          );
+    // 只有 span 树不改变任何字体度量时才缓存：颜色、底片、装饰线不影响
+    // 排版，可以忽略；字重、字体、字号、字距会影响宽度，必须逐层比对。
+    final bool cacheable = block == null &&
+        (usable == null || _spanUsesBaseMetrics(usable, style));
+    final bool pooled = cacheable && cache != null;
+    final _LineKey key = (
+      painted,
+      style,
+      maxWidth,
+      textScaler,
+      textDirection,
+      override,
+    );
+    final _MeasuredLine? measured = pooled ? cache._take(i, key) : null;
+
+    final TextPainter painter;
+    final double height;
+    final List<VisualLine> visuals;
+    if (measured != null) {
+      painter = measured.painter;
+      height = measured.height;
+      visuals = _shiftVisuals(measured.visuals, measured.base, paintedFrom);
+    } else {
+      painter = TextPainter(
+        text: block != null
+            ? TextSpan(text: '', style: style)
+            : (usable ?? TextSpan(text: painted, style: style)),
+        textDirection: textDirection,
+        textScaler: textScaler,
+      )..layout(maxWidth: maxWidth);
+
+      final double rowHeight = _rowHeight(style);
+      height = block?.height ?? override ?? math.max(painter.height, rowHeight);
+      visuals = block != null
+          ? <VisualLine>[
+              VisualLine(
+                index: 0,
+                top: 0,
+                height: block.height,
+                start: source.start,
+                end: source.end,
+                width: block.width,
+              ),
+            ]
+          : _visualsOf(
+              source,
+              painter,
+              height,
+              override != null,
+              maxWidth,
+              paintedFrom,
+            );
+      if (pooled) {
+        cache._put(i, key, painter, height, paintedFrom, visuals);
+      }
+    }
 
     out.add(
       LaidOutLine(
@@ -593,11 +720,14 @@ LineDocumentLayout layoutLines({
         visuals: visuals,
         block: block,
         fills: fills,
+        fromCache: pooled,
         paintedFrom: paintedFrom,
       ),
     );
     top += height;
   }
+
+  cache?._end();
 
   return LineDocumentLayout._(
     text: text,
@@ -705,6 +835,72 @@ List<VisualLine> _visualsOf(
     );
   }
   return out;
+}
+
+/// span 树是否只改变颜色/底片等视觉属性，而不改变字体度量。
+///
+/// 普通段落也会被 `buildLiveInlineSpan` 包成 `TextSpan + children`，不能只看
+/// `children == null`。这里逐层比对字号、字重、字体、字距、行高等真正参与
+/// 排版的属性；代码 token 的颜色、标签底片都可以安全忽略。
+bool _spanUsesBaseMetrics(InlineSpan span, TextStyle base) {
+  if (span is! TextSpan) return false;
+  final TextStyle? style = span.style;
+  if (style != null && !_sameTextMetrics(style, base)) return false;
+  final List<InlineSpan>? children = span.children;
+  if (children == null) return true;
+  for (final InlineSpan child in children) {
+    if (!_spanUsesBaseMetrics(child, base)) return false;
+  }
+  return true;
+}
+
+/// 比较两段样式中会影响排版结果的字段，忽略前景/背景/装饰。
+bool _sameTextMetrics(TextStyle style, TextStyle base) {
+  if (style.foreground != null) return false;
+  return (style.fontSize ?? base.fontSize) == base.fontSize &&
+      (style.fontWeight ?? base.fontWeight) == base.fontWeight &&
+      (style.fontStyle ?? base.fontStyle) == base.fontStyle &&
+      (style.fontFamily ?? base.fontFamily) == base.fontFamily &&
+      listEquals(
+        style.fontFamilyFallback ?? base.fontFamilyFallback,
+        base.fontFamilyFallback,
+      ) &&
+      (style.letterSpacing ?? base.letterSpacing) == base.letterSpacing &&
+      (style.wordSpacing ?? base.wordSpacing) == base.wordSpacing &&
+      (style.textBaseline ?? base.textBaseline) == base.textBaseline &&
+      (style.height ?? base.height) == base.height &&
+      (style.leadingDistribution ?? base.leadingDistribution) ==
+          base.leadingDistribution &&
+      (style.locale ?? base.locale) == base.locale &&
+      listEquals(style.fontFeatures ?? base.fontFeatures, base.fontFeatures) &&
+      listEquals(
+        style.fontVariations ?? base.fontVariations,
+        base.fontVariations,
+      );
+}
+
+/// 复用缓存视觉行时，把文档偏移从旧基准平移到新基准。
+///
+/// 在编辑点之后，整行的 `source.start` / `paintedFrom` 会一起偏移，视觉行
+/// 的 `top/height/width` 不受影响，只需平移 `start/end`。
+List<VisualLine> _shiftVisuals(
+  List<VisualLine> visuals,
+  int from,
+  int to,
+) {
+  if (from == to) return visuals;
+  final int delta = to - from;
+  return <VisualLine>[
+    for (final VisualLine v in visuals)
+      VisualLine(
+        index: v.index,
+        top: v.top,
+        height: v.height,
+        start: v.start + delta,
+        end: v.end + delta,
+        width: v.width,
+      ),
+  ];
 }
 
 /// 一行的导轨 x。

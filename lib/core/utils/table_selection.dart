@@ -92,8 +92,6 @@ class TableRange {
   /// Whether [row] is a body-row index the table actually has.
   bool hasRow(int row) => row >= 0 && row < _body.length;
 
-  bool hasColumn(int column) => column >= 0 && column < block.columns;
-
   /// The cell at absolute body-row [row], column [column], or `null` where the
   /// table's rows are ragged (a short row has no cell there; [textAt] reads it
   /// as empty, which is what the grid edit will write into).

@@ -18,6 +18,7 @@ Widget _host(
   FocusNode focusNode,
   double width, {
   LiveLineStyle? styles,
+  double? height = 400,
 }) {
   return MaterialApp(
     home: Scaffold(
@@ -25,7 +26,7 @@ Widget _host(
         alignment: Alignment.topLeft,
         child: SizedBox(
           width: width,
-          height: 400,
+          height: height,
           child: LineEditableText(
             controller: controller,
             focusNode: focusNode,
@@ -74,6 +75,86 @@ void main() {
 
       expect(render.preferredLineHeight, closeTo(_row, 0.01));
       expect(render.size.width, 360);
+    });
+  });
+
+  test('reuses painters for unchanged lines and shifts their visuals', () {
+    final LineLayoutCache cache = LineLayoutCache();
+    addTearDown(cache.dispose);
+    String document(String middle) => '第一行\n$middle\n第三行\n第四行';
+
+    final LineDocumentLayout before = layoutLines(
+      text: document('中间'),
+      baseStyle: _style,
+      contentWidth: 300,
+      cache: cache,
+    );
+    final LineDocumentLayout after = layoutLines(
+      text: document('中间改'),
+      baseStyle: _style,
+      contentWidth: 300,
+      cache: cache,
+    );
+
+    // 未变行：painter 与高度原样复用。
+    expect(identical(before.laidOut[0].painter, after.laidOut[0].painter), isTrue);
+    expect(after.laidOut[0].height, before.laidOut[0].height);
+
+    // 改动行：不能复用。
+    expect(identical(before.laidOut[1].painter, after.laidOut[1].painter), isFalse);
+
+    // 后续未变行的偏移整体 +1，但 painter 仍复用。
+    expect(identical(before.laidOut[2].painter, after.laidOut[2].painter), isTrue);
+    expect(
+      after.laidOut[2].visuals.first.start,
+      before.laidOut[2].visuals.first.start + 1,
+    );
+    expect(
+      after.laidOut[2].visuals.first.end,
+      before.laidOut[2].visuals.first.end + 1,
+    );
+
+    before.dispose();
+    after.dispose();
+  });
+
+  testWidgets('dry layout agrees with the real layout for plain text', (
+    WidgetTester tester,
+  ) async {
+    await _desktop(tester, () async {
+      // 让 2000 行文档完整展开，而不是被 600px 的测试视口截断。
+      tester.view.physicalSize = const Size(400, 60000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final List<String> documents = <String>[
+        '',
+        '一行',
+        List<String>.generate(2000, (int i) => '第 $i 行').join('\n'),
+      ];
+      for (final String text in documents) {
+        final TextEditingController controller = TextEditingController(
+          text: text,
+        );
+        final FocusNode focusNode = FocusNode();
+        addTearDown(controller.dispose);
+        addTearDown(focusNode.dispose);
+
+        await tester.pumpWidget(_host(controller, focusNode, 360, height: null));
+        final RenderLineEditable render = _render(tester);
+
+        // 宽度不同 → 缓存不命中，走估算分支；纯文本每行都不折行，
+        // 估算必须与真实布局逐像素一致。
+        final Size dry = render.computeDryLayout(
+          const BoxConstraints.tightFor(width: 300),
+        );
+        expect(
+          dry.height,
+          closeTo(render.size.height, 0.01),
+          reason: 'dry layout 与真实布局高度不一致',
+        );
+      }
     });
   });
 

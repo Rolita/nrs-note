@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:provider/provider.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
@@ -615,15 +616,40 @@ class VaultTreeState extends State<VaultTree> {
   }
 
   List<_TreeRow> _rows(NotesController notes) {
+    // 一次遍历建好两张表，替代原先「每个展开的目录都重扫一遍全库」：
+    // 深树 + 大库时，旧写法的开销随目录数放大，而文件树在每次输入时都会重建。
+    final Map<String, Set<String>> childFolders = <String, Set<String>>{};
+    for (final String path in notes.folders) {
+      String parent = '';
+      for (final String part in path.split('/')) {
+        if (part.isEmpty) continue;
+        final String child = parent.isEmpty ? part : '$parent/$part';
+        childFolders.putIfAbsent(parent, () => <String>{}).add(child);
+        parent = child;
+      }
+    }
+    final Map<String, List<Note>> notesByFolder = <String, List<Note>>{};
+    for (final Note note in notes.allNotes) {
+      notesByFolder.putIfAbsent(note.folderPath, () => <Note>[]).add(note);
+    }
+
+    List<String> childrenOf(String parent) {
+      final Set<String>? children = childFolders[parent];
+      if (children == null) return const <String>[];
+      return children.toList()
+        ..sort(
+          (String a, String b) => a.toLowerCase().compareTo(b.toLowerCase()),
+        );
+    }
+
     final List<_TreeRow> rows = <_TreeRow>[];
     void walk(String parent, int depth) {
-      for (final String folder in notes.childFoldersOf(parent)) {
-        final String name = folder.split('/').last;
-        rows.add(_TreeRow.folder(folder, name, depth));
+      for (final String folder in childrenOf(parent)) {
+        rows.add(_TreeRow.folder(folder, folder.split('/').last, depth));
         if (!_expanded.contains(folder)) continue;
         walk(folder, depth + 1);
       }
-      for (final Note note in notes.notesInFolder(parent)) {
+      for (final Note note in notesByFolder[parent] ?? const <Note>[]) {
         rows.add(_TreeRow.file(note, depth));
       }
     }
@@ -1071,18 +1097,7 @@ class _FileRow extends StatelessWidget {
                           ),
                         ),
                   ),
-                  if (note.taskTotal > 0) ...<Widget>[
-                    Text(
-                      '${note.taskDone}/${note.taskTotal}',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: note.taskDone == note.taskTotal
-                            ? p.success
-                            : p.textTertiary,
-                      ),
-                    ),
-                    const SizedBox(width: AppSpace.xs),
-                  ],
+                  _TaskBadge(noteId: note.id),
                   const SizedBox(width: AppSpace.xxs),
                 ],
               ),
@@ -1090,6 +1105,42 @@ class _FileRow extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// 文件行右侧的任务进度徽标。
+///
+/// 它单独订阅「这一篇笔记」的任务统计：正文输入只让开着的那一行重建，
+/// 其余行与整棵树都不动；统计没变时 `select` 也不触发重建。
+class _TaskBadge extends StatelessWidget {
+  const _TaskBadge({required this.noteId});
+
+  final String noteId;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    final ({int done, int total}) counts = context
+        .select<NotesController, ({int done, int total})>((
+          NotesController notes,
+        ) {
+          final Note? live = notes.noteById(noteId);
+          return (done: live?.taskDone ?? 0, total: live?.taskTotal ?? 0);
+        });
+    if (counts.total == 0) return const SizedBox.shrink();
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        Text(
+          '${counts.done}/${counts.total}',
+          style: TextStyle(
+            fontSize: 10,
+            color: counts.done == counts.total ? p.success : p.textTertiary,
+          ),
+        ),
+        const SizedBox(width: AppSpace.xs),
+      ],
     );
   }
 }

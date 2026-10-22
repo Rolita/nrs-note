@@ -373,6 +373,34 @@ class TableCellBarrierFormatter extends TextInputFormatter {
   }
 }
 
+/// 撤销/重做把光标放回这次编辑发生的位置。
+///
+/// 历史记录里快照的选区属于**上一次**编辑，不能直接拿来当本次编辑的位置：
+/// 多次撤销时它会让光标停在上一处，靠近时甚至只差一个字符。这里只按新旧
+/// 正文的公共前后缀找出本次的变化区间：
+///
+/// - 正文变短（撤销一次插入）：落在被删掉文字的起点，也就是当初的插入点；
+/// - 正文变长或等长（撤销删除、重做）：落在新内容的末尾。
+int _historyCaretOffset(String before, String after) {
+  final int shared = before.length < after.length
+      ? before.length
+      : after.length;
+  int prefix = 0;
+  while (prefix < shared &&
+      before.codeUnitAt(prefix) == after.codeUnitAt(prefix)) {
+    prefix++;
+  }
+  int suffix = 0;
+  final int tail = shared - prefix;
+  while (suffix < tail &&
+      before.codeUnitAt(before.length - 1 - suffix) ==
+          after.codeUnitAt(after.length - 1 - suffix)) {
+    suffix++;
+  }
+  final int newEnd = after.length - suffix;
+  return after.length < before.length ? prefix : newEnd;
+}
+
 /// Keeps list bullets alive when the user presses Enter, and ends the list on an
 /// empty item. Implemented as an input formatter so it sits directly in the
 /// native newline path instead of fighting the text input system.
@@ -562,7 +590,8 @@ class _CopyIntent extends Intent {
 /// the clipboard is the **cells**, and what leaves the document has to be those
 /// same cells. The field's own cut removes the raw range, which starts and ends
 /// wherever the pointer did — mid-cell — and leaves the rest of the cell behind
-/// as a broken row. See [snapTableSelection].
+/// as a broken row. The cut path snaps the deleted range to whole rows; see
+/// `TableRange`.
 class _CutIntent extends Intent {
   const _CutIntent();
 }
@@ -572,6 +601,121 @@ class _CutIntent extends Intent {
 /// See [padTablePaste].
 class _PasteIntent extends Intent {
   const _PasteIntent();
+}
+
+/// 正文自己的撤销历史。
+///
+/// 输入框自带的 `UndoHistory` 会把 500ms 内的多次输入合并成一条记录，焦点后
+/// 的第一条快照还可能被随后的一次输入挤掉：输入 7 次再撤销 7 次，正文仍会
+/// 留下内容。这里改为每次正文变化都记账，但把「连续在同一处键入」合并成一
+/// 块——撤销按块走，跟主流编辑器（VS Code、CodeMirror 的 history）一致：一段
+/// 字一次撤掉，光标挪到别处再输才算新的一块。
+///
+/// 合并靠位置判断，不靠节流：这次变化必须紧接上一块留下的光标，且方向相同
+/// （连续插入或连续删除）。把光标挪开、点选文字、组合输入都会断开这一块。
+/// 组合输入（拼音未上屏）期间不记录，整段上屏算一步；只改选区不改正文的
+/// 变化只更新基线，不产生历史。
+class _EditHistory {
+  _EditHistory(this._last);
+
+  static const int _limit = 100;
+
+  final List<TextEditingValue> _undo = <TextEditingValue>[];
+  final List<TextEditingValue> _redo = <TextEditingValue>[];
+
+  /// 控制器最近一次的值；[observe] 用它作为下一次编辑前的快照。
+  TextEditingValue _last;
+
+  /// 写回历史值时置位，避免把还原动作再记成一次编辑。
+  bool _applying = false;
+
+  /// 当前这一块是不是插入；上一块结束时光标落在哪个偏移。
+  bool _inserting = false;
+  int _caretAfter = 0;
+
+  /// 当前位置还能不能接着上一块合并。
+  bool _merge = false;
+
+  bool get canUndo => _undo.isNotEmpty;
+  bool get canRedo => _redo.isNotEmpty;
+
+  /// 记录一次控制器变化。
+  void observe(TextEditingValue value) {
+    if (_applying) return;
+    // 组合输入中间态不进历史，等上屏那一下再和组合前一起记。
+    if (!value.composing.isCollapsed) return;
+    if (value.text == _last.text) {
+      // 点选一段文字才是明确的断点；光标还落在上一块附近时，框架补发的
+      // 选区更新不能把一段字切成好几块。
+      if (!value.selection.isCollapsed) _merge = false;
+      _last = value;
+      return;
+    }
+
+    final String before = _last.text;
+    final String after = value.text;
+    final int shared = before.length < after.length
+        ? before.length
+        : after.length;
+    int prefix = 0;
+    while (prefix < shared &&
+        before.codeUnitAt(prefix) == after.codeUnitAt(prefix)) {
+      prefix++;
+    }
+    int suffix = 0;
+    final int tail = shared - prefix;
+    while (suffix < tail &&
+        before.codeUnitAt(before.length - 1 - suffix) ==
+            after.codeUnitAt(after.length - 1 - suffix)) {
+      suffix++;
+    }
+    final bool inserting = after.length > before.length;
+    final int removed = inserting ? 0 : before.length - after.length;
+    // 插入接着上一块的末尾写；删除接着上一块的起点往前/往后删。
+    final bool continues = _merge &&
+        inserting == _inserting &&
+        (inserting
+            ? prefix == _caretAfter
+            : removed > 0 &&
+                  (prefix == _caretAfter || prefix + removed == _caretAfter));
+    if (!continues) {
+      _undo.add(_last);
+      if (_undo.length > _limit) _undo.removeAt(0);
+    }
+    _redo.clear();
+    _inserting = inserting;
+    _caretAfter = inserting ? after.length - suffix : prefix;
+    _merge = true;
+    _last = value;
+  }
+
+  /// 要还原到的值；没有历史时返回 `null`。
+  TextEditingValue? undo() {
+    if (_undo.isEmpty) return null;
+    _redo.add(_last);
+    final TextEditingValue target = _undo.removeLast();
+    _last = target;
+    return target;
+  }
+
+  TextEditingValue? redo() {
+    if (_redo.isEmpty) return null;
+    _undo.add(_last);
+    final TextEditingValue target = _redo.removeLast();
+    _last = target;
+    return target;
+  }
+
+  void beginApply() => _applying = true;
+
+  /// 结束写回，并把基线对齐到控制器真正落下的值。
+  ///
+  /// 撤销/重做之后的第一次输入要另起一块，不能并进刚还原的那一步里。
+  void endApply(TextEditingValue value) {
+    _applying = false;
+    _merge = false;
+    _last = value;
+  }
 }
 
 /// Ctrl+Z / Ctrl+Y on the body.
@@ -688,8 +832,8 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// Where the caret was before a click that turned out to be on a checkbox.
   TextSelection? _caretBeforeCheckboxTap;
 
-  /// Drives the field's own undo history from the editor's shortcuts.
-  final UndoHistoryController _undoHistory = UndoHistoryController();
+  /// 正文的撤销历史。按每次正文变化记一笔，不跟随 500ms 的节流合并。
+  late _EditHistory _history;
 
   /// True inside [_HistoryIntent]'s action, so [TableCellBarrierFormatter]
   /// knows the incoming value is history being restored and must not be read
@@ -811,11 +955,15 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   @override
   void initState() {
     super.initState();
+    _history = _EditHistory(widget.controller.value);
+    widget.controller.addListener(_recordHistory);
     widget.controller.addListener(_scheduleOverlayRefresh);
     widget.scrollController.addListener(_scheduleOverlayRefresh);
     widget.scrollController.addListener(_reportTopLine);
     widget.onLineTopProbe?.call(_lineTopOf);
   }
+
+  void _recordHistory() => _history.observe(widget.controller.value);
 
   /// 源码行在文档坐标里的顶部；渲染对象还没排版时为 `null`。
   double? _lineTopOf(int line) => _editable()?.lineTopFor(line);
@@ -824,11 +972,16 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   void didUpdateWidget(MarkdownEditor oldWidget) {
     super.didUpdateWidget(oldWidget);
     // 换文档时撤销栈必须从空开始，否则 Ctrl+Z 会恢复上一份笔记的正文。
-    // `UndoHistory` 没有公开的清栈接口，栈属于输入框自己的 State，所以下面
-    // 用 [documentId] 作 KeyedSubtree 的 key，整块重建输入框来丢弃历史。
+    // 输入框自己的 UndoHistory 靠下面 KeyedSubtree 的 documentId 整块重建来
+    // 丢弃；正文历史挂在本 State 上，这里手动重置。
     if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_recordHistory);
       oldWidget.controller.removeListener(_scheduleOverlayRefresh);
+      widget.controller.addListener(_recordHistory);
       widget.controller.addListener(_scheduleOverlayRefresh);
+      _history = _EditHistory(widget.controller.value);
+    } else if (oldWidget.documentId != widget.documentId) {
+      _history = _EditHistory(widget.controller.value);
     }
     if (oldWidget.scrollController != widget.scrollController) {
       oldWidget.scrollController.removeListener(_scheduleOverlayRefresh);
@@ -2456,7 +2609,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     final TextEditingController c = widget.controller;
     if (c is MarkdownSourceController) c.disarmClickGuard();
     if (tablePointerPosition.value != null) tablePointerPosition.value = null;
-    _undoHistory.dispose();
+    widget.controller.removeListener(_recordHistory);
     super.dispose();
   }
 
@@ -2596,24 +2749,30 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
           ),
           _HistoryIntent: CallbackAction<_HistoryIntent>(
             onInvoke: (_HistoryIntent intent) {
-              // 撤销/重做会把“记录那一刻的选区”一起还原；栈里最早的那条是
-              // 绑定笔记时写入的 selection=0，照单全收就会让光标跳回文首。
-              // 取用户按下快捷键时的位置，再夹进还原后的正文里。
-              final TextSelection before = widget.controller.selection;
+              final TextEditingValue? target = intent.undo
+                  ? _history.undo()
+                  : _history.redo();
+              if (target == null) return null;
+              final String beforeText = widget.controller.text;
+              _history.beginApply();
               _navigatingHistory = true;
               try {
-                if (intent.undo) {
-                  _undoHistory.undo();
+                final LineEditableTextState? field = _editableTextState();
+                if (field != null) {
+                  field.userUpdateTextEditingValue(
+                    target,
+                    SelectionChangedCause.keyboard,
+                  );
                 } else {
-                  _undoHistory.redo();
+                  widget.controller.value = target;
                 }
               } finally {
                 _navigatingHistory = false;
+                _history.endApply(widget.controller.value);
               }
-              if (before.isValid) {
-                final String text = widget.controller.text;
+              if (beforeText != target.text) {
                 widget.controller.selection = TextSelection.collapsed(
-                  offset: before.extentOffset.clamp(0, text.length),
+                  offset: _historyCaretOffset(beforeText, target.text),
                 );
               }
               return null;
@@ -2693,7 +2852,6 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                           key: const Key('nrs-editor-field'),
                           controller: widget.controller,
                           focusNode: widget.focusNode,
-                          undoController: _undoHistory,
                           readOnly: widget.readOnly,
                           onChanged: widget.onChanged,
                           maxLines: null,

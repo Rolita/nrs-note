@@ -152,6 +152,9 @@ class RenderLineEditable extends RenderEditable {
        );
 
   LineDocumentLayout? _lineLayout;
+
+  /// 跨轮布局复用的 painter 池；样式、宽度或文字变化时由键自然失效。
+  final LineLayoutCache _lineCache = LineLayoutCache();
   String? _layoutText;
   TextStyle? _layoutStyle;
   double? _layoutWidth;
@@ -394,20 +397,28 @@ class RenderLineEditable extends RenderEditable {
     return min.isFinite && min > 0 ? min : 1.0;
   }
 
+  /// 当前缓存是否仍然对应这份文本、样式与宽度。
+  LineDocumentLayout? _cachedLineLayout(double width) {
+    final LineDocumentLayout? cached = _lineLayout;
+    if (cached != null &&
+        _layoutText == (text?.toPlainText() ?? '') &&
+        _layoutStyle == _baseStyle &&
+        _layoutWidth == width) {
+      return cached;
+    }
+    return null;
+  }
+
   /// 取当前文本的行布局，文本/样式/宽度变化时重建。
   LineDocumentLayout _ensureLineLayout() {
     final double width = _contentWidthFor(constraints);
     final String plain = text?.toPlainText() ?? '';
     final TextStyle style = _baseStyle;
-    final LineDocumentLayout? cached = _lineLayout;
-    if (cached != null &&
-        _layoutText == plain &&
-        _layoutStyle == style &&
-        _layoutWidth == width) {
-      return cached;
-    }
+    final LineDocumentLayout? cached = _cachedLineLayout(width);
+    if (cached != null) return cached;
 
-    cached?.dispose();
+    // 缓存已过期：先释放旧实例，再按当前文本重建。
+    _lineLayout?.dispose();
     final LineDocumentLayout next = layoutLines(
       text: plain,
       baseStyle: style,
@@ -421,6 +432,7 @@ class RenderLineEditable extends RenderEditable {
       insetFor: _lineInsetFor,
       blockFor: _lineBlockFor,
       markerRevealLine: _markerRevealLine,
+      cache: _lineCache,
     );
     _lineLayout = next;
     _layoutText = plain;
@@ -449,26 +461,30 @@ class RenderLineEditable extends RenderEditable {
 
   @override
   Size computeDryLayout(covariant BoxConstraints constraints) {
-    final LineDocumentLayout layout = layoutLines(
-      text: text?.toPlainText() ?? '',
-      baseStyle: _baseStyle,
-      contentWidth: _contentWidthFor(constraints),
-      textScaler: textScaler,
-      textDirection: textDirection,
-      styleFor: _lineStyleFor,
-      heightFor: _lineHeightFor,
-      spanFor: _lineSpanFor,
-      fillFor: _lineFillFor,
-      insetFor: _lineInsetFor,
-      blockFor: _lineBlockFor,
-      markerRevealLine: _markerRevealLine,
-    );
-    final double width = constraints.hasBoundedWidth
+    // 缓存命中时直接回答，不再为了一次「量一下」把整篇重新排一遍。
+    // 未命中也不完整布局：dry 只用于父级询问首选尺寸，真正的尺寸与滚动
+    // 范围仍由 [performLayout] 决定。估算按源码行数 × 基础行高，对纯文本
+    // 文档与真实布局逐像素一致；带标题/折行的文档即使差几像素，下一帧的
+    // `performLayout` 也会把尺寸纠正回来。
+    final double width = _contentWidthFor(constraints);
+    final LineDocumentLayout? cached = _cachedLineLayout(width);
+    final double naturalHeight = cached?.height ??
+        _estimatedHeight(text?.toPlainText() ?? '', _baseStyle);
+    final double boxWidth = constraints.hasBoundedWidth
         ? constraints.maxWidth
-        : layout.width;
-    final Size size = Size(width, constraints.constrainHeight(layout.height));
-    layout.dispose();
-    return size;
+        : width;
+    return Size(boxWidth, constraints.constrainHeight(naturalHeight));
+  }
+
+  /// 没有缓存时的轻量高度估算：换行符个数即源码行数。
+  double _estimatedHeight(String plain, TextStyle style) {
+    int lines = 1;
+    for (int i = 0; i < plain.length; i++) {
+      if (plain.codeUnitAt(i) == 0x0A) lines++;
+    }
+    final double size = style.fontSize ?? 15;
+    final double height = style.height ?? 1.2;
+    return lines * (size * height).roundToDouble();
   }
 
   @override
@@ -1210,6 +1226,7 @@ class RenderLineEditable extends RenderEditable {
     _blink = null;
     _lineLayout?.dispose();
     _lineLayout = null;
+    _lineCache.dispose();
     _layoutText = null;
     _layoutStyle = null;
     _layoutWidth = null;

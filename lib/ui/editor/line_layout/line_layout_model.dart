@@ -273,8 +273,9 @@ final RegExp _kSetextRe = RegExp(r'^ {0,3}(=+)\s*$');
 
 /// 扫描整篇源码，按行给出块种类与列表几何。
 ///
-/// 判定顺序与 `buildLiveSpans` 的 pass one 完全一致。块标记本身复用
-/// [scanLineMarker]——它是全项目唯一的标记判定来源，这里不再复制正则。
+/// 判定顺序沿用原段落排版器的扫描次序（围栏 → 标题 → 分隔线/标题下划线 →
+/// 列表/任务 → 引用），按行渲染与段落渲染对同一份源码给出同样的块种类。块标记
+/// 本身复用 [scanLineMarker]——它是全项目唯一的标记判定来源，这里不再复制正则。
 List<SourceLine> scanSourceLines(String text) {
   final List<String> raw = text.split('\n');
   final int n = raw.length;

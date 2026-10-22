@@ -212,8 +212,6 @@ class _Table {
   /// Source line → index into [rows] (the divider line maps to nothing).
   final Map<int, int> lineOfRow;
   final TableGeometry geometry;
-
-  List<_CellData> cellsOf(int line) => rows[lineOfRow[line]!].data;
 }
 
 const double _kCellPad = 8;

@@ -130,6 +130,18 @@ class NotesController extends ChangeNotifier {
   String get vaultLocation => _store.location;
   bool get supportsNativeFiles => _store.supportsNativeFiles;
   List<Note> get allNotes => List<Note>.unmodifiable(_ordered);
+
+  /// 只读的结构版本号：新增/删除/重命名/移动/排序/文件夹变化时递增。
+  ///
+  /// 文件树只需要在这个版本号、选中项或筛选条件变化时重建；正文输入不碰它，
+  /// 因此不会让整棵文件树跟着每个字符重排（任务徽标由行内单独订阅）。
+  int get structureRevision => _structureRevision;
+
+  int _structureRevision = 0;
+
+  void _bumpStructure() => _structureRevision++;
+
+  Note? noteById(String id) => _noteById(id);
   String? get selectedId => _selectedId;
   SaveState get saveState => _saveState;
 
@@ -237,7 +249,7 @@ class NotesController extends ChangeNotifier {
     final ({List<String> tags, String text}) parsed = parseQuery(_query);
     final String raw = parsed.text;
     final String q = _caseSensitive ? raw : raw.toLowerCase();
-    String fold(String text) => _caseSensitive ? text : text.toLowerCase();
+    final bool fold = !_caseSensitive;
     return _ordered.where((Note n) {
       // Every `tag:` filter has to hold; tags are matched case-insensitively
       // because they are labels, not code.
@@ -246,9 +258,13 @@ class NotesController extends ChangeNotifier {
         if (!n.tags.any((String t) => t.toLowerCase() == needle)) return false;
       }
       if (q.isEmpty) return true;
-      return fold(n.title).contains(q) ||
-          fold(n.body).contains(q) ||
-          n.tags.any((String t) => fold(t).contains(q));
+      final String title = fold ? n.foldedTitle : n.title;
+      final String body = fold ? n.foldedBody : n.body;
+      return title.contains(q) ||
+          body.contains(q) ||
+          n.tags.any(
+            (String t) => (fold ? t.toLowerCase() : t).contains(q),
+          );
     }).toList(growable: false);
   }
 
@@ -294,6 +310,9 @@ class NotesController extends ChangeNotifier {
   /// of them is worth showing: the count in the group header has to mean
   /// something, and one snippet per note would hide the other four.
   SearchHit _hitFor(Note note, ({List<String> tags, String text}) parsed) {
+    // 大小写不敏感时直接在 Note 的折叠副本上找，偏移与原正文一致：副本由
+    // 同一套 `toLowerCase` 生成，和逐次转换的结果逐字符相同。
+    final String haystack = _caseSensitive ? note.body : note.foldedBody;
     final List<String> needles = <String>[
       for (final String tag in parsed.tags) '#$tag',
       if (parsed.text.isNotEmpty) parsed.text,
@@ -304,7 +323,7 @@ class NotesController extends ChangeNotifier {
     for (final String needle in needles) {
       int from = 0;
       while (snippets.length < _kMaxSnippets) {
-        final int at = _indexOf(note.body, needle, from);
+        final int at = _indexOf(haystack, needle, from);
         if (at < 0) break;
         final int lineStart = note.body.lastIndexOf('\n', at) + 1;
         // Two needles on one line is still one line: the group shows lines, and
@@ -380,7 +399,8 @@ class NotesController extends ChangeNotifier {
   int _indexOf(String haystack, String needle, [int from = 0]) {
     if (needle.isEmpty) return -1;
     if (_caseSensitive) return haystack.indexOf(needle, from);
-    return haystack.toLowerCase().indexOf(needle.toLowerCase(), from);
+    // 大小写不敏感时 [haystack] 已经折叠过，只需折查询词。
+    return haystack.indexOf(needle.toLowerCase(), from);
   }
 
   List<TagStat> get tags {
@@ -478,6 +498,7 @@ class NotesController extends ChangeNotifier {
 
   void _resort() {
     _ordered = List<Note>.of(_notes)..sort(_compareNotes);
+    _bumpStructure();
   }
 
   /// Sorting is the only thing that decides the order: the file name is the
@@ -502,6 +523,8 @@ class NotesController extends ChangeNotifier {
 
   /// Injected by the shell so the vault order follows the user's sort choice.
   SortMode _lastSortMode = SortMode.updatedDesc;
+
+  SortMode get sortMode => _lastSortMode;
 
   set sortMode(SortMode mode) {
     _lastSortMode = mode;
@@ -564,6 +587,7 @@ class NotesController extends ChangeNotifier {
       return null;
     }
     _activeFolder = path;
+    _bumpStructure();
     notifyListeners();
     return path;
   }
@@ -929,6 +953,7 @@ class NotesController extends ChangeNotifier {
 
     _notes = _notes.where((Note n) => !ids.contains(n.id)).toList();
     _ordered = _ordered.where((Note n) => !ids.contains(n.id)).toList();
+    _bumpStructure();
     _openIds.removeWhere(ids.contains);
     for (final Note note in targets) {
       _stamps.remove(note.relativePath);
@@ -1064,9 +1089,18 @@ class NotesController extends ChangeNotifier {
   /// Replaces the note in the visible list *without* re-sorting, then schedules
   /// a debounced write.
   void _applyDraft(Note next) {
+    final Note? previous = _draft;
+    // 正文以外的字段（标题/文件名/所在目录）会改变文件树上的那一行，
+    // 这类编辑同样要推进结构版本号，否则树会停在旧标题上。
+    final bool structureChanged =
+        previous == null ||
+        previous.title != next.title ||
+        previous.fileName != next.fileName ||
+        previous.folderPath != next.folderPath;
     _draft = next;
     _replace(next);
     _editRevision++;
+    if (structureChanged) _bumpStructure();
     _saveState = SaveState.dirty;
     notifyListeners();
     // While a conflict is unresolved the note does not write itself: the next
@@ -1492,6 +1526,7 @@ class NotesController extends ChangeNotifier {
     final int index = _openIds.indexOf(draft.id);
     _notes = _notes.where((Note n) => n.id != draft.id).toList();
     _ordered = _ordered.where((Note n) => n.id != draft.id).toList();
+    _bumpStructure();
     _openIds.remove(draft.id);
     _baselines.remove(draft.id);
     _conflict = null;

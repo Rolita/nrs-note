@@ -250,9 +250,6 @@ const Map<String, String> _aliases = <String, String>{
   '': '',
 };
 
-/// Language names the highlighter has real grammars for.
-Set<String> get supportedLanguages => _specs.keys.toSet();
-
 String normaliseLanguage(String? raw) {
   final String key = (raw ?? '').trim().toLowerCase();
   if (_aliases.containsKey(key)) return _aliases[key]!;

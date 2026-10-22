@@ -31,29 +31,3 @@ class Debouncer {
 
   void dispose() => cancel();
 }
-
-/// Formats a timestamp the way a note list wants it: relative for recent items,
-/// absolute once the note has aged.
-String formatRelativeTime(DateTime time) {
-  final Duration diff = DateTime.now().difference(time);
-  if (diff.isNegative) return '刚刚';
-  if (diff.inSeconds < 60) return '刚刚';
-  if (diff.inMinutes < 60) return '${diff.inMinutes} 分钟前';
-  if (diff.inHours < 24) return '${diff.inHours} 小时前';
-  final DateTime now = DateTime.now();
-  final DateTime today = DateTime(now.year, now.month, now.day);
-  final DateTime that = DateTime(time.year, time.month, time.day);
-  final int dayGap = today.difference(that).inDays;
-  if (dayGap == 1) return '昨天';
-  if (dayGap < 7) return '$dayGap 天前';
-  if (time.year == now.year) {
-    return '${time.month} 月 ${time.day} 日';
-  }
-  return '${time.year} 年 ${time.month} 月 ${time.day} 日';
-}
-
-String formatFullTime(DateTime time) {
-  String two(int v) => v.toString().padLeft(2, '0');
-  return '${time.year}-${two(time.month)}-${two(time.day)} '
-      '${two(time.hour)}:${two(time.minute)}';
-}

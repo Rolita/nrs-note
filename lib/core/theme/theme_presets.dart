@@ -313,8 +313,6 @@ class CustomPalette {
     );
   }
 
-  String encode() => raw;
-
   /// Reads a board back from [raw]; returns null when it is missing, empty or
   /// does not parse.
   ///

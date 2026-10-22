@@ -790,22 +790,6 @@ String? tableSelectionMarkdown(
   resolve: resolve,
 )?.markdown;
 
-/// A table selection with its ends **snapped to cell edges**.
-///
-/// The editor paints a table selection by the **cell**: the wash covers whole
-/// cells even when the pointer stopped in the middle of one, so what the user
-/// sees is never the raw `TextSelection`. Copy works off the cells; delete and
-/// cut have to work off the same cells, or a drag that started inside 「链接」
-/// takes only the characters after it and leaves the word behind.
-///
-/// * a selection inside one cell is ordinary text selection and stays exact;
-/// * first cell → last cell is a **whole-row** selection: it starts at the line
-///   start and ends *past the newline*, so the rows disappear instead of
-///   collapsing into empty `|  |  |` ones;
-/// * anything narrower snaps to the cells' own text, padding excluded.
-TextSelection snapTableSelection(String text, TextSelection selection) =>
-    TableRange.fromSelection(text, selection)?.toTextSelection() ?? selection;
-
 /// The value after the washed rectangle is **emptied** — Delete, Backspace or
 /// a cut.
 ///
@@ -1716,27 +1700,6 @@ TextEditingValue? sortTable(TextEditingValue raw, {required bool ascending}) {
   return sorted == null ? null : _valueOf(sorted);
 }
 
-/// Copies the caret's row directly under itself.
-TextEditingValue? duplicateTableRow(TextEditingValue raw) {
-  final TableBlock? block = TableBlock.parse(raw.text, raw.selection.start);
-  if (block == null) return null;
-  final (int row, int column) = _cellOf(block, raw.selection.start);
-  return _valueOf(TableCommands.duplicateRow(block, row: row, column: column));
-}
-
-/// Copies the caret's column directly to its right.
-TextEditingValue? duplicateTableColumn(TextEditingValue raw) {
-  final TableBlock? block = TableBlock.parse(raw.text, raw.selection.start);
-  if (block == null) return null;
-  final (int row, int column) = _cellOf(block, raw.selection.start);
-  final TableEditResult? result = TableCommands.duplicateColumn(
-    block,
-    row: row,
-    column: column,
-  );
-  return result == null ? null : _valueOf(result);
-}
-
 /// Swaps the table's rows and columns.
 TextEditingValue? transposeTable(TextEditingValue raw) {
   final TableBlock? block = TableBlock.parse(raw.text, raw.selection.start);
@@ -2224,50 +2187,6 @@ const String kTableSkeleton = '''
 | --- | --- | --- |
 | 内容 | 内容 | 内容 |
 ''';
-
-/// Continues a list when Enter is pressed inside one.
-///
-/// Returns `null` when the caret is not in a list, letting the default newline
-/// behaviour take over.
-TextEditingValue? continueListOnEnter(TextEditingValue v) {
-  final TextSelection sel = v.selection;
-  if (!sel.isValid || !sel.isCollapsed) return null;
-  final String text = v.text;
-  final int lineStart = lineStartOf(text, sel.start);
-  final String line = text.substring(lineStart, sel.start);
-  final Match? m = RegExp(
-    r'^(\s{0,3})([-*+]|\d+[.)])\s+(\[[ xX]\]\s+)?(.*)$',
-  ).firstMatch(line);
-  if (m == null) return null;
-
-  final String indent = m.group(1)!;
-  final String marker = m.group(2)!;
-  final String checkbox = m.group(3) ?? '';
-  final String content = m.group(4) ?? '';
-
-  // Pressing Enter on an empty item ends the list.
-  if (content.trim().isEmpty) {
-    final String next = text.replaceRange(lineStart, sel.start, '');
-    return TextEditingValue(
-      text: next,
-      selection: TextSelection.collapsed(offset: lineStart),
-    );
-  }
-
-  String nextMarker = marker;
-  if (RegExp(r'^\d+[.)]$').hasMatch(marker)) {
-    final int n = int.parse(marker.replaceAll(RegExp(r'[.)]'), ''));
-    final String dot = marker.endsWith(')') ? ')' : '.';
-    nextMarker = '${n + 1}$dot';
-  }
-  final String newItem =
-      '\n$indent$nextMarker ${checkbox.isEmpty ? '' : '[ ] '}';
-  final String next = text.replaceRange(sel.start, sel.start, newItem);
-  return TextEditingValue(
-    text: next,
-    selection: TextSelection.collapsed(offset: sel.start + newItem.length),
-  );
-}
 
 /// Tab / Shift+Tab indentation inside lists.
 ///

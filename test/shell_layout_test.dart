@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:nrs/core/app_enums.dart';
 import 'package:nrs/core/theme/app_theme.dart';
 import 'package:nrs/core/theme/app_tokens.dart';
+import 'package:nrs/core/utils/markdown_outline.dart';
 import 'package:nrs/data/models/note.dart';
 import 'package:nrs/data/storage/note_store.dart';
 import 'package:nrs/state/notes_controller.dart';
@@ -190,6 +191,39 @@ void main() {
     final Rect panel = tester.getRect(find.byType(NoteListPanel));
     expect(panel.right - previousRight, lessThanOrEqualTo(AppSpace.xs));
     expect(find.text('一篇笔记'), findsWidgets);
+  });
+
+  testWidgets('the tree follows renames and task edits without a full rebuild', (
+    WidgetTester tester,
+  ) async {
+    final Note note = Note(
+      id: 'task',
+      title: '任务清单',
+      body: '- [ ] 待办\n',
+      createdAt: DateTime(2026, 1, 1),
+      updatedAt: DateTime(2026, 1, 2),
+    );
+    final ({SettingsController settings, NotesController notes}) app =
+        await pumpShell(tester, vault: <Note>[note]);
+    app.notes.select('task');
+    await tester.pump();
+
+    Finder inTree(Finder finder) =>
+        find.descendant(of: find.byType(VaultTree), matching: finder);
+    expect(inTree(find.text('0/1')), findsOneWidget);
+
+    // 正文输入只推进编辑版本号：树不重建，但这一行的任务徽标要自己更新。
+    app.notes.updateBody('- [x] 待办\n');
+    await tester.pump();
+    expect(inTree(find.text('1/1')), findsOneWidget);
+
+    // 标题即文件名，属于结构变化：树必须跟着换行。
+    app.notes.updateTitle('任务清单 改');
+    await tester.pump();
+    expect(inTree(find.text('任务清单 改')), findsOneWidget);
+
+    // 让防抖写入落地，否则测试结束时会留下挂起的定时器。
+    await tester.pump(const Duration(seconds: 3));
   });
 
   testWidgets('only the sidebar and the outline can be dragged wider', (
@@ -1109,6 +1143,49 @@ void main() {
     // …and it is the heading of the chapter the viewport now starts in, not the
     // caret's line (which never moved).
     expect(line, greaterThanOrEqualTo(27), reason: '滚动到的位置已经在第二章里了');
+  });
+
+  testWidgets('the outline reuses its headings until the body changes', (
+    WidgetTester tester,
+  ) async {
+    final ({SettingsController settings, NotesController notes}) app =
+        await pumpShell(
+          tester,
+          vault: <Note>[
+            Note(
+              id: 'a',
+              title: '笔记',
+              body: '# 标题\n\n正文\n',
+              createdAt: DateTime(2026, 1, 1),
+              updatedAt: DateTime(2026, 1, 2),
+            ),
+          ],
+        );
+
+    final List<Heading> first = tester
+        .widget<OutlinePanel>(find.byType(OutlinePanel))
+        .headings;
+    expect(first.map((Heading h) => h.plainText), <String>['标题']);
+
+    // 只改面板宽度：正文对象没变，大纲列表应当是同一个对象。
+    app.settings.outlineWidth = app.settings.outlineWidth + 10;
+    await tester.pump();
+    final List<Heading> afterResize = tester
+        .widget<OutlinePanel>(find.byType(OutlinePanel))
+        .headings;
+    expect(afterResize, same(first));
+
+    // 正文变了，缓存必须跟着失效。
+    app.notes.updateBody('# 新标题\n\n正文\n');
+    await tester.pump();
+    final List<Heading> afterEdit = tester
+        .widget<OutlinePanel>(find.byType(OutlinePanel))
+        .headings;
+    expect(afterEdit, isNot(same(first)));
+    expect(afterEdit.map((Heading h) => h.plainText), <String>['新标题']);
+
+    // 让自动保存去抖与「已保存」计时器都跑完，避免留下 pending timer。
+    await tester.pump(const Duration(seconds: 3));
   });
 
   testWidgets('全部展开 and 全部收起 are one button that flips', (

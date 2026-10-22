@@ -477,6 +477,30 @@ void main() {
       expect(caret.height, _row);
       expect(layout.offsetAtPoint(caret.origin), 2);
     });
+
+    test('行尾空格不改变光标高度', () {
+      // 行尾是空格时，量字形得到的是空格自己的盒子，比整行矮一截；
+      // 光标高度必须跟整条视觉行走，否则打一个空格光标就缩一下。
+      final LineDocumentLayout plain = _layout('nihao');
+      final LineDocumentLayout spaced = _layout('nihao ');
+      addTearDown(plain.dispose);
+      addTearDown(spaced.dispose);
+      expect(
+        spaced.caretGeometryAt(spaced.laidOut.first.source.end).height,
+        plain.caretGeometryAt(plain.laidOut.first.source.end).height,
+      );
+
+      final LineDocumentLayout heading = _layout('# 标题');
+      final LineDocumentLayout headingSpaced = _layout('# 标题 ');
+      addTearDown(heading.dispose);
+      addTearDown(headingSpaced.dispose);
+      expect(
+        headingSpaced
+            .caretGeometryAt(headingSpaced.laidOut.first.source.end)
+            .height,
+        heading.caretGeometryAt(heading.laidOut.first.source.end).height,
+      );
+    });
   });
 
   group('选区盒子', () {

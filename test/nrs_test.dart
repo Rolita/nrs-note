@@ -1,15 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/core/theme/app_palette.dart';
-import 'package:nrs/core/theme/app_tokens.dart';
 import 'package:nrs/core/utils/markdown_actions.dart';
 import 'package:nrs/core/utils/markdown_outline.dart';
 import 'package:nrs/data/models/note.dart';
 import 'package:nrs/ui/editor/line_layout/line_layout_engine.dart';
-import 'package:nrs/ui/editor/line_layout/live_line_style.dart';
 import 'package:nrs/ui/editor/live_markdown.dart';
 import 'package:nrs/ui/editor/markdown_editor.dart';
-import 'package:nrs/ui/preview/code_palette.dart';
 import 'package:nrs/ui/preview/syntax_highlighter.dart';
 
 void main() {
@@ -133,6 +130,64 @@ void main() {
       expect(note.taskTotal, 3);
       expect(note.taskDone, 2);
     });
+
+    Note counted(String body) => Note(
+      id: 'x',
+      title: 't',
+      body: body,
+      createdAt: DateTime(2026),
+      updatedAt: DateTime(2026),
+    );
+
+    test('derived counts keep their edge-case results', () {
+      final Note empty = counted('');
+      expect(empty.wordCount, 0);
+      expect(empty.characterCount, 0);
+      expect(empty.readingMinutes, 0);
+
+      final Note cjk = counted('你好世界');
+      expect(cjk.wordCount, 4);
+      expect(cjk.characterCount, 4);
+      expect(cjk.readingMinutes, 1);
+
+      final Note latin = counted('hello world');
+      expect(latin.wordCount, 2);
+      expect(latin.characterCount, 10);
+
+      // 闭合围栏整块不计入统计。
+      final Note fenced = counted('正文\n```dart\nvoid main() {}\n```\n');
+      expect(fenced.wordCount, 2);
+      expect(fenced.characterCount, 2);
+
+      // 未闭合围栏没有「整块」可去：里面的文字照常计入，与旧扫描一致。
+      final Note open = counted('前的文字\n```\ncode here');
+      expect(open.wordCount, 6);
+    });
+
+    test('derived caches follow copyWith and repeated reads', () {
+      final Note note = counted('- [x] done\n- [ ] todo\n- [X] also done\n');
+      expect(note.taskTotal, 3);
+      expect(note.taskDone, 2);
+      expect(note.taskTotal, 3);
+      expect(note.taskDone, 2);
+
+      final Note rewritten = note.copyWith(body: '新正文');
+      expect(rewritten.wordCount, 3);
+      expect(rewritten.taskTotal, 0);
+      expect(rewritten.taskDone, 0);
+    });
+
+    test('folded copies are built once and follow copyWith', () {
+      final Note note = counted('MiXeD 正文');
+      final String folded = note.foldedBody;
+      expect(folded, 'mixed 正文');
+      expect(identical(note.foldedBody, folded), isTrue, reason: '重复读取复用同一副本');
+      expect(identical(note.foldedTitle, note.foldedTitle), isTrue);
+
+      final Note rewritten = note.copyWith(title: 'T', body: 'OTHER');
+      expect(rewritten.foldedBody, 'other');
+      expect(rewritten.foldedTitle, 't');
+    });
   });
 
   group('Outline', () {
@@ -171,21 +226,6 @@ Setext 标题
   });
 
   group('Task toggle', () {
-    test('flips a checkbox on the exact source line', () {
-      const String source = '- [ ] one\n- [ ] two\n';
-      final List<int> lines = taskLineNumbers(source);
-      expect(lines, <int>[0, 1]);
-
-      final String checked = toggleTaskOnLine(source, 1, true);
-      expect(checked, '- [ ] one\n- [x] two\n');
-      expect(toggleTaskOnLine(checked, 1, false), source);
-    });
-
-    test('ignores lines that are not tasks', () {
-      const String source = 'plain text\n';
-      expect(toggleTaskOnLine(source, 0, true), source);
-    });
-
     test('toggles by offset, which is all the click handler knows', () {
       const String source = '开头\n\n- [ ] 一二三\n- [ ] 四五六\n';
       // The offset of the box on the second task line is somewhere inside it.
@@ -659,18 +699,6 @@ Setext 标题
       expect(editTable(value(fence, 8), TableEdit.columnRight), isNull);
     });
 
-    test('continues and then ends a list on Enter', () {
-      final TextEditingValue next = continueListOnEnter(value('- item', 6, 6))!;
-      expect(next.text, '- item\n- ');
-
-      final TextEditingValue ended = continueListOnEnter(
-        value('- item\n- ', 9, 9),
-      )!;
-      expect(ended.text, '- item\n');
-
-      expect(continueListOnEnter(value('普通文本', 4)), isNull);
-    });
-
     test('keeps the caret inside an inserted code block', () {
       final TextEditingValue out = codeBlock(language: 'dart')(value('', 0));
       expect(out.text.trim(), '```dart\n\n```');
@@ -784,781 +812,6 @@ Setext 标题
       expect(normaliseLanguage('ts'), 'javascript');
       expect(normaliseLanguage('yml'), 'yaml');
       expect(normaliseLanguage('未知语言'), '');
-    });
-  });
-
-  group('Live (Typora-style) rendering', () {
-    const AppPalette palette = AppPalette.light;
-    const TextStyle base = TextStyle(fontSize: 15.5, height: 1.78);
-
-    /// The text the paragraph actually lays out.
-    ///
-    /// A [WidgetSpan] contributes exactly one object-replacement character
-    /// (`\uFFFC`) — and *that* is the point: the painted tree has to be exactly
-    /// as long as the source, or every offset after the first decoration slides.
-    String painted(List<InlineSpan> spans) =>
-        spans.map((InlineSpan s) => s.toPlainText()).join();
-
-    /// Rebuilds the source from the painted tree, letting each decoration stand
-    /// in for the single character it replaced.
-    ///
-    /// If this reproduces the document byte for byte, then nothing was dropped,
-    /// duplicated *or shifted* — which is what the old "flatten" helper (it
-    /// skipped widgets entirely) failed to notice.
-    void expectFaithful(String text, List<InlineSpan> spans, String why) {
-      final String p = painted(spans);
-      expect(p.length, text.length, reason: '$why — tree length changed');
-      final StringBuffer b = StringBuffer();
-      for (int i = 0; i < p.length; i++) {
-        b.write(p[i] == '\uFFFC' ? text[i] : p[i]);
-      }
-      expect(b.toString(), text, reason: '$why — source was reshaped');
-    }
-
-    /// The widgets the decorations draw — a [WidgetSpan]'s child, unwrapped.
-    List<Widget> widgetsOf(List<InlineSpan> spans) => <Widget>[
-      for (final InlineSpan s in spans)
-        if (s is WidgetSpan) s.child,
-    ];
-
-    List<InlineSpan> render(String text, {int caretLine = -1, int? caret}) {
-      int offset = 0;
-      if (caret != null) {
-        offset = caret;
-      } else if (caretLine >= 0) {
-        final List<String> lines = text.split('\n');
-        offset = lines
-            .take(caretLine)
-            .fold<int>(0, (int a, String l) => a + l.length + 1);
-      }
-      return buildLiveSpans(
-        text: text,
-        base: base,
-        p: palette,
-        selection: caretLine < 0 && caret == null
-            ? const TextSelection.collapsed(offset: -1)
-            : TextSelection.collapsed(offset: offset),
-        contentWidth: 680,
-      );
-    }
-
-    /// Every [GestureDetector] buried in a [WidgetSpan], so tests can prove a
-    /// pill is actually clickable rather than merely drawn.
-    List<GestureDetector> taps(List<InlineSpan> spans) {
-      final List<GestureDetector> out = <GestureDetector>[];
-      void walk(Widget node) {
-        if (node is GestureDetector) {
-          out.add(node);
-          return;
-        }
-        if (node is SingleChildRenderObjectWidget) {
-          final Widget? c = node.child;
-          if (c != null) walk(c);
-        }
-        if (node is Row) {
-          for (final Widget c in node.children) {
-            walk(c);
-          }
-        }
-      }
-
-      for (final InlineSpan s in spans) {
-        if (s is WidgetSpan) walk(s.child);
-      }
-      return out;
-    }
-
-    const String document = '''
-# 标题一
-
-一段普通文字,包含 **加粗**、*斜体*、~~删除线~~ 和 `行内代码`。
-
-## 标题二
-
-- 无序列表项
-  - 嵌套一层
-    - 再深一层
-- [x] 已完成的任务
-- [ ] 未完成的任务
-
-1. 第一项
-2. 第二项
-
-> 这是一段引用。
-> 引用还没结束。
-
-| 列一 | 列二 |
-| --- | --- |
-| a | b |
-
-```dart
-final x = 1;
-```
-
----
-
-想法 #写作 与 [[会议记录]] 以及 [链接](https://x.test)。
-
-尾段。''';
-
-    test('the painted tree is exactly as long as the source', () {
-      // The caret sweeps every *character*, not just every line: the active
-      // block takes a completely different code path from the inactive ones,
-      // and a decoration that emits one character too many only shows up once
-      // something follows it.
-      for (int caret = -1; caret <= document.length; caret++) {
-        final List<InlineSpan> spans = caret < 0
-            ? render(document)
-            : render(document, caret: caret);
-        expectFaithful(document, spans, 'caret=$caret');
-      }
-    });
-
-    test('the first-run note renders without throwing', () {
-      // The welcome note is the first thing a user ever sees, so a throw here is
-      // a throw on launch — an empty pane with a red box in it. It also happens
-      // to be the densest paragraph of syntax in the whole app: a two-backtick
-      // span, `.md` inline code, a table, a fence and a rule.
-      //
-      // Note the route it takes: written to disk and read back, exactly as the
-      // vault does. The factory body alone would have hidden the bug this test
-      // was written for, because the *loader* was what put a leading blank line
-      // in front of the prose.
-      final String welcome = Note.fromMarkdown(
-        Note.welcome().toMarkdown(),
-        '欢迎使用 NRS-k15and.md',
-        DateTime(2026),
-      ).body;
-      expect(welcome.startsWith('\n'), isFalse);
-
-      for (int caret = -1; caret <= welcome.length; caret++) {
-        final List<InlineSpan> spans = caret < 0
-            ? render(welcome)
-            : render(welcome, caret: caret);
-        expectFaithful(welcome, spans, 'welcome caret=$caret');
-        // The toolbar asks the same question on every build; it used to throw
-        // for the caret at offset 0.
-        expect(
-          () => markerAt(
-            TextEditingValue(
-              text: welcome,
-              selection: TextSelection.collapsed(offset: caret < 0 ? 0 : caret),
-            ),
-          ),
-          returnsNormally,
-          reason: 'markerAt caret=$caret',
-        );
-      }
-    });
-
-    test('never loses or duplicates a character, line by line', () {
-      final int lineCount = document.split('\n').length;
-      for (int line = -1; line < lineCount; line++) {
-        expectFaithful(
-          document,
-          render(document, caretLine: line),
-          'caretLine=$line',
-        );
-      }
-    });
-
-    test('the very last character is never left with a zero-height caret', () {
-      // List markers are painted collapsed (zero size) so they can be revealed
-      // the moment the caret enters the line. 按行排版后末尾光标的高度由行引擎
-      // 给出：它必须退回到这一行的行高，而不是钉在一个零宽的字形盒上。
-      for (final String tail in <String>['- ', '# ', '> ', '- [ ] ']) {
-        final String text = '一句话\n$tail';
-        final LineDocumentLayout layout = layoutLines(
-          text: text,
-          baseStyle: base,
-          contentWidth: 680,
-        );
-        addTearDown(layout.dispose);
-        final CaretGeometry caret = layout.caretGeometryAt(text.length);
-        expect(caret.height, greaterThan(0), reason: 'tail "$tail"');
-      }
-    });
-
-    test('collapses punctuation only outside the caret line', () {
-      const String heading = '# 标题一';
-      final List<InlineSpan> idle = render(heading);
-      final List<InlineSpan> active = render(heading, caretLine: 0);
-
-      TextSpan markerOf(List<InlineSpan> spans) {
-        for (final InlineSpan s in spans) {
-          if (s is TextSpan && s.text == '#' && s.style != null) return s;
-        }
-        return const TextSpan();
-      }
-
-      // Away from the caret the `#` is drawn at zero size, invisible.
-      expect(markerOf(idle).style!.fontSize, 0);
-      // On the caret's line it becomes readable again — and scaled with the
-      // heading, so `#` never looks like a speck next to 26px text.
-      expect(
-        markerOf(active).style!.fontSize,
-        greaterThanOrEqualTo(base.fontSize!),
-      );
-    });
-
-    test('scales headings but leaves body text at base size', () {
-      final List<InlineSpan> spans = render('# 大标题\n\n正文');
-      final List<TextSpan> texts = spans.whereType<TextSpan>().toList();
-
-      final TextSpan heading = texts.firstWhere(
-        (TextSpan s) => s.text == '大标题',
-      );
-      final TextSpan body = texts.firstWhere((TextSpan s) => s.text == '正文');
-
-      expect(heading.style!.fontSize, greaterThan(base.fontSize!));
-      // Semibold, not bold: the design sheet's H1 is w600, and at 27px the
-      // extra weight read as a browser default rather than as a choice.
-      expect(heading.style!.fontWeight, FontWeight.w600);
-      expect(body.style!.fontSize, base.fontSize);
-    });
-
-    test('collapses the fence but highlights the code inside it', () {
-      final List<InlineSpan> spans = render(document);
-      final List<TextSpan> texts = spans.whereType<TextSpan>().toList();
-
-      // The band widget stands in for the first backtick; the rest of the fence
-      // collapses behind it.
-      final TextSpan fence = texts.firstWhere(
-        (TextSpan s) => s.text == '``dart',
-      );
-      expect(fence.style!.fontSize, 0);
-      expect(
-        spans.whereType<WidgetSpan>(),
-        isNotEmpty,
-        reason: 'the fence is drawn as a sunken band',
-      );
-
-      // The code line is a single span with the highlighted tokens as
-      // children — but *no* background of its own. The block's fill is one
-      // rounded slab painted behind the field (`CodeBlockPainter`), because a
-      // `TextStyle` background can only hug the run, which is what turned every
-      // line into a stripe of its own width.
-      final TextSpan code = texts.firstWhere(
-        (TextSpan s) =>
-            s.children != null &&
-            s.children!
-                    .whereType<TextSpan>()
-                    .map((TextSpan t) => t.text)
-                    .join() ==
-                'final x = 1;',
-      );
-      expect(code.style!.backgroundColor, isNull);
-      expect(code.style!.fontFamily, isNot(base.fontFamily));
-      expect(
-        code.children!.whereType<TextSpan>().any(
-          (TextSpan s) => s.style?.color == CodePalette.light.keyword,
-        ),
-        isTrue,
-        reason: '`final` should be coloured as a keyword',
-      );
-
-      // The opening fence reserves the card's header row and the label is
-      // painted into the slab's corner (`CodeBlockPainter`), so the paragraph
-      // holds no `Dart` widget at all — a widget label would be a line of the
-      // paragraph and push the first code row down a whole header.
-      final List<CodeBlockRange> ranges = codeBlockRanges(document);
-      expect(ranges, hasLength(1));
-      expect(
-        ranges.single.label,
-        'Dart',
-        reason: 'the language is read off the fence line, capitalised',
-      );
-      expect(
-        widgetsOf(spans).whereType<Container>().where(
-          (Container c) => c.child is Text && (c.child! as Text).data == 'Dart',
-        ),
-        isEmpty,
-        reason: 'the label is painted, not laid out',
-      );
-
-      // The slab and the text must agree on where the block starts and ends.
-      expect(
-        document.substring(ranges.single.start, ranges.single.end),
-        '```dart\nfinal x = 1;\n```',
-      );
-    });
-
-    test('a fence with no language shows no label', () {
-      const String source = '```\nplain\n```';
-      final List<InlineSpan> spans = render(source);
-
-      expect(codeBlockRanges(source), hasLength(1));
-      expect(
-        codeBlockRanges(source).single.label,
-        isNull,
-        reason: 'an unnamed fence paints no label in the card corner',
-      );
-      expect(
-        widgetsOf(spans).whereType<Container>().where(
-          (Container c) => c.child is Text && (c.child! as Text).data == 'Plain',
-        ),
-        isEmpty,
-      );
-    });
-
-    test('turns a horizontal rule into a real full-width line', () {
-      const String source = '---\n下一段';
-      final List<InlineSpan> spans = render(source);
-      expectFaithful(source, spans, 'rule');
-      expect(
-        widgetsOf(spans).whereType<MarkdownDividerLine>().length,
-        1,
-        reason: 'the rule itself is drawn by its own render object',
-      );
-      // The widget stands in for the first dash; the other two collapse.
-      final TextSpan rest = spans.whereType<TextSpan>().firstWhere(
-        (TextSpan s) => s.text == '--',
-      );
-      expect(rest.style!.fontSize, 0);
-    });
-
-    test('a dash run under a paragraph is a rule, not a heading', () {
-      const String source = '标题\n---\n正文';
-      final List<InlineSpan> spans = render(source);
-      expectFaithful(source, spans, 'divider');
-      final TextSpan word = spans.whereType<TextSpan>().firstWhere(
-        (TextSpan s) => s.text == '标题',
-      );
-      expect(
-        word.style!.fontSize,
-        base.fontSize,
-        reason: 'the paragraph must not be promoted to a heading',
-      );
-      expect(widgetsOf(spans).whereType<MarkdownDividerLine>().length, 1);
-    });
-
-    test('a run of = under a paragraph promotes it to a heading', () {
-      final List<InlineSpan> spans = render('大标题\n===\n');
-      final TextSpan heading = spans.whereType<TextSpan>().firstWhere(
-        (TextSpan s) => s.text == '大标题',
-      );
-      expect(heading.style!.fontSize, greaterThan(base.fontSize!));
-    });
-
-    test('draws task boxes that report the offset they stand in for', () {
-      const String tasks = '- [x] 已完成\n- [ ] 待办\n';
-      final List<InlineSpan> spans = render(tasks);
-      expectFaithful(tasks, spans, 'tasks');
-
-      final List<int> offsets = spans
-          .whereType<WidgetSpan>()
-          .map((WidgetSpan s) => s.child)
-          .whereType<MarkdownTodoCheckbox>()
-          .map((MarkdownTodoCheckbox c) => c.sourceOffset)
-          .toList();
-      // Each box stands in for the `-` of its own line.
-      expect(offsets, <int>[0, tasks.indexOf('- [ ]')]);
-    });
-
-    test('draws an ordered task with its number kept in the marker column', () {
-      const String text = '1. [ ] 一件事\n2. [x] 另一件\n';
-      final List<InlineSpan> spans = render(text);
-      expectFaithful(text, spans, 'ordered tasks');
-
-      // Both items still draw a real box…
-      expect(
-        spans
-            .whereType<WidgetSpan>()
-            .map((WidgetSpan s) => s.child)
-            .whereType<MarkdownTodoCheckbox>()
-            .length,
-        2,
-      );
-      // …and the numbers stay visible: the box *follows* the number instead of
-      // replacing it (that is the whole difference from a `- [ ]` item).
-      final Iterable<String?> numbers = spans
-          .whereType<TextSpan>()
-          .where((TextSpan s) => s.style?.fontWeight == FontWeight.w600)
-          .map((TextSpan s) => s.text);
-      expect(numbers, containsAll(<String>['1.', '2.']));
-
-      // The box must point at the line it belongs to — that offset is what the
-      // tap handler feeds into toggleTaskAt, which only accepts a lead of `-`
-      // or `1.` *because* this test's regex and its own stay in step.
-      final List<int> offsets = spans
-          .whereType<WidgetSpan>()
-          .map((WidgetSpan s) => s.child)
-          .whereType<MarkdownTodoCheckbox>()
-          .map((MarkdownTodoCheckbox c) => c.sourceOffset)
-          .toList();
-      expect(offsets, <int>[text.indexOf('['), text.indexOf('[x]')]);
-
-      // And tapping that offset really does flip the box.
-      expect(toggleTaskAt(text, offsets.first), '1. [x] 一件事\n2. [x] 另一件\n');
-    });
-
-    test('strikes a ticked task through, number included', () {
-      // Two things the rule has to get right, both of which the eye notices
-      // long before any test does:
-      //
-      //  * a ticked *numbered* item is one struck-out sentence — the `1.` is
-      //    part of it, so the rule crosses the number too instead of stopping
-      //    politely in front of it (and the number stops being lit up in
-      //    accent while the words beside it are greyed out);
-      //  * the rule is painted in the colour of the text it crosses, and at
-      //    double the font's own hairline weight. A rule dimmer than its own
-      //    text is unreadable — that is the "删除线不够明显" report.
-      final List<InlineSpan> spans = render('1. [x] 一件事\n2. [ ] 另一件\n');
-
-      TextSpan span(String t) =>
-          spans.whereType<TextSpan>().firstWhere((TextSpan s) => s.text == t);
-
-      final TextSpan struckNumber = span('1.');
-      expect(
-        struckNumber.style!.decoration,
-        TextDecoration.lineThrough,
-        reason: 'the number of a ticked item must be struck too',
-      );
-      expect(
-        struckNumber.style!.decorationColor,
-        struckNumber.style!.color,
-        reason: 'the rule is painted in the colour of the text it crosses',
-      );
-
-      // The other item is untouched: still accent, still no rule.
-      final TextSpan liveNumber = span('2.');
-      expect(liveNumber.style!.decoration, isNot(TextDecoration.lineThrough));
-      expect(liveNumber.style!.color, palette.accent);
-
-      // The rule reads the same on the body text as it does on the number.
-      final TextSpan body = span('一件事');
-      expect(body.style!.decoration, TextDecoration.lineThrough);
-      expect(body.style!.decorationThickness, 2);
-      expect(body.style!.decorationColor, body.style!.color);
-      expect(body.style!.color, palette.textSecondary);
-      expect(
-        struckNumber.style!.decorationThickness,
-        body.style!.decorationThickness,
-        reason: 'one deletion rule, everywhere',
-      );
-
-      // A plain `- [x]` bullet gets the same treatment.
-      final List<InlineSpan> bullet = render('- [x] 一件事\n');
-      final TextSpan bulletBody = bullet.whereType<TextSpan>().firstWhere(
-        (TextSpan s) => s.text == '一件事',
-      );
-      expect(bulletBody.style!.decoration, TextDecoration.lineThrough);
-      expect(bulletBody.style!.decorationThickness, 2);
-
-      // And so does an inline `~~deletion~~`. It keeps the colour of the words
-      // around it, so the rule *matching* that colour is the only cue that it
-      // is struck at all — hence the explicit coloured base.
-      final List<InlineSpan> inline = buildLiveSpans(
-        text: '这是 ~~删掉~~ 的字\n',
-        base: base.copyWith(color: palette.textPrimary),
-        p: palette,
-        selection: const TextSelection.collapsed(offset: -1),
-        contentWidth: 680,
-      );
-      final TextSpan gone = inline.whereType<TextSpan>().firstWhere(
-        (TextSpan s) => s.text == '删掉',
-      );
-      expect(gone.style!.decoration, TextDecoration.lineThrough);
-      expect(gone.style!.decorationThickness, 2);
-      expect(gone.style!.decorationColor, palette.textPrimary);
-    });
-
-    test('draws the list markers as markers even on the caret line', () {
-      // The user's rule: typing `-` then space has to *look* like a list right
-      // away, so a bullet is never swapped back to raw text.
-      const String text = '- 一项\n- [ ] 待办';
-      for (final int caret in <int>[0, 2, 6]) {
-        final List<InlineSpan> spans = render(text, caret: caret);
-        expectFaithful(text, spans, 'caret=$caret');
-        expect(
-          spans.whereType<WidgetSpan>().length,
-          2,
-          reason: 'caret=$caret lost a marker widget',
-        );
-      }
-    });
-
-    test('nests by a fixed step and draws a rail per ancestor level', () {
-      // Two typed spaces are worth ~9px at this font size, which made nesting
-      // invisible: the child marker barely moved and nothing said which parent
-      // the row belonged to. A level is now worth one whole marker column, and
-      // the row carries a rail at its parent's marker centre.
-      const String text = '- 一\n  - 二\n    - 三\n';
-      final List<InlineSpan> spans = render(text);
-      expectFaithful(text, spans, 'nested list');
-
-      // Three bullets, plus one indent guide on each of the two nested rows.
-      expect(spans.whereType<WidgetSpan>().length, 5);
-      final List<MarkdownIndentGuides> guides = spans
-          .whereType<WidgetSpan>()
-          .map((WidgetSpan s) => s.child)
-          .whereType<MarkdownIndentGuides>()
-          .toList();
-      expect(guides.map((MarkdownIndentGuides g) => g.levels), <int>[1, 2]);
-
-      // The typed spaces are still in the tree — they are just worth nothing
-      // now, because the widget in front of them already carries the width.
-      expect(
-        spans
-            .whereType<TextSpan>()
-            .where((TextSpan s) => s.text == '   ')
-            .isNotEmpty,
-        isTrue,
-        reason: 'the deepest indent must survive as real characters',
-      );
-    });
-
-    test('draws tags as pills that report their own name', () {
-      const String text = '想法 #写作 与 #灵感\n';
-      final List<String> tapped = <String>[];
-      final List<InlineSpan> spans = buildLiveSpans(
-        text: text,
-        base: base,
-        p: palette,
-        selection: const TextSelection.collapsed(offset: -1),
-        onTagTap: tapped.add,
-      );
-
-      expectFaithful(text, spans, 'tags');
-      final List<GestureDetector> hit = taps(spans);
-      expect(hit.length, 2);
-      hit.last.onTap!();
-      expect(tapped, <String>['灵感']);
-
-      // The tag the caret sits inside goes back to editable source text, and
-      // the others stay pills.
-      final List<InlineSpan> onLine = buildLiveSpans(
-        text: text,
-        base: base,
-        p: palette,
-        selection: const TextSelection.collapsed(offset: 4),
-        onTagTap: tapped.add,
-      );
-      expect(taps(onLine).length, 1);
-      expectFaithful(text, onLine, 'tags with caret');
-    });
-
-    test('the quote bar is exactly as wide as the marker it hides', () {
-      // A fixed-width bar nudged the paragraph sideways the moment the caret
-      // landed on a quote line, and re-wrapped it when the line ended near the
-      // column's edge. The slot has to match the advance of `> ` exactly.
-      final List<InlineSpan> spans = buildLiveSpans(
-        text: '> 引用\n',
-        base: base,
-        p: palette,
-        selection: const TextSelection.collapsed(offset: -1),
-      );
-      final WidgetSpan bar = spans.whereType<WidgetSpan>().first;
-      final SizedBox slot = bar.child as SizedBox;
-
-      final TextPainter tp = TextPainter(
-        text: TextSpan(text: '> ', style: base),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      expect(slot.width, closeTo(tp.width, 0.001));
-    });
-
-    test('draws wikilinks as tappable links', () {
-      const String text = 'see [[会议记录]] now\n';
-      final List<String> opened = <String>[];
-      final List<InlineSpan> spans = buildLiveSpans(
-        text: text,
-        base: base,
-        p: palette,
-        selection: const TextSelection.collapsed(offset: -1),
-        onWikilinkTap: opened.add,
-      );
-      expectFaithful(text, spans, 'wikilink');
-      final List<GestureDetector> hit = taps(spans);
-      expect(hit.length, 1);
-      hit.single.onTap!();
-      expect(opened, <String>['会议记录']);
-    });
-
-    test('does not mistake an issue number for a tag', () {
-      const String text = '修复 issue#12 与 #1 的问题\n';
-      final List<String> tapped = <String>[];
-      final List<InlineSpan> spans = buildLiveSpans(
-        text: text,
-        base: base,
-        p: palette,
-        selection: const TextSelection.collapsed(offset: -1),
-        onTagTap: tapped.add,
-      );
-      expect(taps(spans), isEmpty);
-      expectFaithful(text, spans, 'issue numbers');
-    });
-
-    test('collapses a table divider instead of shouting it', () {
-      // `| --- | --- |` 只服务于对齐与加列，读的时候它是噪音：行高压成 0，
-      // 字也压成零号。光标停上去时才显形，否则没法编辑那一行。
-      const String text = '| a | b |\n| --- | --- |\n| 1 | 2 |\n';
-      final LiveLineStyle away = LiveLineStyle(
-        base: base,
-        palette: palette,
-        reveal: () => const TextSelection.collapsed(offset: 0),
-      );
-      final SourceLine divider = scanSourceLines(
-        text,
-      ).firstWhere((SourceLine l) => l.kind == LineBlockKind.tableDivider);
-      expect(away.heightFor(divider), 0);
-      expect(away.styleFor(divider).fontSize, 0);
-
-      final LiveLineStyle onCaret = LiveLineStyle(
-        base: base,
-        palette: palette,
-        reveal: () =>
-            TextSelection.collapsed(offset: divider.start + 1),
-      );
-      expect(onCaret.heightFor(divider), isNull);
-      expect(onCaret.styleFor(divider).fontSize, base.fontSize);
-    });
-
-    test('the header sits flush on the first body row', () {
-      // The divider keeps its source line but occupies no pixels, so the header
-      // and the first body row share an edge instead of leaving a body row of
-      // paper between them.
-      const String text = '| 区域 | 事 |\n| --- | --- |\n| 侧栏 | 记 |\n';
-      final LiveLineStyle live = LiveLineStyle(
-        base: base,
-        palette: palette,
-        reveal: () => const TextSelection.collapsed(offset: 0),
-      );
-      final LineDocumentLayout layout = layoutLines(
-        text: text,
-        baseStyle: base,
-        contentWidth: 680,
-        styleFor: live.styleFor,
-        heightFor: live.heightFor,
-      );
-      addTearDown(layout.dispose);
-      final LaidOutLine header = layout.laidOut.firstWhere(
-        (LaidOutLine l) => l.source.kind == LineBlockKind.tableHeader,
-      );
-      final LaidOutLine body = layout.laidOut.firstWhere(
-        (LaidOutLine l) =>
-            l.source.kind == LineBlockKind.table && l.source.start > text.indexOf('---'),
-      );
-      expect(header.bottom, body.top, reason: '表头与第一行正文之间不能空出一行');
-    });
-
-    test('an inline code span never swallows its own backticks', () {
-      const String text = 'a `x = 1` b';
-      expectFaithful(text, render(text), 'inline code');
-      expectFaithful(text, render(text, caret: 4), 'inline code, caret inside');
-    });
-
-    test('an inline code chip is carried by its two backtick ends', () {
-      const String text = 'a `x = 1` b';
-      final List<InlineSpan> spans = render(text);
-      expectFaithful(text, spans, 'inline code chip');
-      expect(
-        spans.whereType<TextSpan>().any(
-          (TextSpan s) => (s.text ?? '').contains('`'),
-        ),
-        isFalse,
-        reason: 'the backticks are drawn as the chip ends, not as text',
-      );
-      expect(
-        spans.whereType<WidgetSpan>().length,
-        2,
-        reason: 'one padded end per backtick',
-      );
-      final TextSpan run = spans
-          .whereType<TextSpan>()
-          .firstWhere((TextSpan s) => s.text == 'x = 1');
-      expect(
-        run.style!.backgroundColor,
-        palette.surfaceSunken,
-        reason: 'the run keeps its fill so the three pieces read as one band',
-      );
-      expect(
-        run.style!.color,
-        palette.textPrimary,
-        reason: 'code is text, not an accent colour',
-      );
-      expect(run.style!.fontFamily, AppFonts.mono);
-      expect(
-        run.style!.fontSize,
-        lessThan(15.5),
-        reason: 'the mono face is set a little smaller to sit in the line',
-      );
-    });
-
-    test('a caret inside inline code takes the chip down to the source', () {
-      const String text = 'a `x = 1` b';
-      final List<InlineSpan> spans = render(text, caret: 5);
-      expectFaithful(text, spans, 'inline code editing');
-      expect(
-        spans.whereType<WidgetSpan>(),
-        isEmpty,
-        reason: 'editing must not leave the padded ends on screen',
-      );
-      expect(
-        spans.whereType<TextSpan>().where((TextSpan s) => s.text == '`').length,
-        2,
-        reason: 'both backticks are visible while editing',
-      );
-      final TextSpan run = spans
-          .whereType<TextSpan>()
-          .firstWhere((TextSpan s) => s.text == 'x = 1');
-      expect(
-        run.style!.backgroundColor,
-        isNull,
-        reason: 'user: 「选中后没有恢复成编辑态」 — the fill has to go',
-      );
-    });
-
-    test('selecting inline code reveals the source as well', () {
-      const String text = 'a `x = 1` b';
-      final List<InlineSpan> spans = buildLiveSpans(
-        text: text,
-        base: base,
-        p: palette,
-        selection: const TextSelection(baseOffset: 0, extentOffset: text.length),
-        contentWidth: 680,
-      );
-      expectFaithful(text, spans, 'inline code selected');
-      expect(spans.whereType<WidgetSpan>(), isEmpty);
-      final TextSpan run = spans
-          .whereType<TextSpan>()
-          .firstWhere((TextSpan s) => s.text == 'x = 1');
-      expect(run.style!.backgroundColor, isNull);
-    });
-
-    test('a frozen drag tints the chip instead of dropping it', () {
-      // A pointer gesture freezes the reveal at pointer-down so the text cannot
-      // reflow under the finger, but the wash still has to be visible. A
-      // rendered chip paints its own opaque fill, so it mixes the selection in.
-      const String text = 'a `x = 1` b';
-      final List<InlineSpan> spans = buildLiveSpans(
-        text: text,
-        base: base,
-        p: palette,
-        selection: const TextSelection.collapsed(offset: 0),
-        liveSelection: const TextSelection(baseOffset: 0, extentOffset: 11),
-        contentWidth: 680,
-      );
-      expect(
-        spans.whereType<WidgetSpan>().length,
-        2,
-        reason: 'the chip has to stay rendered while the reveal is frozen',
-      );
-      final TextSpan run = spans
-          .whereType<TextSpan>()
-          .firstWhere((TextSpan s) => s.text == 'x = 1');
-      expect(
-        run.style!.backgroundColor,
-        Color.alphaBlend(palette.selection, palette.surfaceSunken),
-        reason: 'the chip must carry the selection wash itself',
-      );
-    });
-
-    test('an image keeps its source characters behind the widget', () {
-      const String text = '![风景](https://x.test/a.png)';
-      final List<InlineSpan> spans = render(text);
-      expectFaithful(text, spans, 'image');
-      expect(spans.whereType<WidgetSpan>().length, 1);
     });
   });
 
@@ -1978,66 +1231,91 @@ final x = 1;
     const AppPalette palette = AppPalette.light;
     // `| a | b |` forms; the divider makes the row above it the header.
     const String doc = '| 想要 | 就写 |\n| --- | --- |\n| **加粗** | `Ctrl + B` |\n';
-    List<TableGeometry> measure(String text) => measureTables(
-      text: text,
-      base: base,
-      p: palette,
-      contentWidth: 680,
-    );
+    // 表格几何由 `LiveTableBlocks` 自绘承担：直接读它交给渲染层的行/列矩形
+    // 与单元格文本，不再走已退役的段落级 `measureTables`。
+    ({LineDocumentLayout layout, List<TableRowChrome> rows}) tableOf(
+      String text, {
+      TextSelection selection = const TextSelection.collapsed(offset: -1),
+    }) {
+      final LiveTableBlocks blocks = LiveTableBlocks(
+        base: base,
+        palette: palette,
+        text: () => text,
+        selection: () => selection,
+      );
+      addTearDown(blocks.dispose);
+      final LineDocumentLayout layout = layoutLines(
+        text: text,
+        baseStyle: base,
+        contentWidth: 680,
+        blockFor: blocks.blockFor,
+      );
+      addTearDown(layout.dispose);
+      return (
+        layout: layout,
+        rows: <TableRowChrome>[
+          for (final LaidOutLine line in layout.laidOut)
+            if (line.block is TableRowChrome) line.block! as TableRowChrome,
+        ],
+      );
+    }
 
     test('a table block is measured once, with every row', () {
-      final List<TableGeometry> tables = measure(doc);
-      expect(tables, hasLength(1));
-      final TableGeometry t = tables.single;
+      final ({LineDocumentLayout layout, List<TableRowChrome> rows}) t =
+          tableOf(doc);
       // The divider line is not a row; header plus one body row are.
       expect(t.rows, hasLength(2));
-      expect(t.rows.first.header, isTrue);
-      expect(t.rows.last.header, isFalse);
-      expect(t.rows.first.line, 0);
-      expect(t.rows.last.line, 2);
+      expect(t.layout.laidOut[0].source.kind, LineBlockKind.tableHeader);
+      expect(t.layout.laidOut[1].source.kind, LineBlockKind.tableDivider);
+      expect(t.layout.laidOut[2].source.kind, LineBlockKind.table);
     });
 
     test('columns line up across rows', () {
-      final TableGeometry t = measure(doc).single;
+      final ({LineDocumentLayout layout, List<TableRowChrome> rows}) t =
+          tableOf(doc);
+      final List<Rect> header = t.rows.first.chromeCells();
+      expect(header, hasLength(2));
       for (int c = 0; c < 2; c++) {
-        final double x = t.rows.first.cells[c].x;
-        final double w = t.rows.first.cells[c].width;
-        for (final TableRowGeometry r in t.rows) {
-          expect(r.cells[c].x, x, reason: 'column $c is not aligned');
-          expect(r.cells[c].width, w, reason: 'column $c is not one width');
+        final Rect first = header[c];
+        for (final TableRowChrome row in t.rows) {
+          final Rect cell = row.chromeCells()[c];
+          expect(cell.left, first.left, reason: 'column $c is not aligned');
+          expect(cell.width, first.width, reason: 'column $c is not one width');
         }
       }
       // Cells tile: no gap, no overlap, and the table is exactly as wide as
       // its last cell is far.
-      expect(t.rows.first.cells.first.x, 0);
-      expect(t.rows.first.cells[1].x, t.rows.first.cells.first.width);
+      expect(header.first.left, 0);
+      expect(header[1].left, header.first.width);
+      expect(t.rows.first.chromeBounds().width, header.last.right);
       expect(
-        t.width,
-        t.rows.first.cells.last.x + t.rows.first.cells.last.width,
+        t.rows.first.chromeBounds().width,
+        lessThanOrEqualTo(679),
+        reason: 'the row must not wrap',
       );
-      expect(t.width, lessThanOrEqualTo(679), reason: 'the row must not wrap');
     });
 
     test('a cell knows the source characters it holds', () {
-      final TableGeometry t = measure(doc).single;
-      final TableCellGeometry cell = t.rows.last.cells.first;
+      final ({LineDocumentLayout layout, List<TableRowChrome> rows}) t =
+          tableOf(doc);
       expect(
-        doc.substring(cell.start, cell.end),
-        ' **加粗** ',
-        reason: 'the cell range covers everything between the pipes',
+        t.rows.last.chromeCellSpans().first.toPlainText().trim(),
+        '**加粗**',
+        reason: 'the cell span covers everything between the pipes',
       );
     });
 
-    test('a squeezed cell gets a letter spacing that fits its column', () {
+    test('a squeezed cell fits its column', () {
       // Three wide columns cannot fit 680px without shrinking.
       const String wide = '| 一列很长的文字内容 | 另一列也很长的文字内容 | 第三列照样长 |';
-      final TableGeometry t = measure('$wide\n| --- | --- | --- |\n').single;
-      for (final TableRowGeometry r in t.rows) {
-        for (final TableCellGeometry c in r.cells) {
-          expect(c.width, greaterThan(0));
+      final ({LineDocumentLayout layout, List<TableRowChrome> rows}) t =
+          tableOf('$wide\n| --- | --- | --- |\n');
+      for (final TableRowChrome row in t.rows) {
+        for (final Rect cell in row.chromeCells()) {
+          expect(cell.width, greaterThan(0));
         }
       }
-      expect(t.width, lessThanOrEqualTo(679));
+      expect(t.rows.first.chromeBounds().width, lessThanOrEqualTo(679));
     });
 
     test('a caret in a cell leaves the table rendered', () {
@@ -2366,91 +1644,4 @@ final x = 1;
     });
   });
 
-  group('Table delete snaps to the cells the wash painted', () {
-    // The table from the report: the pointer went down **after** 「链接」 (in
-    // that cell's padding), so the raw selection started mid-cell while the
-    // wash covered the whole cell. Deleting the raw range left 「链接」 and a
-    // stray row of pipes behind.
-    const String row = '| 链接 | Ctrl + K | [标题](url) |';
-    const String grid =
-        '| 加粗 | Ctrl + B | **文字** |\n'
-        '| --- | --- | --- |\n'
-        '| 斜体 | Ctrl + I | *文字* |\n'
-        '| 功能 | 快捷键 | 写法 |\n'
-        '| 行内代码 | Ctrl + E | `code` |\n'
-        '$row\n'
-        '| 加粗 | Ctrl + B | **文字** |\n'
-        '| 斜体 | Ctrl + I | *文字* |\n'
-        '| 行内代码 | Ctrl + E | `code` |\n'
-        '$row\n';
-    final int first = grid.indexOf(row);
-    final int last = grid.indexOf(row, first + 1);
-
-    test('a drag from inside a cell to the end takes the whole rows', () {
-      final TextSelection snapped = snapTableSelection(
-        grid,
-        TextSelection(baseOffset: first + 4, extentOffset: grid.length),
-      );
-      expect(snapped.start, first, reason: 'the row start, not mid-cell');
-      expect(snapped.end, grid.length);
-
-      final String cut = snapped.textBefore(grid) + snapped.textAfter(grid);
-      expect(cut.contains('链接'), isFalse);
-      // No stray `|  |  |` row left at the bottom of the table.
-      expect(cut.endsWith('| 行内代码 | Ctrl + E | `code` |\n'), isTrue);
-      expect(
-        cut.split('\n').where((String l) => l.startsWith('|')),
-        hasLength(5),
-      );
-    });
-
-    test('a selection inside one cell is ordinary text selection', () {
-      final TextSelection sel = TextSelection(
-        baseOffset: first + 2,
-        extentOffset: first + 4,
-      );
-      expect(snapTableSelection(grid, sel), sel);
-    });
-
-    test('one whole row selected goes away as a row', () {
-      // Same rule one row up: a row picked end to end is a row, not a run of
-      // cells, so it cannot come back as `|  |  |`.
-      final TextSelection snapped = snapTableSelection(
-        grid,
-        TextSelection(baseOffset: first, extentOffset: first + row.length),
-      );
-      expect(snapped.start, first);
-      expect(
-        snapped.end,
-        first + row.length + 1,
-        reason: 'the newline goes too',
-      );
-    });
-
-    test('a middle column keeps its pipes', () {
-      final (int a, int b) = tableCellsOf(row)[1];
-      final TextSelection snapped = snapTableSelection(
-        grid,
-        TextSelection(baseOffset: first + a + 3, extentOffset: last + b - 2),
-      );
-      // Snapped to the cell's text, spaces and pipes excluded.
-      expect(grid.substring(snapped.start, snapped.start + 6), 'Ctrl +');
-      expect(grid.substring(snapped.end - 1, snapped.end), 'K');
-    });
-
-    test('a selection across two tables is left alone', () {
-      final String two = '$grid\n$grid';
-      final TextSelection sel = TextSelection(
-        baseOffset: first + 4,
-        extentOffset: two.length,
-      );
-      expect(snapTableSelection(two, sel), sel);
-    });
-
-    test('prose is never touched', () {
-      const String prose = '第一行\n第二行\n第三行\n';
-      const TextSelection sel = TextSelection(baseOffset: 2, extentOffset: 8);
-      expect(snapTableSelection(prose, sel), sel);
-    });
-  });
 }

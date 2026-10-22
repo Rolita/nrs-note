@@ -6,6 +6,7 @@
 /// 排版和段落排版各自维护一套字号。
 library;
 
+import 'dart:collection';
 import 'dart:math' as math;
 
 import 'package:flutter/painting.dart';
@@ -62,6 +63,14 @@ class LiveLineStyle {
 
   /// 代码行首偏移 → 该行的 token；首次排版时算一次，实例存活期间复用。
   Map<int, List<CodeToken>>? _codeTokens;
+
+  /// 跨实例的围栏块分词缓存。
+  ///
+  /// 键是「语言 + 块正文」：块外文字变化时块正文没变，分词结果可以原样
+  /// 复用。只保留最近 8 块，长文档里不会把每个历史代码块都留在内存。
+  static final LinkedHashMap<(String?, String), List<List<CodeToken>>>
+      _blockTokens = LinkedHashMap<(String?, String), List<List<CodeToken>>>();
+  static const int _blockCacheLimit = 8;
 
   /// [line] 里被悬停的标签摘要成这一行内部的偏移；没有则为 `null`。
   ({int a, int b})? _hoverIn(SourceLine line) {
@@ -412,6 +421,22 @@ class LiveLineStyle {
   List<CodeToken>? _tokensFor(SourceLine line) =>
       (_codeTokens ??= _highlightBlocks())[line.start];
 
+  /// 取一个围栏块的分词结果，命中时把它移到 LRU 队尾。
+  static List<List<CodeToken>> _highlightBlock(String body, String? label) {
+    final (String?, String) key = (label, body);
+    final List<List<CodeToken>>? cached = _blockTokens.remove(key);
+    if (cached != null) {
+      _blockTokens[key] = cached;
+      return cached;
+    }
+    final List<List<CodeToken>> tokens = highlightCode(body, label);
+    _blockTokens[key] = tokens;
+    if (_blockTokens.length > _blockCacheLimit) {
+      _blockTokens.remove(_blockTokens.keys.first);
+    }
+    return tokens;
+  }
+
   /// 把每个围栏块的正文整块交给高亮器，再把逐行 token 按行首偏移拆回来。
   Map<int, List<CodeToken>> _highlightBlocks() {
     final Map<int, List<CodeToken>> out = <int, List<CodeToken>>{};
@@ -429,7 +454,7 @@ class LiveLineStyle {
       if (bodyStart >= bodyEnd) continue;
       final String body = source.substring(bodyStart, bodyEnd);
       final List<String> rows = body.split('\n');
-      final List<List<CodeToken>> tokens = highlightCode(body, block.label);
+      final List<List<CodeToken>> tokens = _highlightBlock(body, block.label);
       if (tokens.length != rows.length) continue;
       int offset = bodyStart;
       for (int i = 0; i < rows.length; i++) {

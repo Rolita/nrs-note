@@ -44,7 +44,6 @@ abstract final class AppMotion {
 
   static const Curve enter = Curves.easeOutCubic;
   static const Curve exit = Curves.easeInCubic;
-  static const Curve emphasis = Curves.easeOutBack;
 }
 
 /// A deliberate three-font strategy: UI chrome, prose, and code.
@@ -181,10 +180,6 @@ abstract final class AppLayout {
   /// each side, which is what makes the tabs read as sitting *in* the bar
   /// rather than being squeezed by it.
   static const double titleBarHeight = 40;
-
-  /// Below this width the shell degrades gracefully to a single pane.
-  static const double compactBreakpoint = 900;
-  static const double narrowBreakpoint = 620;
 
   /// Comfortable measure for prose (~72 characters).
   static const double proseMaxWidth = 720;

@@ -358,13 +358,13 @@ class _AppShellState extends State<AppShell> {
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
-    final NotesController notes = context.watch<NotesController>();
+    // 外壳只需要错误横幅；正文、选中等变化交给各自的面板订阅。
+    // 以前这里 watch 整个控制器，用户每敲一个字都会重建整棵外壳。
+    final String? error = context.select<NotesController, String?>(
+      (NotesController notes) => notes.error,
+    );
     final SettingsController settings = context.watch<SettingsController>();
     final bool zen = settings.focusMode;
-    final Note? open = notes.draft ?? notes.selectedNote;
-    final List<Heading> headings = open == null
-        ? const <Heading>[]
-        : extractHeadings(open.body);
 
     return CallbackShortcuts(
       bindings: _globalShortcuts(),
@@ -408,8 +408,7 @@ class _AppShellState extends State<AppShell> {
                     leftInset: leftInset,
                     rightInset: rightInset,
                   ),
-                  if (notes.error != null)
-                    _ErrorBanner(message: notes.error!),
+                  if (error != null) _ErrorBanner(message: error),
                   Expanded(
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -462,8 +461,7 @@ class _AppShellState extends State<AppShell> {
                             onDelta: (double d) =>
                                 settings.outlineWidth = settings.outlineWidth - d,
                           ),
-                          OutlinePanel(
-                            headings: headings,
+                          _OutlineRegion(
                             currentLine: _cursorLine,
                             width: settings.outlineWidth,
                             onSelect: (int line) =>
@@ -479,6 +477,57 @@ class _AppShellState extends State<AppShell> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// 大纲只订阅当前草稿，不再让一次击键重建整棵外壳。
+///
+/// 它仍然会在正文变化时重算（这是大纲的职责），但主题、保存状态、面板宽度
+/// 等通知不会经过这里。正文对象没换时直接复用上一次的标题列表。
+class _OutlineRegion extends StatefulWidget {
+  const _OutlineRegion({
+    required this.currentLine,
+    required this.width,
+    required this.onSelect,
+  });
+
+  final int currentLine;
+  final double width;
+  final ValueChanged<int> onSelect;
+
+  @override
+  State<_OutlineRegion> createState() => _OutlineRegionState();
+}
+
+class _OutlineRegionState extends State<_OutlineRegion> {
+  String? _noteId;
+  String? _body;
+  List<Heading> _headings = const <Heading>[];
+
+  @override
+  Widget build(BuildContext context) {
+    final Note? open = context.select<NotesController, Note?>(
+      (NotesController notes) => notes.draft ?? notes.selectedNote,
+    );
+    final List<Heading> headings;
+    if (open == null) {
+      _noteId = null;
+      _body = null;
+      headings = _headings = const <Heading>[];
+    } else if (_noteId == open.id && identical(_body, open.body)) {
+      headings = _headings;
+    } else {
+      _noteId = open.id;
+      _body = open.body;
+      headings = _headings = extractHeadings(open.body);
+    }
+
+    return OutlinePanel(
+      headings: headings,
+      currentLine: widget.currentLine,
+      width: widget.width,
+      onSelect: widget.onSelect,
     );
   }
 }

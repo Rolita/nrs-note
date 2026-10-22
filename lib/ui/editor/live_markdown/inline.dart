@@ -1,39 +1,5 @@
 part of '../live_markdown.dart';
 
-/// The leading whitespace of a list row, rendered as [level] fixed-width steps.
-///
-/// Tab writes two spaces, and two spaces of a proportional font are worth about
-/// nine pixels — so nesting used to be invisible: the child marker sat 9px right
-/// of the parent's, the text did not move, and there was nothing to say which
-/// parent a nested row belonged to. Here each level is worth [_kIndentStep]
-/// whatever the font's space happens to measure, and the step carries a rail at
-/// the parent's marker centre.
-///
-/// The typed spaces are all still in the span tree — the length invariant needs
-/// every source character to survive — but the first one becomes the full-width
-/// widget and the rest collapse to nothing. That keeps `substring` offsets, the
-/// caret's offsets and `getPositionForPoint` exactly as they were.
-List<InlineSpan> _indentRun(String indent, TextStyle base, AppPalette p) {
-  if (indent.isEmpty) return const <InlineSpan>[];
-  final int level = _level(indent);
-  if (level == 0) {
-    // One stray space is not a nest level. Leave it at its natural width so the
-    // caret stays where the user typed it.
-    return <InlineSpan>[TextSpan(text: indent, style: base)];
-  }
-  return <InlineSpan>[
-    _decoration(
-      MarkdownIndentGuides(
-        levels: level,
-        color: p.rule,
-        rowHeight: _lineHeightOf(base),
-      ),
-    ),
-    if (indent.length > 1)
-      TextSpan(text: indent.substring(1), style: _collapsed(base)),
-  ];
-}
-
 String _fenceLanguage(String info) {
   String raw = info.trim();
   if (raw.startsWith('{')) raw = raw.replaceAll(RegExp(r'[{}]'), '').trim();
@@ -349,110 +315,13 @@ _Ctx _cellEditCtx(_Ctx ctx, int from, int to) => _Ctx(
   onWikilinkTap: ctx.onWikilinkTap,
 );
 
-// ------------------------------------------------------------- inline widgets
-
-/// The dot in front of a bullet item.
-///
-/// One solid disc at every depth. It used to cycle ● / ○ / ▪ by nesting level,
-/// which is the browser default rather than a decision: three shapes meant three
-/// things to learn, and the hollow ring at level 2 read as a disabled control.
-/// Depth is already said by the indent, and one glyph says it once.
-WidgetSpan _bulletDot(AppPalette p) {
-  final Color color = p.textTertiary.withValues(alpha: 0.9);
-  return _decoration(
-    Padding(
-      padding: const EdgeInsets.only(left: 2, right: 9),
-      child: Container(
-        width: 5,
-        height: 5,
-        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-      ),
-    ),
-  );
-}
-
-/// The vertical rule on the left of a quote.
-///
-/// It is exactly one row tall so consecutive quote lines butt up against each
-/// other and read as a single continuous bar rather than a dashed one, and it is
-/// exactly as wide as the `> ` it hides — see [_markerAdvance].
-WidgetSpan _quoteBar(
-  AppPalette p,
-  TextStyle base,
-  String marker,
-  TextScaler scaler,
-) {
-  final double row = _lineHeightOf(base);
-  return _decoration(
-    SizedBox(
-      width: _markerAdvance(marker, base, scaler),
-      height: row,
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: Container(
-          width: 2,
-          height: row,
-          margin: const EdgeInsets.only(left: 2),
-          color: p.accent,
-        ),
-      ),
-    ),
-  );
-}
-
-/// Advance width of a marker, measured the way the paragraph will lay it out.
-///
-/// A decoration that stands in for `> ` has to occupy exactly as much room as
-/// the characters it hides. The bar used to be a fixed 14px while `> ` is as
-/// wide as the font makes it, so putting the caret on a quote line nudged the
-/// whole paragraph sideways under the pointer — and re-wrapped the line whenever
-/// it happened to end near the column's edge. That is the jitter you feel when
-/// you click into a quote.
-double _markerAdvance(String marker, TextStyle style, TextScaler scaler) {
-  final String key =
-      '${style.fontFamily}|${style.fontSize}|${style.letterSpacing}|'
-      '${scaler.scale(1)}|$marker';
-  final double? cached = _kMarkerAdvances[key];
-  if (cached != null) return cached;
-  final TextPainter tp = TextPainter(
-    text: TextSpan(text: marker, style: style),
-    textDirection: TextDirection.ltr,
-    textScaler: scaler,
-  )..layout();
-  final double width = tp.width;
-  tp.dispose();
-  // A note has a handful of distinct markers; the bound is only here so a
-  // pathological document cannot grow the map without end.
-  if (_kMarkerAdvances.length > 128) _kMarkerAdvances.clear();
-  _kMarkerAdvances[key] = width;
-  return width;
-}
-
-final Map<String, double> _kMarkerAdvances = <String, double>{};
-
-/// The sunken slab that keeps a fenced block reading as a single card is
-/// painted behind the field (see `CodeBlockPainter`); this is only the fence
-/// line's own row — an empty spacer that reserves the card's header, or nothing
-/// at all for the closing fence.
-///
-/// 这条腿只剩单段落排版还在用（按行排版的行高由 `heightFor` 给）。它同时顶着
-/// 围栏行的第一个反引号字符位，所以要删它得先改 [_swallowed] 的字符账。
-WidgetSpan _codeFenceSpacer(double width, double height) => _decoration(
-  SizedBox(
-    // A few pixels short of the column: the widget plus whatever it swapped out
-    // may never be wider than the line, or the paragraph wraps.
-    width: math.max(24, width - 8),
-    height: height,
-  ),
-);
-
 // ------------------------------------------------- 按行渲染器（line_layout）入口
 
 /// 一行正文的行内样式树，供按行排版的 `TextPainter` 使用。
 ///
-/// 和 [buildLiveSpans] 共用同一套扫描器，唯一区别是 `plain: true`：chip 一律
-/// 降级成等长的 [TextSpan]，因为一个只负责自己这一行的 `TextPainter` 承载不了
-/// widget。标记字符仍然发出，只是被 `_collapsed` 压成零宽，所以
+/// 和段落渲染共用同一套扫描器，唯一区别是 `plain: true`：chip 一律降级成等长
+/// 的 [TextSpan]，因为一个只负责自己这一行的 `TextPainter` 承载不了 widget。
+/// 标记字符仍然发出，只是被 `_collapsed` 压成零宽，所以
 /// `toPlainText()` 与 [text] 逐字符相同 —— 按行排版的偏移映射靠这个前提。
 ///
 /// [caretA] / [caretB] 是**这一行内部**的揭示范围（已经减掉行首偏移），传

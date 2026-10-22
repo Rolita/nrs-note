@@ -2,9 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// 本文件 fork 自 Flutter 3.38.6 的 widgets/editable_text.dart。
+// 本文件 fork 自 Flutter 3.44.0 的 widgets/editable_text.dart（2026-10-22 对齐）。
 // 唯一目的是把渲染对象换成按行排版的 RenderLineEditable（见 render_line_editable.dart）。
-// 升级 Flutter SDK 时需要重新同步本文件；业务逻辑不要写在这里。
+// 升级 Flutter SDK 时：先看 SDK git 仓库里 `3.44.0..新版本` 对本文件的 diff，逐段
+// 合并进来，再手工验收 IME（组合输入、候选框、自动填充）；业务逻辑不要写在这里。
 //
 // 保留 SDK 原始写法，因此这里集中豁免若干 lint：
 // ignore_for_file: deprecated_member_use, prefer_initializing_formals, constant_identifier_names, use_super_parameters

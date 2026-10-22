@@ -473,6 +473,57 @@ void main() {
     expect(notes.isFiltered, isFalse, reason: '清空后不该留下上一轮的结果');
   });
 
+  test('case-insensitive hits read from the folded copy, casing intact',
+      () async {
+    final NotesController notes = await _open(
+      _MemoryStore(<Note>[
+        _note('Plan', body: '第一行\nSee the NRS Plan here\n最后一行\n'),
+      ]),
+    );
+
+    notes.setQuery('nrs plan');
+    final List<SearchHit> hits = notes.searchHits;
+    expect(hits, hasLength(1));
+
+    final SearchSnippet snippet = hits.single.snippets.single;
+    expect(snippet.text, 'See the NRS Plan here', reason: '摘要取原正文的大小写');
+    expect(
+      snippet.text.substring(snippet.matchStart, snippet.matchEnd),
+      'NRS Plan',
+      reason: '偏移来自折叠副本，但落在原正文的同一位置',
+    );
+  });
+
+  test('body edits leave the structure revision alone, tree edits move it',
+      () async {
+    final Note existing = _note('计划', body: '正文');
+    final NotesController notes = await _open(_MemoryStore(<Note>[existing]));
+    final int start = notes.structureRevision;
+
+    notes.select(existing.id);
+    notes.updateBody('正文改');
+    expect(notes.structureRevision, start, reason: '正文输入不应该重建文件树');
+
+    notes.updateTitle('计划改');
+    expect(
+      notes.structureRevision,
+      greaterThan(start),
+      reason: '标题就是文件名，树上的那一行必须更新',
+    );
+
+    final int afterTitle = notes.structureRevision;
+    final Note created = notes.createNote(title: '新笔记');
+    expect(notes.structureRevision, greaterThan(afterTitle));
+
+    final int afterCreate = notes.structureRevision;
+    await notes.deleteNotes(<Note>[created]);
+    expect(notes.structureRevision, greaterThan(afterCreate));
+
+    final int afterDelete = notes.structureRevision;
+    notes.sortMode = SortMode.updatedAsc;
+    expect(notes.structureRevision, greaterThan(afterDelete), reason: '排序变化也要重排');
+  });
+
   test('names are scoped to their folder, so 未命名.md can repeat', () async {
     final NotesController notes = await _open(_MemoryStore());
 

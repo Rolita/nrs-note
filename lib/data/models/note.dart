@@ -42,16 +42,29 @@ class Note {
   /// note that sits directly in the vault.
   final String folderPath;
 
+  /// 派生统计的惰性缓存。
+  ///
+  /// 正文是不可变的，所以同一份正文算一次就够：状态栏一次构建要取六次统计，
+  /// 原先会重跑六遍全文正则。`copyWith` 生成新实例时缓存自然从空开始，
+  /// 「正文变则统计变」不依赖任何显式失效。
+  ({int words, int chars})? _counts;
+  ({int total, int done})? _tasks;
+
+  /// 大小写不敏感搜索用的折叠副本（标题、正文各一份）。
+  ///
+  /// 过滤和命中行定位都会把整篇正文转小写：原先按「每个查询词 × 每条命中」
+  /// 重复转换，长笔记下开销随命中数放大。正文不可变，折叠一次就够，同样
+  /// 由 `copyWith` 新实例自然失效。
+  String? _foldedTitle;
+  String? _foldedBody;
+
+  String get foldedTitle => _foldedTitle ??= title.toLowerCase();
+
+  String get foldedBody => _foldedBody ??= body.toLowerCase();
+
   /// Vault-relative path of the file, always `/`-separated.
   String get relativePath =>
       folderPath.isEmpty ? fileName : '$folderPath/$fileName';
-
-  /// Last segment of [folderPath], for compact display.
-  String get folderName =>
-      folderPath.isEmpty ? '' : folderPath.split('/').last;
-
-  bool get isEmpty =>
-      body.trim().isEmpty && title.trim().isEmpty && tags.isEmpty;
 
   Note copyWith({
     String? id,
@@ -70,54 +83,17 @@ class Note {
     folderPath: folderPath ?? this.folderPath,
   );
 
-  /// What the list shows underneath the title.
-  String get snippet {
-    final String flat = body
-        .replaceAll(RegExp(r'^---[\s\S]*?---'), '')
-        .replaceAll(RegExp(r'```[\s\S]*?```'), ' ')
-        .replaceAll(RegExp(r'`[^`]*`'), ' ')
-        .replaceAllMapped(
-          RegExp(r'!?\[([^\]]*)\]\([^)]*\)'),
-          (Match m) => m.group(1) ?? '',
-        )
-        .replaceAll(RegExp(r'^\s{0,3}#{1,6}\s*', multiLine: true), '')
-        .replaceAll(RegExp(r'^\s{0,3}>\s?', multiLine: true), '')
-        .replaceAll(RegExp(r'^\s{0,3}[-*+]\s+', multiLine: true), '')
-        .replaceAll(RegExp(r'^\s{0,3}\d+\.\s+', multiLine: true), '')
-        .replaceAll(RegExp(r'[*_~]'), '')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-    return flat;
-  }
-
-  /// Heading extracted from the body — used when the user clears the title.
-  String get derivedTitle {
-    for (final String line in body.split('\n')) {
-      final Match? m = RegExp(r'^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$').firstMatch(line);
-      if (m != null) return m.group(1)!.trim();
-      if (line.trim().isNotEmpty) break;
-    }
-    return '';
-  }
-
   /// Latin words plus CJK ideographs, which is the count Chinese writers expect.
-  int get characterCount {
-    final String text = body.replaceAll(RegExp(r'```[\s\S]*?```'), '');
-    return text.replaceAll(RegExp(r'\s'), '').length;
-  }
+  int get characterCount => (_counts ??= _countBody()).chars;
 
-  int get wordCount {
-    final String text = body.replaceAll(RegExp(r'```[\s\S]*?```'), '');
-    final int cjk = RegExp(
-      r'[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF]',
-    ).allMatches(text).length;
-    final int latin = RegExp(r"[A-Za-z0-9\u00C0-\u024F']+")
-        .allMatches(text.replaceAll(
-          RegExp(r'[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF]'),
-          ' ',
-        ))
-        .length;
-    return cjk + latin;
+  int get wordCount => (_counts ??= _countBody()).words;
+
+  /// 一次扫描同时得到字数与字符数：两者去的是同一份围栏文本。
+  ({int words, int chars}) _countBody() {
+    final String text = body.replaceAll(_fencedBlock, '');
+    final int cjk = _cjk.allMatches(text).length;
+    final int latin = _latin.allMatches(text.replaceAll(_cjk, ' ')).length;
+    return (words: cjk + latin, chars: text.replaceAll(_whitespace, '').length);
   }
 
   /// Rounded reading time in minutes, never zero for non-empty notes.
@@ -130,15 +106,32 @@ class Note {
   /// Checkboxes, whether the item is bulleted (`- [ ] 事`) or numbered
   /// (`1. [ ] 事`). The numbered form is a first-class task list — it is what
   /// the toolbar's "ordered task list" writes and what the editor draws.
-  static const String _taskLead = r'^\s*(?:[-*+]|\d{1,9}[.)])\s+\[[ xX]\]';
-
-  int get taskTotal =>
-      RegExp(_taskLead, multiLine: true).allMatches(body).length;
-
-  int get taskDone => RegExp(
-    r'^\s*(?:[-*+]|\d{1,9}[.)])\s+\[[xX]\]',
+  static final RegExp _taskLine = RegExp(
+    r'^\s*(?:[-*+]|\d{1,9}[.)])\s+\[([ xX])\]',
     multiLine: true,
-  ).allMatches(body).length;
+  );
+
+  int get taskTotal => (_tasks ??= _countTasks()).total;
+
+  int get taskDone => (_tasks ??= _countTasks()).done;
+
+  ({int total, int done}) _countTasks() {
+    int total = 0;
+    int done = 0;
+    for (final RegExpMatch m in _taskLine.allMatches(body)) {
+      total++;
+      final String mark = m.group(1)!;
+      if (mark == 'x' || mark == 'X') done++;
+    }
+    return (total: total, done: done);
+  }
+
+  static final RegExp _fencedBlock = RegExp(r'```[\s\S]*?```');
+  static final RegExp _whitespace = RegExp(r'\s');
+  static final RegExp _cjk = RegExp(
+    r'[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF]',
+  );
+  static final RegExp _latin = RegExp(r"[A-Za-z0-9\u00C0-\u024F']+");
 
   // ---------------------------------------------------------------- front matter
 

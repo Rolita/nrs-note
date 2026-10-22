@@ -310,10 +310,6 @@ class TableBlock {
     if (rows.isEmpty) return null;
     return TableBlock(text: text, start: start, end: end, rows: rows);
   }
-
-  /// The block whose first line starts at [lineStart], if that line is a row.
-  static TableBlock? parseLine(String text, int lineStart) =>
-      parse(text, lineStart.clamp(0, text.length));
 }
 
 String _line(String text, int start) =>

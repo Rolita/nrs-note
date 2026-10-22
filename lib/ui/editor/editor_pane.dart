@@ -79,8 +79,6 @@ class EditorPaneState extends State<EditorPane> {
 
   bool _binding = false;
 
-  TextEditingController get bodyController => _body;
-
   @override
   void initState() {
     super.initState();
@@ -105,11 +103,9 @@ class EditorPaneState extends State<EditorPane> {
     final TextSelection sel = _body.selection;
     final String text = _body.text;
     final int caret = sel.baseOffset.clamp(0, text.length);
-    final int line = '\n'.allMatches(text.substring(0, caret)).length;
-    // Shared with the action layer, so the readout can never disagree with what
-    // the toolbar thinks the caret's line is.
-    final int lineStart = lineStartOf(text, caret);
-    final int column = caret - lineStart + 1;
+    final ({int line, int column}) position = _caretPosition(text, caret);
+    final int line = position.line;
+    final int column = position.column;
     if (line != _cursorLine || column != _cursorColumn) {
       final bool lineMoved = line != _cursorLine;
       setState(() {
@@ -122,6 +118,21 @@ class EditorPaneState extends State<EditorPane> {
         _maybeTypewriter(line);
       }
     }
+  }
+
+  /// 光标所在的源码行（从 0 开始）与列（从 1 开始）。
+  ///
+  /// 旧实现先 `substring(0, caret)` 再 `allMatches`：每次击键都要复制整个
+  /// 前缀，还要为每个换行造一个 `Match`。换行只是一个 UTF-16 码元，直接
+  /// 数 `codeUnitAt` 结果完全相同，且不再分配临时字符串。
+  ({int line, int column}) _caretPosition(String text, int caret) {
+    int line = 0;
+    for (int i = 0; i < caret; i++) {
+      if (text.codeUnitAt(i) == 0x0A) line++;
+    }
+    // Shared with the action layer, so the readout can never disagree with what
+    // the toolbar thinks the caret's line is.
+    return (line: line, column: caret - lineStartOf(text, caret) + 1);
   }
 
   /// Tells the outline which line to light up, once.
@@ -152,10 +163,6 @@ class EditorPaneState extends State<EditorPane> {
     context.read<NotesController>().updateBody(next.text);
     _bodyFocus.requestFocus();
   }
-
-  void focusEditor() => _bodyFocus.requestFocus();
-
-  void focusTitle() => _titleFocus.requestFocus();
 
   // ---------------------------------------------------------------- binding
 
@@ -223,8 +230,9 @@ class EditorPaneState extends State<EditorPane> {
     _bodyEpoch++;
     // `_binding` 挡住了 `_onBodyChanged`，这里自己把状态栏的行列数算回去。
     final int caret = nextSelection.baseOffset.clamp(0, note.body.length);
-    _cursorLine = '\n'.allMatches(note.body.substring(0, caret)).length;
-    _cursorColumn = caret - lineStartOf(note.body, caret) + 1;
+    final ({int line, int column}) position = _caretPosition(note.body, caret);
+    _cursorLine = position.line;
+    _cursorColumn = position.column;
   }
 
   // ------------------------------------------------------------ navigation

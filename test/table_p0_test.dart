@@ -227,6 +227,237 @@ void main() {
       await pressCtrl(tester, LogicalKeyboardKey.keyZ);
       expect(controller.text, before, reason: '撤销没有一次回到键入前');
     });
+
+    testWidgets('contiguous typing undoes as one block', (
+      WidgetTester tester,
+    ) async {
+      final MarkdownSourceController controller = await pumpEditor(
+        tester,
+        table,
+      );
+      final int at = jia + 1;
+      controller.selection = TextSelection.collapsed(offset: at);
+      await tester.pump();
+
+      void typeAt(String ch) {
+        final TextSelection sel = controller.selection;
+        controller.value = TextEditingValue(
+          text: sel.textBefore(controller.text) +
+              ch +
+              sel.textAfter(controller.text),
+          selection: TextSelection.collapsed(
+            offset: sel.baseOffset + ch.length,
+          ),
+        );
+      }
+
+      typeAt('a');
+      await tester.pump();
+      typeAt('b');
+      await tester.pump();
+
+      // 同一处连续打的两个字属于同一块：一次撤销全撤掉，光标回到块首。
+      await pressCtrl(tester, LogicalKeyboardKey.keyZ);
+      expect(controller.text, table, reason: '连续键入应作为一块撤销');
+      expect(
+        controller.selection.baseOffset,
+        at,
+        reason: '撤销整块后光标应回到这一块开始输入的位置',
+      );
+
+      await pressCtrl(tester, LogicalKeyboardKey.keyY);
+      expect(controller.text, table.replaceRange(at, at, 'ab'));
+      expect(
+        controller.selection.baseOffset,
+        at + 2,
+        reason: '重做整块后光标应落在整段文字之后',
+      );
+
+      // 重做栈已空，多按一次不应改动正文。
+      await pressCtrl(tester, LogicalKeyboardKey.keyY);
+      expect(controller.text, table.replaceRange(at, at, 'ab'));
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    testWidgets('a backspace run undoes as one block', (
+      WidgetTester tester,
+    ) async {
+      final MarkdownSourceController controller = await pumpEditor(
+        tester,
+        table,
+      );
+      final int at = jia + 1;
+
+      // 先在「甲」后面打 abc，是输入的一块。
+      controller.value = TextEditingValue(
+        text: controller.text.replaceRange(at, at, 'abc'),
+        selection: TextSelection.collapsed(offset: at + 3),
+      );
+      await tester.pump();
+
+      // 再连按三次退格，是删除的同一块。
+      for (int i = 0; i < 3; i++) {
+        final int caret = controller.selection.baseOffset;
+        controller.value = TextEditingValue(
+          text: controller.text.replaceRange(caret - 1, caret, ''),
+          selection: TextSelection.collapsed(offset: caret - 1),
+        );
+        await tester.pump();
+      }
+      expect(controller.text, table, reason: '三次退格应删回原样');
+
+      // 一次撤销把整段退格恢复回来，光标停在恢复文字之后。
+      await pressCtrl(tester, LogicalKeyboardKey.keyZ);
+      expect(controller.text, table.replaceRange(at, at, 'abc'));
+      expect(controller.selection.baseOffset, at + 3);
+
+      // 再一次撤销才撤掉输入的那一块。
+      await pressCtrl(tester, LogicalKeyboardKey.keyZ);
+      expect(controller.text, table);
+      expect(controller.selection.baseOffset, at);
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    testWidgets('undo returns the caret to where each cell edit was typed', (
+      WidgetTester tester,
+    ) async {
+      final MarkdownSourceController controller = await pumpEditor(
+        tester,
+        table,
+      );
+      final int first = jia + 1;
+      final int second = table.indexOf('乙') + 1;
+
+      void typeAt(int at, String ch) {
+        controller.selection = TextSelection.collapsed(offset: at);
+        controller.value = TextEditingValue(
+          text: controller.text.substring(0, at) +
+              ch +
+              controller.text.substring(at),
+          selection: TextSelection.collapsed(offset: at + ch.length),
+        );
+      }
+
+      controller.selection = TextSelection.collapsed(offset: first);
+      // 让绑定笔记时的初始状态先落进撤销栈，后面两次输入才是两步。
+      await tester.pump(const Duration(milliseconds: 600));
+
+      typeAt(first, 'a');
+      await tester.pump(const Duration(milliseconds: 600));
+      typeAt(second, 'b');
+      await tester.pump(const Duration(milliseconds: 600));
+
+      await pressCtrl(tester, LogicalKeyboardKey.keyZ);
+      expect(controller.text, table.replaceRange(first, first, 'a'));
+      expect(
+        controller.selection.baseOffset,
+        second,
+        reason: '撤销第二个单元格的输入后，光标应回到第二个输入点',
+      );
+
+      await pressCtrl(tester, LogicalKeyboardKey.keyZ);
+      expect(controller.text, table);
+      expect(
+        controller.selection.baseOffset,
+        first,
+        reason: '撤销第一个单元格的输入后，光标应回到第一个输入点',
+      );
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    testWidgets('undo after typing left of the previous edit keeps its place', (
+      WidgetTester tester,
+    ) async {
+      final MarkdownSourceController controller = await pumpEditor(
+        tester,
+        table,
+      );
+      final int at = jia + 1;
+      controller.selection = TextSelection.collapsed(offset: at);
+      await tester.pump(const Duration(milliseconds: 600));
+
+      controller.value = TextEditingValue(
+        text: controller.text.replaceRange(at, at, 'a'),
+        selection: TextSelection.collapsed(offset: at + 1),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+
+      // 光标退回一格，插到刚输入的字符前面。
+      controller.value = TextEditingValue(
+        text: controller.text.replaceRange(at, at, 'b'),
+        selection: TextSelection.collapsed(offset: at + 1),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+
+      await pressCtrl(tester, LogicalKeyboardKey.keyZ);
+      expect(controller.text, table.replaceRange(at, at, 'a'));
+      expect(
+        controller.selection.baseOffset,
+        at,
+        reason: '撤销应回到这次输入的位置，而不是上一次输入的末尾',
+      );
+      await tester.pump(const Duration(seconds: 3));
+    });
+
+    testWidgets('seven cell edits undo back to each input point', (
+      WidgetTester tester,
+    ) async {
+      final MarkdownSourceController controller = await pumpEditor(
+        tester,
+        table,
+      );
+      const List<String> marks = <String>[
+        '名称',
+        '乙',
+        '数量',
+        '一',
+        '2',
+        '二',
+        '备注',
+      ];
+      const List<String> typed = <String>['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+      final List<String> states = <String>[table];
+
+      // 七次输入间隔 100ms：旧实现会被 500ms 节流合并，甚至挤掉第一次输入；
+      // 现在每次正文变化都是独立的一步。
+      for (int i = 0; i < marks.length; i++) {
+        final int at = controller.text.indexOf(marks[i]) + marks[i].length;
+        controller.selection = TextSelection.collapsed(offset: at);
+        controller.value = TextEditingValue(
+          text: controller.text.substring(0, at) +
+              typed[i] +
+              controller.text.substring(at),
+          selection: TextSelection.collapsed(offset: at + 1),
+        );
+        states.add(controller.text);
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+
+      for (int i = marks.length - 1; i >= 0; i--) {
+        await pressCtrl(tester, LogicalKeyboardKey.keyZ);
+        expect(
+          controller.text,
+          states[i],
+          reason: '第 ${i + 1} 次撤销的正文不对',
+        );
+        expect(
+          controller.selection.baseOffset,
+          states[i].indexOf(marks[i]) + marks[i].length,
+          reason: '第 ${i + 1} 次撤销的光标没有回到输入点',
+        );
+      }
+
+      // 已经退到栈底，再按一次不应改动正文，也不应把光标带回文首。
+      final int held = controller.selection.baseOffset;
+      await pressCtrl(tester, LogicalKeyboardKey.keyZ);
+      expect(controller.text, table);
+      expect(
+        controller.selection.baseOffset,
+        held,
+        reason: '栈底多按一次撤销不应移动光标',
+      );
+      await tester.pump(const Duration(seconds: 3));
+    });
   });
 
   group('rectangle paste end to end', () {

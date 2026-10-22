@@ -92,7 +92,23 @@ class NoteListPanelState extends State<NoteListPanel> {
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
-    final NotesController notes = context.watch<NotesController>();
+    final NotesController notes = context.read<NotesController>();
+    if (widget.view == SidebarView.files) {
+      // 文件树只跟结构变化、选中项与筛选条件走。正文输入不改变这些值，
+      // 因此不再重建整棵树；每行的任务徽标由行内单独订阅。
+      context.select<NotesController, (int, String?, String, bool, SortMode)>(
+        (NotesController n) => (
+          n.structureRevision,
+          n.selectedId,
+          n.query,
+          n.caseSensitive,
+          n.sortMode,
+        ),
+      );
+    } else {
+      // 搜索与标签视图的列表内容直接来自正文，仍按整个控制器订阅。
+      context.watch<NotesController>();
+    }
     final SettingsController settings = context.watch<SettingsController>();
     final List<Note> visible = notes.visibleNotes;
 
@@ -534,10 +550,7 @@ class NoteListPanelState extends State<NoteListPanel> {
           const SizedBox(width: 10),
           Container(width: 1, height: 10, color: p.outlineSoft),
           const SizedBox(width: 10),
-          Text(
-            '共 ${_compact(notes.totalWords)} 字',
-            style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
-          ),
+          _WordTotal(p: p),
           const Spacer(),
           if (notes.isFiltered)
             Text(
@@ -553,6 +566,27 @@ class NoteListPanelState extends State<NoteListPanel> {
     if (value < 1000) return '$value';
     if (value < 10000) return '${(value / 1000).toStringAsFixed(1)}k';
     return '${(value / 10000).toStringAsFixed(1)} 万';
+  }
+}
+
+/// 底部「共 N 字」。
+///
+/// 字数随正文输入变化，但它只是一个小文本：单独订阅字数总和，
+/// 避免为了这一个数字把整个文件树一起重建。
+class _WordTotal extends StatelessWidget {
+  const _WordTotal({required this.p});
+
+  final AppPalette p;
+
+  @override
+  Widget build(BuildContext context) {
+    final int words = context.select<NotesController, int>(
+      (NotesController notes) => notes.totalWords,
+    );
+    return Text(
+      '共 ${NoteListPanelState._compact(words)} 字',
+      style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
+    );
   }
 }
 

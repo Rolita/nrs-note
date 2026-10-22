@@ -1,57 +1,5 @@
 part of '../live_markdown.dart';
 
-/// The marker shell around a task checkbox.
-///
-/// [sourceOffset] is the offset of the character this box stands in for.
-///
-/// ⛔ **Deliberately not tappable.** A `GestureDetector` here would be hit
-/// through the `TextPainter`'s *placeholder* box rather than the box the user
-/// can see, which drifts apart as soon as the row wraps or the marker column has
-/// more than one element — the reported symptom is "the box on the first line
-/// works and the others do not". The editor instead runs a `Listener` over the
-/// whole field and hit-tests this widget's real paint rect; see
-/// `MarkdownEditor`.
-class MarkdownTodoCheckbox extends StatelessWidget {
-  const MarkdownTodoCheckbox({
-    super.key,
-    required this.sourceOffset,
-    required this.child,
-  });
-
-  final int sourceOffset;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) => child;
-}
-
-WidgetSpan _taskBox(AppPalette p, bool done, int sourceOffset) => _decoration(
-  MarkdownTodoCheckbox(
-    sourceOffset: sourceOffset,
-    child: MouseRegion(
-      cursor: SystemMouseCursors.click,
-      child: Padding(
-        padding: const EdgeInsets.only(left: 2, right: 9),
-        child: Container(
-          width: 15,
-          height: 15,
-          decoration: BoxDecoration(
-            color: done ? p.accent : Colors.transparent,
-            borderRadius: BorderRadius.circular(AppRadius.xs),
-            border: Border.all(
-              color: done ? p.accent : _strongRule(p),
-              width: 1.5,
-            ),
-          ),
-          child: done
-              ? Icon(LucideIcons.check, size: 11, color: p.onAccent)
-              : null,
-        ),
-      ),
-    ),
-  ),
-);
-
 WidgetSpan _tagChip(
   AppPalette p,
   String tag,

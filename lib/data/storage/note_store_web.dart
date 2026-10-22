@@ -4,6 +4,7 @@ import 'package:web/web.dart' as web;
 
 import '../models/note.dart';
 import 'note_store.dart';
+import 'web_sync.dart';
 
 /// Browser fallback.
 ///
@@ -19,6 +20,10 @@ class WebNoteStore with NoteStoreSupport implements NoteStore {
   static const String _foldersKey = 'nrs/v1/folders';
 
   final Map<String, String> _cache = <String, String>{};
+
+  /// 上次成功写进 localStorage 的正文；`_flush` 只写与它不同的键。
+  final Map<String, String> _persisted = <String, String>{};
+
   final Set<String> _folders = <String>{};
   bool _ready = false;
 
@@ -43,14 +48,22 @@ class WebNoteStore with NoteStoreSupport implements NoteStore {
 
   void _reloadCache() {
     _cache.clear();
+    _persisted.clear();
     final web.Storage ls = web.window.localStorage;
+    final List<String> legacyKeys = <String>[];
     for (int i = 0; i < ls.length; i++) {
       final String? key = ls.key(i);
       if (key == null || !key.startsWith(_prefix)) continue;
       final String? value = ls.getItem(key);
-      if (value != null) {
-        _cache[key.substring(_prefix.length).replaceAll('\\', '/')] = value;
-      }
+      if (value == null) continue;
+      final String path = key.substring(_prefix.length).replaceAll('\\', '/');
+      _cache[path] = value;
+      _persisted[path] = value;
+      // 旧版本可能写入了带反斜杠的键；同一篇笔记只留归一化后的一个。
+      if (key != '$_prefix$path') legacyKeys.add(key);
+    }
+    for (final String key in legacyKeys) {
+      ls.removeItem(key);
     }
   }
 
@@ -74,18 +87,13 @@ class WebNoteStore with NoteStoreSupport implements NoteStore {
   }
 
   void _flush() {
-    final web.Storage ls = web.window.localStorage;
-    final List<String> stale = <String>[];
-    for (int i = 0; i < ls.length; i++) {
-      final String? key = ls.key(i);
-      if (key != null && key.startsWith(_prefix)) stale.add(key);
-    }
-    for (final String key in stale) {
-      ls.removeItem(key);
-    }
-    _cache.forEach((String relativePath, String raw) {
-      ls.setItem('$_prefix$relativePath', raw);
-    });
+    // 只写变化项；全部写成功后才会删过期键。配额超限时 setItem 抛错，
+    // 已存在的笔记仍是旧值，不会出现「清空一半又写了一半」的残缺库。
+    WebSyncPlan.between(persisted: _persisted, next: _cache).apply(
+      _LocalStorage(),
+      _persisted,
+      prefix: _prefix,
+    );
   }
 
   void _flushFolders() {
@@ -267,9 +275,17 @@ class WebNoteStore with NoteStoreSupport implements NoteStore {
     }
     return wanted;
   }
+}
 
-  /// Exposed for the "export vault" action in the browser build.
-  String exportJson() => jsonEncode(_cache);
+/// 把 `package:web` 的 localStorage 包成 [WebKeyValue]，让落盘逻辑留在纯 Dart 里。
+class _LocalStorage implements WebKeyValue {
+  final web.Storage _ls = web.window.localStorage;
+
+  @override
+  void setItem(String key, String value) => _ls.setItem(key, value);
+
+  @override
+  void removeItem(String key) => _ls.removeItem(key);
 }
 
 NoteStore createNoteStore() => WebNoteStore();

@@ -64,4 +64,3 @@ part 'live_markdown/table_measure.dart';
 part 'live_markdown/table_api.dart';
 part 'live_markdown/table_block.dart';
 part 'live_markdown/widgets.dart';
-part 'live_markdown/widgets_render.dart';

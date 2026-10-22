@@ -128,9 +128,6 @@ double textHeightAbove({
   return measured + correction;
 }
 
-_Fence? _blockAt(List<_Fence> blocks, int index) =>
-    index >= 0 && index < blocks.length ? blocks[index] : null;
-
 int _lineOf(String text, int offset) {
   int count = 0;
   for (int i = 0; i < offset && i < text.length; i++) {
@@ -138,22 +135,3 @@ int _lineOf(String text, int offset) {
   }
   return count;
 }
-
-/// Nesting depth from a run of leading whitespace (two spaces ≈ one level).
-int _level(String indent) {
-  int width = 0;
-  for (final int unit in indent.codeUnits) {
-    width += unit == 0x09 ? 2 : 1;
-  }
-  return (width ~/ 2).clamp(0, 5);
-}
-
-/// How far one nest level pushes the marker to the right.
-///
-/// Exactly one marker column (`_taskBox`'s 2 + 15 + 9), so a child's content
-/// lines up under its parent's content instead of drifting.
-const double _kIndentStep = 26;
-
-/// Distance from the row start to the *centre* of a level's marker — where that
-/// level's rail is drawn.
-const double _kMarkerCentre = 9.5;

@@ -107,8 +107,6 @@ class ScreenEyedropper {
   /// 颜色」，只有这里能说清是哪一种。
   bool unavailable = false;
 
-  bool get running => _timer != null;
-
   void start() {
     if (_timer != null) return;
     _armed = false;

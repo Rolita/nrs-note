@@ -2,65 +2,16 @@ part of '../live_markdown.dart';
 
 // ---------------------------------------------------------------- block kinds
 
-enum _Kind {
-  paragraph,
-  heading,
-  fence,
-  code,
-  bullet,
-  ordered,
-  task,
-  quote,
-  rule,
-  setext,
-  table,
-  tableHeader,
-  tableDivider,
-}
-
-final RegExp _fenceRe = RegExp(r'^(\s{0,3})(`{3,}|~{3,})(.*)$');
-
-final RegExp _headingRe = RegExp(r'^(\s{0,3})(#{1,6})(\s+)(.*?)(\s+#+\s*)?$');
-
-final RegExp _bulletRe = RegExp(r'^(\s*)([-*+])(\s+)(.*)$');
-
-final RegExp _taskRe = RegExp(
-  r'^(\s*)([-*+]|\d{1,9}[.)])(\s+)(\[[ xX]\])(\s+)(.*)$',
-);
-
-/// Whether a task's lead-in is a number (`1.`) rather than a bullet (`-`).
+/// 围栏行的语法：缩进、围栏字符与 info string。
 ///
-/// The lead group is either a single bullet character or digits plus `.`/`)`,
-/// so anything longer than one character is a number.
-bool _isOrderedLead(String lead) => lead.length > 1;
-
-final RegExp _orderedRe = RegExp(r'^(\s*)(\d{1,9})([.)])(\s+)(.*)$');
-
-final RegExp _quoteRe = RegExp(r'^(\s{0,3})(>)(\s?)(.*)$');
-
-final RegExp _ruleRe = RegExp(r'^ {0,3}(?:[-*_]\s*){3,}$');
-
-/// A setext underline turns the line above it into a heading. Only `===` counts
-/// here: a run of `-` is *always* a horizontal rule, because that is what
-/// everyone who types `---` under a paragraph means, and silently promoting the
-/// paragraph to a heading is the single most confusing thing this renderer can
-/// do. Use `##` for a level-2 heading.
-final RegExp _setextRe = RegExp(r'^ {0,3}(=+)\s*$');
+/// 段落级的块判定（`_Kind`、标题/列表/引用/分隔线正则）已随 `buildLiveSpans`
+/// 一起退役；按行排版由 `line_layout` 的扫描器判定块种类。
+final RegExp _fenceRe = RegExp(r'^(\s{0,3})(`{3,}|~{3,})(.*)$');
 
 /// The font size used for punctuation that is hidden. Zero, not "very small":
 /// a proportional font at 0.1px still has a non-zero advance, and those slivers
 /// add up into a visible wobble.
 const double _kHiddenFontSize = 0;
-
-/// A fenced code block, remembered so it can be highlighted as a whole.
-class _Fence {
-  _Fence({required this.open, required this.language});
-
-  final int open;
-  int close = -1;
-  final String language;
-  List<List<CodeToken>>? tokens;
-}
 
 /// Height of the card's header row: the band above the first line of code that
 /// carries the language label. 16px — not a prose row — is what keeps the card
