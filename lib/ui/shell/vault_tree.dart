@@ -12,6 +12,7 @@ import '../../data/models/note.dart';
 import '../../state/notes_controller.dart';
 import '../common/app_widgets.dart';
 import '../editor/editor_context_menu.dart';
+import 'data_safety_dialogs.dart';
 
 /// The real directory tree of the vault: folders first, then the notes that
 /// live directly in each one.
@@ -31,12 +32,17 @@ class VaultTree extends StatefulWidget {
     required this.notes,
     required this.onOpenNote,
     required this.onDeleteNotes,
+    required this.onDeleteFolder,
     this.onAllExpandedChanged,
   });
 
   final NotesController notes;
   final ValueChanged<Note> onOpenNote;
   final ValueChanged<List<Note>> onDeleteNotes;
+
+  /// Deletes a folder after the shell's confirmation. True means the folder or
+  /// the notes inside it are gone, so this tree drops its local expansion state.
+  final Future<bool> Function(String folderPath) onDeleteFolder;
 
   /// Reports whether every folder is open, so the toolbar can offer a single
   /// button that is either "全部展开" or "全部收起" — never both at once.
@@ -310,6 +316,12 @@ class VaultTreeState extends State<VaultTree> {
           icon: LucideIcons.folderInput,
           onPressed: () => unawaited(_pickFolder(affected)),
         ),
+        if (widget.notes.supportsHistory && affected.length == 1)
+          MenuAction(
+            label: '历史版本…',
+            icon: LucideIcons.history,
+            onPressed: () => showVersionHistoryDialog(context, note),
+          ),
         const MenuSeparator(),
         MenuAction(
           label: deleteLabel,
@@ -339,8 +351,34 @@ class VaultTreeState extends State<VaultTree> {
           shortcut: 'F2',
           onPressed: () => _startRenameFolder(folder, name),
         ),
+        const MenuSeparator(),
+        MenuAction(
+          label: '删除文件夹',
+          icon: LucideIcons.trash2,
+          danger: true,
+          onPressed: () => unawaited(_deleteFolder(folder)),
+        ),
       ],
     );
+  }
+
+  /// Runs the folder delete and forgets local tree state only after something
+  /// actually moved. A refusal — a file the trash cannot hold — leaves the
+  /// expansion and focus exactly where they were.
+  Future<void> _deleteFolder(String folder) async {
+    final bool changed = await widget.onDeleteFolder(folder);
+    if (!mounted || !changed) return;
+    setState(() {
+      _expanded.removeWhere(
+        (String path) => path == folder || path.startsWith('$folder/'),
+      );
+      final String? focus = _focusFolderPath;
+      if (focus == folder || (focus?.startsWith('$folder/') ?? false)) {
+        _focusFolderPath = null;
+      }
+      _pruneToVisible();
+    });
+    _notifyExpansion();
   }
 
   // ------------------------------------------------------------------ rename

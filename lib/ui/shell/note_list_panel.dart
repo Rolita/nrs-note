@@ -22,12 +22,17 @@ class NoteListPanel extends StatefulWidget {
     required this.view,
     required this.onCreateNote,
     required this.onDeleteNotes,
+    required this.onDeleteFolder,
     required this.onSwitchView,
   });
 
   final SidebarView view;
   final VoidCallback onCreateNote;
   final void Function(List<Note> notes) onDeleteNotes;
+
+  /// Deletes a folder after its own confirmation; true when the tree should
+  /// forget the folder and the notes that lived there.
+  final Future<bool> Function(String folderPath) onDeleteFolder;
   final ValueChanged<SidebarView> onSwitchView;
 
   @override
@@ -138,6 +143,7 @@ class NoteListPanelState extends State<NoteListPanel> {
                 notes: notes,
                 onOpenNote: (Note note) => notes.select(note.id),
                 onDeleteNotes: widget.onDeleteNotes,
+                onDeleteFolder: widget.onDeleteFolder,
                 onAllExpandedChanged: (bool all) {
                   if (!mounted || all == _allExpanded) return;
                   setState(() => _allExpanded = all);

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/core/app_enums.dart';
 import 'package:nrs/data/models/note.dart';
@@ -18,6 +20,48 @@ class _MemoryStore extends NoteStore {
   final List<Note> notes;
   final Map<String, NoteFileStamp> _stamps = <String, NoteFileStamp>{};
   int _clock = 0;
+
+  /// Trash entries, newest first, with the bytes needed to put them back.
+  final List<_MemoryTrashEntry> trash = <_MemoryTrashEntry>[];
+
+  /// Deletes of these ids fail, as a locked file would.
+  final Set<String> failDeleteIds = <String>{};
+
+  /// Makes the next save fail, as a read-only vault would.
+  bool failSave = false;
+
+  /// Directories that exist even when empty, as the real stores report them.
+  final Set<String> folders = <String>{};
+
+  /// Files below a folder that the note trash cannot restore.
+  final Set<String> foreignFiles = <String>{};
+
+  /// Every content string handed to [captureVersion], oldest first.
+  final List<({String id, String raw})> captured =
+      <({String id, String raw})>[];
+
+  /// Seeded history, per note id.
+  final Map<String, List<NoteVersion>> versions = <String, List<NoteVersion>>{};
+  final Map<String, Map<String, String>> _versionRaw =
+      <String, Map<String, String>>{};
+  int _versionSeq = 0;
+
+  void seedVersion(Note note, String body) {
+    final DateTime at = DateTime(2026, 1, 1)
+        .add(Duration(minutes: ++_versionSeq));
+    final String id = '${at.microsecondsSinceEpoch}';
+    final String raw = note.copyWith(body: body, updatedAt: at).toMarkdown();
+    versions.putIfAbsent(note.id, () => <NoteVersion>[]).add(
+      NoteVersion(id: id, capturedAt: at, size: raw.length),
+    );
+    _versionRaw.putIfAbsent(note.id, () => <String, String>{})[id] = raw;
+  }
+
+  @override
+  bool get supportsTrash => true;
+
+  @override
+  bool get supportsHistory => true;
 
   void _touch(Note note) {
     _stamps[note.relativePath] = NoteFileStamp(
@@ -64,6 +108,7 @@ class _MemoryStore extends NoteStore {
 
   @override
   Future<void> save(Note note, {String? previousPath}) async {
+    if (failSave) throw StateError('disk is read-only');
     notes.removeWhere(
       (Note n) =>
           n.id == note.id ||
@@ -79,9 +124,149 @@ class _MemoryStore extends NoteStore {
   }
 
   @override
-  Future<void> delete(Note note) async {
+  Future<List<String>> listFolders() async => folders.toList()..sort();
+
+  @override
+  Future<String> createFolder(String folderPath) async {
+    final String folder = Note.normalizeFolderPath(folderPath);
+    if (folder.isEmpty) return '';
+    String current = '';
+    for (final String part in folder.split('/')) {
+      current = current.isEmpty ? part : '$current/$part';
+      folders.add(current);
+    }
+    return folder;
+  }
+
+  @override
+  Future<bool> folderHoldsOnlyNotes(
+    String folderPath,
+    Set<String> notePaths,
+  ) async {
+    final String folder = Note.normalizeFolderPath(folderPath);
+    if (folder.isEmpty) return false;
+    final String prefix = '$folder/';
+    final bool exists =
+        folders.contains(folder) ||
+        notes.any(
+          (Note n) =>
+              n.folderPath == folder || n.folderPath.startsWith(prefix),
+        );
+    if (!exists) return false;
+    if (foreignFiles.any((String f) => f.startsWith(prefix))) return false;
+    for (final Note note in notes) {
+      if (!note.relativePath.startsWith(prefix)) continue;
+      if (!notePaths.contains(note.relativePath)) return false;
+    }
+    return true;
+  }
+
+  @override
+  Future<bool> deleteFolder(String folderPath) async {
+    final String folder = Note.normalizeFolderPath(folderPath);
+    if (folder.isEmpty) return false;
+    final String prefix = '$folder/';
+    if (notes.any((Note n) => n.relativePath.startsWith(prefix))) return false;
+    if (foreignFiles.any((String f) => f.startsWith(prefix))) return false;
+    folders.removeWhere(
+      (String path) => path == folder || path.startsWith(prefix),
+    );
+    return true;
+  }
+
+  @override
+  Future<TrashEntry?> delete(Note note) async {
+    if (failDeleteIds.contains(note.id)) {
+      throw StateError('file is locked');
+    }
+    final String raw = note.toMarkdown();
+    final TrashEntry entry = TrashEntry(
+      id: 'trash-${trash.length + 1}',
+      originalPath: note.relativePath,
+      title: note.title,
+      deletedAt: DateTime(2026, 1, 2),
+      size: raw.length,
+    );
+    trash.insert(
+      0,
+      _MemoryTrashEntry(
+        entry: entry,
+        raw: raw,
+        fileName: note.fileName,
+        folderPath: note.folderPath,
+      ),
+    );
     notes.removeWhere((Note n) => n.id == note.id);
     _stamps.remove(note.relativePath);
+    return entry;
+  }
+
+  @override
+  Future<List<TrashEntry>> listTrash() async =>
+      <TrashEntry>[for (final _MemoryTrashEntry e in trash) e.entry];
+
+  @override
+  Future<Note?> restoreTrash(String entryId) async {
+    final int index = trash.indexWhere(
+      (_MemoryTrashEntry e) => e.entry.id == entryId,
+    );
+    if (index < 0) return null;
+    final _MemoryTrashEntry record = trash.removeAt(index);
+    return writeNewMarkdown(
+      record.raw,
+      record.fileName,
+      folderPath: record.folderPath,
+    );
+  }
+
+  @override
+  Future<void> purgeTrash(String entryId) async {
+    trash.removeWhere((_MemoryTrashEntry e) => e.entry.id == entryId);
+  }
+
+  @override
+  Future<void> emptyTrash() async => trash.clear();
+
+  @override
+  Future<List<NoteVersion>> historyOf(Note note) async {
+    final List<NoteVersion> found = <NoteVersion>[
+      ...?versions[note.id],
+    ]..sort(
+      (NoteVersion a, NoteVersion b) => b.capturedAt.compareTo(a.capturedAt),
+    );
+    return found;
+  }
+
+  @override
+  Future<String?> readVersion(Note note, String versionId) async =>
+      _versionRaw[note.id]?[versionId];
+
+  @override
+  Future<bool> restoreVersion(Note note, String versionId) async {
+    final String? raw = _versionRaw[note.id]?[versionId];
+    if (raw == null) return false;
+    final Note live = notes.firstWhere(
+      (Note n) => n.id == note.id,
+      orElse: () => note,
+    );
+    await captureVersion(live);
+    await save(
+      live.copyWith(
+        body: Note.splitFrontMatter(raw).body,
+        updatedAt: DateTime(2026, 2, 1),
+      ),
+      previousPath: live.relativePath,
+    );
+    return true;
+  }
+
+  @override
+  Future<void> captureVersion(Note note) async {
+    final Note live = notes.firstWhere(
+      (Note n) => n.id == note.id,
+      orElse: () => note,
+    );
+    captured.add((id: note.id, raw: live.toMarkdown()));
   }
 
   @override
@@ -102,7 +287,7 @@ class _MemoryStore extends NoteStore {
       folderPath: folder,
     );
     final Note note = parsed.copyWith(
-      fileName: _uniqueName(folder, Note.buildFileName(parsed.title)),
+      fileName: _uniqueName(folder, withExtension),
     );
     await save(note);
     return note;
@@ -127,12 +312,28 @@ class _MemoryStore extends NoteStore {
   }
 }
 
-Note _note(String title, {String body = ''}) => Note(
+/// One trashed note: the public receipt, plus the bytes that put it back.
+class _MemoryTrashEntry {
+  const _MemoryTrashEntry({
+    required this.entry,
+    required this.raw,
+    required this.fileName,
+    required this.folderPath,
+  });
+
+  final TrashEntry entry;
+  final String raw;
+  final String fileName;
+  final String folderPath;
+}
+
+Note _note(String title, {String body = '', String folderPath = ''}) => Note(
   id: Note.newId(),
   title: title,
   body: body,
   createdAt: DateTime(2026, 1, 1),
   updatedAt: DateTime(2026, 1, 1),
+  folderPath: folderPath,
 );
 
 Future<NotesController> _open(_MemoryStore store) async {
@@ -377,6 +578,119 @@ void main() {
     expect(store.maxInFlight, 1, reason: '写盘必须排队,不能同时进行');
     expect(store.notes, hasLength(1), reason: '不能留下幽灵文件');
     expect(store.notes.single.fileName, '第二个名字.md');
+  });
+
+  test('switching notes while a write is in flight keeps the last edits', () async {
+    // The queue used to read `_draft` again when it drained, so a flush that
+    // waited behind a slow write saved the *newly opened* note and dropped the
+    // words typed in the old one.
+    final _GatedStore store = _GatedStore();
+    final NotesController notes = NotesController(store: store);
+    addTearDown(notes.dispose);
+    await notes.bootstrap();
+    final Note first = notes.allNotes.firstWhere(
+      (Note n) => n.title == '第一篇',
+    );
+    final Note second = notes.allNotes.firstWhere(
+      (Note n) => n.title == '第二篇',
+    );
+    notes.select(first.id);
+
+    store.blockNextSave();
+    notes.updateBody('改过一次');
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    await store.saveStarted;
+
+    notes.updateBody('切走前的最后一版');
+    notes.select(second.id);
+    store.release();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(
+      store.notes.firstWhere((Note n) => n.id == first.id).body,
+      '切走前的最后一版',
+      reason: '排队的那次写盘必须带着切走前的快照,而不是新打开的草稿',
+    );
+    expect(notes.draft?.id, second.id);
+    expect(
+      store.notes.firstWhere((Note n) => n.id == second.id).body,
+      '另一篇',
+      reason: '切过去的那篇不能被上一篇的排队写盘顺手覆盖',
+    );
+
+    // The late write must not leave its own path on the freshly opened note:
+    // the next save of that note would then delete the previous one's file.
+    notes.updateBody('第二篇的新正文');
+    await notes.saveNow();
+
+    expect(store.notes, hasLength(2));
+    expect(
+      store.notes.firstWhere((Note n) => n.id == first.id).body,
+      '切走前的最后一版',
+    );
+    expect(
+      store.notes.firstWhere((Note n) => n.id == second.id).body,
+      '第二篇的新正文',
+    );
+  });
+
+  test('renaming a row older than the last keystroke keeps the new words', () async {
+    // The tree redraws on structure changes only, so its row can predate the
+    // typing. Writing that stale copy during a rename rolls the file back.
+    final Note note = _note('甲', body: '正文');
+    final _MemoryStore store = _MemoryStore(<Note>[note]);
+    final NotesController notes = await _open(store);
+    final Note stale = notes.draft!;
+
+    notes.updateBody('刚敲的正文');
+    await notes.saveNow();
+    await notes.renameNote(stale, '乙');
+
+    final Note stored = store.notes.single;
+    expect(stored.title, '乙');
+    expect(stored.fileName, '乙.md');
+    expect(stored.body, '刚敲的正文', reason: '重命名不能把旧正文写回去');
+  });
+
+  test('dragging a row older than the last keystroke keeps the new words', () async {
+    final Note note = _note('甲', body: '正文');
+    final _MemoryStore store = _MemoryStore(<Note>[note]);
+    final NotesController notes = await _open(store);
+    final Note stale = notes.draft!;
+
+    notes.updateBody('刚敲的正文');
+    await notes.saveNow();
+    await notes.moveNotes(<Note>[stale], '归档');
+
+    final Note stored = store.notes.single;
+    expect(stored.folderPath, '归档');
+    expect(stored.relativePath, '归档/甲.md');
+    expect(stored.body, '刚敲的正文', reason: '移动不能把旧正文写回去');
+  });
+
+  test('a focus sync that raced with a save never puts the older body back', () async {
+    // The sync read the file before our save replaced it. Applying that older
+    // snapshot on top of an already-saved draft is a silent undo of real work.
+    final _RacingStore store = _RacingStore();
+    final NotesController notes = await _open(store);
+
+    notes.updateBody('刚敲的新正文');
+    store.arm();
+    store.touchStamp();
+    final Future<String?> sync = notes.syncFromDisk();
+    await store.readStarted;
+
+    await notes.saveNow();
+    store.finishRead();
+    await sync;
+
+    expect(
+      notes.draft?.body,
+      '刚敲的新正文',
+      reason: '读盘早于保存完成时,那次读到的旧字节必须作废',
+    );
+    expect(notes.saveState, SaveState.saved);
+    expect(store.notes.single.body, '刚敲的新正文');
   });
 
   test('all six sort modes order the vault as their labels promise', () async {
@@ -686,6 +1000,312 @@ void main() {
     expect(notes.draft, isNull);
     expect(notes.conflict, isNull);
   });
+
+  group('回收站', () {
+    test('deleting the open note puts the unsaved edits in the trash', () async {
+      final Note note = _note('随笔', body: '第一行');
+      final _MemoryStore store = _MemoryStore(<Note>[note]);
+      final NotesController notes = await _open(store);
+
+      notes.updateBody('本地改过');
+      final DeleteOutcome outcome = await notes.deleteNotes(<Note>[note]);
+
+      expect(outcome.deleted, 1);
+      expect(outcome.failed, 0);
+      expect(outcome.receipts, hasLength(1));
+      expect(store.notes, isEmpty);
+      expect(
+        store.trash.single.raw,
+        contains('本地改过'),
+        reason: '回收站里必须是删除前一秒的正文',
+      );
+      expect(notes.draft, isNull);
+    });
+
+    test('a delete that cannot save the open draft is cancelled', () async {
+      final Note note = _note('随笔', body: '第一行');
+      final _MemoryStore store = _MemoryStore(<Note>[note]);
+      final NotesController notes = await _open(store);
+
+      notes.updateBody('本地改过');
+      store.failSave = true;
+      final DeleteOutcome outcome = await notes.deleteNotes(<Note>[note]);
+
+      expect(outcome.deleted, 0);
+      expect(outcome.failed, 1);
+      expect(store.notes, hasLength(1), reason: '没保存成功就不能删');
+      expect(notes.allNotes, hasLength(1));
+      expect(notes.draft?.body, '本地改过', reason: '本地输入不能丢');
+      expect(notes.error, contains('删除已取消'));
+    });
+
+    test('undoing a delete brings the note back and selects it', () async {
+      final Note note = _note('随笔', body: '正文', folderPath: '工作');
+      final _MemoryStore store = _MemoryStore(<Note>[note]);
+      final NotesController notes = await _open(store);
+
+      final DeleteOutcome outcome = await notes.deleteNotes(<Note>[note]);
+      final int restored = await notes.restoreTrashEntries(
+        <String>[outcome.receipts.single.id],
+      );
+
+      expect(restored, 1);
+      expect(store.trash, isEmpty);
+      final Note back = store.notes.single;
+      expect(back.id, note.id);
+      expect(back.title, '随笔');
+      expect(back.relativePath, '工作/随笔.md');
+      expect(back.body, '正文');
+      expect(notes.selectedId, back.id);
+      expect(notes.draft?.body, '正文');
+    });
+
+    test('a batch delete keeps the notes it could not move', () async {
+      final Note first = _note('一');
+      final Note second = _note('二');
+      final _MemoryStore store = _MemoryStore(<Note>[first, second]);
+      final NotesController notes = await _open(store);
+
+      store.failDeleteIds.add(second.id);
+      final DeleteOutcome outcome = await notes.deleteNotes(
+        <Note>[first, second],
+      );
+
+      expect(outcome.deleted, 1);
+      expect(outcome.failed, 1);
+      expect(outcome.receipts, hasLength(1));
+      expect(store.notes.single.id, second.id, reason: '没删掉的必须留在库里');
+      expect(notes.allNotes.single.id, second.id);
+      expect(notes.error, contains('二'));
+    });
+  });
+
+  group('删除文件夹', () {
+    test('a folder delete trashes every note below it and removes the folder',
+        () async {
+      final Note rootNote = _note('根目录');
+      final Note plan = _note('计划', body: '正文', folderPath: '项目');
+      final Note sub = _note('子计划', body: '正文', folderPath: '项目/子项目');
+      final _MemoryStore store = _MemoryStore(<Note>[rootNote, plan, sub]);
+      await store.createFolder('项目/子项目');
+      final NotesController notes = await _open(store);
+      notes.setActiveFolder('项目/子项目');
+
+      final FolderDeleteOutcome outcome = await notes.deleteFolder('项目');
+
+      expect(outcome.blocked, isNull);
+      expect(outcome.removed, isTrue);
+      expect(outcome.deleted, 2);
+      expect(outcome.failed, 0);
+      expect(outcome.receipts, hasLength(2));
+      expect(store.notes.single.id, rootNote.id);
+      expect(notes.allNotes.single.id, rootNote.id);
+      expect(notes.folders, isNot(contains('项目')));
+      expect(notes.activeFolder, '', reason: '被删掉的目录要让下一步落到根目录');
+    });
+
+    test('a folder with a foreign file is refused before any note moves',
+        () async {
+      final Note plan = _note('计划', body: '正文', folderPath: '项目');
+      final _MemoryStore store = _MemoryStore(<Note>[plan]);
+      await store.createFolder('项目');
+      store.foreignFiles.add('项目/附件.png');
+      final NotesController notes = await _open(store);
+
+      final FolderDeleteOutcome outcome = await notes.deleteFolder('项目');
+
+      expect(outcome.blocked, contains('不是笔记'));
+      expect(outcome.removed, isFalse);
+      expect(outcome.deleted, 0);
+      expect(store.notes.single.id, plan.id);
+      expect(store.trash, isEmpty, reason: '拒绝时连一篇笔记都不能移动');
+      expect(notes.allNotes.single.id, plan.id);
+    });
+
+    test('a note that cannot be trashed keeps the folder and the other notes',
+        () async {
+      final Note first = _note('一', folderPath: '项目');
+      final Note second = _note('二', folderPath: '项目/子');
+      final _MemoryStore store = _MemoryStore(<Note>[first, second]);
+      await store.createFolder('项目/子');
+      final NotesController notes = await _open(store);
+      store.failDeleteIds.add(second.id);
+
+      final FolderDeleteOutcome outcome = await notes.deleteFolder('项目');
+
+      expect(outcome.removed, isFalse);
+      expect(outcome.deleted, 1);
+      expect(outcome.failed, 1);
+      expect(outcome.receipts, hasLength(1));
+      expect(store.notes.single.id, second.id);
+      expect(notes.folders, contains('项目'));
+    });
+
+    test('an empty folder is removed without a trash entry', () async {
+      final _MemoryStore store = _MemoryStore();
+      await store.createFolder('空');
+      final NotesController notes = await _open(store);
+
+      final FolderDeleteOutcome outcome = await notes.deleteFolder('空');
+
+      expect(outcome.removed, isTrue);
+      expect(outcome.deleted, 0);
+      expect(outcome.receipts, isEmpty);
+      expect(notes.folders, isNot(contains('空')));
+    });
+
+    test('undoing a folder delete puts the notes back with their folders',
+        () async {
+      final Note plan = _note('计划', body: '正文', folderPath: '项目/子');
+      final _MemoryStore store = _MemoryStore(<Note>[plan]);
+      await store.createFolder('项目/子');
+      final NotesController notes = await _open(store);
+
+      final FolderDeleteOutcome outcome = await notes.deleteFolder('项目');
+      final int restored = await notes.restoreTrashEntries(
+        <String>[outcome.receipts.single.id],
+      );
+
+      expect(restored, 1);
+      expect(store.notes.single.relativePath, '项目/子/计划.md');
+      expect(notes.folders, contains('项目/子'));
+    });
+  });
+
+  group('版本历史', () {
+    test('restoring a version swaps the body in place and keeps the tab',
+        () async {
+      final Note note = _note('计划', body: '旧版', folderPath: '工作');
+      final _MemoryStore store = _MemoryStore(<Note>[note]);
+      store.seedVersion(note, '旧版');
+      final NotesController notes = await _open(store);
+      final String versionId = store.versions[note.id]!.single.id;
+
+      notes.updateBody('新版');
+      final bool restored = await notes.restoreVersion(
+        notes.draft!,
+        versionId,
+      );
+
+      expect(restored, isTrue);
+      expect(notes.draft?.body, '旧版');
+      expect(notes.draft?.title, '计划');
+      expect(notes.draft?.relativePath, '工作/计划.md');
+      expect(notes.saveState, SaveState.idle);
+      expect(notes.selectedId, note.id);
+      expect(store.notes.single.body, '旧版');
+      expect(store.captured, hasLength(1));
+      expect(
+        store.captured.single.raw,
+        contains('新版'),
+        reason: '恢复前的内容要先进历史,恢复才可逆',
+      );
+    });
+
+    test('keepMine snapshots the disk version before discarding it', () async {
+      final Note original = _note('随笔', body: '第一行');
+      final _MemoryStore store = _MemoryStore(<Note>[original]);
+      final NotesController notes = await _open(store);
+
+      notes.updateBody('本地改过');
+      store.writeExternally(original.copyWith(body: '外部改过'));
+      await notes.syncFromDisk();
+      expect(notes.conflict, isNotNull);
+
+      await notes.keepMine();
+
+      expect(notes.conflict, isNull);
+      expect(store.notes.single.body, '本地改过');
+      expect(store.captured, hasLength(1));
+      expect(store.captured.single.raw, contains('外部改过'));
+    });
+  });
+
+  group('标签栏会话', () {
+    test('四个标签按原顺序回来，选中的还是第四个', () async {
+      final List<Note> seed = <Note>[
+        _note('一'),
+        _note('二'),
+        _note('三'),
+        _note('四'),
+      ];
+      final _MemoryStore store = _MemoryStore(seed);
+
+      final NotesController first = NotesController(store: store);
+      addTearDown(first.dispose);
+      await first.bootstrap();
+      for (final Note note in seed) {
+        first.select(note.id);
+      }
+      expect(first.selectedId, seed.last.id);
+      final List<String> tabs = first.openIds;
+
+      final NotesController second = NotesController(store: store);
+      addTearDown(second.dispose);
+      second.restoreSession(tabs: tabs, selected: first.selectedId);
+      await second.bootstrap();
+
+      expect(second.openIds, tabs, reason: '顺序也要一样');
+      expect(second.selectedId, seed.last.id);
+      expect(second.draft?.id, seed.last.id);
+      expect(second.tabSessionRestored, isTrue);
+    });
+
+    test('上次把标签全关了，重启后也不替他打开一篇', () async {
+      final _MemoryStore store = _MemoryStore(<Note>[_note('一'), _note('二')]);
+      final NotesController notes = NotesController(store: store);
+      addTearDown(notes.dispose);
+      notes.restoreSession(tabs: const <String>[], selected: null);
+      await notes.bootstrap();
+
+      expect(notes.openIds, isEmpty);
+      expect(notes.selectedId, isNull);
+      expect(notes.draft, isNull);
+      expect(notes.tabSessionRestored, isTrue, reason: '空标签栏是用户选的，不是要修复的空白');
+    });
+
+    test('上次选中的那篇没了，右邻居接手；没有右边就交给左邻居', () async {
+      final Note one = _note('一');
+      final Note two = _note('二');
+      final Note three = _note('三');
+      final _MemoryStore store = _MemoryStore(<Note>[one, two, three]);
+
+      final NotesController middle = NotesController(store: store);
+      addTearDown(middle.dispose);
+      middle.restoreSession(
+        tabs: <String>[one.id, '不见了', two.id, three.id],
+        selected: '不见了',
+      );
+      await middle.bootstrap();
+
+      expect(middle.openIds, <String>[one.id, two.id, three.id]);
+      expect(middle.selectedId, two.id, reason: '右邻居接手');
+
+      final NotesController last = NotesController(store: store);
+      addTearDown(last.dispose);
+      last.restoreSession(
+        tabs: <String>[one.id, two.id, '也不见了'],
+        selected: '也不见了',
+      );
+      await last.bootstrap();
+
+      expect(last.openIds, <String>[one.id, two.id]);
+      expect(last.selectedId, two.id, reason: '没有右邻居时交给左邻居');
+    });
+
+    test('没存过会话时照旧打开第一篇，不冒充恢复成功', () async {
+      final Note first = _note('一');
+      final NotesController notes = NotesController(
+        store: _MemoryStore(<Note>[first, _note('二')]),
+      );
+      addTearDown(notes.dispose);
+      await notes.bootstrap();
+
+      expect(notes.selectedId, first.id);
+      expect(notes.openIds, <String>[first.id]);
+      expect(notes.tabSessionRestored, isFalse);
+    });
+  });
 }
 
 /// An in-memory vault whose writes take real time, so overlap is visible.
@@ -741,5 +1361,81 @@ class _CountingStore extends _MemoryStore {
   Future<void> save(Note note, {String? previousPath}) {
     _written();
     return super.save(note, previousPath: previousPath);
+  }
+}
+
+/// The in-memory vault with one save that can be held open, so a tab switch
+/// lands while that write is still in flight.
+class _GatedStore extends _MemoryStore {
+  _GatedStore()
+    : super(<Note>[
+        _note('第一篇', body: '正文'),
+        _note('第二篇', body: '另一篇'),
+      ]);
+
+  Completer<void>? _gate;
+  Completer<void>? _held;
+  Completer<void>? _started;
+
+  Future<void> get saveStarted => _started!.future;
+
+  void blockNextSave() {
+    _gate = Completer<void>();
+    _started = Completer<void>();
+  }
+
+  void release() {
+    final Completer<void>? gate = _held;
+    _held = null;
+    if (gate != null && !gate.isCompleted) gate.complete();
+  }
+
+  @override
+  Future<void> save(Note note, {String? previousPath}) async {
+    final Completer<void>? gate = _gate;
+    if (gate != null && !gate.isCompleted) {
+      _gate = null;
+      _held = gate;
+      _started!.complete();
+      await gate.future;
+    }
+    await super.save(note, previousPath: previousPath);
+  }
+}
+
+/// The in-memory vault whose next [loadAll] blocks, reproducing a focus sync
+/// that read the disk before the app's own save replaced the file.
+class _RacingStore extends _MemoryStore {
+  _RacingStore() : super(<Note>[_note('随笔', body: '旧正文')]);
+
+  Completer<void>? _readStarted;
+  Completer<void>? _readGate;
+
+  Future<void> get readStarted => _readStarted!.future;
+
+  void arm() {
+    _readStarted = Completer<void>();
+    _readGate = Completer<void>();
+  }
+
+  void finishRead() {
+    _readGate?.complete();
+    _readGate = null;
+  }
+
+  /// Touches the file the way another program would, so the next focus sync
+  /// believes the vault changed and reads it.
+  void touchStamp() {
+    writeExternally(notes.first);
+  }
+
+  @override
+  Future<List<Note>> loadAll() async {
+    final Completer<void>? gate = _readGate;
+    if (gate == null) return super.loadAll();
+    final List<Note> snapshot = List<Note>.of(notes);
+    _readStarted!.complete();
+    await gate.future;
+    return snapshot;
   }
 }

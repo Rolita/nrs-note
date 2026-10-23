@@ -8,6 +8,7 @@ import 'package:nrs/ui/editor/line_layout/line_editable_text.dart';
 import 'package:nrs/ui/editor/line_layout/line_layout_engine.dart';
 import 'package:nrs/ui/editor/line_layout/live_line_style.dart';
 import 'package:nrs/ui/editor/line_layout/render_line_editable.dart';
+import 'package:nrs/ui/editor/live_markdown.dart' show kTagPadX;
 
 /// 测试字体（Ahem）每个字形都是 [fontSize] 见方，行高 `16 * 1.5 = 24`。
 const TextStyle _style = TextStyle(fontSize: 16, height: 1.5);
@@ -19,6 +20,7 @@ Widget _host(
   double width, {
   LiveLineStyle? styles,
   double? height = 400,
+  Set<int> foldedLines = const <int>{},
 }) {
   return MaterialApp(
     home: Scaffold(
@@ -38,6 +40,7 @@ Widget _host(
             lineStyleFor: styles?.styleFor,
             lineHeightFor: styles?.heightFor,
             lineInsetFor: styles?.insetFor,
+            foldedLines: foldedLines,
           ),
         ),
       ),
@@ -97,14 +100,23 @@ void main() {
     );
 
     // 未变行：painter 与高度原样复用。
-    expect(identical(before.laidOut[0].painter, after.laidOut[0].painter), isTrue);
+    expect(
+      identical(before.laidOut[0].painter, after.laidOut[0].painter),
+      isTrue,
+    );
     expect(after.laidOut[0].height, before.laidOut[0].height);
 
     // 改动行：不能复用。
-    expect(identical(before.laidOut[1].painter, after.laidOut[1].painter), isFalse);
+    expect(
+      identical(before.laidOut[1].painter, after.laidOut[1].painter),
+      isFalse,
+    );
 
     // 后续未变行的偏移整体 +1，但 painter 仍复用。
-    expect(identical(before.laidOut[2].painter, after.laidOut[2].painter), isTrue);
+    expect(
+      identical(before.laidOut[2].painter, after.laidOut[2].painter),
+      isTrue,
+    );
     expect(
       after.laidOut[2].visuals.first.start,
       before.laidOut[2].visuals.first.start + 1,
@@ -141,7 +153,9 @@ void main() {
         addTearDown(controller.dispose);
         addTearDown(focusNode.dispose);
 
-        await tester.pumpWidget(_host(controller, focusNode, 360, height: null));
+        await tester.pumpWidget(
+          _host(controller, focusNode, 360, height: null),
+        );
         final RenderLineEditable render = _render(tester);
 
         // 宽度不同 → 缓存不命中，走估算分支；纯文本每行都不折行，
@@ -411,6 +425,78 @@ void main() {
     });
   });
 
+  testWidgets('折叠箭头落在标记槽位左侧，收起后子树不占高度', (WidgetTester tester) async {
+    await _desktop(tester, () async {
+      const String text = '- 父\n  1. 子\n- 末尾';
+      final TextEditingController controller = TextEditingController(
+        text: text,
+      );
+      final FocusNode focusNode = FocusNode();
+      addTearDown(controller.dispose);
+      addTearDown(focusNode.dispose);
+
+      await tester.pumpWidget(_host(controller, focusNode, 360));
+      final RenderLineEditable open = _render(tester);
+      final Offset origin = open.localToGlobal(Offset.zero);
+
+      final List<ListFoldHandle> handles = open.foldHandles();
+      expect(handles, hasLength(1), reason: '只有挂着子项的父行有箭头');
+      final ListFoldHandle handle = handles.single;
+      expect(handle.lineStart, 0);
+      expect(handle.lineEnd, 3);
+      expect(handle.hiddenEnd, 10);
+      expect(handle.folded, isFalse);
+      expect(handle.button.size, const Size(16, 20));
+      expect(
+        handle.button.right,
+        closeTo(origin.dx, 0.01),
+        reason: '箭头收在标记槽位左缘',
+      );
+      expect(handle.button.center.dy, closeTo(origin.dy + _row / 2, 0.01));
+      expect(handle.row.top, closeTo(origin.dy, 0.01));
+      expect(handle.row.bottom, closeTo(origin.dy + _row, 0.01));
+      expect(open.foldHandleAt(handle.button.center), isNotNull);
+      expect(open.foldRowAt(handle.row.center), isNotNull);
+      expect(handle.ellipsis, isNull, reason: '展开时不画省略号');
+
+      await tester.pumpWidget(
+        _host(controller, focusNode, 360, foldedLines: <int>{0}),
+      );
+      final RenderLineEditable folded = _render(tester);
+      final ListFoldHandle closed = folded.foldHandles().single;
+      expect(closed.folded, isTrue);
+      expect(folded.lineLayout!.laidOut[1].height, 0);
+      expect(
+        folded.getLocalRectForCaret(const TextPosition(offset: 11)).top,
+        closeTo(_row, 0.01),
+        reason: '末尾行顶到父项下面',
+      );
+      expect(
+        folded.getLocalRectForCaret(const TextPosition(offset: 8)).top,
+        closeTo(0, 0.01),
+        reason: '藏在折叠里的光标收回到父项',
+      );
+      expect(closed.ellipsis, isNotNull);
+      expect(
+        closed.ellipsis!.dx,
+        closeTo(origin.dx + 16 + 16 + 5, 0.01),
+        reason: '省略号接在正文最后一个字之后',
+      );
+      final LaidOutLine parent = folded.lineLayout!.laidOut.first;
+      expect(
+        closed.ellipsis!.dy,
+        closeTo(
+          origin.dy +
+              parent.top +
+              parent.visuals.last.top -
+              lineTextRise(parent),
+          0.01,
+        ),
+        reason: '省略号和父项正文同一条基线（字形整体被上提过）',
+      );
+    });
+  });
+
   group('live 行样式', () {
     final LiveLineStyle styles = LiveLineStyle(
       base: _style,
@@ -449,6 +535,24 @@ void main() {
       );
     });
 
+    test('行首标签让出胶囊的左内边距，被光标摊开后收回', () {
+      final SourceLine line = scanSourceLines('#日常 后文').single;
+      expect(styles.insetFor(line), const EdgeInsets.only(left: kTagPadX));
+
+      // 标签只是出现在行中：行首是正文，不需要让位。
+      expect(styles.insetFor(scanSourceLines('前 #日常').single), EdgeInsets.zero);
+      // `#1` 是 issue 引用，不是标签，不铺胶囊也不让位。
+      expect(styles.insetFor(scanSourceLines('#1 号').single), EdgeInsets.zero);
+
+      // 光标落进标签：标签退回源码，底片不再画，内边距一起收掉。
+      final LiveLineStyle lit = LiveLineStyle(
+        base: styles.base,
+        palette: AppPalette.light,
+        reveal: () => const TextSelection.collapsed(offset: 1),
+      );
+      expect(lit.insetFor(line), EdgeInsets.zero);
+    });
+
     test('代码行按 token 着色，字符账不变', () {
       final String text = '```dart\nfinal x = 1;\n```';
       final List<SourceLine> lines = scanSourceLines(text);
@@ -477,6 +581,7 @@ void main() {
       expect(fills.single.fill, AppPalette.light.accentSoft);
       expect(fills.single.radius, 5);
       expect(fills.single.padX, 6);
+      expect(fills.single.padY, 1);
       // 胶囊只改变字形样式，字符账必须和源码逐字相同。
       expect(styles.spanFor(line).toPlainText(), line.text);
     });

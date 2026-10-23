@@ -107,16 +107,16 @@ class LiveTableBlocks {
 
     final List<String> lines = source.split('\n');
     final List<int> starts = <int>[for (final SourceLine s in sources) s.start];
-    final TextSelection? sel = selection();
-    final bool selValid = sel != null && sel.isValid;
     // 格子的 span 树由渲染对象重画，芯片（标签、链接）拿不到 BuildContext，
     // 所以整棵树走 `plain` 上下文：格子里的行内代码不画胶囊，改由自绘层画。
+    // 胶囊的选中色不在测量时决定：表格的选区是一个**格子矩形**，而线性选区
+    // 的区间会扫过两端之间的所有列。选中色留到绘制时按色带（按格子）上。
     final _Ctx ctx = _Ctx(
       p: palette,
       caretA: -1,
       caretB: -1,
-      selA: selValid ? sel.start : -1,
-      selB: selValid ? sel.end : -1,
+      selA: -1,
+      selB: -1,
       contentWidth: context.contentWidth,
       direction: context.textDirection,
       textScaler: context.textScaler,
@@ -203,11 +203,21 @@ class LiveTableBlocks {
 
 /// A rounded fill behind one inline code run, in the cell painter's coordinates.
 class _PaintedChip {
-  const _PaintedChip(this.rect, this.fill);
+  const _PaintedChip(this.rect, this.fill, {this.tint = false});
 
   final Rect rect;
   final Color fill;
+
+  /// 底片是否跟着表格选区换色。标签不跟：它在选中格里也保留自己的配色。
+  final bool tint;
 }
+
+/// 整格落在 [band] 里就算选中。
+///
+/// 色带的两端就是格子边界，所以一格要么整个在里面、要么整个在外面；半像素
+/// 只是给外框的栅格化取整留余量。
+bool _cellInBand(_CellData cell, _RowBand band) =>
+    cell.x >= band.left - 0.5 && cell.x + cell.boxWidth <= band.right + 0.5;
 
 /// 一行实时表格：既是行引擎的自绘内容，也是指针层的 chrome 提供者。
 class _TableLineBlock implements LineBlockView, TableRowChrome {
@@ -307,6 +317,7 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
             baseline - drop + metrics.height,
           ),
           code.fill,
+          tint: code.isCode,
         ),
       );
       metrics.dispose();
@@ -540,15 +551,19 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
     // 会啃掉表头的下边框。
     final double chipRadius = textScaler.scale(_kInlineCodeRadius);
     final Paint chipPaint = Paint();
+    // 选中色按**格子**上：色带就是这一行里被选中的那几格，格子要么整格在里
+    // 面、要么整格在外面。按线性选区上色会把两端之间的邻列一起点亮。
+    final Color selectedChip = _selectedChip(palette);
     for (int i = 0; i < row.data.length && i < _chips.length; i++) {
       if (_chips[i].isEmpty) continue;
+      final bool cellSelected = band != null && _cellInBand(row.data[i], band);
       final TextPainter tp = _painters[i];
       final Offset cellOrigin = Offset(
         left + row.data[i].textX,
         top + _textTop(tp),
       );
       for (final _PaintedChip chip in _chips[i]) {
-        chipPaint.color = chip.fill;
+        chipPaint.color = chip.tint && cellSelected ? selectedChip : chip.fill;
         canvas.drawRRect(
           RRect.fromRectAndRadius(
             chip.rect.shift(cellOrigin),

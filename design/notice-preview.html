@@ -1,0 +1,712 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>提示样式方案 · nrs</title>
+<style>
+/* ============================================================
+   页面外壳：中性画廊底，不参与被评审的样式。
+   被评审的窗口全部读取 app_palette.dart 的真实令牌，
+   由 JS 注入到 .col[data-t][data-m] 上。
+   ============================================================ */
+:root{
+  --pg-bg:#0C0C0F; --pg-card:#141418; --pg-line:#232329; --pg-line2:#2E2E36;
+  --pg-fg:#E7E7EC; --pg-mut:#8A8A94; --pg-dim:#61616B;
+  --font:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","PingFang SC",system-ui,sans-serif;
+  --mono:"Cascadia Code","Cascadia Mono",Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body,html{height:100%}
+body{
+  font-family:var(--font);font-size:13px;line-height:1.5;
+  background:var(--pg-bg);color:var(--pg-fg);
+  -webkit-font-smoothing:antialiased;
+}
+svg{display:block;flex:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;padding:0}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#33333B;border-radius:6px;border:3px solid transparent;background-clip:content-box}
+
+.wrap{max-width:1420px;margin:0 auto;padding:34px 30px 120px}
+.head h1{font-size:23px;font-weight:650;letter-spacing:-.2px}
+.head p{color:var(--pg-mut);margin-top:6px;max-width:104ch}
+.controls{
+  position:sticky;top:0;z-index:20;margin:22px -30px 26px;padding:12px 30px;
+  background:rgba(12,12,15,.82);backdrop-filter:blur(10px);
+  border-top:1px solid var(--pg-line);border-bottom:1px solid var(--pg-line);
+  display:flex;flex-wrap:wrap;gap:20px;align-items:center;
+}
+.grp{display:flex;align-items:center;gap:7px}
+.grp>.gl{font-size:11px;font-weight:650;letter-spacing:.5px;color:var(--pg-dim);text-transform:uppercase}
+.tg{
+  display:inline-flex;align-items:center;gap:6px;
+  font-size:12.5px;color:var(--pg-mut);background:var(--pg-card);
+  border:1px solid var(--pg-line2);border-radius:7px;padding:4px 11px;
+  transition:color .12s,border-color .12s,background .12s;
+}
+.tg:hover{color:var(--pg-fg)}
+.tg[aria-pressed="true"]{color:#fff;background:#23232B;border-color:#4A4A57}
+.tg .sw{width:9px;height:9px;border-radius:50%;flex:none}
+
+/* ---------------- 方案区块 ---------------- */
+.scheme{margin:0 0 52px}
+.scheme-hd{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+.scheme-hd .idx{
+  font-family:var(--mono);font-size:12px;color:var(--pg-dim);
+  border:1px solid var(--pg-line2);border-radius:5px;padding:1px 7px;
+}
+.scheme-hd h2{font-size:18px;font-weight:650;letter-spacing:-.1px}
+.scheme-hd .en{font-size:12px;color:var(--pg-dim);padding-bottom:2px}
+.scheme-hd .ref{font-size:12px;color:var(--pg-dim);padding-bottom:2px}
+.scheme-desc{color:var(--pg-mut);max-width:104ch;margin:2px 0 12px}
+
+.pair{display:flex;flex-wrap:wrap;gap:22px}
+.col{width:640px;flex:none}
+.col>figcaption{
+  display:flex;align-items:center;gap:8px;margin-bottom:8px;
+  font-size:12px;color:var(--pg-mut);
+}
+.col>figcaption .cap-dot{width:10px;height:10px;border-radius:50%;border:1px solid var(--pg-line2)}
+.col>figcaption .cap-hex{font-family:var(--mono);font-size:11px;color:var(--pg-dim)}
+
+/* 亮/暗各自的投影与悬停底，与色相无关 */
+.col[data-m="light"]{
+  --shadow:rgba(20,20,30,.10); --shadow2:rgba(20,20,30,.055);
+  --hover-wash:rgba(20,20,30,.055);
+}
+.col[data-m="dark"]{
+  --shadow:rgba(0,0,0,.46); --shadow2:rgba(0,0,0,.30);
+  --hover-wash:rgba(255,255,255,.075);
+}
+
+/* ---------------- 窗口外壳 ---------------- */
+.appwin{
+  width:100%;height:372px;display:grid;grid-template-rows:34px 1fr;
+  background:var(--canvas);border:1px solid var(--outline);border-radius:11px;
+  overflow:hidden;box-shadow:0 14px 34px var(--shadow),0 2px 7px var(--shadow2);
+}
+.i{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.6;
+   stroke-linecap:round;stroke-linejoin:round;flex:none}
+.i-sm{width:12.5px;height:12.5px}
+.i-xs{width:11px;height:11px;stroke-width:2}
+
+/* 标题栏 */
+.titlebar{display:flex;align-items:center;gap:3px;padding:0 5px;
+  background:var(--canvas);border-bottom:1px solid var(--outline-soft);min-width:0}
+.tb-btns{display:flex;align-items:center;gap:2px;flex:none}
+.bar-btn{width:27px;height:27px;display:grid;place-items:center;border-radius:6px;
+  color:var(--t2);transition:background .12s,color .12s}
+.bar-btn:hover{background:var(--hover-wash);color:var(--t1)}
+.bar-btn.on{background:var(--accent-soft);color:var(--accent)}
+.tb-div{width:1px;height:14px;background:var(--outline);margin:0 2px;flex:none}
+.tabs{flex:1;display:flex;align-items:center;gap:2px;min-width:0;overflow:hidden}
+.tab{display:flex;align-items:center;gap:7px;height:27px;padding:0 8px;border-radius:6px;
+  color:var(--t2);white-space:nowrap;min-width:0}
+.tab.on{background:var(--surface);color:var(--t1);font-weight:600}
+.tab .tt{font-size:11.5px;overflow:hidden;text-overflow:ellipsis}
+.tab .tx{color:var(--t3);display:grid;place-items:center}
+.caps{display:flex;align-items:center;gap:2px;flex:none;margin-left:auto;color:var(--t3)}
+.cap{width:24px;height:24px;display:grid;place-items:center;border-radius:5px}
+.cap:hover{background:var(--hover-wash);color:var(--t1)}
+.cap.close:hover{background:#C42B1C;color:#fff}
+
+/* 主体四栏 */
+.body{display:flex;min-height:0;position:relative;background:var(--canvas)}
+.rail{width:36px;flex:none;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 0}
+.rail-btn{width:27px;height:27px;display:grid;place-items:center;border-radius:6px;
+  color:var(--t2)}
+.rail-btn:hover{background:var(--hover-wash);color:var(--t1)}
+.rail-btn.on{background:var(--accent-soft);color:var(--accent)}
+.rail-sp{flex:1}
+.sidebar{width:160px;flex:none;display:flex;flex-direction:column;
+  background:var(--sidebar);border-right:1px solid var(--outline-soft);min-height:0}
+.panel-head{height:26px;flex:none;display:flex;align-items:center;padding:0 5px 0 9px;gap:2px}
+.panel-head .label{font-size:10.5px;font-weight:650;letter-spacing:.5px;color:var(--t3);text-transform:uppercase}
+.panel-head .spacer{flex:1}
+.icon-btn{width:21px;height:21px;display:grid;place-items:center;border-radius:5px;color:var(--t3)}
+.icon-btn:hover{background:var(--hover-wash);color:var(--t1)}
+.search-wrap{padding:2px 8px 8px}
+.search{display:flex;align-items:center;gap:6px;height:25px;padding:0 7px;
+  background:var(--raised);border:1px solid var(--outline);border-radius:6px;color:var(--t3)}
+.search .ph{flex:1;font-size:11.5px}
+.search .kbd{font-size:9.5px;color:var(--t3);border:1px solid var(--outline);border-radius:3px;padding:0 3px}
+.tree{flex:1;overflow:hidden;padding:0 4px}
+.row{display:flex;align-items:center;gap:6px;height:24px;padding:0 6px;border-radius:5px;color:var(--t2)}
+.row .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px}
+.row .mt{font-size:10.5px;color:var(--t3)}
+.row.i1{padding-left:21px}
+.row.sel{background:var(--accent-soft);color:var(--t1);font-weight:600}
+.row.hov{background:var(--hover-wash)}
+.chev{width:11px;height:11px;color:var(--t3)}
+.chev.off{opacity:0}
+.tree-gap{height:5px}
+
+.editor{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--surface)}
+.ed-head{height:30px;flex:none;display:flex;align-items:center;gap:1px;padding:0 9px;
+  border-bottom:1px solid var(--outline-soft)}
+.ed-title{font-size:10.5px;color:var(--t3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ed-head .spacer{flex:1}
+.ed-btn{width:24px;height:24px;display:grid;place-items:center;border-radius:5px;color:var(--t2)}
+.ed-btn:hover{background:var(--hover-wash);color:var(--t1)}
+.ed-btn.on{background:var(--accent-soft);color:var(--accent)}
+.ed-scroll{flex:1;overflow:hidden;padding:18px 24px}
+.doc{font-size:11.5px;line-height:1.75;color:var(--t1)}
+.doc h1{font-size:18px;line-height:1.3;font-weight:650;letter-spacing:-.3px;margin:0 0 3px}
+.doc .sub{font-size:10.5px;color:var(--t3);margin-bottom:13px;display:flex;gap:8px;align-items:center}
+.doc .sub .dot{width:3px;height:3px;border-radius:50%;background:var(--t3)}
+.doc h2{font-size:13px;font-weight:650;margin:14px 0 5px}
+.doc p{margin:0 0 8px}
+.doc .muted{color:var(--t2)}
+.doc code{font-family:var(--mono);font-size:10.5px;padding:1px 4px;border-radius:3px;
+  background:var(--sunken);border:1px solid var(--outline-soft)}
+.tag{display:inline-flex;align-items:center;padding:0 5px;border-radius:4px;
+  background:var(--accent-soft);color:var(--accent);font-size:11px;font-weight:600}
+.outline{width:116px;flex:none;display:flex;flex-direction:column;
+  background:var(--sidebar);border-left:1px solid var(--outline-soft);min-height:0}
+.ol-list{flex:1;overflow:hidden;padding:2px 3px}
+.ol{display:flex;align-items:center;height:24px;padding:0 6px;border-radius:5px;
+  color:var(--t2);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ol.h1{font-weight:650;color:var(--t1);font-size:11.5px}
+.ol.h2{padding-left:16px}
+.ol.sel{background:var(--accent-soft);color:var(--accent);font-weight:600}
+
+/* ============================================================
+   被评审的部分：提示层。每个方案只共享位置与状态类，
+   结构与计时表达各自不同。
+   ============================================================ */
+.layer{position:absolute;top:8px;left:10px;right:10px;z-index:6;
+  display:flex;justify-content:flex-end;pointer-events:none}
+.layer.b{top:0}
+.n{--tone:var(--success);--soft:var(--success-soft);
+   --ink-tone:color-mix(in srgb,var(--success) 45%,var(--canvas));
+   font-family:var(--font);pointer-events:auto}
+.n.is-info{--tone:var(--accent);--soft:var(--accent-soft);
+   --ink-tone:color-mix(in srgb,var(--accent) 45%,var(--canvas))}
+.n.is-error{--tone:var(--danger);--soft:var(--danger-soft);
+   --ink-tone:color-mix(in srgb,var(--danger) 45%,var(--canvas))}
+
+.txt{display:flex;align-items:baseline;gap:6px;min-width:0;flex:1}
+.msg{font-size:12px;font-weight:600;line-height:1.25;color:var(--t1);white-space:nowrap}
+.txt .msg{flex:none}
+.det{font-size:11px;line-height:1.25;color:var(--t3);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.vline{width:1px;height:13px;background:var(--outline-soft);flex:none}
+.act{flex:none;height:22px;padding:0 6px;border-radius:6px;
+  font-size:11.5px;font-weight:600;color:var(--accent);white-space:nowrap;
+  transition:background .12s,color .12s}
+.act:hover{background:var(--accent-soft)}
+.x{flex:none;width:19px;height:19px;display:grid;place-items:center;
+  border-radius:5px;color:var(--t3);transition:background .12s,color .12s}
+.x:hover{background:var(--hover-wash);color:var(--t1)}
+
+/* ---- A · 回执胶囊 ---- */
+.n-pill{
+  display:flex;align-items:center;gap:8px;height:32px;max-width:352px;
+  padding:0 7px 0 10px;background:var(--raised);
+  border:1px solid var(--outline);border-radius:999px;
+  box-shadow:0 10px 26px var(--shadow),0 1px 2px var(--shadow2);
+}
+.n-pill .dot{width:13px;height:13px;flex:none;border-radius:50%;display:grid;place-items:center;
+  background:conic-gradient(var(--tone) calc(var(--p,64) * 1%),
+    color-mix(in srgb,var(--tone) 20%,transparent) 0)}
+.n-pill .dot::after{content:"";width:7px;height:7px;border-radius:50%;background:var(--raised)}
+.n-pill.long{align-items:flex-start;height:auto;padding:7px 7px 7px 10px;
+  border-radius:13px;gap:8px}
+.n-pill.long .dot{margin-top:2px}
+.n-pill.long .stack{display:flex;flex-direction:column;gap:1px;flex:1;min-width:0}
+.n-pill.long .det{flex:none}
+
+/* ---- B · 顶部挂签 ---- */
+.n-tab{
+  position:relative;display:flex;align-items:center;gap:8px;width:308px;height:36px;
+  padding:0 7px 0 11px;background:var(--raised);
+  border:1px solid var(--outline);border-top:0;
+  border-radius:0 0 10px 10px;overflow:hidden;
+  box-shadow:0 10px 24px var(--shadow),0 1px 2px var(--shadow2);
+}
+.n-tab::after{content:"";position:absolute;left:0;bottom:0;height:2px;width:64%;
+  background:var(--tone)}
+.n-tab .i{color:var(--tone)}
+.n-tab .act:hover{background:var(--hover-wash)}
+.n-tab .det{flex:1}
+
+/* ---- C · 状态轨卡片 ---- */
+.n-card{
+  position:relative;min-width:206px;max-width:320px;overflow:hidden;
+  padding:7px 8px 8px 13px;background:var(--raised);
+  border:1px solid var(--outline);border-radius:10px;
+  box-shadow:0 12px 28px var(--shadow),0 1px 2px var(--shadow2);
+}
+.n-card .bar{position:absolute;left:0;top:0;bottom:0;width:3px;
+  background:color-mix(in srgb,var(--tone) 16%,transparent)}
+.n-card .bar i{position:absolute;left:0;top:0;width:100%;height:64%;
+  background:var(--tone);border-radius:0 0 2px 0}
+.n-card .r1{display:flex;align-items:center;gap:7px}
+.n-card .r1 .i{color:var(--tone)}
+.n-card .r1 .msg{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.n-card .r2{display:flex;align-items:center;gap:8px;margin:5px 0 0 19px}
+.n-card .r2 .det{flex:1}
+.n-card .act{height:19px;padding:0 7px;border-radius:5px;
+  background:var(--accent-soft);color:var(--accent);font-size:11px}
+.n-card .act:hover{background:var(--accent);color:var(--on-accent)}
+
+/* ---- D · 淡底徽章 ---- */
+.n-chip{
+  position:relative;display:flex;align-items:center;gap:7px;height:29px;max-width:340px;
+  padding:0 7px 0 9px;background:var(--soft);border-radius:8px;overflow:hidden;
+  box-shadow:0 2px 8px var(--shadow2);
+}
+.n-chip::after{content:"";position:absolute;left:0;bottom:0;width:64%;height:1.5px;
+  background:color-mix(in srgb,var(--tone) 55%,transparent)}
+.n-chip .i{color:var(--tone)}
+.n-chip .det{color:color-mix(in srgb,var(--tone) 48%,var(--t2))}
+.n-chip .act{height:20px;padding:0 3px;background:none;color:var(--tone);
+  text-decoration:underline;text-underline-offset:2px;text-decoration-thickness:1px}
+.n-chip .act:hover{background:color-mix(in srgb,var(--tone) 12%,transparent)}
+.n-chip .x{color:color-mix(in srgb,var(--tone) 55%,transparent)}
+.n-chip .x:hover{background:color-mix(in srgb,var(--tone) 12%,transparent);color:var(--tone)}
+
+/* ---- E · 反色墨条 ---- */
+.n-ink{
+  position:relative;display:flex;align-items:center;gap:8px;height:31px;max-width:344px;
+  padding:0 7px 0 10px;background:var(--t1);border-radius:8px;overflow:hidden;
+  box-shadow:0 12px 30px var(--shadow),0 2px 6px var(--shadow2);
+}
+.n-ink::after{content:"";position:absolute;left:0;bottom:0;width:64%;height:2px;
+  background:var(--ink-tone)}
+.n-ink .i{color:var(--ink-tone)}
+.n-ink .msg{color:var(--canvas)}
+.n-ink .det{color:color-mix(in srgb,var(--canvas) 60%,transparent)}
+.n-ink .act{height:21px;background:none;color:var(--canvas);
+  text-decoration:underline;text-underline-offset:2px;text-decoration-thickness:1px}
+.n-ink .act:hover{background:color-mix(in srgb,var(--canvas) 14%,transparent)}
+.n-ink .x{color:color-mix(in srgb,var(--canvas) 58%,transparent)}
+.n-ink .x:hover{background:color-mix(in srgb,var(--canvas) 14%,transparent);color:var(--canvas)}
+
+/* ---- 说明条 ---- */
+.notes{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.nt{font-size:11.5px;color:var(--pg-mut);background:var(--pg-card);
+  border:1px solid var(--pg-line2);border-radius:6px;padding:4px 9px}
+.nt b{color:var(--pg-fg);font-weight:600;margin-right:6px}
+
+/* ---- 对比表 ---- */
+.cmp{width:100%;border-collapse:collapse;margin:6px 0 10px;font-size:12px}
+.cmp th,.cmp td{border-bottom:1px solid var(--pg-line);padding:9px 12px;text-align:left;
+  color:var(--pg-mut);white-space:nowrap}
+.cmp th{font-size:10.5px;letter-spacing:.5px;color:var(--pg-dim);text-transform:uppercase;font-weight:650}
+.cmp td:first-child{color:var(--pg-fg);font-weight:600}
+.cmp .dots{font-family:var(--mono);color:var(--pg-fg);letter-spacing:2px}
+.cmp tr:last-child td{border-bottom:0}
+
+.foot{margin-top:38px;padding-top:20px;border-top:1px solid var(--pg-line);color:var(--pg-dim);font-size:12px}
+.foot p{margin-bottom:8px;max-width:110ch}
+.foot b{color:var(--pg-fg);font-weight:600}
+.foot code{font-family:var(--mono);font-size:11.5px;color:var(--pg-mut)}
+</style>
+<style id="theme-vars"></style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1a2 2 0 0 1 1.5.7l1 1.2h7.4A2.5 2.5 0 0 1 21 9.4v7.1a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/></symbol>
+  <symbol id="i-folder-plus" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1a2 2 0 0 1 1.5.7l1 1.2h7.4A2.5 2.5 0 0 1 21 9.4v7.1a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/><path d="M12 11.4v4.4M9.8 13.6h4.4"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 4.5 4.5"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M11.6 3.6H5.4A1.8 1.8 0 0 0 3.6 5.4v6.2a2 2 0 0 0 .6 1.4l7.4 7.4a2 2 0 0 0 2.8 0l6.2-6.2a2 2 0 0 0 0-2.8L13.2 4.2a2 2 0 0 0-1.6-.6Z"/><circle cx="8.2" cy="8.2" r="1.4"/></symbol>
+  <symbol id="i-toc" viewBox="0 0 24 24"><path d="M4 6.5h2M4 12h2M4 17.5h2M9.5 6.5H20M9.5 12H20M9.5 17.5H20"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="m5 9 7 7 7-7"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M13.5 3.5H7A2.5 2.5 0 0 0 4.5 6v12A2.5 2.5 0 0 0 7 20.5h10a2.5 2.5 0 0 0 2.5-2.5V9.5z"/><path d="M13.5 3.5v6h6"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1.2" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-type" viewBox="0 0 24 24"><path d="M5 6.5V5h14v1.5M12 5v14M9 19h6"/></symbol>
+  <symbol id="i-focus" viewBox="0 0 24 24"><path d="M4 8.5V6a2 2 0 0 1 2-2h2.5M15.5 4H18a2 2 0 0 1 2 2v2.5M20 15.5V18a2 2 0 0 1-2 2h-2.5M8.5 20H6a2 2 0 0 1-2-2v-2.5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11.2v5M12 7.9v.1"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4.2 21 19.5H3z"/><path d="M12 9.5v4.2M12 16.6v.1"/></symbol>
+  <symbol id="i-min" viewBox="0 0 10 10"><path d="M0 5.5h10"/></symbol>
+  <symbol id="i-max" viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9"/></symbol>
+  <symbol id="i-close" viewBox="0 0 10 10"><path d="M.5.5l9 9M9.5.5l-9 9"/></symbol>
+</defs></svg>
+
+<div class="wrap">
+  <div class="head">
+    <h1>提示样式 · 5 套方案</h1>
+    <p>现状：右上角 244px 的小卡片里同时塞了图标方块、标题、细节、关闭按钮和一条 2px 进度线，文字被压到 12px，整体读起来拥挤、像临时弹窗。下面 5 套都只换「画法」，不改数据流：仍然一次只显示一条、6 秒撤销窗口、悬停暂停、外部同步检测照旧。所有颜色都取 石墨素白 / 午夜靛 / 高对比 的真实令牌，切主题即可核对其余两套的表现。</p>
+  </div>
+
+  <div class="controls">
+    <div class="grp"><span class="gl">主题</span><span id="theme-btns"></span></div>
+    <div class="grp"><span class="gl">场景</span><span id="state-btns"></span></div>
+  </div>
+
+  <div id="board"></div>
+
+  <div class="foot">
+    <p><b>怎么选。</b>C 状态轨卡片是最稳的升级：保留现有的信息量与撤销按钮，但把「图标方块 + 底部进度条」换成一条会退减的状态轨，两行文字不再互相挤。A 回执胶囊最安静，适合高频的保存/同步回执。B 顶边挂签最像系统级提示，不悬浮在正文中央。D 淡底徽章最轻，黑白主题下状态辨识会变弱。E 反色墨条最醒目，一次只出一条时观感最好。</p>
+    <p>实现口径：只重写 <code>notices.dart</code> 里的 <code>_NoticeCard</code>；<code>NoticeHost</code> 的两个时钟（入场 / 停留）不变；为 A 的环、B/C/D/E 的线提供同一个进度值 <code>life</code>。选定编号（A–E）后我按它落地。</p>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   一、三套内置主题的全部令牌，键名与 app_palette.dart 一致。
+   ============================================================ */
+const THEMES = {
+  graphite:{
+    label:'石墨素白', accentSwatch:'#2A2A28',
+    light:{
+      '--canvas':'#F7F7F5','--sidebar':'#F1F1EF','--surface':'#FCFCFB','--raised':'#FFFFFF',
+      '--sunken':'#EFEFED','--outline':'#DCDCD9','--outline-soft':'#E9E9E6','--rule':'#D5D5D1',
+      '--t1':'#1B1B1A','--t2':'#5C5C59','--t3':'#8C8C88',
+      '--accent':'#2A2A28','--accent-hover':'#111110','--accent-soft':'#E9E9E6','--on-accent':'#FFFFFF',
+      '--success':'#2E8B62','--success-soft':'#E3F0E8',
+      '--warning':'#B06B1B','--warning-soft':'#F7EADA',
+      '--danger':'#C0392B','--danger-soft':'#FAE7E4'
+    },
+    dark:{
+      '--canvas':'#151514','--sidebar':'#1A1A19','--surface':'#1F1F1E','--raised':'#272726',
+      '--sunken':'#101010','--outline':'#2F2F2E','--outline-soft':'#242423','--rule':'#3A3A38',
+      '--t1':'#E9E9E6','--t2':'#9E9E9A','--t3':'#6E6E6A',
+      '--accent':'#EDEDEA','--accent-hover':'#FFFFFF','--accent-soft':'#2E2E2C','--on-accent':'#141413',
+      '--success':'#6FC29A','--success-soft':'#17281F',
+      '--warning':'#E0964A','--warning-soft':'#33240F',
+      '--danger':'#E5796B','--danger-soft':'#2E1A17'
+    }
+  },
+  midnight:{
+    label:'午夜靛', accentSwatch:'#4A56C4',
+    light:{
+      '--canvas':'#F6F7FA','--sidebar':'#EEF1F6','--surface':'#FBFCFE','--raised':'#FFFFFF',
+      '--sunken':'#EAECF3','--outline':'#D7DBE6','--outline-soft':'#E6E9F0','--rule':'#CFD4E0',
+      '--t1':'#171A21','--t2':'#565D6E','--t3':'#8A91A2',
+      '--accent':'#4A56C4','--accent-hover':'#3B46A8','--accent-soft':'#E6E8FB','--on-accent':'#FFFFFF',
+      '--success':'#2E8B62','--success-soft':'#E2F1E9',
+      '--warning':'#B26A1A','--warning-soft':'#F8EADB',
+      '--danger':'#C4473F','--danger-soft':'#FBEAE8'
+    },
+    dark:{
+      '--canvas':'#0E0F13','--sidebar':'#131419','--surface':'#17181E','--raised':'#1F2027',
+      '--sunken':'#0A0B0E','--outline':'#2A2C36','--outline-soft':'#1E2028','--rule':'#32343F',
+      '--t1':'#E6E8EF','--t2':'#9AA0B0','--t3':'#6A7080',
+      '--accent':'#8B94F2','--accent-hover':'#A0A8F7','--accent-soft':'#23263A','--on-accent':'#10122A',
+      '--success':'#5FC79A','--success-soft':'#13251D',
+      '--warning':'#E0A24A','--warning-soft':'#2E2413',
+      '--danger':'#E4797F','--danger-soft':'#2C1A1F'
+    }
+  },
+  vivid:{
+    label:'高对比', accentSwatch:'#0D9488',
+    light:{
+      '--canvas':'#FAFAFA','--sidebar':'#F4F4F5','--surface':'#FFFFFF','--raised':'#FFFFFF',
+      '--sunken':'#F0F0F1','--outline':'#DFDFE2','--outline-soft':'#EDEDEE','--rule':'#D7D7DA',
+      '--t1':'#09090B','--t2':'#52525B','--t3':'#8A8A93',
+      '--accent':'#0D9488','--accent-hover':'#0F766E','--accent-soft':'#D9F2EF','--on-accent':'#FFFFFF',
+      '--success':'#059669','--success-soft':'#DFF3EA',
+      '--warning':'#B45309','--warning-soft':'#FDEBD3',
+      '--danger':'#DC2626','--danger-soft':'#FDE7E7'
+    },
+    dark:{
+      '--canvas':'#09090B','--sidebar':'#0E0E11','--surface':'#121215','--raised':'#1A1A1E',
+      '--sunken':'#050506','--outline':'#26262B','--outline-soft':'#1B1B1F','--rule':'#2E2E34',
+      '--t1':'#FAFAFA','--t2':'#A1A1AA','--t3':'#63636B',
+      '--accent':'#2DD4BF','--accent-hover':'#5EEAD4','--accent-soft':'#10302C','--on-accent':'#04211D',
+      '--success':'#34D399','--success-soft':'#10281F',
+      '--warning':'#FBBF24','--warning-soft':'#30240D',
+      '--danger':'#F87171','--danger-soft':'#301618'
+    }
+  }
+};
+
+/* ============================================================
+   二、场景：覆盖应用里真实出现的四类提示。
+   ============================================================ */
+const STATES = [
+  {id:'ok',    cls:'is-ok',    icon:'check', msg:'已保存',       det:'',                       act:''},
+  {id:'undo',  cls:'is-ok',    icon:'check', msg:'已移入回收站', det:'2026-10-20 周一',        act:'撤销'},
+  {id:'info',  cls:'is-info',  icon:'info',  msg:'已从磁盘同步', det:'检测到外部修改',         act:''},
+  {id:'error', cls:'is-error', icon:'alert', msg:'无法粘贴',     det:'剪贴板里是图片，编辑器只接受纯文本', act:''}
+];
+
+/* ============================================================
+   三、5 套方案。
+   ============================================================ */
+const SCHEMES = [
+  {
+    id:'a', key:'A', name:'回执胶囊', en:'Receipt Pill',
+    ref:'参考 macOS HUD · Things',
+    desc:'把图标方块、第二行、底部进度条全部收掉，只留一个带环状倒计时的状态点、一行标题（细节跟在后面）和必要操作。最安静，适合「已保存 / 已同步」这类高频回执；细节过长自动截断，错误态折成两行短胶囊。',
+    notes:[['计时','状态点外圈的环，倒退后消失'],['动作','标题右侧竖线分隔的文字按钮'],['长文案','错误态自动折两行'],['关闭','常显小 ×']]
+  },
+  {
+    id:'b', key:'B', name:'顶部挂签', en:'Edge Tab',
+    ref:'参考 Arc · VSCode 下载条',
+    desc:'从内容区顶边垂下来的一枚挂签，贴着窗口上沿、只圆下两角，不悬浮在正文中央。底部那条 2px 状态色同时充当倒计时。信息密度高于胶囊，能放下「标题 + 细节 + 撤销」，位置又与工具栏在同一视觉带上。',
+    notes:[['计时','底边 2px 状态线自左向右退'],['位置','贴内容区顶边，不覆盖正文'],['动效','自上沿滑下 180ms'],['结构','单行：图标 + 标题 + 细节 + 撤销']]
+  },
+  {
+    id:'c', key:'C', name:'状态轨卡片', en:'Rail Card',
+    ref:'参考 Linear · Raycast',
+    desc:'左缘 3px 状态轨既是色标也是倒计时，自上而下退减。两行结构把标题、细节、撤销各归其位：标题行只放图标、标题与关闭，细节与撤销在第二行。信息最完整，长标题和长细节都不挤，是现布局最接近的升级路线。',
+    notes:[['计时','左侧状态轨自上而下退'],['结构','标题行 / 细节 + 撤销行'],['长文案','细节截断，撤销固定右侧'],['关闭','标题行右端']]
+  },
+  {
+    id:'d', key:'D', name:'淡底徽章', en:'Tinted Chip',
+    ref:'参考 Notion · 飞书',
+    desc:'去掉边框与浮层感，直接用 success / accent / danger 的淡底染色，像贴纸落在右上角。存在感最低，几乎不打断阅读；多条同时出现时可以 4px 间距无缝堆叠。代价是纯黑白主题（石墨素白）下状态色差不明显。',
+    notes:[['计时','底边 1.5px 淡色线退减'],['配色','状态淡底填充，无描边'],['堆叠','多条上下 4px 无缝排'],['长文案','细节截断']]
+  },
+  {
+    id:'e', key:'E', name:'反色墨条', en:'Ink Toast',
+    ref:'参考 Raycast · Cron',
+    desc:'亮色主题是深墨底浅字，暗色主题反过来。全界面对比最强的一条提示，不依赖状态色也能一眼读到；状态色只出现在图标与底线上。撤销做成下划线文字，适合错误和「只此一次」的提醒，不宜高频使用。',
+    notes:[['计时','底边 2px 反色线退减'],['配色','反色底，不随状态换底'],['动作','下划线文字'],['长文案','细节截断']]
+  }
+];
+
+/* ============================================================
+   四、令牌注入。
+   ============================================================ */
+let cssText = '';
+Object.entries(THEMES).forEach(([id, th]) => ['light','dark'].forEach(m => {
+  const decl = Object.entries(th[m]).map(([k, v]) => k + ':' + v).join(';');
+  cssText += '.col[data-t="' + id + '"][data-m="' + m + '"]{' + decl + '}\n';
+}));
+document.getElementById('theme-vars').textContent = cssText;
+
+/* ============================================================
+   五、被评审的窗口与提示。
+   ============================================================ */
+const ico = (id, cls) => '<svg class="i ' + (cls || '') + '"><use href="#i-' + id + '"/></svg>';
+
+function windowHTML(kind, st){
+  return `
+  <div class="appwin">
+    <header class="titlebar">
+      <div class="tb-btns">
+        <button class="bar-btn on" title="文件">${ico('folder','i-sm')}</button>
+        <button class="bar-btn" title="搜索">${ico('search','i-sm')}</button>
+        <button class="bar-btn" title="标签">${ico('tag','i-sm')}</button>
+      </div>
+      <span class="tb-div"></span>
+      <div class="tabs">
+        <div class="tab on"><span class="tt">Markdown 语法</span><span class="tx">${ico('x','i-xs')}</span></div>
+        <div class="tab"><span class="tt">读书笔记 · 深度工作</span></div>
+        <div class="tab"><span class="tt">周报 2026-W42</span></div>
+      </div>
+      <div class="caps">
+        <button class="cap"><svg width="10" height="10"><use href="#i-min"/></svg></button>
+        <button class="cap"><svg width="10" height="10"><use href="#i-max"/></svg></button>
+        <button class="cap close"><svg width="10" height="10"><use href="#i-close"/></svg></button>
+      </div>
+    </header>
+    <div class="body">
+      <nav class="rail">
+        <button class="rail-btn on">${ico('folder')}</button>
+        <button class="rail-btn">${ico('search')}</button>
+        <button class="rail-btn">${ico('tag')}</button>
+        <div class="rail-sp"></div>
+        <button class="rail-btn">${ico('toc')}</button>
+      </nav>
+      <aside class="sidebar">
+        <div class="panel-head">
+          <span class="label">文件</span>
+          <span class="spacer"></span>
+          <button class="icon-btn">${ico('chev-d','i-sm')}</button>
+          <button class="icon-btn">${ico('folder-plus','i-sm')}</button>
+          <button class="icon-btn">${ico('plus','i-sm')}</button>
+        </div>
+        <div class="search-wrap">
+          <div class="search">${ico('search','i-sm')}<span class="ph">搜索笔记</span><span class="kbd">Esc</span></div>
+        </div>
+        <div class="tree">
+          <div class="row"><span class="chev">${ico('chev-r')}</span>${ico('folder','i-sm')}<span class="nm">日常</span><span class="mt">12</span></div>
+          <div class="row i1">${ico('file','i-sm')}<span class="nm">2026-10-20 周一</span></div>
+          <div class="row i1 sel">${ico('file','i-sm')}<span class="nm">Markdown 语法</span></div>
+          <div class="row i1 hov">${ico('file','i-sm')}<span class="nm">灵感碎片</span></div>
+          <div class="tree-gap"></div>
+          <div class="row"><span class="chev">${ico('chev-r')}</span>${ico('folder','i-sm')}<span class="nm">读书</span><span class="mt">8</span></div>
+          <div class="row i1">${ico('file','i-sm')}<span class="nm">深度工作</span></div>
+          <div class="row i1">${ico('file','i-sm')}<span class="nm">如何阅读一本书</span></div>
+          <div class="tree-gap"></div>
+          <div class="row"><span class="chev off">${ico('chev-r')}</span>${ico('folder','i-sm')}<span class="nm">项目</span><span class="mt">4</span></div>
+          <div class="row"><span class="chev off">${ico('chev-r')}</span>${ico('folder','i-sm')}<span class="nm">归档</span><span class="mt">0</span></div>
+        </div>
+      </aside>
+      <main class="editor">
+        <div class="ed-head">
+          <span class="ed-title">日常 / Markdown 语法</span>
+          <span class="spacer"></span>
+          <button class="ed-btn on">${ico('type','i-sm')}</button>
+          <button class="ed-btn">${ico('focus','i-sm')}</button>
+          <button class="ed-btn">${ico('more','i-sm')}</button>
+        </div>
+        <div class="ed-scroll">
+          <div class="doc">
+            <h1>Markdown 语法</h1>
+            <div class="sub"><span>日常</span><span class="dot"></span><span>10 月 20 日 01:12</span><span class="dot"></span><span>1 248 字</span></div>
+            <p>这是一份随手记的语法清单。<span class="tag">#入门</span> 里的东西都试过一遍了，<span class="tag">#速查</span> 留作以后翻。</p>
+            <h2>标题与段落</h2>
+            <p class="muted">用 <code>#</code> 到 <code>######</code> 表示六级标题，段落之间空一行。</p>
+            <h2>任务清单</h2>
+            <p>写作不是记录想法，而是产生想法。</p>
+          </div>
+        </div>
+      </main>
+      <aside class="outline">
+        <div class="panel-head"><span class="label">大纲</span><span class="spacer"></span><button class="icon-btn">${ico('chev-d','i-sm')}</button></div>
+        <div class="ol-list">
+          <div class="ol h1">Markdown 语法</div>
+          <div class="ol h2 sel">标题与段落</div>
+          <div class="ol h2">任务清单</div>
+        </div>
+      </aside>
+      <div class="layer ${kind === 'b' ? 'b' : ''}">${noticeHTML(kind, st)}</div>
+    </div>
+  </div>`;
+}
+
+function noticeHTML(kind, st){
+  const icon = ico(st.icon, 'i-sm');
+  const det = st.det ? '<span class="det">' + st.det + '</span>' : '';
+  const close = '<button class="x">' + ico('x', 'i-xs') + '</button>';
+
+  if (kind === 'a'){
+    if (st.id === 'error'){
+      return '<div class="n n-pill long ' + st.cls + '">' +
+        '<span class="dot" style="--p:64"></span>' +
+        '<div class="stack"><span class="msg">' + st.msg + '</span>' +
+        '<span class="det">' + st.det + '</span></div>' +
+        close + '</div>';
+    }
+    return '<div class="n n-pill ' + st.cls + '">' +
+      '<span class="dot" style="--p:64"></span>' +
+      '<span class="txt"><span class="msg">' + st.msg + '</span>' + det + '</span>' +
+      (st.act ? '<span class="vline"></span><button class="act">' + st.act + '</button>' : '') +
+      close + '</div>';
+  }
+
+  if (kind === 'b'){
+    return '<div class="n n-tab ' + st.cls + '">' + icon +
+      '<span class="txt"><span class="msg">' + st.msg + '</span>' + det + '</span>' +
+      (st.act ? '<button class="act">' + st.act + '</button>' : '') +
+      close + '</div>';
+  }
+
+  if (kind === 'c'){
+    const second = (st.det || st.act)
+      ? '<div class="r2">' + (st.det ? '<span class="det">' + st.det + '</span>' : '<span class="det"></span>') +
+        (st.act ? '<button class="act">' + st.act + '</button>' : '') + '</div>'
+      : '';
+    return '<div class="n n-card ' + st.cls + '">' +
+      '<span class="bar"><i></i></span>' +
+      '<div class="r1">' + icon + '<span class="msg">' + st.msg + '</span>' + close + '</div>' +
+      second + '</div>';
+  }
+
+  if (kind === 'd'){
+    return '<div class="n n-chip ' + st.cls + '">' + icon +
+      '<span class="txt"><span class="msg">' + st.msg + '</span>' + det + '</span>' +
+      (st.act ? '<button class="act">' + st.act + '</button>' : '') +
+      close + '</div>';
+  }
+
+  return '<div class="n n-ink ' + st.cls + '">' + icon +
+    '<span class="txt"><span class="msg">' + st.msg + '</span>' + det + '</span>' +
+    (st.act ? '<button class="act">' + st.act + '</button>' : '') +
+    close + '</div>';
+}
+
+/* ============================================================
+   六、渲染。
+   ============================================================ */
+const state = { t:'graphite', st:'undo' };
+
+function colHTML(kind, s, mode){
+  const th = THEMES[state.t];
+  const label = mode === 'light' ? '亮色 · Light' : '暗色 · Dark';
+  const swatch = state.t === 'graphite' ? (mode === 'light' ? '#2A2A28' : '#EDEDEA') : th.accentSwatch;
+  return `<figure class="col" data-t="${state.t}" data-m="${mode}">
+    <figcaption>
+      <span class="cap-dot" style="background:${mode === 'light' ? '#FCFCFB' : '#1F1F1E'}"></span>
+      ${label}
+      <span class="cap-hex">accent ${swatch}</span>
+    </figcaption>
+    ${windowHTML(kind, s)}
+  </figure>`;
+}
+
+function sectionHTML(scheme){
+  const st = STATES.find(x => x.id === state.st);
+  const notes = scheme.notes.map(([k, v]) =>
+    '<span class="nt"><b>' + k + '</b>' + v + '</span>').join('');
+  return `<section class="scheme">
+    <div class="scheme-hd">
+      <span class="idx">${scheme.key}</span>
+      <h2>${scheme.name}</h2>
+      <span class="en">${scheme.en}</span>
+      <span class="ref">${scheme.ref}</span>
+    </div>
+    <p class="scheme-desc">${scheme.desc}</p>
+    <div class="pair">
+      ${colHTML(scheme.id, st, 'light')}
+      ${colHTML(scheme.id, st, 'dark')}
+    </div>
+    <div class="notes">${notes}</div>
+  </section>`;
+}
+
+const SUMMARY = [
+  ['A 回执胶囊', '●●○', '●○○', '●●○', '●●○', '低', '保存、同步等高频回执'],
+  ['B 顶部挂签', '●●○', '●●●', '●●○', '●●●', '低', '删除撤销、外部修改'],
+  ['C 状态轨卡片', '●●●', '●●●', '●●●', '●●●', '中', '作为统一样式全场景使用'],
+  ['D 淡底徽章', '●○○', '●●○', '●●○', '●○○', '低', '极低频、几乎不想打断'],
+  ['E 反色墨条', '●●●', '●●○', '●●○', '●●○', '低', '错误与一次性提醒']
+];
+
+function summaryHTML(){
+  const rows = SUMMARY.map(r => '<tr>' + r.map((c, i) =>
+    i >= 1 && i <= 4 ? '<td class="dots">' + c + '</td>' : '<td>' + c + '</td>').join('') + '</tr>').join('');
+  return `<table class="cmp">
+    <thead><tr><th>方案</th><th>存在感</th><th>信息量</th><th>长文案</th><th>状态辨识</th><th>实现成本</th><th>适合</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+document.getElementById('board').innerHTML = '';
+
+function renderBoard(){
+  document.getElementById('board').innerHTML =
+    SCHEMES.map(sectionHTML).join('') +
+    `<section class="scheme"><div class="scheme-hd"><h2>横向对比</h2></div>${summaryHTML()}</section>`;
+}
+
+function buildControls(){
+  const tb = document.getElementById('theme-btns');
+  tb.innerHTML = Object.entries(THEMES).map(([id, t]) =>
+    `<button class="tg" data-t="${id}" aria-pressed="${id === state.t}">` +
+    `<span class="sw" style="background:${t.accentSwatch}"></span>${t.label}</button>`).join('');
+  tb.querySelectorAll('.tg').forEach(b => b.addEventListener('click', () => {
+    state.t = b.dataset.t;
+    tb.querySelectorAll('.tg').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.t === state.t)));
+    renderBoard();
+  }));
+
+  const sb = document.getElementById('state-btns');
+  sb.innerHTML = STATES.map(s =>
+    `<button class="tg" data-st="${s.id}" aria-pressed="${s.id === state.st}">` +
+    `${s.id === 'ok' ? '成功' : s.id === 'undo' ? '撤销' : s.id === 'info' ? '信息' : '错误'}${s.act ? ' + ' + s.act : ''}</button>`).join('');
+  sb.querySelectorAll('.tg').forEach(b => b.addEventListener('click', () => {
+    state.st = b.dataset.st;
+    sb.querySelectorAll('.tg').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.st === state.st)));
+    renderBoard();
+  }));
+}
+
+buildControls();
+renderBoard();
+</script>
+</body>
+</html>

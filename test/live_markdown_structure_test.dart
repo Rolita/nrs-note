@@ -460,14 +460,66 @@ void main() {
       expect(issueStyle.fillsFor(scanSourceLines(issues).first), isEmpty);
     });
 
-    test('引用的竖线恰好占住它藏起来的标记宽度', () {
-      const String text = '> 引用\n';
+    test('双链只留目标文字，方括号折叠但偏移不丢', () {
+      const String text = '看 [[笔记一]] 和 ![[附件]]\n';
       final SourceLine line = scanSourceLines(text).first;
-      final TextSpan tree = LiveLineStyle(
+      final LiveLineStyle style = LiveLineStyle(
         base: base,
         palette: palette,
         source: text,
-      ).spanFor(line) as TextSpan;
+      );
+      final TextSpan tree = style.spanFor(line) as TextSpan;
+      final TextSpan label = spanWith(tree, '笔记一')!;
+      expect(label.style!.color, palette.accent);
+      expect(label.style!.decoration, TextDecoration.underline);
+      expect(spanWith(tree, '[[')!.style!.fontSize, 0, reason: '未进入编辑时方括号压成零宽');
+      expect(tree.toPlainText(), line.text, reason: '压宽不能丢字符');
+
+      final List<({int start, int end, String target})> links = style
+          .wikilinksFor(line);
+      expect(links.map((l) => l.target), <String>['笔记一', '附件']);
+      expect(text.substring(links[0].start, links[0].end), '[[笔记一]]');
+      expect(text.substring(links[1].start, links[1].end), '![[附件]]');
+
+      // 光标落进第一个链接：整段源码显形，和别的行内标记同一规则。
+      final LiveLineStyle editing = LiveLineStyle(
+        base: base,
+        palette: palette,
+        source: text,
+        reveal: () => TextSelection.collapsed(offset: text.indexOf('笔记一')),
+      );
+      expect(
+        spanWith(editing.spanFor(line), '[[笔记一]]'),
+        isNotNull,
+        reason: '编辑态应露出双链源码',
+      );
+    });
+
+    test('代码里的方括号不是双链', () {
+      const String text = '`[[不是]]` 与 [[是]]\n';
+      final SourceLine line = scanSourceLines(text).first;
+      final LiveLineStyle style = LiveLineStyle(
+        base: base,
+        palette: palette,
+        source: text,
+      );
+      final List<({int start, int end, String target})> links = style
+          .wikilinksFor(line);
+      expect(links, hasLength(1));
+      expect(links.single.target, '是');
+      expect(text.substring(links.single.start, links.single.end), '[[是]]');
+    });
+
+    test('引用的竖线恰好占住它藏起来的标记宽度', () {
+      const String text = '> 引用\n';
+      final SourceLine line = scanSourceLines(text).first;
+      final TextSpan tree =
+          LiveLineStyle(
+                base: base,
+                palette: palette,
+                source: text,
+              ).spanFor(line)
+              as TextSpan;
       final TextSpan prefix = spanWith(tree, '> ')!;
       expect(prefix.style!.color!.a, 0, reason: '未揭示时前缀只透明、不缩字');
 

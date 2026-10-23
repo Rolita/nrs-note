@@ -26,6 +26,8 @@ class SettingsController extends ChangeNotifier {
   static const String _kProseSize = 'nrs.proseSize';
   static const String _kFocus = 'nrs.focusMode';
   static const String _kTypewriter = 'nrs.typewriter';
+  static const String _kSessionTabs = 'nrs.sessionTabs';
+  static const String _kSessionSelected = 'nrs.sessionSelected';
 
   static Future<SettingsController> load() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -226,5 +228,37 @@ class SettingsController extends ChangeNotifier {
     if ((proseSize - clamped).abs() < 0.05) return;
     _prefs.setDouble(_kProseSize, clamped);
     notifyListeners();
+  }
+
+  // ------------------------------------------------------------- tab session
+  //
+  // 标签栏属于「下次打开时的样子」：和面板宽度一样是视图状态，不写进笔记。
+
+  /// 上次退出时开着的标签（笔记 id，按标签顺序）；`null` 表示还没存过。
+  ///
+  /// 空列表是有效状态：用户把标签全关了，下次启动也不该替他打开一篇。
+  List<String>? get sessionTabs => _prefs.getStringList(_kSessionTabs);
+
+  /// 上次退出时选中的标签，没有选中页时为 `null`。
+  String? get sessionSelectedTab => _prefs.getString(_kSessionSelected);
+
+  /// 记下当前的标签栏；值没变就不碰磁盘。
+  ///
+  /// 通知每次正文输入也会来，而输入并不改变标签——不比较就会在打字时反复
+  /// 重写整个偏好文件。
+  void saveSession(List<String> tabs, String? selectedTab) {
+    final bool sameTabs = listEquals(
+      _prefs.getStringList(_kSessionTabs),
+      tabs,
+    );
+    final bool sameSelected =
+        _prefs.getString(_kSessionSelected) == selectedTab;
+    if (sameTabs && sameSelected) return;
+    _prefs.setStringList(_kSessionTabs, tabs);
+    if (selectedTab == null) {
+      _prefs.remove(_kSessionSelected);
+    } else {
+      _prefs.setString(_kSessionSelected, selectedTab);
+    }
   }
 }

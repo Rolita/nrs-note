@@ -115,6 +115,8 @@ class _CellCode {
     required this.fill,
     this.radius = _kInlineCodeRadius,
     this.padX = 0,
+    this.padY = 0,
+    this.isCode = true,
   });
 
   final int start;
@@ -128,6 +130,12 @@ class _CellCode {
 
   /// 底片在文字两侧额外铺出的宽度（标签的内边距）。
   final double padX;
+
+  /// 底片在文字上下额外铺出的高度（标签的 1px 上下内边距）。
+  final double padY;
+
+  /// 只有行内代码的底片跟随表格选区换色；标签保留自己的颜色。
+  final bool isCode;
 }
 
 /// A cell with its measured and allocated geometry.

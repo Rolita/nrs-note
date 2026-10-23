@@ -24,6 +24,7 @@ LineDocumentLayout _layout(
   LineHeightResolver? heightFor,
   LineInsetResolver? insetFor,
   int? markerRevealLine,
+  Set<int> foldedLines = const <int>{},
   LineLayoutMetrics metrics = const LineLayoutMetrics(),
 }) => layoutLines(
   text: text,
@@ -33,6 +34,7 @@ LineDocumentLayout _layout(
   heightFor: heightFor,
   insetFor: insetFor,
   markerRevealLine: markerRevealLine,
+  foldedLines: foldedLines,
   metrics: metrics,
 );
 
@@ -699,6 +701,33 @@ void main() {
       );
     });
 
+    test('摊开嵌套列表时，缩进仍由槽位保留', () {
+      const String doc = '- 父\n  2. [ ] 子';
+      final SourceLine line = scanSourceLines(doc)[1];
+      expect(line.nestLevel, 1);
+      final LineDocumentLayout layout = _layout(
+        doc,
+        markerRevealLine: line.start,
+      );
+      addTearDown(layout.dispose);
+
+      final LaidOutLine row = layout.laidOut[1];
+      expect(row.slot.revealedMarkers, isTrue);
+      expect(row.paintedFrom, line.markerStart, reason: '缩进不摊进正文');
+      expect(row.slot.width, row.slot.indent, reason: '槽位仍占着缩进');
+      expect(row.gutter, closeTo(row.slot.indent, 0.01));
+      expect(
+        (row.painter.text! as TextSpan).toPlainText(),
+        doc.substring(line.markerStart, line.end),
+        reason: '排出来的是从标记起的源码',
+      );
+      expect(
+        layout.offsetAtPoint(Offset(row.slot.indent / 2, row.top + 8)),
+        line.markerStart,
+        reason: '缩进里的落点吸附到序号起点',
+      );
+    });
+
     test('只有列表行会摊开，普通段落不受影响', () {
       const String doc = '15. 甲\n普通段落';
       final List<SourceLine> lines = scanSourceLines(doc);
@@ -711,6 +740,212 @@ void main() {
       expect(layout.laidOut.first.slot.revealedMarkers, isTrue);
       expect(layout.laidOut.first.paintedFrom, 0);
       expect(layout.laidOut.last.slot.revealedMarkers, isFalse);
+    });
+  });
+
+  group('列表子树扫描', () {
+    test('只有挂着更深列表项的项可折叠', () {
+      const String doc =
+          '- 父\n'
+          '  1. 子\n'
+          '- 独项\n'
+          '- 续行父\n'
+          '  普通续行';
+      final List<SourceLine> lines = scanSourceLines(doc);
+      final List<ListFold> folds = scanListFolds(lines);
+
+      expect(folds, hasLength(1));
+      expect(folds.single.parentIndex, 0);
+      expect(folds.single.lastIndex, 1);
+    });
+
+    test('每一层有子项的项各占一折', () {
+      const String doc =
+          '- 父\n'
+          '  1. 子\n'
+          '  2. 子项父\n'
+          '    - 孙\n'
+          '- 末尾';
+      final List<SourceLine> lines = scanSourceLines(doc);
+      final List<ListFold> folds = scanListFolds(lines);
+
+      expect(
+        folds.map((ListFold f) => '${f.parentIndex}..${f.lastIndex}').toList(),
+        <String>['0..3', '2..3'],
+      );
+    });
+
+    test('缩进续行与缩进围栏算子树，结尾空行不算', () {
+      const String doc =
+          '- 父\n'
+          '  1. 子\n'
+          '     续行\n'
+          '  ```\n'
+          '  代码\n'
+          '  ```\n'
+          '\n'
+          '- 末尾';
+      final List<SourceLine> lines = scanSourceLines(doc);
+      final List<ListFold> folds = scanListFolds(lines);
+
+      expect(folds.single.parentIndex, 0);
+      // 空行在末尾，不并进子树，展开时不会在下一项前多出一段空行。
+      expect(folds.single.lastIndex, 5);
+    });
+
+    test('顶格围栏结束列表，不算进子树', () {
+      const String doc =
+          '- 父\n'
+          '  1. 子\n'
+          '```\n'
+          '代码\n'
+          '```';
+      final List<SourceLine> lines = scanSourceLines(doc);
+      final List<ListFold> folds = scanListFolds(lines);
+
+      expect(folds.single.lastIndex, 1);
+    });
+
+    test('任务列表与有序任务同样可折叠', () {
+      const String doc =
+          '- [ ] 父\n'
+          '  1. [x] 子\n'
+          '- [x] 末尾';
+      final List<SourceLine> lines = scanSourceLines(doc);
+      final List<ListFold> folds = scanListFolds(lines);
+
+      expect(folds.single.parentIndex, 0);
+      expect(folds.single.lastIndex, 1);
+      expect(lines[1].isList, isTrue);
+    });
+  });
+
+  group('折叠列表子树', () {
+    const String doc =
+        '- 父\n'
+        '  1. 子\n'
+        '  2. 次子\n'
+        '- 末尾';
+
+    test('收起的子树压成零高，后面的行顶上来', () {
+      final List<SourceLine> lines = scanSourceLines(doc);
+      final LineDocumentLayout layout = _layout(
+        doc,
+        foldedLines: <int>{lines[0].start},
+      );
+      addTearDown(layout.dispose);
+
+      expect(layout.laidOut[0].fold, isNotNull);
+      expect(layout.laidOut[0].folded, isTrue);
+      expect(layout.laidOut[0].height, _row);
+      for (int i = 1; i <= 2; i++) {
+        expect(layout.laidOut[i].hidden, isTrue);
+        expect(layout.laidOut[i].height, 0);
+      }
+      expect(layout.laidOut[3].hidden, isFalse);
+      expect(layout.laidOut[3].top, _row);
+      expect(layout.height, _row * 2);
+    });
+
+    test('没点开时子树照常排版', () {
+      final List<SourceLine> lines = scanSourceLines(doc);
+      final LineDocumentLayout layout = _layout(doc);
+      addTearDown(layout.dispose);
+
+      expect(layout.laidOut[0].fold, isNotNull);
+      expect(layout.laidOut[0].folded, isFalse);
+      for (final LaidOutLine line in layout.laidOut) {
+        expect(line.hidden, isFalse);
+        expect(line.height, _row);
+      }
+      expect(layout.height, _row * 4);
+      expect(lines, hasLength(4));
+    });
+
+    test('折起来的偏移与光标收回到父项末尾', () {
+      final List<SourceLine> lines = scanSourceLines(doc);
+      final LineDocumentLayout layout = _layout(
+        doc,
+        foldedLines: <int>{lines[0].start},
+      );
+      addTearDown(layout.dispose);
+
+      final int inside = lines[1].paintStart + 1;
+      expect(layout.visibleOffset(inside), lines[0].end);
+
+      final CaretGeometry caret = layout.caretGeometryAt(inside);
+      expect(caret.offset, lines[0].end);
+      expect(caret.origin.dy, 0, reason: '光标要落在仍然可见的父项上');
+    });
+
+    test('折到文末时，纸面下方的点击落在父项末尾', () {
+      const String tail = '- 父\n  1. 子';
+      final List<SourceLine> lines = scanSourceLines(tail);
+      final LineDocumentLayout layout = _layout(
+        tail,
+        foldedLines: <int>{lines[0].start},
+      );
+      addTearDown(layout.dispose);
+
+      expect(layout.height, _row);
+      expect(layout.offsetAtPoint(const Offset(10, _row + 5)), lines[0].end);
+    });
+
+    test('选区扫过折叠区时不产生零高盒子', () {
+      final List<SourceLine> lines = scanSourceLines(doc);
+      final LineDocumentLayout layout = _layout(
+        doc,
+        foldedLines: <int>{lines[0].start},
+      );
+      addTearDown(layout.dispose);
+
+      final List<Rect> rects = layout.selectionRects(
+        lines[0].start,
+        layout.text.length,
+      );
+      expect(rects, isNotEmpty);
+      for (final Rect rect in rects) {
+        expect(rect.height, greaterThan(0));
+      }
+    });
+
+    test('外层收起时内层的折叠键不生效，行都归外层', () {
+      const String nested =
+          '- 父\n'
+          '  1. 子\n'
+          '    - 孙\n'
+          '- 末尾';
+      final List<SourceLine> lines = scanSourceLines(nested);
+      final LineDocumentLayout layout = _layout(
+        nested,
+        foldedLines: <int>{lines[0].start, lines[1].start},
+      );
+      addTearDown(layout.dispose);
+
+      expect(layout.laidOut[1].hidden, isTrue);
+      expect(layout.laidOut[1].folded, isFalse);
+      expect(layout.visibleOffset(lines[2].start), lines[0].end);
+      expect(layout.laidOut[3].top, layout.laidOut[0].bottom);
+    });
+
+    test('只收起内层时，外层照常可见', () {
+      const String nested =
+          '- 父\n'
+          '  1. 子\n'
+          '    - 孙\n'
+          '- 末尾';
+      final List<SourceLine> lines = scanSourceLines(nested);
+      final LineDocumentLayout layout = _layout(
+        nested,
+        foldedLines: <int>{lines[1].start},
+      );
+      addTearDown(layout.dispose);
+
+      expect(layout.laidOut[0].height, _row);
+      expect(layout.laidOut[1].folded, isTrue);
+      expect(layout.laidOut[2].hidden, isTrue);
+      expect(layout.visibleOffset(lines[2].start), lines[1].end);
+      expect(layout.laidOut[3].top, _row * 2);
     });
   });
 }

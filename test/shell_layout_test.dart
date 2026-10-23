@@ -15,9 +15,11 @@ import 'package:nrs/data/storage/note_store.dart';
 import 'package:nrs/state/notes_controller.dart';
 import 'package:nrs/state/settings_controller.dart';
 import 'package:nrs/ui/common/app_widgets.dart';
+import 'package:nrs/ui/common/notices.dart';
 import 'package:nrs/ui/editor/editor_context_menu.dart';
 import 'package:nrs/ui/editor/editor_pane.dart';
 import 'package:nrs/ui/editor/line_layout/line_editable_text.dart';
+import 'package:nrs/ui/editor/line_layout/render_line_editable.dart';
 import 'package:nrs/ui/editor/markdown_editor.dart';
 import 'package:nrs/ui/editor/outline_panel.dart';
 import 'package:nrs/ui/shell/app_shell.dart';
@@ -93,8 +95,43 @@ class _VaultStore extends NoteStore {
   }
 
   @override
-  Future<void> delete(Note note) async {
+  Future<bool> folderHoldsOnlyNotes(
+    String folderPath,
+    Set<String> notePaths,
+  ) async => Note.normalizeFolderPath(folderPath).isNotEmpty;
+
+  @override
+  Future<bool> deleteFolder(String folderPath) async {
+    final String folder = Note.normalizeFolderPath(folderPath);
+    if (folder.isEmpty) return false;
+    folders.removeWhere(
+      (String path) => path == folder || path.startsWith('$folder/'),
+    );
+    return true;
+  }
+
+  final Map<String, Note> trashed = <String, Note>{};
+
+  @override
+  Future<TrashEntry?> delete(Note note) async {
     notes.removeWhere((Note n) => n.id == note.id);
+    final TrashEntry entry = TrashEntry(
+      id: 'trash-${note.id}',
+      originalPath: note.relativePath,
+      title: note.title,
+      deletedAt: DateTime(2026, 1, 2),
+      size: note.toMarkdown().length,
+    );
+    trashed[entry.id] = note;
+    return entry;
+  }
+
+  @override
+  Future<Note?> restoreTrash(String entryId) async {
+    final Note? note = trashed.remove(entryId);
+    if (note == null) return null;
+    notes.add(note);
+    return note;
   }
 }
 
@@ -193,37 +230,66 @@ void main() {
     expect(find.text('一篇笔记'), findsWidgets);
   });
 
-  testWidgets('the tree follows renames and task edits without a full rebuild', (
+  testWidgets(
+    'the tree follows renames and task edits without a full rebuild',
+    (WidgetTester tester) async {
+      final Note note = Note(
+        id: 'task',
+        title: '任务清单',
+        body: '- [ ] 待办\n',
+        createdAt: DateTime(2026, 1, 1),
+        updatedAt: DateTime(2026, 1, 2),
+      );
+      final ({SettingsController settings, NotesController notes}) app =
+          await pumpShell(tester, vault: <Note>[note]);
+      app.notes.select('task');
+      await tester.pump();
+
+      Finder inTree(Finder finder) =>
+          find.descendant(of: find.byType(VaultTree), matching: finder);
+      expect(inTree(find.text('0/1')), findsOneWidget);
+
+      // 正文输入只推进编辑版本号：树不重建，但这一行的任务徽标要自己更新。
+      app.notes.updateBody('- [x] 待办\n');
+      await tester.pump();
+      expect(inTree(find.text('1/1')), findsOneWidget);
+
+      // 标题即文件名，属于结构变化：树必须跟着换行。
+      app.notes.updateTitle('任务清单 改');
+      await tester.pump();
+      expect(inTree(find.text('任务清单 改')), findsOneWidget);
+
+      // 让防抖写入落地，否则测试结束时会留下挂起的定时器。
+      await tester.pump(const Duration(seconds: 3));
+    },
+  );
+
+  /// 打开一篇笔记时，光标只是停在文首，并没有在编辑：第一行的 `# ` 不该一上屏
+  /// 就摊开。用户点进正文之后，光标所在的那一行才揭示源码。
+  testWidgets('a note opens rendered, with no line in source mode', (
     WidgetTester tester,
   ) async {
-    final Note note = Note(
-      id: 'task',
-      title: '任务清单',
-      body: '- [ ] 待办\n',
-      createdAt: DateTime(2026, 1, 1),
-      updatedAt: DateTime(2026, 1, 2),
+    await pumpShell(tester);
+    RenderLineEditable field() =>
+        tester.allRenderObjects.whereType<RenderLineEditable>().first;
+    double markerWidth() => field()
+        .getBoxesForSelection(
+          const TextSelection(baseOffset: 0, extentOffset: 1),
+        )
+        .first
+        .toRect()
+        .width;
+
+    expect(markerWidth(), 0, reason: '刚打开笔记，第一行的 # 不该露出来');
+
+    final Rect caret = field().getLocalRectForCaret(
+      const TextPosition(offset: 3),
     );
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(tester, vault: <Note>[note]);
-    app.notes.select('task');
-    await tester.pump();
-
-    Finder inTree(Finder finder) =>
-        find.descendant(of: find.byType(VaultTree), matching: finder);
-    expect(inTree(find.text('0/1')), findsOneWidget);
-
-    // 正文输入只推进编辑版本号：树不重建，但这一行的任务徽标要自己更新。
-    app.notes.updateBody('- [x] 待办\n');
-    await tester.pump();
-    expect(inTree(find.text('1/1')), findsOneWidget);
-
-    // 标题即文件名，属于结构变化：树必须跟着换行。
-    app.notes.updateTitle('任务清单 改');
-    await tester.pump();
-    expect(inTree(find.text('任务清单 改')), findsOneWidget);
-
-    // 让防抖写入落地，否则测试结束时会留下挂起的定时器。
-    await tester.pump(const Duration(seconds: 3));
+    await tester.tapAt(
+      (field().localToGlobal(caret.topLeft) & caret.size).center,
+    );
+    await tester.pumpAndSettle();
+    expect(markerWidth(), greaterThan(0), reason: '点进这一行后才展开源码');
   });
 
   testWidgets('only the sidebar and the outline can be dragged wider', (
@@ -369,10 +435,7 @@ void main() {
     // The matching line sits under the name — a list of names would answer
     // "which notes", but a search asks "where in them".
     expect(
-      find.descendant(
-        of: panel,
-        matching: find.textContaining('正文里提到了甲'),
-      ),
+      find.descendant(of: panel, matching: find.textContaining('正文里提到了甲')),
       findsOneWidget,
     );
     expect(
@@ -426,89 +489,86 @@ void main() {
       find.descendant(of: panel, matching: find.textContaining('#入门 也会')),
       findsOneWidget,
     );
-    expect(
-      find.descendant(of: panel, matching: find.text('闲话')),
-      findsNothing,
-    );
+    expect(find.descendant(of: panel, matching: find.text('闲话')), findsNothing);
   });
 
-  testWidgets('a note with three matches is one group, and hover lights it up', (
-    WidgetTester tester,
-  ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          vault: <Note>[
-            Note(
-              id: 'a',
-              title: 'NRS 快速入门',
-              fileName: 'NRS 快速入门.md',
-              body:
-                  '# NRS 快速入门\n\n第一行 #入门\n第二行 #入门\n第三行 #入门\n',
-              createdAt: DateTime(2026, 1, 1),
-              updatedAt: DateTime(2026, 1, 2),
-            ),
-          ],
-        );
+  testWidgets(
+    'a note with three matches is one group, and hover lights it up',
+    (WidgetTester tester) async {
+      final ({SettingsController settings, NotesController notes}) app =
+          await pumpShell(
+            tester,
+            vault: <Note>[
+              Note(
+                id: 'a',
+                title: 'NRS 快速入门',
+                fileName: 'NRS 快速入门.md',
+                body: '# NRS 快速入门\n\n第一行 #入门\n第二行 #入门\n第三行 #入门\n',
+                createdAt: DateTime(2026, 1, 1),
+                updatedAt: DateTime(2026, 1, 2),
+              ),
+            ],
+          );
 
-    await tester.tap(find.byTooltip('搜索'));
-    await tester.pumpAndSettle();
-    app.notes.setQuery('tag:#入门');
-    await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('搜索'));
+      await tester.pumpAndSettle();
+      app.notes.setQuery('tag:#入门');
+      await tester.pumpAndSettle();
 
-    final Finder panel = find.byType(NoteListPanel);
-    // One group named after the file (without `.md`), with the match count.
-    expect(
-      find.descendant(of: panel, matching: find.text('NRS 快速入门')),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(of: panel, matching: find.text('3')),
-      findsOneWidget,
-    );
-    final Finder firstCard = find.descendant(
-      of: panel,
-      matching: find.textContaining('第一行'),
-    );
-    expect(firstCard, findsOneWidget);
-    expect(
-      find.descendant(of: panel, matching: find.textContaining('第三行')),
-      findsOneWidget,
-    );
+      final Finder panel = find.byType(NoteListPanel);
+      // One group named after the file (without `.md`), with the match count.
+      expect(
+        find.descendant(of: panel, matching: find.text('NRS 快速入门')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: panel, matching: find.text('3')),
+        findsOneWidget,
+      );
+      final Finder firstCard = find.descendant(
+        of: panel,
+        matching: find.textContaining('第一行'),
+      );
+      expect(firstCard, findsOneWidget);
+      expect(
+        find.descendant(of: panel, matching: find.textContaining('第三行')),
+        findsOneWidget,
+      );
 
-    // The highlight is quiet until the pointer is on the card.
-    Color? highlightBackground() {
-      final Text text = tester.widget<Text>(firstCard);
-      final TextSpan span = text.textSpan! as TextSpan;
-      for (final InlineSpan child in span.children ?? const <InlineSpan>[]) {
-        final Color? color = child.style?.backgroundColor;
-        if (color != null) return color;
+      // The highlight is quiet until the pointer is on the card.
+      Color? highlightBackground() {
+        final Text text = tester.widget<Text>(firstCard);
+        final TextSpan span = text.textSpan! as TextSpan;
+        for (final InlineSpan child in span.children ?? const <InlineSpan>[]) {
+          final Color? color = child.style?.backgroundColor;
+          if (color != null) return color;
+        }
+        return null;
       }
-      return null;
-    }
 
-    final Color? idle = highlightBackground();
-    expect(idle, isNotNull, reason: '命中的标签要有底色');
+      final Color? idle = highlightBackground();
+      expect(idle, isNotNull, reason: '命中的标签要有底色');
 
-    final TestGesture pointer = await tester.createGesture(
-      kind: PointerDeviceKind.mouse,
-    );
-    await pointer.addPointer(location: Offset.zero);
-    addTearDown(pointer.removePointer);
-    await pointer.moveTo(tester.getCenter(firstCard));
-    await tester.pumpAndSettle();
-    expect(highlightBackground(), isNot(idle), reason: '悬浮时才变黄');
+      final TestGesture pointer = await tester.createGesture(
+        kind: PointerDeviceKind.mouse,
+      );
+      await pointer.addPointer(location: Offset.zero);
+      addTearDown(pointer.removePointer);
+      await pointer.moveTo(tester.getCenter(firstCard));
+      await tester.pumpAndSettle();
+      expect(highlightBackground(), isNot(idle), reason: '悬浮时才变黄');
 
-    // The header folds its cards away.
-    await tester.tap(
-      find.descendant(of: panel, matching: find.text('NRS 快速入门')),
-    );
-    await tester.pumpAndSettle();
-    expect(
-      find.descendant(of: panel, matching: find.textContaining('第一行')),
-      findsNothing,
-    );
-  });
+      // The header folds its cards away.
+      await tester.tap(
+        find.descendant(of: panel, matching: find.text('NRS 快速入门')),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: panel, matching: find.textContaining('第一行')),
+        findsNothing,
+      );
+    },
+  );
 
   testWidgets('Aa flips case sensitivity, which changes what matches', (
     WidgetTester tester,
@@ -634,39 +694,40 @@ void main() {
     expect(inBar('甲'), findsNothing);
   });
 
-  testWidgets('tabs start at the editor and the outline button at the outline', (
-    WidgetTester tester,
-  ) async {
-    await pumpShell(
-      tester,
-      vault: <Note>[
-        note('a', '甲', DateTime(2026, 3, 1)),
-        note('b', '乙', DateTime(2026, 2, 1)),
-      ],
-    );
-    await tester.tap(treeRow('乙'));
-    await tester.pumpAndSettle();
+  testWidgets(
+    'tabs start at the editor and the outline button at the outline',
+    (WidgetTester tester) async {
+      await pumpShell(
+        tester,
+        vault: <Note>[
+          note('a', '甲', DateTime(2026, 3, 1)),
+          note('b', '乙', DateTime(2026, 2, 1)),
+        ],
+      );
+      await tester.tap(treeRow('乙'));
+      await tester.pumpAndSettle();
 
-    // A tab sits exactly above the column it opens.
-    final Rect editor = tester.getRect(find.byType(EditorPane));
-    final Finder tab = find
-        .ancestor(
-          of: find.descendant(
-            of: find.byType(AppTitleBar),
-            matching: find.text('甲'),
-          ),
-          matching: find.byType(AnimatedContainer),
-        )
-        .first;
-    expect(tester.getRect(tab).left, editor.left);
+      // A tab sits exactly above the column it opens.
+      final Rect editor = tester.getRect(find.byType(EditorPane));
+      final Finder tab = find
+          .ancestor(
+            of: find.descendant(
+              of: find.byType(AppTitleBar),
+              matching: find.text('甲'),
+            ),
+            matching: find.byType(AnimatedContainer),
+          )
+          .first;
+      expect(tester.getRect(tab).left, editor.left);
 
-    // The outline toggle shares the outline panel's left edge.
-    final Rect outline = tester.getRect(find.byType(OutlinePanel));
-    final Rect outlineButton = tester.getRect(
-      find.byTooltip('大纲  ·  Ctrl+Shift+O'),
-    );
-    expect(outlineButton.left, outline.left);
-  });
+      // The outline toggle shares the outline panel's left edge.
+      final Rect outline = tester.getRect(find.byType(OutlinePanel));
+      final Rect outlineButton = tester.getRect(
+        find.byTooltip('大纲  ·  Ctrl+Shift+O'),
+      );
+      expect(outlineButton.left, outline.left);
+    },
+  );
 
   testWidgets('right-clicking a file in the tree offers delete for that file', (
     WidgetTester tester,
@@ -689,7 +750,7 @@ void main() {
     await tester.tap(find.text('删除笔记'));
     await tester.pumpAndSettle();
 
-    expect(find.text('删除这篇笔记?'), findsOneWidget);
+    expect(find.text('删除这篇笔记？'), findsOneWidget);
     await tester.tap(find.widgetWithText(FilledButton, '删除'));
     await tester.pumpAndSettle();
 
@@ -698,6 +759,35 @@ void main() {
       'C 笔记',
     ]);
     expect(treeRow('B 笔记'), findsNothing);
+    // The menu closes on the row's tap, before the dialog opens. A menu route
+    // left behind here paints nothing once its barrier is invisible but still
+    // swallows every click over the app.
+    expect(find.text('删除笔记'), findsNothing, reason: '删除完成后右键菜单必须已经关上');
+    expect(find.text('移到文件夹…'), findsNothing);
+  });
+
+  testWidgets('Esc backs out of the delete dialog and keeps the note', (
+    WidgetTester tester,
+  ) async {
+    final ({SettingsController settings, NotesController notes}) app =
+        await pumpShell(
+          tester,
+          sort: SortMode.titleAsc,
+          vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
+        );
+
+    await tester.tap(treeRow('A 笔记'), buttons: kSecondaryMouseButton);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除笔记'));
+    await tester.pumpAndSettle();
+    expect(find.text('删除这篇笔记？'), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+
+    expect(find.text('删除这篇笔记？'), findsNothing);
+    expect(find.byKey(NoticeHost.cardKey), findsNothing);
+    expect(app.notes.allNotes.map((Note n) => n.title), <String>['A 笔记']);
   });
 
   testWidgets('shift+click takes the range, and delete takes the whole range', (
@@ -726,14 +816,41 @@ void main() {
 
     await tester.tap(find.text('删除 3 篇笔记'));
     await tester.pumpAndSettle();
-    expect(find.text('删除这 3 篇笔记?'), findsOneWidget);
+    expect(find.text('删除这 3 篇笔记？'), findsOneWidget);
 
     await tester.tap(find.widgetWithText(FilledButton, '删除'));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    // The undo card has a 6s countdown of its own; settle only far enough for
+    // the dialog to leave and the card to arrive.
+    await tester.pump(const Duration(milliseconds: 300));
 
     expect(app.notes.allNotes, isEmpty);
     expect(find.text('笔记库还是空的'), findsOneWidget);
+    expect(find.text('已移入回收站'), findsOneWidget);
+    expect(find.text('3 篇笔记'), findsOneWidget);
     expect(find.text('撤销'), findsOneWidget);
+    expect(
+      find.text('删除 3 篇笔记'),
+      findsNothing,
+      reason: '菜单在点下删除时就该关掉，不能留一层隐形遮罩',
+    );
+
+    // The card hugs the window's top-right corner, clear of the caption.
+    final Rect titleBar = tester.getRect(find.byType(AppTitleBar));
+    final Rect card = tester.getRect(find.byKey(NoticeHost.cardKey));
+    expect(titleBar.right - card.right, lessThanOrEqualTo(12));
+    expect(card.top, greaterThanOrEqualTo(titleBar.bottom));
+    expect(card.top - titleBar.bottom, lessThan(12));
+    expect(card.width, lessThanOrEqualTo(352));
+  });
+
+  testWidgets('the function rail opens the trash', (WidgetTester tester) async {
+    await pumpShell(tester);
+
+    await tester.tap(find.byTooltip('回收站'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('回收站是空的'), findsOneWidget);
   });
 
   testWidgets('a file row paints its label centred inside the highlight', (
@@ -787,7 +904,7 @@ void main() {
     expect(app.notes.folders, <String>['新建文件夹']);
     // Creating a folder says nothing: the new row appearing in the tree is the
     // only feedback the app gives.
-    expect(find.byType(SnackBar), findsNothing);
+    expect(find.byKey(NoticeHost.cardKey), findsNothing);
   });
 
   testWidgets('F2 renames the clicked row, and Enter writes the new name', (
@@ -911,6 +1028,53 @@ void main() {
 
     expect(app.notes.folders, <String>['归档']);
     expect(treeRow('归档'), findsOneWidget);
+  });
+
+  testWidgets('a folder can be deleted from its menu, and the notice undoes it', (
+    WidgetTester tester,
+  ) async {
+    final ({SettingsController settings, NotesController notes}) app =
+        await pumpShell(
+          tester,
+          vault: <Note>[
+            note('a', 'A 笔记', DateTime(2026, 3, 1)).copyWith(folderPath: '项目'),
+            note('b', 'B 笔记', DateTime(2026, 2, 1)),
+          ],
+          folders: <String>['项目'],
+        );
+
+    await tester.tap(
+      find.descendant(of: find.byType(VaultTree), matching: find.text('项目')),
+      buttons: kSecondaryMouseButton,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('删除文件夹'), findsOneWidget);
+    await tester.tap(find.text('删除文件夹'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('删除文件夹「项目」？'), findsOneWidget);
+    expect(find.textContaining('1 篇笔记将移入回收站'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, '删除'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    // The dialog's future resolves when the pop starts, so the delete and its
+    // notice run while the barrier is still fading out. One more frame lets the
+    // navigator drop the barrier before the notice is tapped.
+    await tester.pump();
+
+    expect(app.notes.allNotes.map((Note n) => n.title), <String>['B 笔记']);
+    expect(treeRow('项目'), findsNothing);
+    expect(find.text('已删除文件夹「项目」'), findsOneWidget);
+    expect(find.text('1 篇笔记已移入回收站'), findsOneWidget);
+
+    await tester.tap(find.text('撤销'));
+    await tester.pumpAndSettle();
+
+    expect(
+      app.notes.allNotes.map((Note n) => n.title),
+      containsAll(<String>['A 笔记', 'B 笔记']),
+    );
+    expect(treeRow('项目'), findsOneWidget);
   });
 
   testWidgets('dragging a row onto a folder moves the note into it', (
@@ -1125,7 +1289,10 @@ void main() {
     );
 
     // The caret is still on line 0, so the first heading is lit.
-    expect(tester.widget<OutlinePanel>(find.byType(OutlinePanel)).currentLine, 0);
+    expect(
+      tester.widget<OutlinePanel>(find.byType(OutlinePanel)).currentLine,
+      0,
+    );
 
     // Drag the paper's right margin — outside the text column, so this is a
     // scroll and not a text selection.
@@ -1144,6 +1311,54 @@ void main() {
     // caret's line (which never moved).
     expect(line, greaterThanOrEqualTo(27), reason: '滚动到的位置已经在第二章里了');
   });
+
+  testWidgets(
+    'the note title scrolls with the document, the path strip does not',
+    (WidgetTester tester) async {
+      final String body = <String>[
+        '# 第一章',
+        for (int i = 0; i < 80; i++) '正文 $i',
+      ].join('\n');
+
+      await pumpShell(
+        tester,
+        vault: <Note>[
+          Note(
+            id: 'a',
+            title: '长笔记',
+            body: body,
+            createdAt: DateTime(2026, 1, 1),
+            updatedAt: DateTime(2026, 1, 2),
+          ),
+        ],
+      );
+
+      final Finder title = find.byKey(const ValueKey<String>('title-a'));
+      expect(title, findsOneWidget);
+      final Rect titleBefore = tester.getRect(title);
+      final Rect pathBefore = tester.getRect(find.text('笔记库'));
+
+      // Drag the paper's right margin — outside the text column, so this is a
+      // scroll and not a text selection.
+      final Rect editor = tester.getRect(find.byType(MarkdownEditor));
+      await tester.dragFrom(
+        Offset(editor.right - 12, editor.center.dy),
+        const Offset(0, -600),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        tester.getRect(title).top,
+        lessThan(titleBefore.top - 100),
+        reason: '标题是文档的第一行，滚动时必须跟着正文一起离开顶部',
+      );
+      expect(
+        tester.getRect(find.text('笔记库')).top,
+        pathBefore.top,
+        reason: '路径条是面板的一部分，不随正文滚动',
+      );
+    },
+  );
 
   testWidgets('the outline reuses its headings until the body changes', (
     WidgetTester tester,

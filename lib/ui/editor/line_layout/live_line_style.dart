@@ -169,14 +169,16 @@ class LiveLineStyle {
   /// （标题的 `#`、引用的 `>`）按揭示范围决定显形还是折叠，列表标记则根本
   /// 不进正文（[SourceLine.paintStart] 已经跳过了它们）。
   ///
-  /// 返回值的 `toPlainText()` 必须与 `text.substring(paintStart, end)` 逐字符
-  /// 相同，否则按行排版的偏移映射会整体错位；对不上时退回纯文本。
+  /// 返回值的 `toPlainText()` 必须与引擎的 `paintedFrom` 起算的源码逐字符
+  /// 相同（平时从 [SourceLine.paintStart] 起，标记摊开时从
+  /// [SourceLine.markerStart] 起），否则按行排版的偏移映射会整体错位；
+  /// 对不上时退回纯文本。
   InlineSpan spanFor(SourceLine line) {
     final TextStyle style = styleFor(line);
     // 标记摊进正文时，`- ` / `1. ` / `[ ] ` 必须是这一行排出来的字符，
-    // 偏移映射才认得出它们；否则它们仍画在槽位里、由渲染层负责。
+    // 偏移映射才认得出它们；缩进仍由槽位占宽，所以从标记起点起排。
     final bool inline = markersInline(line);
-    final int at = inline ? line.start : line.paintStart;
+    final int at = inline ? line.markerStart : line.paintStart;
     final String body = line.text.substring(at - line.start);
     if (body.isEmpty) return TextSpan(text: '', style: style);
 
@@ -197,8 +199,8 @@ class LiveLineStyle {
     }
     if (inline) {
       // 标记按「标记样式」上屏，后半段照常解析行内语法；两段合起来的纯文本
-      // 仍然是整行源码，引擎的偏移映射对得上。
-      final int prefixLength = line.paintStart - line.start;
+      // 是本行从标记起的源码，引擎的偏移映射对得上。
+      final int prefixLength = line.paintStart - line.markerStart;
       final String prefix = body.substring(0, prefixLength);
       final String rest = body.substring(prefixLength);
       final InlineSpan marked = TextSpan(
@@ -275,9 +277,10 @@ class LiveLineStyle {
       default:
         break;
     }
-    // 标记摊进正文时底片也要按整行算，否则胶囊会整体左移一个标记宽度。
+    // 标记摊进正文时底片也要按从标记起的正文算，否则胶囊会整体左移一个
+    // 标记宽度。
     final bool inline = markersInline(line);
-    final int at = inline ? line.start : line.paintStart;
+    final int at = inline ? line.markerStart : line.paintStart;
     final String body = line.text.substring(at - line.start);
     final TextSelection? sel = reveal?.call();
     final bool valid =
@@ -288,7 +291,7 @@ class LiveLineStyle {
         sel.start <= at + body.length;
     final ({int a, int b})? hover = _hoverIn(line);
     // `_hoverIn` 的偏移相对正文起点；标记摊开时要把前缀长度加回去。
-    final int shift = inline ? line.paintStart - line.start : 0;
+    final int shift = inline ? line.paintStart - line.markerStart : 0;
     return inlineFills(
       body,
       base: styleFor(line),
@@ -298,6 +301,39 @@ class LiveLineStyle {
       hoverA: hover == null ? -1 : hover.a + shift,
       hoverB: hover == null ? -1 : hover.b + shift,
     );
+  }
+
+  /// 这一行里的双链（文档偏移区间 + 链接目标），供编辑器做点击命中。
+  ///
+  /// 代码、围栏和表格行不认：代码里的方括号不是链接，表格行的文字由自绘
+  /// 内容承担，按行 span 里的偏移在那儿没有意义。
+  List<({int start, int end, String target})> wikilinksFor(SourceLine line) {
+    switch (line.kind) {
+      case LineBlockKind.code:
+      case LineBlockKind.fence:
+      case LineBlockKind.setext:
+      case LineBlockKind.table:
+      case LineBlockKind.tableHeader:
+      case LineBlockKind.tableDivider:
+      case LineBlockKind.rule:
+        return const <({int start, int end, String target})>[];
+      default:
+        break;
+    }
+    if (!line.text.contains('[[')) {
+      return const <({int start, int end, String target})>[];
+    }
+    // 与 [spanFor] 同一个正文起点：列表标记摊进正文时，方括号的偏移也从
+    // 标记起点算起。
+    final bool inline = markersInline(line);
+    final int at = inline ? line.markerStart : line.paintStart;
+    final String body = line.text.substring(at - line.start);
+    return <({int start, int end, String target})>[
+      for (final ({int start, int end, String target}) run in wikilinkRuns(
+        body,
+      ))
+        (start: at + run.start, end: at + run.end, target: run.target),
+    ];
   }
 
   /// 行内语法；[at] 是 [body] 第一个字符的文档偏移。
@@ -390,17 +426,42 @@ class LiveLineStyle {
 
   /// 这一行的左右内边距。
   ///
-  /// 代码块卡片是唯一的例子：卡片底色铺满正文列，代码要左右各退
-  /// [kCodeBlockInset] 才不会贴着卡片的边。围栏行（卡片头）也一起退，光标
-  /// 落上去展开源码时那一行才会跟正文对齐。
+  /// 代码块卡片：卡片底色铺满正文列，代码要左右各退 [kCodeBlockInset] 才不会
+  /// 贴着卡片的边。围栏行（卡片头）也一起退，光标落上去展开源码时那一行才会
+  /// 跟正文对齐。
+  ///
+  /// 以 `#标签` 开头的正文行要再让出 [kTagPadX]：胶囊的左边没有字形可借位，
+  /// 底片只能从正文列边缘往外铺，渲染对象在 x=0 一裁，左边的内边距就没了，
+  /// 字会贴着底片（与行中段的胶囊一眼不同）。让出这份内边距后，底片从列边
+  /// 起铺、字退进去；标签被光标摊开成源码时底片不再画，内边距也一起收掉。
   EdgeInsets insetFor(SourceLine line) {
     switch (line.kind) {
       case LineBlockKind.code:
       case LineBlockKind.fence:
         return const EdgeInsets.symmetric(horizontal: kCodeBlockInset);
-      default:
+      case LineBlockKind.setext:
+      case LineBlockKind.table:
+      case LineBlockKind.tableHeader:
+      case LineBlockKind.tableDivider:
+      case LineBlockKind.rule:
         return EdgeInsets.zero;
+      default:
+        break;
     }
+    if (line.paintStart == line.start) {
+      final int? end = leadingTagEnd(line.text);
+      if (end != null && !_tagRevealed(line, end)) {
+        return const EdgeInsets.only(left: kTagPadX);
+      }
+    }
+    return EdgeInsets.zero;
+  }
+
+  /// 行首标签是否在揭示范围内（判据同 `_Ctx.touched`）。
+  bool _tagRevealed(SourceLine line, int end) {
+    final TextSelection? sel = reveal?.call();
+    if (sel == null || !sel.isValid || sel.start < 0) return false;
+    return sel.end >= line.start && sel.start <= line.start + end;
   }
 
   /// 固定行高；`null` 表示按测量结果。

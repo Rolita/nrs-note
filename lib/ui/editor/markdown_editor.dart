@@ -8,6 +8,7 @@ import 'package:flutter/gestures.dart'
         kDoubleTapTimeout,
         kSecondaryMouseButton,
         kTouchSlop;
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart' hide TableCell, TableRow;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -18,12 +19,14 @@ import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/markdown_outline.dart';
 import '../../core/utils/table_model.dart';
 import '../../core/utils/table_selection.dart';
+import '../common/notices.dart';
 import 'code_block_painter.dart';
 import 'editor_context_menu.dart';
 import 'line_layout/line_editable_text.dart';
 import 'line_layout/line_layout_engine.dart';
 import 'line_layout/live_line_style.dart';
 import 'line_layout/render_line_editable.dart';
+import 'list_fold_painter.dart';
 import 'live_markdown.dart';
 import 'selection_wash.dart';
 
@@ -51,6 +54,13 @@ class MarkdownSourceController extends TextEditingController {
   /// them to the right. Holding the reveal still for the whole gesture keeps the
   /// geometry exactly as the user saw it when they pressed.
   TextSelection? revealAs;
+
+  /// 刚绑定笔记、用户还没在正文里落过点：光标停在文首只是“停着”，不是在编辑。
+  ///
+  /// 揭示是按选区算的，若不按住，第一行是标题 / 引用的笔记一打开就露出 `# `
+  /// 或 `>`，看起来像自动进了编辑模式。正文里任何一次落点、光标移动或输入
+  /// 都会把它清掉（见 `EditorPane` 与两个落点处理）。
+  bool revealSuppressed = false;
 
   /// The rectangle a **grip** selected, held until the document changes.
   ///
@@ -401,14 +411,16 @@ int _historyCaretOffset(String before, String after) {
   return after.length < before.length ? prefix : newEnd;
 }
 
-/// Keeps list bullets alive when the user presses Enter, and ends the list on an
-/// empty item. Implemented as an input formatter so it sits directly in the
-/// native newline path instead of fighting the text input system.
+/// Keeps list bullets alive when the user presses Enter, steps an empty nested
+/// item out one level, and ends the list on an empty top-level item. Implemented
+/// as an input formatter so it sits directly in the native newline path instead
+/// of fighting the text input system.
 class ListContinuationFormatter extends TextInputFormatter {
   static final RegExp _listRe = RegExp(
     r'^(\s{0,})([-*+]|\d+[.)])\s+(\[[ xX]\]\s+)?(.*)$',
   );
   static final RegExp _quoteRe = RegExp(r'^(\s{0,3}>)(\s?)(.*)$');
+  static final RegExp _orderedRe = RegExp(r'^(\d+)([.)])$');
 
   @override
   TextEditingValue formatEditUpdate(
@@ -484,11 +496,28 @@ class ListContinuationFormatter extends TextInputFormatter {
     final String content = m.group(4) ?? '';
 
     if (content.trim().isEmpty) {
-      // An empty item at the end of its line means "I am done with this list":
-      // take the marker back off instead of nesting one level deeper, so the
-      // user can leave. 行中回车时标记后面还有正文，删标记会把后半段一起
-      // 删掉，这里只换行。
+      // An empty item at the end of its line means "step out": one level out
+      // when there is a parent item above to step to — `  - ` becomes `- ` —
+      // and off the list entirely at the top. 行中回车时标记后面还有正文，
+      // 删标记会把后半段一起删掉，这里只换行。
       if (!atLineEnd) return newValue;
+      final ({String indent, String marker, bool separated})? parent =
+          indent.isEmpty
+          ? null
+          : _parentItem(oldValue.text, lineStart, indent.length);
+      if (parent != null) {
+        return _stepOut(
+          oldValue,
+          newValue,
+          lineStart,
+          at,
+          parentIndent: parent.indent,
+          parentMarker: parent.marker,
+          parentSeparated: parent.separated,
+          marker: marker,
+          checkbox: checkbox,
+        );
+      }
       return _dropMarker(newValue, lineStart, at - lineStart, at);
     }
 
@@ -496,7 +525,7 @@ class ListContinuationFormatter extends TextInputFormatter {
     // `tryParse` rather than `parse`: a run of digits long enough to overflow an
     // int is a typo, not a list, and Enter must never throw.
     String nextMarker = marker;
-    final Match? num = RegExp(r'^(\d+)([.)])$').firstMatch(marker);
+    final Match? num = _orderedRe.firstMatch(marker);
     if (num != null) {
       final int? n = int.tryParse(num.group(1)!);
       if (n != null) nextMarker = '${n + 1}${num.group(2)}';
@@ -512,6 +541,95 @@ class ListContinuationFormatter extends TextInputFormatter {
     return TextEditingValue(
       text: text,
       selection: TextSelection.collapsed(offset: at + 1 + insert.length),
+    );
+  }
+
+  /// The nearest list item above with a *smaller* indent — the level an empty
+  /// item steps out to — or null when there is none at all.
+  ///
+  /// Blank lines belong to the list and are skipped. A paragraph, rule, heading
+  /// or any other line is a break: it ends the list the item is part of, but the
+  /// walk keeps going so an item indented under a list that such a break cut off
+  /// can still step out to that list's level. `separated` reports whether a
+  /// break was crossed on the way up, which is what makes the landing level a
+  /// fresh list instead of a continuation. 被回车（空行）隔开不算断开。
+  ({String indent, String marker, bool separated})? _parentItem(
+    String text,
+    int lineStart,
+    int indent,
+  ) {
+    int end = lineStart - 1;
+    bool separated = false;
+    while (end >= 0) {
+      final int start = end == 0 ? 0 : text.lastIndexOf('\n', end - 1) + 1;
+      final String line = text.substring(start, end);
+      if (line.trim().isNotEmpty) {
+        final Match? m = _listRe.firstMatch(line);
+        if (m == null) {
+          separated = true;
+        } else {
+          final String above = m.group(1)!;
+          if (above.length < indent) {
+            return (indent: above, marker: m.group(2)!, separated: separated);
+          }
+        }
+      }
+      end = start - 1;
+    }
+    return null;
+  }
+
+  /// Rewrites the empty item just before the newline at [at] as an item at the
+  /// parent's level.
+  ///
+  /// Stepping out *is* what that Enter does, so its newline is consumed: with
+  /// text below, the empty item's own newline still ends the outdented line;
+  /// at the bottom of the document the item simply changes level in place. An
+  /// ordered item takes the next number of the level it lands on — the child's
+  /// own number is local to the child level — while a bullet or task keeps the
+  /// kind the user was writing. When that level was cut off from this item by
+  /// other content, the landing item starts the number sequence over at 1: the
+  /// old sequence is not the one it joins. 只隔空行不算隔开，父级序号照常接续。
+  ///
+  /// The edit adds no line, so the renumber formatter's "line count changed"
+  /// gate would never see it; renumber here, forcibly, or the parent-level
+  /// items below keep their old numbers and the new item collides with them.
+  TextEditingValue _stepOut(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+    int lineStart,
+    int at, {
+    required String parentIndent,
+    required String parentMarker,
+    required bool parentSeparated,
+    required String marker,
+    required String checkbox,
+  }) {
+    String nextMarker = marker;
+    final Match? num = _orderedRe.firstMatch(marker);
+    if (num != null) {
+      final String separator = num.group(2)!;
+      if (parentSeparated) {
+        nextMarker = '1$separator';
+      } else {
+        final Match? parentNum = _orderedRe.firstMatch(parentMarker);
+        final int? n = int.tryParse(parentNum?.group(1) ?? '');
+        if (n != null) nextMarker = '${n + 1}$separator';
+      }
+    }
+    final String insert =
+        '$parentIndent$nextMarker ${checkbox.isEmpty ? '' : '[ ] '}';
+    final String text =
+        newValue.text.substring(0, lineStart) +
+        insert +
+        newValue.text.substring(at + 1);
+    return renumberAfterLineChange(
+      oldValue,
+      TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: lineStart + insert.length),
+      ),
+      force: true,
     );
   }
 
@@ -672,7 +790,8 @@ class _EditHistory {
     final bool inserting = after.length > before.length;
     final int removed = inserting ? 0 : before.length - after.length;
     // 插入接着上一块的末尾写；删除接着上一块的起点往前/往后删。
-    final bool continues = _merge &&
+    final bool continues =
+        _merge &&
         inserting == _inserting &&
         (inserting
             ? prefix == _caretAfter
@@ -779,10 +898,14 @@ class MarkdownEditor extends StatefulWidget {
     required this.fontSize,
     this.padding = const EdgeInsets.fromLTRB(40, 28, 40, 200),
     this.maxWidth = AppLayout.proseMaxWidth,
+    this.header,
+    this.shortcuts = const <ShortcutActivator, Intent>{},
+    this.actions = const <Type, Action<Intent>>{},
     this.onChanged,
     this.onTopLineChanged,
     this.onLineTopProbe,
     this.onTagTap,
+    this.onWikilinkTap,
     this.documentId,
     this.readOnly = false,
   });
@@ -793,16 +916,33 @@ class MarkdownEditor extends StatefulWidget {
   final double fontSize;
   final EdgeInsets padding;
   final double maxWidth;
+
+  /// Scrolls with the document above the first line: the note's title.
+  ///
+  /// It lives inside the scroll view but outside [shortcuts] and the editor's
+  /// own key handling — while the title has focus, Ctrl+Z must undo the title,
+  /// not the body underneath it.
+  final Widget? header;
+
+  /// Host shortcuts and actions for the body, applied only to the field.
+  ///
+  /// They sit outside the editor's own maps (so the editor's finer-grained
+  /// handling wins) but inside the scroll view, which keeps them away from
+  /// [header].
+  final Map<ShortcutActivator, Intent> shortcuts;
+  final Map<Type, Action<Intent>> actions;
+
   final ValueChanged<String>? onChanged;
 
   /// Reports the source line at the top of the viewport on every scroll, so a
   /// reader who is only scrolling still gets the right section in the outline.
   final ValueChanged<int>? onTopLineChanged;
 
-  /// 把「源码行 → 文档坐标里的 y」交给宿主（大纲跳转用）。
+  /// 把「源码行 → 滚动内容坐标里的 y」交给宿主（大纲跳转用）。
   ///
   /// 每行高度由行引擎按自己的字号量出来，宿主推算不出来；这个口子在挂载时
-  /// 注册、卸载时注销，调用时再向渲染对象取当前排版结果。
+  /// 注册、卸载时注销，调用时再向渲染对象取当前排版结果。返回值包含滚动内边距
+  /// 与头部（标题）的高度，滚动控制器要的正是这个坐标。
   final ValueChanged<double? Function(int line)?>? onLineTopProbe;
 
   /// 点击 `#标签` 胶囊时回调，参数是不带 `#` 的标签名。
@@ -810,6 +950,12 @@ class MarkdownEditor extends StatefulWidget {
   /// 标签胶囊是渲染层画出来的，没有 widget 可以挂手势；点击由编辑器自己
   /// 在指针抬起时命中判定，命中后才通知宿主去切换搜索。
   final ValueChanged<String>? onTagTap;
+
+  /// 点击 `[[双链]]` 时回调，参数是方括号里的目标标题。
+  ///
+  /// 链接和标签一样没有 widget 可以挂手势：命中由编辑器在指针抬起时按
+  /// 渲染层自己的字形矩形判定。
+  final ValueChanged<String>? onWikilinkTap;
 
   /// 当前正文的身份：笔记 id，外加宿主自己的版本号。
   ///
@@ -828,6 +974,18 @@ class MarkdownEditor extends StatefulWidget {
 class _MarkdownEditorState extends State<MarkdownEditor> {
   /// Lets us walk the field's element tree to find the checkbox shells.
   final GlobalKey _fieldKey = GlobalKey();
+
+  /// Locates the scrolled header (the title), so the pointer handlers can tell
+  /// a press on it from a press on the sheet around the body.
+  final GlobalKey _headerKey = GlobalKey();
+
+  bool _overHeader(Offset globalPosition) {
+    final RenderObject? render = _headerKey.currentContext?.findRenderObject();
+    if (render is! RenderBox || !render.hasSize) return false;
+    return (render.localToGlobal(Offset.zero) & render.size).contains(
+      globalPosition,
+    );
+  }
 
   /// Where the caret was before a click that turned out to be on a checkbox.
   TextSelection? _caretBeforeCheckboxTap;
@@ -894,6 +1052,18 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// 还是展开的源码。抬起时把这份光标还回去，胶囊原样保留。
   TextSelection? _caretBeforeTagTap;
 
+  /// 按下时命中的双链，等指针抬起再决定是不是一次点击。
+  ///
+  /// 和标签一样必须在按下时就取：输入框会把光标落进链接，方括号随即从
+  /// 折叠态退回源码，到了抬起时命中的字形已经和按下时不是一回事。
+  ({int start, int end, String target})? _wikilinkBeforeTap;
+
+  /// 按下链接前的光标位置，抬起后归还：链接是跳转，不是一次落点。
+  TextSelection? _caretBeforeWikilinkTap;
+
+  /// 指针当前悬停的双链；按下命中的兜底，理由同 [_hoverTag]。
+  ({int start, int end, String target})? _hoverWikilink;
+
   LiveLineStyle _resolveLineStyle(TextStyle style, AppPalette palette) {
     final LiveLineStyle? cached = _lineStyle;
     final String source = _currentText();
@@ -947,9 +1117,13 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// 管——它们按 [_markerReveal] 单独摊开，见 `markerRevealLine`。
   TextSelection? _revealSelection() {
     final TextEditingController c = widget.controller;
-    return c is MarkdownSourceController
-        ? (c.revealAs ?? c.selection)
-        : c.selection;
+    if (c is MarkdownSourceController) {
+      final TextSelection? frozen = c.revealAs;
+      if (frozen != null) return frozen;
+      if (c.revealSuppressed) return null;
+      return c.selection;
+    }
+    return c.selection;
   }
 
   @override
@@ -958,15 +1132,33 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     _history = _EditHistory(widget.controller.value);
     widget.controller.addListener(_recordHistory);
     widget.controller.addListener(_scheduleOverlayRefresh);
+    widget.controller.addListener(_onFoldsChanged);
     widget.scrollController.addListener(_scheduleOverlayRefresh);
     widget.scrollController.addListener(_reportTopLine);
     widget.onLineTopProbe?.call(_lineTopOf);
+    _foldDocument = widget.documentId ?? '';
+    _foldText = widget.controller.text;
+    _foldedListStarts = Set<int>.of(
+      _foldedByDocument[_foldDocument] ?? const <int>{},
+    );
+    _lastFoldSelection = widget.controller.selection;
   }
 
   void _recordHistory() => _history.observe(widget.controller.value);
 
-  /// 源码行在文档坐标里的顶部；渲染对象还没排版时为 `null`。
-  double? _lineTopOf(int line) => _editable()?.lineTopFor(line);
+  /// 源码行在滚动内容坐标里的顶部；渲染对象还没排版时为 `null`。
+  ///
+  /// 加上滚动内边距与头部（标题）的高度：两者都排在字段上方，滚动控制器只认
+  /// 内容坐标，`_scrollToLine` 拿到的必须包含它们，否则跳转会差一截。
+  double? _lineTopOf(int line) {
+    final double? top = _editable()?.lineTopFor(line);
+    if (top == null) return null;
+    final RenderObject? header = _headerKey.currentContext?.findRenderObject();
+    final double headerHeight = header is RenderBox && header.hasSize
+        ? header.size.height
+        : 0;
+    return widget.padding.top + headerHeight + top;
+  }
 
   @override
   void didUpdateWidget(MarkdownEditor oldWidget) {
@@ -977,11 +1169,17 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller.removeListener(_recordHistory);
       oldWidget.controller.removeListener(_scheduleOverlayRefresh);
+      oldWidget.controller.removeListener(_onFoldsChanged);
       widget.controller.addListener(_recordHistory);
       widget.controller.addListener(_scheduleOverlayRefresh);
+      widget.controller.addListener(_onFoldsChanged);
       _history = _EditHistory(widget.controller.value);
     } else if (oldWidget.documentId != widget.documentId) {
       _history = _EditHistory(widget.controller.value);
+    }
+    if (oldWidget.controller != widget.controller ||
+        oldWidget.documentId != widget.documentId) {
+      _bindFoldSession();
     }
     if (oldWidget.scrollController != widget.scrollController) {
       oldWidget.scrollController.removeListener(_scheduleOverlayRefresh);
@@ -1062,6 +1260,43 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     return null;
   }
 
+  /// 指针下压着的双链，没有则为 `null`。
+  ///
+  /// 和 [_tagAt] 同一条判据：只认字形真正覆盖的矩形，不认 `positionAt` 吸附
+  /// 到的行末偏移；链接没有胶囊内边距，所以不额外放宽横向范围。
+  ({int start, int end, String target})? _wikilinkAt(Offset globalPosition) {
+    final RenderLineEditable? field = _editable();
+    final LiveLineStyle? style = _lineStyle;
+    if (field == null || style == null) return null;
+
+    final int offset = field.positionAt(globalPosition).offset;
+    final LineDocumentLayout? layout = field.lineLayout;
+    if (layout == null) return null;
+    SourceLine? target;
+    for (final SourceLine line in layout.lines) {
+      if (offset >= line.start && offset <= line.end) {
+        target = line;
+        break;
+      }
+    }
+    if (target == null || !target.text.contains('[[')) return null;
+
+    for (final ({int start, int end, String target}) link in style.wikilinksFor(
+      target,
+    )) {
+      for (final Rect local in field.selectionBands(
+        TextSelection(baseOffset: link.start, extentOffset: link.end),
+      )) {
+        if (local
+            .shift(field.localToGlobal(Offset.zero))
+            .contains(globalPosition)) {
+          return link;
+        }
+      }
+    }
+    return null;
+  }
+
   /// 悬停标签变了才重建：颜色是烤进每一行 `TextPainter` 的，必须让渲染层
   /// 重排（值相等判断在 [LiveLineStyle] 上），光重画改不了字形颜色。
   void _setHoverTag(TextRange? next) {
@@ -1121,7 +1356,30 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   ///
   /// 按下就摊开会让整行在手指还没动的时候重排，也会把「按在标记上、拖到复选框」
   /// 这类手势的命中结果换掉——所以只记下来，抬手再决定。
-  ({int start, int paintStart, bool revealed})? _pendingMarker;
+  ({int start, int markerStart, int paintStart, bool revealed, int caret})?
+  _pendingMarker;
+
+  // ------------------------------------------------------------ list folds
+  //
+  // 折叠状态按笔记记在会话里：键是列表项的**行首偏移**，编辑后按公共前后缀
+  // 平移，换 tab 时按 documentId 存取。箭头是画出来的，收起/展开只是一次
+  // setState，不碰正文。
+
+  Set<int> _foldedListStarts = <int>{};
+  final Map<String, Set<int>> _foldedByDocument = <String, Set<int>>{};
+  String _foldDocument = '';
+  String _foldText = '';
+
+  /// 指针所在的可折叠行、以及正压在按钮上的那一行。
+  ///
+  /// 展开的箭头只在悬停行显形；收起的一直画着，因为不点它就没有别的入口。
+  int? _hoverFoldLine;
+  int? _hoverFoldButton;
+
+  /// 这一次按下是在点折叠箭头；抬手不能再去落光标。
+  bool _foldPress = false;
+
+  TextSelection? _lastFoldSelection;
 
   /// The base offset of a drag that began **outside** the field's box.
   ///
@@ -1434,6 +1692,144 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     });
   }
 
+  // ------------------------------------------------------------ list folds
+
+  /// 文本或选区一变：先把折叠键跟着源码平移，再看光标是不是走进了折起来
+  /// 的子树——是的话把它展开，否则光标会停在看不见的行上。
+  void _onFoldsChanged() {
+    final String text = widget.controller.text;
+    final bool textChanged = text != _foldText;
+    if (textChanged) {
+      final Set<int> next = _remapFoldStarts(
+        _foldedListStarts,
+        _foldText,
+        text,
+      );
+      _foldText = text;
+      if (!setEquals(next, _foldedListStarts)) {
+        _foldedListStarts = next;
+        setState(() {});
+      }
+    }
+    if (!textChanged) _guardSelectionAgainstFolds();
+  }
+
+  /// 换笔记时把折叠状态存到上一份、从下一份取回。
+  void _bindFoldSession() {
+    final String key = widget.documentId ?? '';
+    if (key != _foldDocument) {
+      _foldedByDocument[_foldDocument] = Set<int>.of(_foldedListStarts);
+      _foldDocument = key;
+      _foldedListStarts = Set<int>.of(_foldedByDocument[key] ?? const <int>{});
+    }
+    _foldText = widget.controller.text;
+    _lastFoldSelection = widget.controller.selection;
+    _hoverFoldLine = null;
+    _hoverFoldButton = null;
+  }
+
+  /// 编辑点之前的折叠键不动，之后的整体平移；落在改动区间里的项已经不存在。
+  Set<int> _remapFoldStarts(Set<int> starts, String oldText, String newText) {
+    if (starts.isEmpty) return starts;
+    final int limit = math.min(oldText.length, newText.length);
+    int prefix = 0;
+    while (prefix < limit &&
+        oldText.codeUnitAt(prefix) == newText.codeUnitAt(prefix)) {
+      prefix++;
+    }
+    int suffix = 0;
+    while (suffix < limit - prefix &&
+        oldText.codeUnitAt(oldText.length - 1 - suffix) ==
+            newText.codeUnitAt(newText.length - 1 - suffix)) {
+      suffix++;
+    }
+    final int changedEnd = oldText.length - suffix;
+    final int delta = newText.length - oldText.length;
+    final Set<int> out = <int>{};
+    for (final int start in starts) {
+      // 插入点正好压在折叠行的行首时，整行会被推到后面：键要跟着平移，
+      // 否则折叠会跳到插入进来的那段文字上（在列表上方新起一段就是这种）。
+      // 删除到行首则相反，行首还在原处。
+      if (start < prefix || (start == prefix && delta < 0)) {
+        out.add(start);
+      } else if (start >= changedEnd) {
+        out.add(start + delta);
+      }
+    }
+    return out;
+  }
+
+  /// 选区端点进入折叠区时自动展开。
+  ///
+  /// 收起只是把行压成零高，源码还在：方向键、Ctrl+End、Shift+点击都可能
+  /// 把光标送进那块看不见的文字。展开是最不容易让人迷路的处理——光标永远
+  /// 落在画出来的字上。
+  void _guardSelectionAgainstFolds() {
+    if (_foldedListStarts.isEmpty) return;
+    final TextSelection selection = widget.controller.selection;
+    if (!selection.isValid || selection == _lastFoldSelection) return;
+    _lastFoldSelection = selection;
+    final LineDocumentLayout? layout = _editable()?.lineLayout;
+    if (layout == null) return;
+
+    final Set<int> expand = <int>{};
+    for (final LaidOutLine line in layout.laidOut) {
+      final ListFold? fold = line.fold;
+      if (fold == null || !line.folded) continue;
+      final int from = line.source.end;
+      final int to = layout.lines[fold.lastIndex].end;
+      final bool inside = selection.isCollapsed
+          ? selection.start > from && selection.start <= to
+          : selection.start <= to && selection.end > from;
+      if (inside) expand.add(line.source.start);
+    }
+    if (expand.isEmpty) return;
+    setState(() {
+      _foldedListStarts = Set<int>.of(_foldedListStarts)..removeAll(expand);
+    });
+  }
+
+  /// 收起/展开一条列表项。收起时若光标正藏在子树里，把它收回本行末尾。
+  void _toggleListFold(ListFoldHandle handle) {
+    final Set<int> next = Set<int>.of(_foldedListStarts);
+    if (handle.folded) {
+      next.remove(handle.lineStart);
+    } else {
+      next.add(handle.lineStart);
+      final TextSelection selection = widget.controller.selection;
+      if (selection.isValid &&
+          selection.end > handle.lineEnd &&
+          selection.start <= handle.hiddenEnd) {
+        widget.controller.selection = TextSelection.collapsed(
+          offset: handle.lineEnd,
+        );
+      }
+    }
+    setState(() => _foldedListStarts = next);
+  }
+
+  /// 箭头按钮；[visibleOnly] 时只认当前真的画出来的那个（展开项要悬停）。
+  ListFoldHandle? _foldButtonAt(Offset position, {bool visibleOnly = false}) {
+    final ListFoldHandle? handle = _editable()?.foldHandleAt(position);
+    if (handle == null) return null;
+    if (visibleOnly && !handle.folded && _hoverFoldLine != handle.lineStart) {
+      return null;
+    }
+    return handle;
+  }
+
+  /// 指针落在哪一条可折叠列表项的横带上。
+  ListFoldHandle? _foldRowAt(Offset position) =>
+      _editable()?.foldRowAt(position);
+
+  void _setFoldHover({int? row, int? button}) {
+    if (_hoverFoldLine == row && _hoverFoldButton == button) return;
+    setState(() {
+      _hoverFoldLine = row;
+      _hoverFoldButton = button;
+    });
+  }
+
   // ---------------------------------------------------------- table chrome
   //
   // The grips and the plus buttons a live table paints around itself are
@@ -1599,8 +1995,16 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// avoid. It only changes when the *kind* of thing under the pointer changes.
   MouseCursor _pointerCursor = SystemMouseCursors.text;
 
-  MouseCursor _cursorAt(Offset? position, {TextRange? tag}) {
+  MouseCursor _cursorAt(
+    Offset? position, {
+    TextRange? tag,
+    bool onWikilink = false,
+  }) {
     if (position == null) return SystemMouseCursors.text;
+    // 折叠箭头是一次点击，不是落光标：悬停时先于页边/缩进的箭头光标判定。
+    if (_foldButtonAt(position, visibleOnly: true) != null) {
+      return SystemMouseCursors.click;
+    }
     final (TableRowChrome, TableChromeTarget)? hit = _chromeAt(position);
     if (hit != null) {
       return switch (hit.$2.kind) {
@@ -1612,8 +2016,22 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     }
     // 复选框是一次勾选而不是一段文字：悬停时给普通箭头，别让人以为能打字。
     if (_checkboxAt(position) != null) return SystemMouseCursors.basic;
-    // 标签胶囊是一次跳转而不是一段文字：手指光标是它唯一的静态提示。
-    if (tag != null && widget.onTagTap != null) return SystemMouseCursors.click;
+    // 标签胶囊和双链都是一次跳转而不是一段文字：手指光标是它们唯一的静态提示。
+    if ((tag != null && widget.onTagTap != null) ||
+        (onWikilink && widget.onWikilinkTap != null)) {
+      return SystemMouseCursors.click;
+    }
+    // 正文列两侧的页边和列表标记前的缩进都不是可编辑的字形：那里给箭头，
+    // 免得把整张纸的留白都提示成输入区。标记本身和正文仍在列内，照旧是 I-beam。
+    final RenderLineEditable? field = _editable();
+    if (field != null) {
+      final Offset origin = field.localToGlobal(Offset.zero);
+      final bool outsideColumn =
+          position.dx < origin.dx || position.dx > origin.dx + field.size.width;
+      if (outsideColumn || field.isLeftOfListMarker(position)) {
+        return SystemMouseCursors.basic;
+      }
+    }
     return SystemMouseCursors.text;
   }
 
@@ -1626,19 +2044,40 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// pointer is at the table's edge, so the editor has to tell the render
   /// objects where the pointer is.
   void _onPointerHover(PointerHoverEvent event) {
+    if (_overHeader(event.position)) {
+      // The title field owns the pointer there; leaving the body's hover state
+      // behind would keep a fold arrow or a tag lit over the title.
+      tablePointerPosition.value = null;
+      _hoverWikilink = null;
+      _setHoverTag(null);
+      _setFoldHover();
+      return;
+    }
     tablePointerPosition.value = event.position;
     if (_grabbedRow != null) return; // a drag owns the cursor until release
-    // 一次命中同时决定两件事：光标形状和标签的悬停配色。
+    // 一次命中同时决定三件事：光标形状、标签的悬停配色、双链的按下兜底。
     final TextRange? tag = _tagAt(event.position);
-    _setCursor(_cursorAt(event.position, tag: tag));
+    final ({int start, int end, String target})? wikilink = tag == null
+        ? _wikilinkAt(event.position)
+        : null;
+    _hoverWikilink = wikilink;
+    // 折叠箭头：按在按钮上才算按钮，落在这条列表项的行里则让箭头显形。
+    final ListFoldHandle? foldButton = _foldButtonAt(event.position);
+    final ListFoldHandle? foldRow = foldButton ?? _foldRowAt(event.position);
+    _setFoldHover(row: foldRow?.lineStart, button: foldButton?.lineStart);
+    _setCursor(
+      _cursorAt(event.position, tag: tag, onWikilink: wikilink != null),
+    );
     _setHoverTag(tag);
   }
 
   void _onPointerExit(PointerExitEvent event) {
     if (_grabbedRow != null) return;
     tablePointerPosition.value = null;
+    _hoverWikilink = null;
     _setCursor(SystemMouseCursors.text);
     _setHoverTag(null);
+    _setFoldHover();
   }
 
   /// Runs whatever the chrome control meant. Returns whether an edit landed.
@@ -1886,6 +2325,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       // The same freeze a press on the text takes: the layout under the pointer
       // must not reflow when the reveal catches up halfway through the drag.
       c.revealAs = c.selection;
+      c.revealSuppressed = false;
       c.disarmClickGuard();
     }
     widget.focusNode.requestFocus();
@@ -1921,7 +2361,20 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
           TextSelection(baseOffset: lineStart, extentOffset: offset),
         )
         .every((Rect band) => band.width <= 0);
-    return hidden ? lineStart : offset;
+    if (!hidden) return offset;
+    // 列表标记根本没进 painter（`paintedFrom` 已经越过 `1. [ ] `）：回溯到
+    // 行首会选中屏幕上不存在的源码，松开鼠标后连标记一起洗蓝、一起复制。
+    // 标题/引用的前缀在 painter 里只是被排成零宽，`paintedFrom` 仍是行首，
+    // 回溯照旧，让 `# ` 跟着显示出来的标题一起被选中。
+    final LineDocumentLayout? layout = field.lineLayout;
+    if (layout != null) {
+      for (final LaidOutLine line in layout.laidOut) {
+        if (offset < line.source.start || offset > line.source.end) continue;
+        if (line.source.isList && !line.slot.revealedMarkers) return offset;
+        break;
+      }
+    }
+    return lineStart;
   }
 
   /// Applies [_visibleEdgeOffset] to both ends of a finished range.
@@ -1951,6 +2404,11 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// the selection on up would already be too late.
   void _onPointerDown(PointerDownEvent event) {
     _dragAnchor = null;
+    _foldPress = false;
+    // The title is scrolled with the document but is not part of the sheet:
+    // its own field handles the press, and running the editor's "outside the
+    // text" drag here would select body text from a title click.
+    if (_overHeader(event.position)) return;
     final bool secondary = event.buttons & kSecondaryMouseButton != 0;
     // 标签胶囊只在按下这一刻还铺着底片：输入框马上会把光标落进标签、退回
     // 源码，等到抬起再命中就找不到它了。悬停命中的区间是同一块胶囊的兜底，
@@ -1958,9 +2416,28 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     _tagBeforeTap = (secondary || widget.onTagTap == null)
         ? null
         : (_tagAt(event.position) ?? _hoverTag);
+    _wikilinkBeforeTap =
+        (secondary || widget.onWikilinkTap == null || _tagBeforeTap != null)
+        ? null
+        : (_wikilinkAt(event.position) ?? _hoverWikilink);
     final TextSelection caret = widget.controller.selection;
     _caretBeforeTagTap = _tagBeforeTap != null && caret.isValid ? caret : null;
+    _caretBeforeWikilinkTap = _wikilinkBeforeTap != null && caret.isValid
+        ? caret
+        : null;
     if (!secondary) {
+      // 折叠箭头在自己的按钮上：一次按下就收起/展开，光标原地不动。
+      final ListFoldHandle? fold = _foldButtonAt(
+        event.position,
+        visibleOnly: true,
+      );
+      if (fold != null) {
+        _toggleListFold(fold);
+        _foldPress = true;
+        _downPosition = event.position;
+        _gestureMoved = false;
+        return;
+      }
       final (TableRowChrome, TableChromeTarget)? hit = _chromeAt(
         event.position,
       );
@@ -2086,6 +2563,8 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     // a hand that has not moved yet, which is how a drag over 「编辑器」 ends up
     // selecting 「编辑」. The reveal catches up on release.
     c.revealAs = c.selection;
+    // 落点就是“用户开始编辑这一行”的凭据：刚打开笔记时的静默揭示到此结束。
+    c.revealSuppressed = false;
     // A click must stay a click. The guard has to live in the controller rather
     // than here — see [MarkdownSourceController.armClickGuard] — and the anchor
     // is taken *now*, while the reveal is still frozen, so it refers to the
@@ -2107,18 +2586,20 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     final Rect fieldBox = editable.localToGlobal(Offset.zero) & editable.size;
     if (!fieldBox.contains(event.position)) return;
     int at = editable.positionAt(event.position).offset.clamp(0, c.text.length);
-    // 点在列表标记槽位里：把 `- ` / `1. ` / `[ ] ` 摊进正文，并把光标放到标记
-    // 起点。落在正文上时 listMarkerAt 返回 null，行为完全不变。
-    final ({int start, int paintStart, bool revealed})? marker = editable
-        .listMarkerAt(event.position);
+    // 点在列表标记槽位里：把 `- ` / `1. ` / `[ ] ` 摊进正文，并把光标放到
+    // 点中的字间。落在正文上时 listMarkerAt 返回 null，行为完全不变。
+    ({int start, int markerStart, int paintStart, bool revealed, int caret})?
+    marker = editable.listMarkerAt(event.position);
     _pendingMarker = marker;
     if (marker == null) {
       _setMarkerReveal(null);
     } else if (!marker.revealed) {
       // 换行才收起；同一行押着不动它，抬手时还要接着摊开。
       if (_markerReveal?.start != marker.start) _setMarkerReveal(null);
-      at = marker.start;
-      _markerCaret = marker.start;
+      // 点 `1.` 的哪一段就落在哪一段：点中序号右侧不该把光标拽回最左边。
+      // 标记起点仍然在缩进之后，输入不会插到缩进前面。
+      at = marker.caret;
+      _markerCaret = marker.caret;
     }
     final ({TableBlock block, int row, int column, TableCell cell})? cell =
         _paintedCellAt(event.position);
@@ -2217,13 +2698,31 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
   void _onPointerUp(PointerUpEvent event) {
     _dragAnchor = null;
+    if (_foldPress) {
+      _foldPress = false;
+      _downPosition = null;
+      _gestureMoved = false;
+      _setCursor(_cursorAt(event.position));
+      return;
+    }
     final TextRange? tappedTag = _tagBeforeTap;
     final TextSelection? tappedTagCaret = _caretBeforeTagTap;
     _tagBeforeTap = null;
     _caretBeforeTagTap = null;
+    final ({int start, int end, String target})? tappedWikilink =
+        _wikilinkBeforeTap;
+    final TextSelection? tappedWikilinkCaret = _caretBeforeWikilinkTap;
+    _wikilinkBeforeTap = null;
+    _caretBeforeWikilinkTap = null;
     // 按下时命中的列表标记：只有“按下和抬手都在原地”的那一次点击才摊开它。
-    final ({int start, int paintStart, bool revealed})? pendingMarker =
-        _pendingMarker;
+    final ({
+      int start,
+      int markerStart,
+      int paintStart,
+      bool revealed,
+      int caret,
+    })?
+    pendingMarker = _pendingMarker;
     _pendingMarker = null;
     final TableRowChrome? grabbed = _grabbedRow;
     final TableChromeTarget? target = _grabbed;
@@ -2305,6 +2804,18 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       }
       return;
     }
+    // 双链也是一次跳转：按下时命中的链接在抬起仍算一次点击时打开。光标先
+    // 归还一拍，链接本来的折叠态才不会因为这次点击留在展开的源码上。
+    if (tappedWikilink != null && !_gestureMoved) {
+      _downPosition = null;
+      if (tappedWikilinkCaret != null) {
+        scheduleMicrotask(() {
+          if (mounted) widget.controller.selection = tappedWikilinkCaret;
+        });
+      }
+      widget.onWikilinkTap?.call(tappedWikilink.target);
+      return;
+    }
     final int? at = _checkboxAt(event.position);
     if (at == null) {
       // 抬手还在标记上：这才是“点了标记”，现在把源码摊进正文。
@@ -2350,6 +2861,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
   void _onPointerCancel(PointerCancelEvent event) {
     _dragAnchor = null;
+    _foldPress = false;
     _markerCaret = null;
     _pendingMarker = null;
     _grabbedRow = null;
@@ -2358,6 +2870,8 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     _rangeBeforeChromeTap = null;
     _tagBeforeTap = null;
     _caretBeforeTagTap = null;
+    _wikilinkBeforeTap = null;
+    _caretBeforeWikilinkTap = null;
     tableDragPreview.value = null;
     _setCursor(_cursorAt(event.position));
     _endGesture();
@@ -2580,9 +3094,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     final String? refusal = pasteGridRefusal(text);
     if (refusal != null) {
       if (mounted) {
-        ScaffoldMessenger.maybeOf(
-          context,
-        )?.showSnackBar(SnackBar(content: Text(refusal)));
+        showSplitNotice(context, refusal, kind: NoticeKind.error);
       }
       return;
     }
@@ -2598,6 +3110,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   @override
   void dispose() {
     widget.controller.removeListener(_scheduleOverlayRefresh);
+    widget.controller.removeListener(_onFoldsChanged);
     widget.scrollController.removeListener(_scheduleOverlayRefresh);
     widget.scrollController.removeListener(_reportTopLine);
     widget.onLineTopProbe?.call(null);
@@ -2627,309 +3140,330 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     // the I-beam. Hand it the editor's cursor explicitly.
     final MouseCursor fieldCursor = _pointerCursor;
 
-    final Widget editor = Shortcuts(
-      shortcuts: <ShortcutActivator, Intent>{
-        const SingleActivator(LogicalKeyboardKey.tab): const _IndentIntent(
-          false,
-        ),
-        const SingleActivator(LogicalKeyboardKey.tab, shift: true):
-            const _IndentIntent(true),
-        const SingleActivator(LogicalKeyboardKey.keyC, control: true):
-            const _CopyIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyX, control: true):
-            const _CutIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyV, control: true):
-            const _PasteIntent(),
-        const SingleActivator(
-          LogicalKeyboardKey.keyV,
-          control: true,
-          shift: true,
-        ): const _PasteIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyZ, control: true):
-            const _HistoryIntent(undo: true),
-        const SingleActivator(
-          LogicalKeyboardKey.keyZ,
-          control: true,
-          shift: true,
-        ): const _HistoryIntent(
-          undo: false,
-        ),
-        const SingleActivator(LogicalKeyboardKey.keyY, control: true):
-            const _HistoryIntent(undo: false),
-        // Spreadsheet muscle memory. Both only do something inside a table;
-        // everywhere else they fall through untouched.
-        const SingleActivator(LogicalKeyboardKey.keyD, control: true):
-            const _FillIntent(down: true),
-        const SingleActivator(LogicalKeyboardKey.keyR, control: true):
-            const _FillIntent(down: false),
-        const SingleActivator(
-          LogicalKeyboardKey.keyC,
-          control: true,
-          shift: true,
-        ): const _TsvIntent(),
-        const SingleActivator(LogicalKeyboardKey.f2): const _EditCellIntent(),
-      },
-      child: Actions(
-        actions: <Type, Action<Intent>>{
-          _IndentIntent: CallbackAction<_IndentIntent>(
-            onInvoke: (_IndentIntent intent) {
-              // Inside a table, Tab is *cell navigation*, not indentation —
-              // the same key every spreadsheet and Obsidian use. Only when the
-              // caret is not in a table does it fall through to the list
-              // indent it has always been.
-              final TextEditingValue? cell = tableCellStep(
-                widget.controller.value,
-                forward: !intent.outdent,
-              );
-              // The landing cell is a range so typing replaces its content, and
-              // the click guard would fold that range to the click that was
-              // still inside its 400 ms window.
-              if (cell != null) _disarmClickGuard();
-              final TextEditingValue next =
-                  cell ??
-                  indentLines(widget.controller.value, outdent: intent.outdent);
-              widget.controller.value = next;
-              widget.onChanged?.call(next.text);
-              return null;
-            },
-          ),
-          _CopyIntent: CallbackAction<_CopyIntent>(
-            onInvoke: (_CopyIntent intent) {
-              final TextEditingValue v = widget.controller.value;
-              final String out =
-                  tableSelectionMarkdown(
-                    v.text,
-                    v.selection,
-                    resolve: _resolveRange,
-                  ) ??
-                  v.selection.textInside(v.text);
-              if (out.isNotEmpty) {
-                Clipboard.setData(ClipboardData(text: out));
-              }
-              return null;
-            },
-          ),
-          _CutIntent: CallbackAction<_CutIntent>(
-            onInvoke: (_CutIntent intent) {
-              final TextEditingValue v = widget.controller.value;
-              if (v.selection.isCollapsed) return null;
-              // The clipboard gets the cells (a table) or the plain text, and
-              // the document loses the **same** rectangle: a partial cell
-              // block is cleared in place, a whole-row sweep takes the rows.
-              // Splicing the raw source range is what left half a cell behind.
-              final TableRange? range = tableRangeOf(v, resolve: _resolveRange);
-              final String out =
-                  range?.markdown ?? v.selection.textInside(v.text);
-              unawaited(Clipboard.setData(ClipboardData(text: out)));
-              final TextEditingValue value;
-              if (range != null) {
-                value = tableRangeClear(range);
-              } else {
-                final int start = v.selection.start.clamp(0, v.text.length);
-                final String next =
-                    v.selection.textBefore(v.text) +
-                    v.selection.textAfter(v.text);
-                value = TextEditingValue(
-                  text: next,
-                  selection: TextSelection.collapsed(
-                    offset: start.clamp(0, next.length),
-                  ),
-                );
-              }
-              widget.controller.value = value;
-              widget.onChanged?.call(value.text);
-              return null;
-            },
-          ),
-          _PasteIntent: CallbackAction<_PasteIntent>(
-            onInvoke: (_PasteIntent intent) {
-              unawaited(_pasteFromClipboard());
-              return null;
-            },
-          ),
-          _HistoryIntent: CallbackAction<_HistoryIntent>(
-            onInvoke: (_HistoryIntent intent) {
-              final TextEditingValue? target = intent.undo
-                  ? _history.undo()
-                  : _history.redo();
-              if (target == null) return null;
-              final String beforeText = widget.controller.text;
-              _history.beginApply();
-              _navigatingHistory = true;
-              try {
-                final LineEditableTextState? field = _editableTextState();
-                if (field != null) {
-                  field.userUpdateTextEditingValue(
-                    target,
-                    SelectionChangedCause.keyboard,
-                  );
-                } else {
-                  widget.controller.value = target;
-                }
-              } finally {
-                _navigatingHistory = false;
-                _history.endApply(widget.controller.value);
-              }
-              if (beforeText != target.text) {
-                widget.controller.selection = TextSelection.collapsed(
-                  offset: _historyCaretOffset(beforeText, target.text),
-                );
-              }
-              return null;
-            },
-          ),
-          _FillIntent: CallbackAction<_FillIntent>(
-            onInvoke: (_FillIntent intent) {
-              final TextEditingValue? next = tableFill(
-                widget.controller.value,
-                down: intent.down,
-                resolve: _resolveRange,
-              );
-              if (next == null) return null;
-              widget.controller.value = next;
-              widget.onChanged?.call(next.text);
-              return null;
-            },
-          ),
-          _TsvIntent: CallbackAction<_TsvIntent>(
-            onInvoke: (_TsvIntent intent) {
-              final TextEditingValue v = widget.controller.value;
-              final String? out =
-                  tableSelectionTsv(
-                    v.text,
-                    v.selection,
-                    resolve: _resolveRange,
-                  ) ??
-                  tableActiveCell(v, resolve: _resolveRange)?.cell.text;
-              if (out != null && out.isNotEmpty) {
-                Clipboard.setData(ClipboardData(text: out));
-              }
-              return null;
-            },
-          ),
-          _EditCellIntent: CallbackAction<_EditCellIntent>(
-            onInvoke: (_EditCellIntent intent) {
-              _openCellEditor();
-              return null;
-            },
-          ),
+    final Map<ShortcutActivator, Intent>
+    editorShortcuts = <ShortcutActivator, Intent>{
+      const SingleActivator(LogicalKeyboardKey.tab): const _IndentIntent(false),
+      const SingleActivator(LogicalKeyboardKey.tab, shift: true):
+          const _IndentIntent(true),
+      const SingleActivator(LogicalKeyboardKey.keyC, control: true):
+          const _CopyIntent(),
+      const SingleActivator(LogicalKeyboardKey.keyX, control: true):
+          const _CutIntent(),
+      const SingleActivator(LogicalKeyboardKey.keyV, control: true):
+          const _PasteIntent(),
+      const SingleActivator(
+        LogicalKeyboardKey.keyV,
+        control: true,
+        shift: true,
+      ): const _PasteIntent(),
+      const SingleActivator(LogicalKeyboardKey.keyZ, control: true):
+          const _HistoryIntent(undo: true),
+      const SingleActivator(
+        LogicalKeyboardKey.keyZ,
+        control: true,
+        shift: true,
+      ): const _HistoryIntent(
+        undo: false,
+      ),
+      const SingleActivator(LogicalKeyboardKey.keyY, control: true):
+          const _HistoryIntent(undo: false),
+      // Spreadsheet muscle memory. Both only do something inside a table;
+      // everywhere else they fall through untouched.
+      const SingleActivator(LogicalKeyboardKey.keyD, control: true):
+          const _FillIntent(down: true),
+      const SingleActivator(LogicalKeyboardKey.keyR, control: true):
+          const _FillIntent(down: false),
+      const SingleActivator(
+        LogicalKeyboardKey.keyC,
+        control: true,
+        shift: true,
+      ): const _TsvIntent(),
+      const SingleActivator(LogicalKeyboardKey.f2): const _EditCellIntent(),
+    };
+
+    final Map<Type, Action<Intent>> editorActions = <Type, Action<Intent>>{
+      _IndentIntent: CallbackAction<_IndentIntent>(
+        onInvoke: (_IndentIntent intent) {
+          // Inside a table, Tab is *cell navigation*, not indentation —
+          // the same key every spreadsheet and Obsidian use. Only when the
+          // caret is not in a table does it fall through to the list
+          // indent it has always been.
+          final TextEditingValue? cell = tableCellStep(
+            widget.controller.value,
+            forward: !intent.outdent,
+          );
+          // The landing cell is a range so typing replaces its content, and
+          // the click guard would fold that range to the click that was
+          // still inside its 400 ms window.
+          if (cell != null) _disarmClickGuard();
+          final TextEditingValue next =
+              cell ??
+              indentLines(widget.controller.value, outdent: intent.outdent);
+          widget.controller.value = next;
+          widget.onChanged?.call(next.text);
+          return null;
         },
-        // The `Listener` wraps the whole scroll view, not the field, and it is
-        // **opaque**: a table's grips and plus buttons hang *outside* the
-        // field's box (left of the table, above it, below its last line), and a
-        // `deferToChild` listener only hears about pointers that hit the field
-        // itself. That is why a click on the grip did nothing at first.
-        child: MouseRegion(
-          cursor: _pointerCursor,
-          onHover: _onPointerHover,
-          onExit: _onPointerExit,
-          child: Listener(
-            key: _fieldKey,
-            behavior: HitTestBehavior.opaque,
-            onPointerDown: _onPointerDown,
-            onPointerMove: _onPointerMove,
-            onPointerUp: _onPointerUp,
-            onPointerCancel: _onPointerCancel,
-            child: _ChromeShield(
-              blocks: (Offset position) => _chromeAt(position) != null,
-              child: SingleChildScrollView(
-                controller: widget.scrollController,
-                padding: widget.padding,
-                child: Center(
+      ),
+      _CopyIntent: CallbackAction<_CopyIntent>(
+        onInvoke: (_CopyIntent intent) {
+          final TextEditingValue v = widget.controller.value;
+          final String out =
+              tableSelectionMarkdown(
+                v.text,
+                v.selection,
+                resolve: _resolveRange,
+              ) ??
+              v.selection.textInside(v.text);
+          if (out.isNotEmpty) {
+            Clipboard.setData(ClipboardData(text: out));
+          }
+          return null;
+        },
+      ),
+      _CutIntent: CallbackAction<_CutIntent>(
+        onInvoke: (_CutIntent intent) {
+          final TextEditingValue v = widget.controller.value;
+          if (v.selection.isCollapsed) return null;
+          // The clipboard gets the cells (a table) or the plain text, and
+          // the document loses the **same** rectangle: a partial cell
+          // block is cleared in place, a whole-row sweep takes the rows.
+          // Splicing the raw source range is what left half a cell behind.
+          final TableRange? range = tableRangeOf(v, resolve: _resolveRange);
+          final String out = range?.markdown ?? v.selection.textInside(v.text);
+          unawaited(Clipboard.setData(ClipboardData(text: out)));
+          final TextEditingValue value;
+          if (range != null) {
+            value = tableRangeClear(range);
+          } else {
+            final int start = v.selection.start.clamp(0, v.text.length);
+            final String next =
+                v.selection.textBefore(v.text) + v.selection.textAfter(v.text);
+            value = TextEditingValue(
+              text: next,
+              selection: TextSelection.collapsed(
+                offset: start.clamp(0, next.length),
+              ),
+            );
+          }
+          widget.controller.value = value;
+          widget.onChanged?.call(value.text);
+          return null;
+        },
+      ),
+      _PasteIntent: CallbackAction<_PasteIntent>(
+        onInvoke: (_PasteIntent intent) {
+          unawaited(_pasteFromClipboard());
+          return null;
+        },
+      ),
+      _HistoryIntent: CallbackAction<_HistoryIntent>(
+        onInvoke: (_HistoryIntent intent) {
+          final TextEditingValue? target = intent.undo
+              ? _history.undo()
+              : _history.redo();
+          if (target == null) return null;
+          final String beforeText = widget.controller.text;
+          _history.beginApply();
+          _navigatingHistory = true;
+          try {
+            final LineEditableTextState? field = _editableTextState();
+            if (field != null) {
+              field.userUpdateTextEditingValue(
+                target,
+                SelectionChangedCause.keyboard,
+              );
+            } else {
+              widget.controller.value = target;
+            }
+          } finally {
+            _navigatingHistory = false;
+            _history.endApply(widget.controller.value);
+          }
+          if (beforeText != target.text) {
+            widget.controller.selection = TextSelection.collapsed(
+              offset: _historyCaretOffset(beforeText, target.text),
+            );
+          }
+          return null;
+        },
+      ),
+      _FillIntent: CallbackAction<_FillIntent>(
+        onInvoke: (_FillIntent intent) {
+          final TextEditingValue? next = tableFill(
+            widget.controller.value,
+            down: intent.down,
+            resolve: _resolveRange,
+          );
+          if (next == null) return null;
+          widget.controller.value = next;
+          widget.onChanged?.call(next.text);
+          return null;
+        },
+      ),
+      _TsvIntent: CallbackAction<_TsvIntent>(
+        onInvoke: (_TsvIntent intent) {
+          final TextEditingValue v = widget.controller.value;
+          final String? out =
+              tableSelectionTsv(v.text, v.selection, resolve: _resolveRange) ??
+              tableActiveCell(v, resolve: _resolveRange)?.cell.text;
+          if (out != null && out.isNotEmpty) {
+            Clipboard.setData(ClipboardData(text: out));
+          }
+          return null;
+        },
+      ),
+      _EditCellIntent: CallbackAction<_EditCellIntent>(
+        onInvoke: (_EditCellIntent intent) {
+          _openCellEditor();
+          return null;
+        },
+      ),
+    };
+
+    // The `Listener` wraps the whole scroll view, not the field, and it is
+    // **opaque**: a table's grips and plus buttons hang *outside* the
+    // field's box (left of the table, above it, below its last line), and a
+    // `deferToChild` listener only hears about pointers that hit the field
+    // itself. That is why a click on the grip did nothing at first.
+    final Widget editor = MouseRegion(
+      cursor: _pointerCursor,
+      onHover: _onPointerHover,
+      onExit: _onPointerExit,
+      child: Listener(
+        key: _fieldKey,
+        behavior: HitTestBehavior.opaque,
+        onPointerDown: _onPointerDown,
+        onPointerMove: _onPointerMove,
+        onPointerUp: _onPointerUp,
+        onPointerCancel: _onPointerCancel,
+        child: _ChromeShield(
+          blocks: (Offset position) =>
+              !_overHeader(position) &&
+              (_chromeAt(position) != null ||
+                  _foldButtonAt(position, visibleOnly: true) != null),
+          child: SingleChildScrollView(
+            controller: widget.scrollController,
+            padding: widget.padding,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                // Inside the scroll view so it leaves with the text, but
+                // outside both shortcut maps — Ctrl+Z with the title
+                // focused must undo the title, not the body.
+                if (widget.header != null)
+                  KeyedSubtree(key: _headerKey, child: widget.header!),
+                Center(
                   child: ConstrainedBox(
                     constraints: BoxConstraints(maxWidth: widget.maxWidth),
-                    child: Focus(
-                      // Not a tab stop — just a listener this close to the
-                      // field, so table caret keys are decided before the
-                      // platform's line movement (and before Shortcuts).
-                      canRequestFocus: false,
-                      skipTraversal: true,
-                      onKeyEvent: _onTableKey,
-                      child: KeyedSubtree(
-                        // 文档一变，整块输入框重建：撤销栈随之清空。
-                        key: ValueKey<String?>('doc-${widget.documentId}'),
-                        child: LineEditableText(
-                          key: const Key('nrs-editor-field'),
-                          controller: widget.controller,
-                          focusNode: widget.focusNode,
-                          readOnly: widget.readOnly,
-                          onChanged: widget.onChanged,
-                          maxLines: null,
-                          expands: false,
-                          autofocus: false,
-                          mouseCursor: fieldCursor,
-                          cursorColor: p.accent,
-                          backgroundCursorColor: p.accent,
-                          cursorWidth: 1.8,
-                          cursorRadius: const Radius.circular(1),
-                          keyboardType: TextInputType.multiline,
-                          textInputAction: TextInputAction.newline,
-                          inputFormatters: <TextInputFormatter>[
-                            ListContinuationFormatter(),
-                            // 行数一变就把有序列表的序号接上：删掉 16 那一条，
-                            // 下面的 17 变回 16；回车插进去的条目也会让后面的
-                            // 序号依次后移。
-                            OrderedListRenumberFormatter(
-                              suspend: () => _navigatingHistory,
+                    child: Shortcuts(
+                      shortcuts: widget.shortcuts,
+                      child: Actions(
+                        actions: widget.actions,
+                        child: Shortcuts(
+                          shortcuts: editorShortcuts,
+                          child: Actions(
+                            actions: editorActions,
+                            child: Focus(
+                              // Not a tab stop — just a listener this close to the
+                              // field, so table caret keys are decided before the
+                              // platform's line movement (and before Shortcuts).
+                              canRequestFocus: false,
+                              skipTraversal: true,
+                              onKeyEvent: _onTableKey,
+                              child: KeyedSubtree(
+                                // 文档一变，整块输入框重建：撤销栈随之清空。
+                                key: ValueKey<String?>(
+                                  'doc-${widget.documentId}',
+                                ),
+                                child: LineEditableText(
+                                  key: const Key('nrs-editor-field'),
+                                  controller: widget.controller,
+                                  focusNode: widget.focusNode,
+                                  readOnly: widget.readOnly,
+                                  onChanged: widget.onChanged,
+                                  maxLines: null,
+                                  expands: false,
+                                  autofocus: false,
+                                  mouseCursor: fieldCursor,
+                                  cursorColor: p.accent,
+                                  backgroundCursorColor: p.accent,
+                                  cursorWidth: 1.8,
+                                  cursorRadius: const Radius.circular(1),
+                                  keyboardType: TextInputType.multiline,
+                                  textInputAction: TextInputAction.newline,
+                                  inputFormatters: <TextInputFormatter>[
+                                    ListContinuationFormatter(),
+                                    // 行数一变就把有序列表的序号接上：删掉 16 那一条，
+                                    // 下面的 17 变回 16；回车插进去的条目也会让后面的
+                                    // 序号依次后移。
+                                    OrderedListRenumberFormatter(
+                                      suspend: () => _navigatingHistory,
+                                    ),
+                                    // Last, so it sees the text every other formatter has
+                                    // already agreed on: a Backspace must never leave the
+                                    // cell the caret is in.
+                                    TableCellBarrierFormatter(
+                                      suspend: () => _navigatingHistory,
+                                      resolve: _resolveRange,
+                                    ),
+                                  ],
+                                  style: style,
+                                  // 选区盒子的形状不再由这两个参数决定：
+                                  // `RenderLineEditable.getBoxesForSelection` 直接转发按行
+                                  // 引擎的 `selectionBands`（横向贴字形、纵向铺满视觉行），
+                                  // 传进来的 `BoxWidthStyle` / `BoxHeightStyle` 会被忽略。
+                                  // 字段的底色依旧是透明的（见 `editor` 外层的
+                                  // `DefaultSelectionStyle`），洗色由 `EditorSelectionPainter`
+                                  // 自己画。
+                                  //
+                                  // 行高由按行引擎给（见 `lineHeightFor`）；这个 strut 只
+                                  // 留给继承来的那套单段排版做几何兜底，压到 1px 才不会被
+                                  // 正文字号撑成所有行共用的最小行高。
+                                  strutStyle: const StrutStyle(
+                                    fontSize: 1,
+                                    height: 1,
+                                    leading: 0,
+                                  ),
+                                  // 按行排版：每行按源码种类取样式、行高与 span 树。
+                                  lineStyleFor: lineStyle.styleFor,
+                                  lineHeightFor: lineStyle.heightFor,
+                                  lineSpanFor: lineStyle.spanFor,
+                                  // 行内代码的圆角底片：一行一个 `TextPainter` 没有
+                                  // widget 端帽，铺底由渲染层按这份区间自己画。
+                                  lineFillFor: lineStyle.fillsFor,
+                                  // 代码块卡片的内边距：卡片铺满正文列，代码行由引擎
+                                  // 左右各退 16px，不必再把卡片画到列外。
+                                  lineInsetFor: lineStyle.insetFor,
+                                  // 表格整行不是一行文字：行高、网格、抓手都由
+                                  // `LiveTableBlocks` 自己画，引擎只负责 y 定位。
+                                  lineBlockFor: tableBlocks.blockFor,
+                                  // 选区变了要重排（`# `、`**` 的显隐会改行宽）；拖动期间
+                                  // 冻结在按下时的那一份。
+                                  revealSelection: _revealSelection,
+                                  // 点开的这一行把标记摊进正文，其余行仍然由渲染层把
+                                  // 圆点 / 序号 / 复选框画在左侧槽位里。
+                                  markerRevealLine: _markerReveal?.start,
+                                  // 收起的列表项：子树压成零高，箭头由编辑器叠的
+                                  // `ListFoldPainter` 画在字段外面（顶级项在页边距）。
+                                  foldedLines: _foldedListStarts,
+                                  // 列表标记（圆点 / 序号 / 复选框 / 导轨）由渲染层
+                                  // 画在正文左侧的槽位里，源码里的 `- ` 不再上屏。
+                                  markerStyle: lineStyle.markers,
+                                  // 交给继承来的单段排版（`super.performLayout` 与
+                                  // `getWordBoundary` 都读它）的仍是纯源码：装饰树里的
+                                  // U+FFFC 会让那些按整段算的方法错位。行内样式只走
+                                  // `lineSpanFor`，两者互不影响。
+                                  plainTextSpan: true,
+                                ),
+                              ),
                             ),
-                            // Last, so it sees the text every other formatter has
-                            // already agreed on: a Backspace must never leave the
-                            // cell the caret is in.
-                            TableCellBarrierFormatter(
-                              suspend: () => _navigatingHistory,
-                              resolve: _resolveRange,
-                            ),
-                          ],
-                          style: style,
-                          // 选区盒子的形状不再由这两个参数决定：
-                          // `RenderLineEditable.getBoxesForSelection` 直接转发按行
-                          // 引擎的 `selectionBands`（横向贴字形、纵向铺满视觉行），
-                          // 传进来的 `BoxWidthStyle` / `BoxHeightStyle` 会被忽略。
-                          // 字段的底色依旧是透明的（见 `editor` 外层的
-                          // `DefaultSelectionStyle`），洗色由 `EditorSelectionPainter`
-                          // 自己画。
-                          //
-                          // 行高由按行引擎给（见 `lineHeightFor`）；这个 strut 只
-                          // 留给继承来的那套单段排版做几何兜底，压到 1px 才不会被
-                          // 正文字号撑成所有行共用的最小行高。
-                          strutStyle: const StrutStyle(
-                            fontSize: 1,
-                            height: 1,
-                            leading: 0,
                           ),
-                          // 按行排版：每行按源码种类取样式、行高与 span 树。
-                          lineStyleFor: lineStyle.styleFor,
-                          lineHeightFor: lineStyle.heightFor,
-                          lineSpanFor: lineStyle.spanFor,
-                          // 行内代码的圆角底片：一行一个 `TextPainter` 没有
-                          // widget 端帽，铺底由渲染层按这份区间自己画。
-                          lineFillFor: lineStyle.fillsFor,
-                          // 代码块卡片的内边距：卡片铺满正文列，代码行由引擎
-                          // 左右各退 16px，不必再把卡片画到列外。
-                          lineInsetFor: lineStyle.insetFor,
-                          // 表格整行不是一行文字：行高、网格、抓手都由
-                          // `LiveTableBlocks` 自己画，引擎只负责 y 定位。
-                          lineBlockFor: tableBlocks.blockFor,
-                          // 选区变了要重排（`# `、`**` 的显隐会改行宽）；拖动期间
-                          // 冻结在按下时的那一份。
-                          revealSelection: _revealSelection,
-                          // 点开的这一行把标记摊进正文，其余行仍然由渲染层把
-                          // 圆点 / 序号 / 复选框画在左侧槽位里。
-                          markerRevealLine: _markerReveal?.start,
-                          // 列表标记（圆点 / 序号 / 复选框 / 导轨）由渲染层
-                          // 画在正文左侧的槽位里，源码里的 `- ` 不再上屏。
-                          markerStyle: lineStyle.markers,
-                          // 交给继承来的单段排版（`super.performLayout` 与
-                          // `getWordBoundary` 都读它）的仍是纯源码：装饰树里的
-                          // U+FFFC 会让那些按整段算的方法错位。行内样式只走
-                          // `lineSpanFor`，两者互不影响。
-                          plainTextSpan: true,
                         ),
                       ),
                     ),
                   ),
                 ),
-              ),
+              ],
             ),
           ),
         ),
@@ -2971,12 +3505,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                 // The label goes away while the block shows its source; the
                 // renderer freezes the reveal for a drag, so ask for the same
                 // selection it paints with.
-                selection: () {
-                  final TextEditingController c = widget.controller;
-                  return c is MarkdownSourceController
-                      ? (c.revealAs ?? c.selection)
-                      : c.selection;
-                },
+                selection: _revealSelection,
               ),
             ),
           ),
@@ -3010,6 +3539,31 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
             // the F2 cell editor is a sibling and keeps its normal highlight.
             selectionColor: Colors.transparent,
             child: editor,
+          ),
+        ),
+        // 折叠箭头在字段的裁剪之外（顶级列表项的按钮落在页边距里），所以
+        // 由编辑器这层画。几何按当前排版现取，滚动时跟着走。
+        Positioned.fill(
+          child: IgnorePointer(
+            child: CustomPaint(
+              painter: ListFoldPainter(
+                controller: widget.controller,
+                scrollController: widget.scrollController,
+                editorBox: () {
+                  final RenderObject? root = context.findRenderObject();
+                  return root is RenderBox && root.hasSize ? root : null;
+                },
+                handles: () =>
+                    _editable()?.foldHandles() ?? const <ListFoldHandle>[],
+                hoveredLine: _hoverFoldLine,
+                hoveredButton: _hoverFoldButton,
+                iconColor: p.textTertiary,
+                hoverIconColor: p.accent,
+                hoverFill: p.accentSoft,
+                ellipsisStyle: style.copyWith(color: p.textTertiary),
+                textScaler: MediaQuery.textScalerOf(context),
+              ),
+            ),
           ),
         ),
         if (_statsAnchor != null && _statsLabel != null)

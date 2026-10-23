@@ -39,9 +39,8 @@ class EditorPane extends StatefulWidget {
 }
 
 class EditorPaneState extends State<EditorPane> {
-  /// Matches the editor's own padding; the pane needs it to map a source line
-  /// onto a scroll offset.
-  static const EdgeInsets _editorPadding = EdgeInsets.fromLTRB(40, 28, 40, 200);
+  /// The minimum gutter between the pane's edge and the prose column.
+  static const double _proseGutter = 40;
 
   final TextEditingController _title = TextEditingController();
   late final MarkdownSourceController _body;
@@ -100,6 +99,8 @@ class EditorPaneState extends State<EditorPane> {
     // Binding a note writes the controller from inside `build`; swallowing the
     // notification there keeps us out of "setState during build" territory.
     if (_binding) return;
+    // 用户动过正文（落点、移动光标、输入）：打开笔记时的静默揭示解除。
+    _body.revealSuppressed = false;
     final TextSelection sel = _body.selection;
     final String text = _body.text;
     final int caret = sel.baseOffset.clamp(0, text.length);
@@ -176,6 +177,9 @@ class EditorPaneState extends State<EditorPane> {
     _title.text = note.title;
     _body.text = note.body;
     _body.selection = const TextSelection.collapsed(offset: 0);
+    // 光标停在文首是绑定的副产物，不是用户在编辑第一行：按住揭示，等正文里
+    // 真正落点 / 移动光标 / 输入之后再摊开标记。
+    _body.revealSuppressed = true;
     final bool hadCursor = _cursorLine != 0 || _outlineLine != 0;
     _cursorLine = 0;
     _cursorColumn = 1;
@@ -259,7 +263,9 @@ class EditorPaneState extends State<EditorPane> {
   }) async {
     if (!_editorScroll.hasClients) return;
     final ScrollPosition pos = _editorScroll.position;
-    final double contentY = _editorPadding.top + _lineTop(line, style);
+    // The probe already reports scroll-content coordinates (padding and the
+    // scrolled title included), so nothing is added here.
+    final double contentY = _lineTop(line, style);
     final double target = (contentY - pos.viewportDimension * anchor).clamp(
       0.0,
       pos.maxScrollExtent,
@@ -354,23 +360,16 @@ class EditorPaneState extends State<EditorPane> {
           _header(p, note, notes, settings),
           if (conflict != null && conflict.noteId == note.id)
             _conflictBar(p, conflict, notes),
-          LayoutBuilder(
-            builder: (BuildContext context, BoxConstraints c) => _titleRow(
-              p,
-              note,
-              notes,
-              _proseSide(c.maxWidth),
-            ),
-          ),
           // No formatting ribbon: every action lives in the editor's own
           // right-click menu now, and the shortcuts are unchanged.
           // ⛔ 快捷键只包住正文编辑器：包住整个面板会把标题框的 Ctrl+Z 也
           // 抢去撤销正文，正文里存的是没按标题改过的内容，自动保存再写回
-          // 文件就是一次覆盖。
+          // 文件就是一次覆盖。标题现在随正文一起滚动，仍由编辑器把它们挡在
+          // 字段之外（见 `MarkdownEditor.shortcuts`）。
           Expanded(
             child: LayoutBuilder(
               builder: (BuildContext context, BoxConstraints c) {
-                return _workspace(notes, c.maxWidth);
+                return _workspace(p, note, notes, c.maxWidth);
               },
             ),
           ),
@@ -610,19 +609,23 @@ class EditorPaneState extends State<EditorPane> {
     );
   }
 
-  Widget _titleRow(
-    AppPalette p,
-    Note note,
-    NotesController notes,
-    double side,
-  ) {
+  /// The note's H1, scrolled with the document above the first line.
+  ///
+  /// [MarkdownEditor] already pads the scroll content out to the prose column,
+  /// so this adds only the vertical breathing room.
+  Widget _titleRow(AppPalette p, Note note, NotesController notes) {
     // H1, as the live renderer draws it: body size scaled by 1.74 with the
     // same tracking and weight (see `_headingStyle` in live_markdown.dart).
     // The title field *is* the note's H1 — there is no separate file-name row.
     final double h1Size = context.read<SettingsController>().proseSize * 1.74;
 
     return Padding(
-      padding: EdgeInsets.fromLTRB(side, AppSpace.md, side, AppSpace.sm),
+      // The bottom padding is the gap the body used to get from its own top
+      // padding; the title and the first line still sit 36px apart.
+      padding: const EdgeInsets.only(
+        top: AppSpace.md,
+        bottom: AppSpace.sm + AppSpace.xxl,
+      ),
       // ⛔ 标题框的撤销栈也必须随笔记清空：它由同一个控制器跨笔记复用，
       // Ctrl+Z 会把上一份笔记的标题恢复进当前标题，`updateTitle` 随即按旧
       // 标题重命名当前文件，等于拿旧名字覆盖一条文件记录。
@@ -674,21 +677,26 @@ class EditorPaneState extends State<EditorPane> {
   /// Where the prose column starts inside [availableWidth].
   ///
   /// The column is capped and centred, the way the design sheet draws it. The
-  /// title row and the body share this number: they are the same paragraph as
-  /// far as the eye is concerned, and a 20px step between them was the most
+  /// title and the body share this padding: they are the same paragraph as far
+  /// as the eye is concerned, and a 20px step between them was the most
   /// visible misalignment in the whole pane.
-  double _proseSide(double availableWidth) => math.max(
-    _editorPadding.left,
-    (availableWidth - AppLayout.proseMaxWidth) / 2,
-  );
+  double _proseSide(double availableWidth) =>
+      math.max(_proseGutter, (availableWidth - AppLayout.proseMaxWidth) / 2);
 
-  Widget _workspace(NotesController notes, double availableWidth) {
+  Widget _workspace(
+    AppPalette p,
+    Note note,
+    NotesController notes,
+    double availableWidth,
+  ) {
     // The *field* stays full width, because the padding is what moves the text:
     // constraining the widget instead would leave the gutter beside the column
     // dead to clicks, and "click the paper to start typing" has to keep working
     // everywhere.
     final double side = _proseSide(availableWidth);
-    final EdgeInsets padding = EdgeInsets.fromLTRB(side, 28, side, 200);
+    // No top padding: the title is the first thing in the scroll content and
+    // brings its own spacing, so it can leave with the text.
+    final EdgeInsets padding = EdgeInsets.fromLTRB(side, 0, side, 200);
 
     // Exactly the width the laid-out text gets, so the few spans that draw a
     // real widget (rules, images) can span the column without overflowing it.
@@ -698,29 +706,33 @@ class EditorPaneState extends State<EditorPane> {
     );
     _contentWidth = contentWidth;
 
-    return Shortcuts(
+    return MarkdownEditor(
+      controller: _body,
+      focusNode: _bodyFocus,
+      scrollController: _editorScroll,
+      fontSize: context.read<SettingsController>().proseSize,
+      padding: padding,
+      // Scrolled with the text; the editor keeps every shortcut and pointer
+      // handler strictly below it, so the title keeps its own undo stack.
+      header: _titleRow(p, note, notes),
+      // Given to the editor rather than wrapped around it: only the field may
+      // see them. Around the whole editor they would also catch the title's
+      // keys — Ctrl+Z there must undo the title, not the body.
       shortcuts: _editorShortcuts(),
-      child: Actions(
-        actions: _editorActions(notes),
-        child: MarkdownEditor(
-          controller: _body,
-          focusNode: _bodyFocus,
-          scrollController: _editorScroll,
-          fontSize: context.read<SettingsController>().proseSize,
-          padding: padding,
-          // 带上 [_bodyEpoch]：id 相同但正文被外部整段替换时，输入框也要
-          // 重建，撤销栈才不会把替换前的正文恢复回来。
-          documentId: '${(notes.draft ?? notes.selectedNote)?.id}#$_bodyEpoch',
-          onChanged: notes.updateBody,
-          onTopLineChanged: _onTopLine,
-          onLineTopProbe: (double? Function(int line)? probe) =>
-              _lineTopProbe = probe,
-          onTagTap: (String tag) {
-            notes.toggleTag(tag);
-            widget.onOpenSearch?.call();
-          },
-        ),
-      ),
+      actions: _editorActions(notes),
+      // 带上 [_bodyEpoch]：id 相同但正文被外部整段替换时，输入框也要
+      // 重建，撤销栈才不会把替换前的正文恢复回来。
+      documentId: '${(notes.draft ?? notes.selectedNote)?.id}#$_bodyEpoch',
+      onChanged: notes.updateBody,
+      onTopLineChanged: _onTopLine,
+      onLineTopProbe: (double? Function(int line)? probe) =>
+          _lineTopProbe = probe,
+      onTagTap: (String tag) {
+        notes.toggleTag(tag);
+        widget.onOpenSearch?.call();
+      },
+      // `[[还不存在的标题]]` 不是坏链接：打开即创建，这是双链的写法。
+      onWikilinkTap: notes.openOrCreateByTitle,
     );
   }
 

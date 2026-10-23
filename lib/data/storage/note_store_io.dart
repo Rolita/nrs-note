@@ -4,7 +4,9 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/note.dart';
 import 'atomic_file.dart';
+import 'history_store.dart';
 import 'note_store.dart';
+import 'trash_store.dart';
 
 /// Desktop implementation: one real `.md` file per note inside a vault folder
 /// the user can open in Explorer / Finder.
@@ -17,11 +19,30 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     this.folderName = 'NRS Notes',
     this.overrideRoot,
     AtomicFileWriter? writer,
-  }) : _writer = writer ?? AtomicFileWriter();
+    DateTime Function()? clock,
+    this.historyMinInterval = HistoryStore.defaultMinInterval,
+  }) : _writer = writer ?? AtomicFileWriter(),
+       _clock = clock ?? DateTime.now;
 
   final String folderName;
   final Directory? overrideRoot;
   final AtomicFileWriter _writer;
+  final DateTime Function() _clock;
+
+  /// Exposed for tests; production uses the ten-minute default.
+  final Duration historyMinInterval;
+
+  TrashStore? _trash;
+  HistoryStore? _history;
+
+  TrashStore get _trashStore =>
+      _trash ??= TrashStore(vault, clock: _clock);
+
+  HistoryStore get _historyStore => _history ??= HistoryStore(
+    vault,
+    clock: _clock,
+    minInterval: historyMinInterval,
+  );
 
   Directory? _vault;
   String _location = '';
@@ -31,6 +52,12 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
 
   @override
   bool get supportsNativeFiles => true;
+
+  @override
+  bool get supportsTrash => true;
+
+  @override
+  bool get supportsHistory => true;
 
   Directory get vault {
     final Directory? v = _vault;
@@ -56,31 +83,77 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     // the vault back together *before* deciding whether it is empty, otherwise
     // a recovered note would not count and a welcome note would be seeded on
     // top of it.
-    await _writer.recover(dir);
+    await _writer.recover(
+      dir,
+      skipDirectories: <String>{
+        TrashStore.dirName.toLowerCase(),
+        HistoryStore.dirName.toLowerCase(),
+      },
+    );
+
+    try {
+      await _trashStore.cleanupResidue();
+    } on FileSystemException {
+      // A trash that cannot be tidied is still readable.
+    }
 
     final List<File> existing = await _mdFiles();
     if (existing.isEmpty) {
-      final Note welcome = Note.welcome();
-      await _writer.replace(
-        File(_pathFor(welcome.relativePath)),
-        welcome.toMarkdown(),
-      );
+      bool trashEmpty = true;
+      try {
+        trashEmpty = (await _trashStore.list()).isEmpty;
+      } on FileSystemException {
+        // Unknown trash contents are not evidence of a fresh install.
+        trashEmpty = false;
+      }
+      if (trashEmpty) {
+        final Note welcome = Note.welcome();
+        await _writer.replace(
+          File(_pathFor(welcome.relativePath)),
+          welcome.toMarkdown(),
+        );
+      }
     }
   }
 
   Future<List<File>> _mdFiles() async {
-    final Directory dir = vault;
+    final List<File> files = <File>[];
     try {
-      final List<FileSystemEntity> entries = await dir
-          .list(recursive: true, followLinks: false)
-          .toList();
-      return entries
-          .whereType<File>()
-          .where((File f) => f.path.toLowerCase().endsWith('.md'))
-          .toList(growable: false);
+      await _walk(vault, files: files);
     } on FileSystemException {
       return const <File>[];
     }
+    return files;
+  }
+
+  /// Walks the vault without descending into the app's own bookkeeping
+  /// directories. Their `.md` files are snapshots, not notes.
+  Future<void> _walk(
+    Directory dir, {
+    List<File>? files,
+    List<Directory>? dirs,
+  }) async {
+    try {
+      await for (final FileSystemEntity entity
+          in dir.list(followLinks: false)) {
+        if (entity is Directory) {
+          if (_isInternalDirName(_baseName(entity.path))) continue;
+          dirs?.add(entity);
+          await _walk(entity, files: files, dirs: dirs);
+        } else if (entity is File &&
+            files != null &&
+            entity.path.toLowerCase().endsWith('.md')) {
+          files.add(entity);
+        }
+      }
+    } on FileSystemException {
+      // One unreadable subtree must not hide the rest of the vault.
+    }
+  }
+
+  bool _isInternalDirName(String name) {
+    final String lower = name.toLowerCase();
+    return lower == TrashStore.dirName || lower == HistoryStore.dirName;
   }
 
   /// `/`-separated path below the vault root, the form [Note.relativePath] uses.
@@ -111,20 +184,20 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
 
   @override
   Future<List<String>> listFolders() async {
+    final List<Directory> found = <Directory>[];
     try {
-      final List<FileSystemEntity> entries = await vault
-          .list(recursive: true, followLinks: false)
-          .toList();
-      final List<String> folders = entries
-          .whereType<Directory>()
-          .map(_relativeOf)
-          .where((String p) => p.isNotEmpty)
-          .toList();
-      folders.sort((String a, String b) => a.toLowerCase().compareTo(b.toLowerCase()));
-      return folders;
+      await _walk(vault, dirs: found);
     } on FileSystemException {
       return const <String>[];
     }
+    final List<String> folders = found
+        .map(_relativeOf)
+        .where((String p) => p.isNotEmpty)
+        .toList();
+    folders.sort(
+      (String a, String b) => a.toLowerCase().compareTo(b.toLowerCase()),
+    );
+    return folders;
   }
 
   @override
@@ -149,6 +222,75 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     } on FileSystemException {
       // A folder in use, or a permission problem: report it rather than
       // pretending the rename happened.
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> folderHoldsOnlyNotes(
+    String folderPath,
+    Set<String> notePaths,
+  ) async {
+    final String folder = Note.normalizeFolderPath(folderPath);
+    if (folder.isEmpty) return false;
+    if (_isInternalDirName(folder.split('/').first)) return false;
+    final Directory dir = Directory(_pathFor(folder));
+    if (!await dir.exists()) return false;
+    final Set<String> known = <String>{
+      for (final String path in notePaths)
+        path.replaceAll('\\', '/').toLowerCase(),
+    };
+    return _holdsOnlyKnownNotes(dir, known);
+  }
+
+  /// Every file below [dir] has to be one of [known]. Links and unreadable
+  /// entries count as unknown: they cannot be put in the note trash, so the
+  /// folder stays.
+  Future<bool> _holdsOnlyKnownNotes(Directory dir, Set<String> known) async {
+    try {
+      await for (final FileSystemEntity entity in dir.list(followLinks: false)) {
+        if (entity is Directory) {
+          // The app's own bookkeeping has no business inside a note folder, and
+          // deleting it would take snapshots the trash cannot restore.
+          if (_isInternalDirName(_baseName(entity.path))) return false;
+          if (!await _holdsOnlyKnownNotes(entity, known)) return false;
+        } else if (entity is File) {
+          if (!known.contains(_relativeOf(entity).toLowerCase())) return false;
+        } else {
+          return false;
+        }
+      }
+      return true;
+    } on FileSystemException {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> deleteFolder(String folderPath) async {
+    final String folder = Note.normalizeFolderPath(folderPath);
+    if (folder.isEmpty) return false;
+    if (_isInternalDirName(folder.split('/').first)) return false;
+    final Directory dir = Directory(_pathFor(folder));
+    if (!await dir.exists()) return false;
+    return _removeEmptyTree(dir);
+  }
+
+  /// Deletes [dir] only after every child directory is gone and no non-directory
+  /// entry is left. The non-recursive delete is the final guard: if anything
+  /// appeared while walking, the directory stays.
+  Future<bool> _removeEmptyTree(Directory dir) async {
+    try {
+      await for (final FileSystemEntity entity in dir.list(followLinks: false)) {
+        if (entity is Directory) {
+          if (!await _removeEmptyTree(entity)) return false;
+        } else {
+          return false;
+        }
+      }
+      await dir.delete();
+      return true;
+    } on FileSystemException {
       return false;
     }
   }
@@ -269,12 +411,14 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     final File targetFile = File(_pathFor(target));
     await targetFile.parent.create(recursive: true);
 
+    final String contents = note.toMarkdown();
     final String? previousRelative = previousPath?.replaceAll('\\', '/');
     final bool samePath =
         previousRelative != null &&
         previousRelative.toLowerCase() == target.toLowerCase();
     if (samePath) {
-      await _writer.replace(targetFile, note.toMarkdown());
+      await _captureBeforeWrite(note, targetFile, contents);
+      await _writer.replace(targetFile, contents);
       return;
     }
 
@@ -285,7 +429,6 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
       throw NotePathTaken(target);
     }
 
-    final String contents = note.toMarkdown();
     final File? previousFile = previousRelative == null
         ? null
         : File(_pathFor(previousRelative));
@@ -296,6 +439,7 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
       // Land the new contents on the file we own, then move that file. A crash
       // between the two leaves the note saved under its old name — never two
       // copies of the same note on disk.
+      await _captureBeforeWrite(note, previousFile, contents);
       await _writer.replace(previousFile, contents);
       try {
         await previousFile.rename(targetFile.path);
@@ -313,9 +457,143 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     if (hadPrevious) await _deleteQuietly(previousRelative!);
   }
 
+  /// Keeps the content that is about to be overwritten.
+  ///
+  /// The interval check comes before the file read, so ordinary autosaves pay
+  /// nothing once a snapshot exists. Pure renames and moves are skipped by
+  /// comparing bodies: the front matter's `updated` changes on every save, but
+  /// the prose did not.
+  Future<void> _captureBeforeWrite(
+    Note note,
+    File file,
+    String next,
+  ) async {
+    try {
+      if (!await _historyStore.shouldCapture(note.id)) return;
+      if (!await file.exists()) return;
+      final String previous = await file.readAsString();
+      if (Note.splitFrontMatter(previous).body ==
+          Note.splitFrontMatter(next).body) {
+        return;
+      }
+      await _historyStore.capture(note.id, previous);
+    } catch (_) {
+      // A history snapshot must never take a save down with it.
+    }
+  }
+
   @override
-  Future<void> delete(Note note) async {
-    await _deleteQuietly(note.relativePath);
+  Future<TrashEntry?> delete(Note note) async {
+    final File file = File(_pathFor(note.relativePath));
+    if (!await file.exists()) return null;
+    return _trashStore.move(file, note.relativePath);
+  }
+
+  @override
+  Future<List<TrashEntry>> listTrash() async {
+    if (_vault == null) await init();
+    return _trashStore.list();
+  }
+
+  @override
+  Future<Note?> restoreTrash(String entryId) async {
+    if (_vault == null) await init();
+    final TrashRecord? record = await _trashStore.read(entryId);
+    if (record == null) return null;
+    final ({String folder, String fileName}) path = _restorePath(record);
+    final Note note = await writeNewMarkdown(
+      record.markdown,
+      path.fileName,
+      folderPath: path.folder,
+    );
+    await _trashStore.purge(entryId);
+    return note;
+  }
+
+  @override
+  Future<void> purgeTrash(String entryId) async {
+    if (_vault == null) return;
+    await _trashStore.purge(entryId);
+  }
+
+  @override
+  Future<void> emptyTrash() async {
+    if (_vault == null) return;
+    await _trashStore.empty();
+  }
+
+  /// Turns untrusted metadata back into a path inside the vault. An absolute
+  /// path, a drive letter or `..` can never make the restore escape the vault.
+  ({String folder, String fileName}) _restorePath(TrashRecord record) {
+    final List<String> parts = record.entry.originalPath
+        .replaceAll('\\', '/')
+        .split('/')
+        .map((String part) => part.trim())
+        .where(
+          (String part) =>
+              part.isNotEmpty &&
+              part != '.' &&
+              part != '..' &&
+              !part.contains(':'),
+        )
+        .toList();
+    String fileName = parts.isEmpty ? '' : parts.removeLast();
+    if (fileName.isEmpty) fileName = record.fileName;
+    fileName = _baseName(fileName);
+    if (fileName.isEmpty) fileName = '未命名.md';
+    if (!fileName.toLowerCase().endsWith('.md')) fileName = '$fileName.md';
+    return (
+      folder: Note.normalizeFolderPath(parts.join('/')),
+      fileName: fileName,
+    );
+  }
+
+  @override
+  Future<List<NoteVersion>> historyOf(Note note) async {
+    if (_vault == null) await init();
+    return _historyStore.list(note.id);
+  }
+
+  @override
+  Future<String?> readVersion(Note note, String versionId) async {
+    if (_vault == null) return null;
+    return _historyStore.read(note.id, versionId);
+  }
+
+  @override
+  Future<bool> restoreVersion(Note note, String versionId) async {
+    if (_vault == null) await init();
+    final String? raw = await _historyStore.read(note.id, versionId);
+    if (raw == null) return false;
+    final Note version = Note.fromMarkdown(
+      raw,
+      note.fileName,
+      _clock(),
+      folderPath: note.folderPath,
+    );
+    final Note restored = note.copyWith(
+      body: version.body,
+      updatedAt: _clock(),
+    );
+    // Make the restore itself reversible before touching the current file.
+    await captureVersion(note);
+    final File target = File(_pathFor(restored.relativePath));
+    await target.parent.create(recursive: true);
+    await _writer.replace(target, restored.toMarkdown());
+    return true;
+  }
+
+  @override
+  Future<void> captureVersion(Note note) async {
+    if (_vault == null) return;
+    try {
+      final File file = File(_pathFor(note.relativePath));
+      if (!await file.exists()) return;
+      final String raw = await file.readAsString();
+      await _historyStore.capture(note.id, raw, force: true);
+    } catch (_) {
+      // Force capture is best effort; the caller's own operation is the point.
+    }
   }
 
   Future<void> _deleteQuietly(String relativePath) async {
@@ -373,11 +651,10 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
       folderPath: folder,
     );
     final Note note = parsed.copyWith(
-      fileName: await _freeName(
-        folder,
-        Note.buildFileName(parsed.title),
-        withExtension,
-      ),
+      // The caller's file name is the name that comes back: imports keep the
+      // dropped file's name, and a trash restore keeps the original. A file
+      // already sitting there forces the ` 2` rule instead of being replaced.
+      fileName: await _freeName(folder, withExtension, ''),
       updatedAt: DateTime.now(),
     );
     await save(note);

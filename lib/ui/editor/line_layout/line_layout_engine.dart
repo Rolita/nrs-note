@@ -58,6 +58,7 @@ class LineFillRun {
     required this.probe,
     required this.style,
     this.padX = 0,
+    this.padY = 0,
   });
 
   /// 片段在这一行**排出来的文字**里的起止偏移（`paintStart` 起算，含两侧
@@ -76,6 +77,12 @@ class LineFillRun {
   /// 行内代码靠反引号的字宽顶出内边距，标签没有这种隐藏字符可用，只能把底片
   /// 向两侧多画几个像素（样式层给的 `kTagPadX`）。
   final double padX;
+
+  /// 底片在文字上下额外铺出的高度。
+  ///
+  /// 标签胶囊在设计稿里是 `padding: 1px 6px`，这 1px 上下内边距同样没有字符
+  /// 位可占：底片高度按字号量出来之后再上下各补一点，行盒高度不变。
+  final double padY;
 
   /// 量底片高度用的样本（代码正文）。
   final String probe;
@@ -120,6 +127,9 @@ class LaidOutLine {
     this.block,
     this.fills = const <LineFillRun>[],
     this.fromCache = false,
+    this.hidden = false,
+    this.fold,
+    this.folded = false,
     int? paintedFrom,
   }) : paintedFrom = paintedFrom ?? source.paintStart;
 
@@ -133,8 +143,8 @@ class LaidOutLine {
 
   /// 交给 [painter] 的第一个字符的文档偏移。
   ///
-  /// 平时等于 [SourceLine.paintStart]；标记摊进正文时退回行首，因为 `- ` /
-  /// `1. ` 这时是真实文字，参与排版、可以被点击和编辑。
+  /// 平时等于 [SourceLine.paintStart]；标记摊进正文时退回标记起点
+  /// [SourceLine.markerStart]——缩进仍留在槽位里，摊开的只是标记本身。
   final int paintedFrom;
 
   /// 行顶在文档坐标里的 y。
@@ -160,6 +170,18 @@ class LaidOutLine {
 
   /// 这一行要铺在文字下面的圆角底片（行内代码），坐标相对 [painter]。
   final List<LineFillRun> fills;
+
+  /// 这一行被某个折叠的祖先藏起来了：保留在 [LineDocumentLayout.laidOut]
+  /// 里以维持行号对齐，但高度为 0，不测量、不绘制、不参与命中。
+  final bool hidden;
+
+  /// 这一行自己可以折叠时，它的子树范围；其余行为 `null`。
+  ///
+  /// 被祖先藏起来的行不再拥有折叠箭头，所以这里也是 `null`。
+  final ListFold? fold;
+
+  /// [fold] 的子树当前是否折起。
+  final bool folded;
 
   double get bottom => top + height;
 
@@ -193,7 +215,10 @@ class LineDocumentLayout {
     required this.width,
     required this.height,
     required this.metrics,
-  });
+    required Map<int, int> hiddenUnder,
+    // 私有字段不能做命名参数，只能在这里赋值。
+    // ignore: prefer_initializing_formals
+  }) : _hiddenUnder = hiddenUnder;
 
   final String text;
   final List<SourceLine> lines;
@@ -202,15 +227,34 @@ class LineDocumentLayout {
   final double height;
   final LineLayoutMetrics metrics;
 
+  /// 被藏起来的行号 → 折叠它的可见祖先行号。
+  final Map<int, int> _hiddenUnder;
+
   bool _disposed = false;
+
+  /// 把落在折叠子树里的偏移收回到可见位置。
+  ///
+  /// 折叠区的文字还留在源码里，程序性选区（方向键、Ctrl+End、撤销）仍可能
+  /// 停在那些偏移上。它们没有字形可以落脚，统一吸附到折叠项正文的末尾——
+  /// 也就是子树前面那个仍然可见的位置。
+  int visibleOffset(int offset) {
+    final int o = offset.clamp(0, text.length);
+    final int index = _lineIndexAtOffset(o);
+    if (!laidOut[index].hidden) return o;
+    final int? parent = _hiddenUnder[index];
+    return parent == null
+        ? laidOut[index].source.start
+        : laidOut[parent].source.end;
+  }
 
   /// 光标在 [offset] 处的几何。
   ///
   /// 标记没摊开时（列表行 `[start, paintStart)`）光标统一吸附到正文列起点：
   /// 槽位里的圆点/复选框不是字形，用字宽去插值只会让光标在标记里乱跳。
-  /// 标记摊进正文后它就是字形，偏移按普通字符映射。
+  /// 标记摊进正文后它就是字形，偏移按普通字符映射；只有缩进区仍吸附到
+  /// 标记起点。
   CaretGeometry caretGeometryAt(int offset) {
-    final int o = offset.clamp(0, text.length);
+    final int o = visibleOffset(offset);
     final int lineIndex = _lineIndexAtOffset(o);
     final LaidOutLine line = laidOut[lineIndex];
     final SourceLine source = line.source;
@@ -260,10 +304,10 @@ class LineDocumentLayout {
   ///
   /// 标记没摊开时，落在标记区/缩进区会返回正文起点——点列表的圆点会像点行首
   /// 一样，光标进到正文第一字前面，而不是钻到标记字符之间。标记摊进正文后
-  /// 槽位宽度为零，这里就只在真的落在行首左侧时才钳到行首。
+  /// 缩进仍占着槽位，只有落在槽位左边才钳到标记起点。
   int offsetAtPoint(Offset point) {
     if (point.dy < 0) return 0;
-    if (point.dy >= height) return text.length;
+    if (point.dy >= height) return visibleOffset(text.length);
     final int lineIndex = _lineIndexAtY(point.dy);
     final LaidOutLine line = laidOut[lineIndex];
     final LineBlockView? block = line.block;
@@ -453,6 +497,11 @@ class LineDocumentLayout {
         hi = mid - 1;
       }
     }
+    // 零高的行（折叠子树的成员、收起的闭围栏）不占像素：落点归到它上方
+    // 最近一条真正画出来的行，否则点击会被吸进看不见的源码。
+    while (lo > 0 && laidOut[lo].height <= 0) {
+      lo--;
+    }
     return lo;
   }
 
@@ -578,12 +627,33 @@ LineDocumentLayout layoutLines({
   LineInsetResolver? insetFor,
   LineBlockResolver? blockFor,
   int? markerRevealLine,
+  Set<int> foldedLines = const <int>{},
   LineLayoutMetrics metrics = const LineLayoutMetrics(),
   LineLayoutCache? cache,
 }) {
   cache?._begin();
   final List<SourceLine> sources = scanSourceLines(text);
   final List<LaidOutLine> out = <LaidOutLine>[];
+
+  // 哪些列表项的子树现在收起。父行自己也藏在上一个折叠里时跳过：它的
+  // 箭头看不见，展开状态等祖先展开后自然恢复。这样每个被藏的行都只认
+  // 最近一层**可见**的折叠，光标吸附一步就能回到看得见的地方。
+  final Map<int, ListFold> foldByParent = <int, ListFold>{
+    for (final ListFold fold in scanListFolds(sources)) fold.parentIndex: fold,
+  };
+  final Set<int> hiddenLines = <int>{};
+  final Map<int, int> hiddenUnder = <int, int>{};
+  final Set<int> foldedParents = <int>{};
+  for (int i = 0; i < sources.length; i++) {
+    final ListFold? fold = foldByParent[i];
+    if (fold == null || hiddenLines.contains(i)) continue;
+    if (!foldedLines.contains(sources[i].start)) continue;
+    foldedParents.add(i);
+    for (int k = i + 1; k <= fold.lastIndex; k++) {
+      hiddenLines.add(k);
+      hiddenUnder[k] = i;
+    }
+  }
   final LineBlockContext blockContext = LineBlockContext(
     contentWidth: contentWidth,
     textScaler: textScaler,
@@ -597,6 +667,37 @@ LineDocumentLayout layoutLines({
 
   for (int i = 0; i < sources.length; i++) {
     final SourceLine source = sources[i];
+    if (hiddenLines.contains(i)) {
+      // 零高的占位行：不取样式、不测量、不进缓存，只为让行号与源码一一
+      // 对应。绘制与命中都会跳过它，几何出口会把它折回可见的父项。
+      final TextPainter painter = TextPainter(
+        text: TextSpan(text: '', style: baseStyle),
+        textDirection: textDirection,
+        textScaler: textScaler,
+      )..layout();
+      out.add(
+        LaidOutLine(
+          source: source,
+          top: top,
+          height: 0,
+          slot: MarkerSlot.none,
+          painter: painter,
+          visuals: <VisualLine>[
+            VisualLine(
+              index: 0,
+              top: 0,
+              height: 0,
+              start: source.paintStart,
+              end: source.end,
+              width: 0,
+            ),
+          ],
+          hidden: true,
+        ),
+      );
+      continue;
+    }
+
     final TextStyle style = styleFor?.call(source) ?? baseStyle;
     final MarkerSlot bare = _slotOf(
       source,
@@ -640,7 +741,9 @@ LineDocumentLayout layoutLines({
       1.0,
       contentWidth - insets.horizontal - slot.width,
     );
-    final int paintedFrom = markersInline ? source.start : source.paintStart;
+    final int paintedFrom = markersInline
+        ? source.markerStart
+        : source.paintStart;
     final String painted = text.substring(paintedFrom, source.end);
     final InlineSpan? custom = block == null ? spanFor?.call(source) : null;
     final InlineSpan? usable = custom != null && custom.toPlainText() == painted
@@ -654,7 +757,8 @@ LineDocumentLayout layoutLines({
     final double? override = block != null ? null : heightFor?.call(source);
     // 只有 span 树不改变任何字体度量时才缓存：颜色、底片、装饰线不影响
     // 排版，可以忽略；字重、字体、字号、字距会影响宽度，必须逐层比对。
-    final bool cacheable = block == null &&
+    final bool cacheable =
+        block == null &&
         (usable == null || _spanUsesBaseMetrics(usable, style));
     final bool pooled = cacheable && cache != null;
     final _LineKey key = (
@@ -721,6 +825,8 @@ LineDocumentLayout layoutLines({
         block: block,
         fills: fills,
         fromCache: pooled,
+        fold: foldByParent[i],
+        folded: foldedParents.contains(i),
         paintedFrom: paintedFrom,
       ),
     );
@@ -736,6 +842,7 @@ LineDocumentLayout layoutLines({
     width: contentWidth,
     height: top,
     metrics: metrics,
+    hiddenUnder: hiddenUnder,
   );
 }
 
@@ -857,6 +964,10 @@ bool _spanUsesBaseMetrics(InlineSpan span, TextStyle base) {
 /// 比较两段样式中会影响排版结果的字段，忽略前景/背景/装饰。
 bool _sameTextMetrics(TextStyle style, TextStyle base) {
   if (style.foreground != null) return false;
+  // 完全透明的字不落墨，却仍在排版里占位：它的显隐只改颜色，按度量比较会
+  // 把整行当成可缓存行，光标移进来时复用旧 painter，`>` 这类标记就永远
+  // 显不出来。引用前缀（keepMarkerWidth）和只保留行高的分隔行都属于这类。
+  if (style.color != null && style.color!.a == 0) return false;
   return (style.fontSize ?? base.fontSize) == base.fontSize &&
       (style.fontWeight ?? base.fontWeight) == base.fontWeight &&
       (style.fontStyle ?? base.fontStyle) == base.fontStyle &&
@@ -883,11 +994,7 @@ bool _sameTextMetrics(TextStyle style, TextStyle base) {
 ///
 /// 在编辑点之后，整行的 `source.start` / `paintedFrom` 会一起偏移，视觉行
 /// 的 `top/height/width` 不受影响，只需平移 `start/end`。
-List<VisualLine> _shiftVisuals(
-  List<VisualLine> visuals,
-  int from,
-  int to,
-) {
+List<VisualLine> _shiftVisuals(List<VisualLine> visuals, int from, int to) {
   if (from == to) return visuals;
   final int delta = to - from;
   return <VisualLine>[

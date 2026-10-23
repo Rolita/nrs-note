@@ -154,6 +154,67 @@ void main() {
     );
   });
 
+  test('deleteFolder removes emptied directories deepest-first', () async {
+    final IoNoteStore store = IoNoteStore(overrideRoot: root);
+    await store.init();
+    await store.createFolder('项目/子项目');
+    await store.createFolder('项目/空');
+    final Note note = Note.blank(title: '计划', folderPath: '项目/子项目');
+    await store.save(note);
+
+    expect(
+      await store.folderHoldsOnlyNotes('项目', <String>{note.relativePath}),
+      isTrue,
+    );
+    await store.delete(note);
+
+    expect(await store.deleteFolder('项目'), isTrue);
+    expect(
+      Directory('$vault${Platform.pathSeparator}项目').existsSync(),
+      isFalse,
+    );
+    expect(await store.listFolders(), isNot(contains('项目/子项目')));
+  });
+
+  test('deleteFolder refuses a folder holding a file the trash cannot keep',
+      () async {
+    final IoNoteStore store = IoNoteStore(overrideRoot: root);
+    await store.init();
+    await store.createFolder('项目');
+    final Note note = Note.blank(title: '计划', folderPath: '项目');
+    await store.save(note);
+    file('项目/附件.txt').writeAsStringSync('不可丢的附件');
+
+    expect(
+      await store.folderHoldsOnlyNotes('项目', <String>{note.relativePath}),
+      isFalse,
+    );
+
+    await store.delete(note);
+    expect(await store.deleteFolder('项目'), isFalse);
+    expect(file('项目/附件.txt').existsSync(), isTrue);
+    expect(
+      Directory('$vault${Platform.pathSeparator}项目').existsSync(),
+      isTrue,
+      reason: '有外部文件时目录必须原地保留',
+    );
+  });
+
+  test('a note the caller did not list keeps the folder from being deleted',
+      () async {
+    final IoNoteStore store = IoNoteStore(overrideRoot: root);
+    await store.init();
+    await store.createFolder('项目');
+    final Note note = Note.blank(title: '计划', folderPath: '项目');
+    await store.save(note);
+
+    expect(
+      await store.folderHoldsOnlyNotes('项目', const <String>{}),
+      isFalse,
+      reason: '不认识的笔记也是数据，不能跟着目录一起消失',
+    );
+  });
+
   test('folders are real directories and empty ones survive a reload', () async {
     final IoNoteStore store = IoNoteStore(overrideRoot: root);
     await store.init();

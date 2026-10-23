@@ -42,8 +42,9 @@ class _VaultStore extends NoteStore {
   }
 
   @override
-  Future<void> delete(Note note) async {
+  Future<TrashEntry?> delete(Note note) async {
     notes.removeWhere((Note n) => n.id == note.id);
+    return null;
   }
 }
 
@@ -190,7 +191,9 @@ void main() {
       createdAt: DateTime(2026, 1, 1),
       updatedAt: DateTime(2026, 1, 2),
     );
-    final NotesController notes = NotesController(store: _VaultStore(<Note>[a, b]));
+    final NotesController notes = NotesController(
+      store: _VaultStore(<Note>[a, b]),
+    );
     addTearDown(notes.dispose);
     await notes.bootstrap();
 
@@ -202,9 +205,7 @@ void main() {
         ],
         child: MaterialApp(
           theme: AppTheme.build(AppPalette.dark),
-          home: Scaffold(
-            body: EditorPane(onDelete: (Note note) {}),
-          ),
+          home: Scaffold(body: EditorPane(onDelete: (Note note) {})),
         ),
       ),
     );
@@ -236,9 +237,71 @@ void main() {
     await tester.pump(const Duration(seconds: 3));
   });
 
-  testWidgets('磁盘上的正文更新后编辑器跟着换，Ctrl+Z 不会把旧正文写回去', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('标题框的 Ctrl+Z 只撤销标题，不碰正文', (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final SettingsController settings = await SettingsController.load();
+    final Note note = Note(
+      id: 'a',
+      title: '旧标题',
+      body: '正文',
+      createdAt: DateTime(2026, 1, 1),
+      updatedAt: DateTime(2026, 1, 2),
+    );
+    final NotesController notes = NotesController(
+      store: _VaultStore(<Note>[note]),
+    );
+    addTearDown(notes.dispose);
+    await notes.bootstrap();
+    await _pumpPane(tester, notes, settings);
+
+    // 正文里先打一次字，编辑器的撤销栈里留下「正文」这一条。
+    final TextEditingController body = tester
+        .widget<LineEditableText>(find.byType(LineEditableText))
+        .controller;
+    tester.testTextInput.register();
+    await tester.tap(find.byType(LineEditableText));
+    await tester.pump(const Duration(milliseconds: 600));
+    const String typed = '正文追加';
+    tester.testTextInput.updateEditingValue(
+      TextEditingValue(
+        text: typed,
+        selection: TextSelection.collapsed(offset: typed.length),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(body.text, typed);
+
+    // 标题随正文滚动，但快捷键只包住正文字段：焦点在标题上时，
+    // Ctrl+Z 必须走标题框自己的撤销栈。
+    final Finder titleField = find.descendant(
+      of: find.byKey(const ValueKey<String>('title-a')),
+      matching: find.byType(TextField),
+    );
+    // `enterText` swaps the value without the input-connection round trip the
+    // undo stack records; the simulated IME update is the path a user's typing
+    // takes, so the title gets a real history entry to undo.
+    await tester.tap(titleField);
+    await tester.pump(const Duration(milliseconds: 600));
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '新标题',
+        selection: TextSelection.collapsed(offset: 3),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(notes.draft?.title, '新标题');
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(notes.draft?.title, '旧标题', reason: 'Ctrl+Z 应撤销刚才的改名');
+    expect(body.text, typed, reason: '撤销被正文抢走的话，自动保存会把旧正文写回文件');
+    await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('磁盘上的正文更新后编辑器跟着换，Ctrl+Z 不会把旧正文写回去', (WidgetTester tester) async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final SettingsController settings = await SettingsController.load();
     final Note note = Note(
@@ -261,9 +324,7 @@ void main() {
         ],
         child: MaterialApp(
           theme: AppTheme.build(AppPalette.dark),
-          home: Scaffold(
-            body: EditorPane(onDelete: (Note note) {}),
-          ),
+          home: Scaffold(body: EditorPane(onDelete: (Note note) {})),
         ),
       ),
     );

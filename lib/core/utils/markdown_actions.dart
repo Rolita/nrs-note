@@ -2264,16 +2264,20 @@ TextEditingValue indentLines(TextEditingValue v, {required bool outdent}) {
 /// 删掉 `16.` 那一条，下面的 `17.` 要变回 `16.`；在中间回车插进一条，后面的
 /// 序号依次后移。只在“行数变了”时动手：逐字输入、只改一条内容都不重编号；
 /// 粘贴整段列表时插入的不是单个换行，也保留原来的序号。
+///
+/// [force] 跳过“行数变了”这一关：空子项退到父级不增减行数，却改了列表结构，
+/// 新条目下面的同级序号同样要接上。
 TextEditingValue renumberAfterLineChange(
   TextEditingValue oldValue,
-  TextEditingValue newValue,
-) {
+  TextEditingValue newValue, {
+  bool force = false,
+}) {
   if (newValue.text == oldValue.text || !newValue.selection.isValid) {
     return newValue;
   }
   final int oldLines = '\n'.allMatches(oldValue.text).length;
   final int newLines = '\n'.allMatches(newValue.text).length;
-  if (oldLines == newLines) return newValue;
+  if (!force && oldLines == newLines) return newValue;
 
   // 本次编辑的公共前后缀，用来定位它落在哪几行上。
   final int shorter = oldValue.text.length < newValue.text.length

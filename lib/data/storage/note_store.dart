@@ -35,6 +35,39 @@ class NoteFileStamp {
   int get hashCode => Object.hash(relativePath, modifiedAt, size);
 }
 
+/// A deleted note waiting in the vault's trash.
+class TrashEntry {
+  const TrashEntry({
+    required this.id,
+    required this.originalPath,
+    required this.title,
+    required this.deletedAt,
+    required this.size,
+  });
+
+  final String id;
+
+  /// Vault-relative path the note will return to, `/`-separated.
+  final String originalPath;
+  final String title;
+  final DateTime deletedAt;
+  final int size;
+}
+
+/// One snapshot in a note's version history.
+class NoteVersion {
+  const NoteVersion({
+    required this.id,
+    required this.capturedAt,
+    required this.size,
+  });
+
+  /// Stable id for this snapshot, derived from its capture time.
+  final String id;
+  final DateTime capturedAt;
+  final int size;
+}
+
 /// Thrown by [NoteStore.save] when the target file already exists and is not
 /// the file this note owns — typically a note the user created outside NRS.
 ///
@@ -95,14 +128,68 @@ abstract class NoteStore {
   /// is deliberate: silently merging two folders would scatter the notes.
   Future<bool> renameFolder(String from, String to) async => false;
 
+  /// True when [folderPath] contains nothing but directories and the note files
+  /// in [notePaths].
+  ///
+  /// The note trash cannot hold anything else, so a folder with a picture or a
+  /// hand-written text file is not deletable: removing it would destroy content
+  /// the app could never restore. Platforms that cannot inspect the folder
+  /// answer false, which refuses the delete rather than guessing.
+  Future<bool> folderHoldsOnlyNotes(
+    String folderPath,
+    Set<String> notePaths,
+  ) async => false;
+
+  /// Removes [folderPath] and its empty sub-directories, deepest first.
+  ///
+  /// Only empty directories are ever deleted. Returns false when the folder
+  /// itself is still there — anything the note trash cannot hold is inside, or a
+  /// directory could not be removed. Empty sub-directories may already have been
+  /// removed; nothing else is touched.
+  Future<bool> deleteFolder(String folderPath) async => false;
+
   /// Writes [note] to its [Note.relativePath].
   ///
   /// When [previousPath] is supplied and differs, the old file is removed so
   /// that renaming a note does not leave an orphan behind.
   Future<void> save(Note note, {String? previousPath});
 
-  /// Removes the note's file from the vault.
-  Future<void> delete(Note note);
+  /// True when deleting moves the note into a restorable trash.
+  bool get supportsTrash => false;
+
+  /// True when snapshots of overwritten content can be listed and restored.
+  bool get supportsHistory => false;
+
+  /// Removes the note from the vault, returning its trash receipt when the
+  /// platform keeps one. A null receipt means the note is gone for good.
+  Future<TrashEntry?> delete(Note note);
+
+  /// Everything currently in the trash, newest deletion first.
+  Future<List<TrashEntry>> listTrash() async => const <TrashEntry>[];
+
+  /// Restores a trashed note to its original path (or a free name there).
+  Future<Note?> restoreTrash(String entryId) async => null;
+
+  /// Permanently removes one trash entry.
+  Future<void> purgeTrash(String entryId) async {}
+
+  /// Permanently removes every trash entry.
+  Future<void> emptyTrash() async {}
+
+  /// Snapshots of [note]'s previous content, newest first.
+  Future<List<NoteVersion>> historyOf(Note note) async =>
+      const <NoteVersion>[];
+
+  /// Raw `.md` contents of one snapshot, or null when it disappeared.
+  Future<String?> readVersion(Note note, String versionId) async => null;
+
+  /// Replaces [note]'s body with [versionId], first snapshotting what is on
+  /// disk now so the restore itself can be undone.
+  Future<bool> restoreVersion(Note note, String versionId) async => false;
+
+  /// Snapshots the note's current on-disk content immediately, ignoring the
+  /// normal capture interval. Used before destructive overwrites.
+  Future<void> captureVersion(Note note) async {}
 
   /// Opens the vault folder in the OS file manager. No-op where unsupported.
   Future<bool> reveal() async => false;

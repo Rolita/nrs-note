@@ -75,14 +75,33 @@ class AtomicFileWriter {
   ///
   /// A backup is only kept when its target vanished; a temporary file is only
   /// removed once it is old enough that no running instance can still own it.
+  /// [skipDirectories] lets the vault skip large bookkeeping trees (history
+  /// snapshots) whose files are not notes.
   Future<void> recover(
     Directory vault, {
     Duration maxTempAge = const Duration(hours: 1),
+    Set<String> skipDirectories = const <String>{},
   }) async {
-    final DateTime now = DateTime.now();
+    await _recoverDir(vault, DateTime.now(), maxTempAge, skipDirectories);
+  }
+
+  Future<void> _recoverDir(
+    Directory dir,
+    DateTime now,
+    Duration maxTempAge,
+    Set<String> skipDirectories,
+  ) async {
     try {
       await for (final FileSystemEntity entity
-          in vault.list(recursive: true, followLinks: false)) {
+          in dir.list(followLinks: false)) {
+        if (entity is Directory) {
+          final String name =
+              entity.path.split(RegExp(r'[\\/]')).last.toLowerCase();
+          if (!skipDirectories.contains(name)) {
+            await _recoverDir(entity, now, maxTempAge, skipDirectories);
+          }
+          continue;
+        }
         if (entity is! File) continue;
         final String path = entity.path;
         if (path.endsWith('.nrs-bak')) {

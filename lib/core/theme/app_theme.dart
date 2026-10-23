@@ -102,9 +102,7 @@ abstract final class AppTheme {
         textStyle: TextStyle(
           fontSize: 12,
           height: 1.3,
-          color: p.brightness == Brightness.dark
-              ? p.canvas
-              : p.surfaceRaised,
+          color: p.brightness == Brightness.dark ? p.canvas : p.surfaceRaised,
           fontFamily: AppFonts.ui,
           fontFamilyFallback: AppFonts.uiFallback,
         ),
@@ -166,17 +164,6 @@ abstract final class AppTheme {
           fontFamilyFallback: AppFonts.uiFallback,
         ),
       ),
-      snackBarTheme: SnackBarThemeData(
-        backgroundColor: p.textPrimary.withValues(alpha: p.isDark ? 0.95 : 0.93),
-        contentTextStyle: TextStyle(
-          color: p.isDark ? p.canvas : p.surfaceRaised,
-          fontSize: 13,
-        ),
-        behavior: SnackBarBehavior.floating,
-        elevation: 6,
-        shape: RoundedRectangleBorder(borderRadius: AppRadius.mdAll),
-        insetPadding: const EdgeInsets.all(AppSpace.lg),
-      ),
       inputDecorationTheme: InputDecorationThemeData(
         isDense: true,
         filled: true,
@@ -205,9 +192,8 @@ abstract final class AppTheme {
           borderRadius: BorderRadius.circular(AppRadius.xs),
         ),
         fillColor: WidgetStateProperty.resolveWith(
-          (Set<WidgetState> s) => s.contains(WidgetState.selected)
-              ? p.accent
-              : Colors.transparent,
+          (Set<WidgetState> s) =>
+              s.contains(WidgetState.selected) ? p.accent : Colors.transparent,
         ),
         checkColor: WidgetStatePropertyAll<Color>(p.onAccent),
       ),
@@ -217,9 +203,8 @@ abstract final class AppTheme {
               s.contains(WidgetState.selected) ? p.onAccent : p.surfaceRaised,
         ),
         trackColor: WidgetStateProperty.resolveWith(
-          (Set<WidgetState> s) => s.contains(WidgetState.selected)
-              ? p.accent
-              : p.surfaceSunken,
+          (Set<WidgetState> s) =>
+              s.contains(WidgetState.selected) ? p.accent : p.surfaceSunken,
         ),
         trackOutlineColor: WidgetStatePropertyAll<Color>(p.outline),
       ),
@@ -243,7 +228,10 @@ abstract final class AppTheme {
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
           foregroundColor: p.accent,
-          textStyle: TextStyle(fontSize: AppText.ui, fontWeight: FontWeight.w600),
+          textStyle: TextStyle(
+            fontSize: AppText.ui,
+            fontWeight: FontWeight.w600,
+          ),
           shape: RoundedRectangleBorder(borderRadius: AppRadius.smAll),
           padding: const EdgeInsets.symmetric(
             horizontal: AppSpace.sm + 2,
@@ -255,7 +243,10 @@ abstract final class AppTheme {
         style: FilledButton.styleFrom(
           backgroundColor: p.accent,
           foregroundColor: p.onAccent,
-          textStyle: TextStyle(fontSize: AppText.ui, fontWeight: FontWeight.w600),
+          textStyle: TextStyle(
+            fontSize: AppText.ui,
+            fontWeight: FontWeight.w600,
+          ),
           shape: RoundedRectangleBorder(borderRadius: AppRadius.smAll),
           padding: const EdgeInsets.symmetric(
             horizontal: AppSpace.md,
@@ -267,7 +258,10 @@ abstract final class AppTheme {
         style: OutlinedButton.styleFrom(
           foregroundColor: p.textPrimary,
           side: BorderSide(color: p.outline),
-          textStyle: TextStyle(fontSize: AppText.ui, fontWeight: FontWeight.w600),
+          textStyle: TextStyle(
+            fontSize: AppText.ui,
+            fontWeight: FontWeight.w600,
+          ),
           shape: RoundedRectangleBorder(borderRadius: AppRadius.smAll),
         ),
       ),

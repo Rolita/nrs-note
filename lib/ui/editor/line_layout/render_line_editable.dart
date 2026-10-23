@@ -25,6 +25,46 @@ import 'package:flutter/services.dart';
 import 'line_layout_engine.dart';
 import 'line_marker_style.dart';
 
+/// 一条可折叠列表项在屏幕上的落点，坐标已换算成全局坐标。
+///
+/// 箭头是画出来的（`ListFoldPainter`），没有 widget 可以 `getRect`，所以
+/// 命中与悬停都问渲染对象要这两个矩形：与用户看到的位置逐像素一致。
+class ListFoldHandle {
+  const ListFoldHandle({
+    required this.lineStart,
+    required this.lineEnd,
+    required this.hiddenEnd,
+    required this.folded,
+    required this.button,
+    required this.row,
+    this.ellipsis,
+  });
+
+  /// 列表项行首的源码偏移，也是折叠状态的键。
+  final int lineStart;
+
+  /// 列表项这一行源码的末尾（换行符之前）。
+  final int lineEnd;
+
+  /// 子树最后一行的末尾；收起时落在 `(lineEnd, hiddenEnd]` 的光标都算
+  /// 藏进了折叠区。
+  final int hiddenEnd;
+
+  final bool folded;
+
+  /// 箭头按钮（16 × 20），在标记槽位左侧、页边距里。
+  final Rect button;
+
+  /// 这一行（含折行）的整条横带，用来判断箭头该不该因悬停显形。
+  final Rect row;
+
+  /// 收起时接在正文末尾的省略号左上角（全局坐标）；展开时为 `null`。
+  ///
+  /// 省略号不在源码里，也不进排版：它是折叠状态的提示，由
+  /// `ListFoldPainter` 画在字后面，不参与选区与命中。
+  final Offset? ellipsis;
+}
+
 class RenderLineEditable extends RenderEditable {
   // 纯粹转发参数给 super，保持与 SDK 构造函数逐项一致，便于升级时对比。
   // ignore: use_super_parameters
@@ -83,11 +123,14 @@ class RenderLineEditable extends RenderEditable {
     LineInsetResolver? lineInsetFor,
     TextSelection? revealSelection,
     int? markerRevealLine,
+    Set<int>? foldedLines,
     LineMarkerStyle? markerStyle,
     LineBlockResolver? lineBlockFor,
   }) : // 私有字段不能做命名参数，只能在这里赋值。
        // ignore: prefer_initializing_formals
        _explicitCursorHeight = cursorHeight,
+       // ignore: prefer_initializing_formals
+       _foldedLines = foldedLines ?? const <int>{},
        // ignore: prefer_initializing_formals
        _lineStyleFor = lineStyleFor,
        // ignore: prefer_initializing_formals
@@ -245,6 +288,18 @@ class RenderLineEditable extends RenderEditable {
   set markerRevealLine(int? value) {
     if (value == _markerRevealLine) return;
     _markerRevealLine = value;
+    _dropLineLayout();
+  }
+
+  /// 哪些列表项的行首偏移当前收起。
+  ///
+  /// 折叠会改变行高与整篇高度，必须重排；集合按值比较，重建时原样传回
+  /// 同一个集合不会白白丢掉缓存。
+  Set<int> get foldedLines => _foldedLines;
+  Set<int> _foldedLines;
+  set foldedLines(Set<int> value) {
+    if (setEquals(value, _foldedLines)) return;
+    _foldedLines = Set<int>.unmodifiable(value);
     _dropLineLayout();
   }
 
@@ -432,6 +487,7 @@ class RenderLineEditable extends RenderEditable {
       insetFor: _lineInsetFor,
       blockFor: _lineBlockFor,
       markerRevealLine: _markerRevealLine,
+      foldedLines: _foldedLines,
       cache: _lineCache,
     );
     _lineLayout = next;
@@ -468,7 +524,8 @@ class RenderLineEditable extends RenderEditable {
     // `performLayout` 也会把尺寸纠正回来。
     final double width = _contentWidthFor(constraints);
     final LineDocumentLayout? cached = _cachedLineLayout(width);
-    final double naturalHeight = cached?.height ??
+    final double naturalHeight =
+        cached?.height ??
         _estimatedHeight(text?.toPlainText() ?? '', _baseStyle);
     final double boxWidth = constraints.hasBoundedWidth
         ? constraints.maxWidth
@@ -626,7 +683,7 @@ class RenderLineEditable extends RenderEditable {
           textDirection: textDirection,
           textScaler: textScaler,
         )..layout();
-        final double height = metrics.height;
+        final double height = metrics.height + run.padY * 2;
         metrics.dispose();
         paint.color = run.fill;
 
@@ -639,15 +696,17 @@ class RenderLineEditable extends RenderEditable {
         void flush() {
           final double center = (top + bottom) / 2;
           // 标签的内边距没有字符位可占，只能把底片向两侧多铺几个像素；
-          // 贴到正文列边缘时夹住，避免被渲染对象裁掉半个圆角。
+          // 夹取要在**画布坐标**里做（先加 origin）：行首让出的内边距正是靠
+          // 这一步生效的，若先在画笔局部坐标夹再平移，让出的位置会被平移
+          // 原样吃掉，字又贴回底片边缘。
           canvas.drawRRect(
             RRect.fromRectAndRadius(
               Rect.fromLTRB(
-                math.max(0, left - run.padX),
-                center - height / 2,
-                math.min(layout.width, right + run.padX),
-                center + height / 2,
-              ).shift(origin),
+                math.max(0, origin.dx + left - run.padX),
+                origin.dy + center - height / 2,
+                math.min(layout.width, origin.dx + right + run.padX),
+                origin.dy + center + height / 2,
+              ),
               Radius.circular(run.radius),
             ),
             paint,
@@ -952,15 +1011,34 @@ class RenderLineEditable extends RenderEditable {
     return null;
   }
 
+  /// [globalPosition] 是否落在未摊开的列表标记**左侧**的空白里。
+  ///
+  /// 标记画在槽位 [MarkerSlot.indent] 处，左边的缩进没有字形，悬停在那里
+  /// 不该出现输入光标；标记摊开后缩进仍由槽位占着，同样不算字形。
+  bool isLeftOfListMarker(Offset globalPosition) {
+    final LineDocumentLayout? layout = _lineLayout;
+    if (layout == null) return false;
+    final Offset local = globalToLocal(globalPosition) - _linePaintOffset;
+    for (final LaidOutLine line in layout.laidOut) {
+      if (line.height <= 0 || !line.source.isList) continue;
+      if (local.dy < line.top || local.dy >= line.top + line.height) continue;
+      return local.dx < line.slot.indent;
+    }
+    return false;
+  }
+
   /// [globalPosition] 落在列表行的标记区时，返回该行的标记范围。
   ///
   /// 槽位里画的圆点/序号/复选框不是字形，`positionAt` 会把落点吸附到正文列；
   /// 但用户点的是标记本身，要的是把它展开成可编辑的 `- ` / `1. `。这个出口
   /// 就是那一下区分：命中标记区返回源码范围，否则返回 `null`，让调用方照常
   /// 按正文定位。[revealed] 为真时标记已经是字形，落点可以留在标记内部。
-  ({int start, int paintStart, bool revealed})? listMarkerAt(
-    Offset globalPosition,
-  ) {
+  ///
+  /// [caret] 是未摊开时按落点换算出的标记内偏移：点在 `1` 和 `.` 之间就落在
+  /// 那两个字之间，而不是一律回到标记起点；标记已摊开时调用方本来就按正文
+  /// 定位，这里给 [markerStart] 占位。
+  ({int start, int markerStart, int paintStart, bool revealed, int caret})?
+  listMarkerAt(Offset globalPosition) {
     final LineDocumentLayout? layout = _lineLayout;
     if (layout == null) return null;
     final Offset local = globalToLocal(globalPosition) - _linePaintOffset;
@@ -979,25 +1057,133 @@ class RenderLineEditable extends RenderEditable {
       final bool revealed = line.slot.revealedMarkers;
       double markerWidth = line.slot.indent + line.slot.marker;
       if (revealed) {
-        // 摊开以后前缀是真实字形：缩进变成真的空格，宽度按排出来的算，
-        // 不然嵌套列表的后半截标记会被当成正文，一点就收起。
+        // 摊开以后标记是真实字形：宽度按排出来的算，但缩进仍由槽位占着，
+        // 命中区要从正文列起算，不然嵌套列表的标记会被当成正文。
         final List<TextBox> boxes = line.painter.getBoxesForSelection(
           TextSelection(
             baseOffset: 0,
             extentOffset: line.source.paintStart - line.paintedFrom,
           ),
         );
-        markerWidth = boxes.fold<double>(
-          0,
-          (double w, TextBox b) => math.max(w, b.right),
-        );
+        markerWidth =
+            line.gutter +
+            boxes.fold<double>(
+              0,
+              (double w, TextBox b) => math.max(w, b.right),
+            );
       }
       if (local.dx >= (revealed ? markerWidth : line.gutter)) continue;
       return (
         start: line.source.start,
+        markerStart: line.source.markerStart,
         paintStart: line.source.paintStart,
         revealed: revealed,
+        caret: revealed
+            ? line.source.markerStart
+            : _markerCaretAt(line, local.dx),
       );
+    }
+    return null;
+  }
+
+  /// 落点在标记槽位里的 x 换算成标记源码里的字符偏移。
+  ///
+  /// 槽位宽度就是按标记源码、用正文样式量出来的（见引擎的 `_slotOf`），
+  /// 摊开后的前缀也走同一套度量，所以拿同一份样式排一遍就能得到各个字符
+  /// 间隙。落在标记左侧的缩进里时夹回标记起点。
+  int _markerCaretAt(LaidOutLine line, double dx) {
+    final SourceLine source = line.source;
+    final int from = source.markerStart;
+    final int to = source.paintStart;
+    if (to <= from) return from;
+    final TextStyle? style = line.painter.text?.style;
+    if (style == null) return from;
+    final String marker = source.text.substring(
+      from - source.start,
+      to - source.start,
+    );
+    final TextPainter painter = TextPainter(
+      text: TextSpan(text: marker, style: style),
+      textDirection: textDirection,
+      textScaler: textScaler,
+    )..layout();
+    final int within = painter
+        .getPositionForOffset(
+          Offset(math.max(0, dx - line.slot.indent), painter.height / 2),
+        )
+        .offset;
+    painter.dispose();
+    return (from + within).clamp(from, to);
+  }
+
+  /// 每一条可折叠列表项的箭头落点，按源码顺序，**全局坐标**。
+  ///
+  /// 箭头画在标记槽位左侧：16px 宽的按钮正好在标记起点收住，顶级项因此
+  /// 落到页边距里，嵌套项落在缩进槽里。纵向上对齐第一条视觉行。
+  List<ListFoldHandle> foldHandles() {
+    final LineDocumentLayout? layout = _lineLayout;
+    if (layout == null || !hasSize) return const <ListFoldHandle>[];
+    final Offset origin = localToGlobal(_linePaintOffset);
+    final List<ListFoldHandle> handles = <ListFoldHandle>[];
+    for (final LaidOutLine line in layout.laidOut) {
+      final ListFold? fold = line.fold;
+      if (fold == null || line.height <= 0) continue;
+      final VisualLine first = line.visuals.first;
+      final double center = line.top + first.top + first.height / 2;
+      final Rect button = Rect.fromLTWH(
+        line.slot.indent - 16,
+        center - 10,
+        16,
+        20,
+      ).shift(origin);
+      Offset? ellipsis;
+      if (line.folded) {
+        final VisualLine last = line.visuals.last;
+        final Offset end = line.painter.getOffsetForCaret(
+          TextPosition(offset: line.source.end - line.paintedFrom),
+          Rect.zero,
+        );
+        ellipsis =
+            Offset(
+              // 字与省略号之间留一个字距，读起来像句尾接着写的。
+              line.gutter + end.dx + 5,
+              // 字形整体被上提了 `lineTextRise`，省略号跟着上提才有同一条基线。
+              line.top + last.top - lineTextRise(line),
+            ) +
+            origin;
+      }
+      handles.add(
+        ListFoldHandle(
+          lineStart: line.source.start,
+          lineEnd: line.source.end,
+          hiddenEnd: layout.lines[fold.lastIndex].end,
+          folded: line.folded,
+          button: button,
+          row: Rect.fromLTRB(
+            button.left,
+            line.top + origin.dy,
+            layout.width + origin.dx,
+            line.bottom + origin.dy,
+          ),
+          ellipsis: ellipsis,
+        ),
+      );
+    }
+    return handles;
+  }
+
+  /// [globalPosition] 落在哪个折叠箭头上；没有则为 `null`。
+  ListFoldHandle? foldHandleAt(Offset globalPosition) {
+    for (final ListFoldHandle handle in foldHandles()) {
+      if (handle.button.contains(globalPosition)) return handle;
+    }
+    return null;
+  }
+
+  /// [globalPosition] 落在哪一条可折叠列表项的横带上。
+  ListFoldHandle? foldRowAt(Offset globalPosition) {
+    for (final ListFoldHandle handle in foldHandles()) {
+      if (handle.row.contains(globalPosition)) return handle;
     }
     return null;
   }

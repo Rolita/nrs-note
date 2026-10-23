@@ -126,6 +126,24 @@ class SourceLine {
   String toString() => 'SourceLine($index, ${kind.name}, $text)';
 }
 
+/// 一个可折叠的列表项：它下面挂着至少一个更深的列表项。
+///
+/// [lastIndex] 是这一项子树最后一行（含）的行号。子树包括更深的列表项、
+/// 它们带缩进的续行和中间的空白行；结尾的空白行不算，否则折起来会在
+/// 下一项之前凭空吃掉一段空行。
+class ListFold {
+  const ListFold({required this.parentIndex, required this.lastIndex});
+
+  /// 列表项所在行号。
+  final int parentIndex;
+
+  /// 子树最后一行（含）的行号。
+  final int lastIndex;
+
+  @override
+  String toString() => 'ListFold($parentIndex..$lastIndex)';
+}
+
 /// 一条视觉行（软换行之后真正画出来的一行）。
 class VisualLine {
   const VisualLine({
@@ -199,8 +217,9 @@ class MarkerSlot {
 
   /// 正文列，也就是整条缩进的宽度。
   ///
-  /// 标记摊进正文后槽位不再占宽，正文直接从行首起排（缩进跟着变成真的空格）。
-  double get width => revealedMarkers ? 0 : indent + marker;
+  /// 标记摊进正文后只让出标记自身的宽度：缩进仍由槽位占着，嵌套项的
+  /// `2. ` 才停在原来的层级上，而不是掉回行首（空格宽和槽位缩进不等宽）。
+  double get width => revealedMarkers ? indent : indent + marker;
 
   /// 每一级导轨的中心 x，供渲染层画嵌套竖线。
   final List<double> railXs;
@@ -341,6 +360,61 @@ List<SourceLine> scanSourceLines(String text) {
     for (int i = 0; i < n; i++) scans[i].toSourceLine(i, starts[i]),
   ];
 }
+
+/// 找出每个带子项列表项的行号与子树范围。
+///
+/// 只有真的挂着更深列表项的行才可折叠——一段缩进续行、一张缩进表格不算
+/// 子节点。子树在遇到同级/更浅的列表项或顶格的非列表行时结束；空行和
+/// 带缩进的续行属于这一项，但结尾的空行不并进来。
+List<ListFold> scanListFolds(List<SourceLine> lines) {
+  final List<ListFold> folds = <ListFold>[];
+  for (int i = 0; i < lines.length; i++) {
+    final SourceLine parent = lines[i];
+    if (!parent.isList) continue;
+
+    int lastChild = -1;
+    int last = i;
+    bool inIndentedFence = false;
+    for (int j = i + 1; j < lines.length; j++) {
+      final SourceLine line = lines[j];
+      if (inIndentedFence) {
+        last = j;
+        if (line.kind == LineBlockKind.fence) inIndentedFence = false;
+        continue;
+      }
+      if (line.text.trim().isEmpty) continue;
+      if (line.kind == LineBlockKind.fence) {
+        if (!_kIndentRe.hasMatch(line.text)) break;
+        inIndentedFence = true;
+        last = j;
+        continue;
+      }
+      if (line.isList) {
+        if (line.nestLevel <= parent.nestLevel) break;
+        lastChild = j;
+        last = j;
+        continue;
+      }
+      if (line.kind == LineBlockKind.code) {
+        // 围栏在 scanSourceLines 里已经成对判定；走到这里说明它属于
+        // 上方某个缩进围栏，跟着父项一起收。
+        last = j;
+        continue;
+      }
+      if (_kIndentRe.hasMatch(line.text)) {
+        last = j;
+        continue;
+      }
+      break;
+    }
+    if (lastChild >= 0) {
+      folds.add(ListFold(parentIndex: i, lastIndex: last));
+    }
+  }
+  return folds;
+}
+
+final RegExp _kIndentRe = RegExp(r'^\s');
 
 /// 一层可变的扫描中间态，最后才冻成 [SourceLine]。
 class _Scan {

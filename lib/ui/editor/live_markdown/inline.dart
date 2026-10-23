@@ -62,6 +62,50 @@ bool _tagLooksValid(String token) {
   return true;
 }
 
+/// 文本开头的 `#标签` 的结束偏移；第一个字符不是会画胶囊的标签时返回 `null`。
+///
+/// 行首标签的胶囊左边没有字形可以借位——底片若按「字形左缘再往外铺」来画，
+/// 就会被渲染对象的左边界裁掉，左边 6px 内边距整个消失。排版层据此给整行让
+/// 出同样的内边距，底片才能从正文列边缘起铺、字退进去。判定与 [_inline] 同一
+/// 个扫描器，两边不会各说各话。
+int? leadingTagEnd(String text) {
+  if (!text.startsWith('#')) return null;
+  final RegExpMatch? m = _inlineRe.firstMatch(text);
+  if (m == null || m.start != 0) return null;
+  final String token = m.group(0)!;
+  if (!token.startsWith('#') || !_tagLooksValid(token)) return null;
+  return m.end;
+}
+
+/// `[[目标]]` / `![[目标]]` 里的链接目标；不是双链或目标为空时返回 `null`。
+///
+/// 渲染、点击命中和跳转都经过这一个入口，三方对「什么才算双链」不会各说各话。
+String? wikilinkTarget(String token) {
+  if (!token.startsWith('[[') && !token.startsWith('![[')) return null;
+  final int open = token.startsWith('!') ? 3 : 2;
+  if (token.length < open + 2) return null;
+  final String inner = token.substring(open, token.length - 2);
+  return inner.trim().isEmpty ? null : inner;
+}
+
+/// 一段文本里的双链：行内区间（含方括号）与链接目标。
+///
+/// 与 [buildLiveInlineSpan] 共用 [_inlineRe]，所以反引号里的 `[[...]]` 不算
+/// 链接——扫描器从头扫，先吃掉了整个代码 span。
+List<({int start, int end, String target})> wikilinkRuns(String text) {
+  if (!text.contains('[[')) {
+    return const <({int start, int end, String target})>[];
+  }
+  final List<({int start, int end, String target})> runs =
+      <({int start, int end, String target})>[];
+  for (final RegExpMatch m in _inlineRe.allMatches(text)) {
+    final String token = m.group(0)!;
+    final String? target = wikilinkTarget(token);
+    if (target != null) runs.add((start: m.start, end: m.end, target: target));
+  }
+  return runs;
+}
+
 List<InlineSpan> _inline(
   String text,
   TextStyle body,
@@ -107,6 +151,8 @@ List<InlineSpan> _inline(
             fill: lit ? p.accent : p.accentSoft,
             radius: kTagRadius,
             padX: kTagPadX,
+            padY: kTagPadY,
+            isCode: false,
           ),
         );
       } else if (ctx.onTagTap == null) {
@@ -224,18 +270,31 @@ List<InlineSpan> _inline(
       );
       spans.add(TextSpan(text: '==', style: mark));
     } else if (token.startsWith('[[') || token.startsWith('![[')) {
-      final bool embed = token.startsWith('!');
-      final String inner = token.substring(embed ? 3 : 2, token.length - 2);
-      if (open ||
-          ctx.plain ||
-          ctx.onWikilinkTap == null ||
-          inner.trim().isEmpty) {
+      final String? target = wikilinkTarget(token);
+      if (open || target == null) {
+        spans.add(TextSpan(text: token, style: _wikiText(style, p)));
+      } else if (ctx.plain) {
+        // 按行排版是一行一个 `TextPainter`，方括号没有 chip 可以收：和普通
+        // 链接一样压成零宽，只留链接目标的下划线；光标落进去时整段源码显形，
+        // 而 `toPlainText()` 仍然逐字符等于源码。
+        final int openLen = token.startsWith('!') ? 3 : 2;
+        spans.add(
+          TextSpan(text: token.substring(0, openLen), style: _collapsed(style)),
+        );
+        spans.add(TextSpan(text: target, style: _wikiText(style, p)));
+        spans.add(
+          TextSpan(
+            text: token.substring(token.length - 2),
+            style: _collapsed(style),
+          ),
+        );
+      } else if (ctx.onWikilinkTap == null) {
         spans.add(TextSpan(text: token, style: _wikiText(style, p)));
       } else {
         spans.add(
-          embed
-              ? _embedChip(p, inner, ctx.onWikilinkTap!)
-              : _wikiChip(p, inner, style, ctx.onWikilinkTap!),
+          token.startsWith('!')
+              ? _embedChip(p, target, ctx.onWikilinkTap!)
+              : _wikiChip(p, target, style, ctx.onWikilinkTap!),
         );
         spans.add(_swallowed(token, body));
       }
@@ -407,6 +466,7 @@ List<LineFillRun> inlineFills(
         fill: run.fill,
         radius: run.radius,
         padX: run.padX,
+        padY: run.padY,
         probe: run.probe,
         style: run.style,
       ),

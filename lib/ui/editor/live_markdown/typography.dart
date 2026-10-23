@@ -65,18 +65,21 @@ const double kCodeBlockInset = 16;
 /// height anything rounder turns a one-character span into a pill.
 const double _kInlineCodeRadius = 3;
 
-/// `#tag` 胶囊的圆角与左右内边距，对齐设计稿 `.tag`：
+/// `#tag` 胶囊的圆角与内边距，对齐设计稿 `.tag`：
 /// `padding: 1px 6px 1px 5px; border-radius: var(--r-sm)`（5px）。
 ///
 /// 标签没有反引号那样的隐藏端帽可用，内边距只能由渲染层把底片向两侧多铺
-/// 一点——多铺的部分会盖到相邻的空格上。
+/// 一点——多铺的部分会盖到相邻的空格上。上下那 1px 同理：底片按字号量出来
+/// 之后再上下各补 [kTagPadY]，行盒高度不受影响。
 const double kTagRadius = 5;
 const double kTagPadX = 6;
+const double kTagPadY = 1;
 
 TextStyle _inlineCode(TextStyle base, AppPalette p, [Color? fill]) =>
-    _inlineCodeSource(base, p).copyWith(
-      backgroundColor: fill ?? p.surfaceSunken,
-    );
+    _inlineCodeSource(
+      base,
+      p,
+    ).copyWith(backgroundColor: fill ?? p.surfaceSunken);
 
 /// The code run while it is being edited: same face and size as the chip, but
 /// no fill — the backticks and the plain background are what say "source".
@@ -139,15 +142,20 @@ TextStyle _struck(TextStyle base) => base.copyWith(
 TextStyle _tagText(TextStyle base, AppPalette p) =>
     base.copyWith(color: p.accent);
 
-/// 标签胶囊里的字：12.5px / w600 / 强调色，对齐设计稿 `.tag`（正文 15px，
+/// 标签胶囊里的字：12.6px / w600 / 强调色，对齐设计稿 `.tag`（正文 15px，
 /// `font-size: 12.5px; font-weight: 600`）。
+///
+/// `height` 取设计稿正文的 1.78（`.tag` 不设自己的行高，继承 `.doc` 的
+/// `line-height: 1.78`）：胶囊的内容盒因此和设计稿一样高 ≈ 22.4px，再叠上
+/// [kTagPadY] 的 1px 上下内边距，整个胶囊 ≈ 24.4px——设计稿量出来是 24.25px。
+/// 这个盒子比正文行盒（28px）矮，撑不破行距。
 ///
 /// [hovered] 时用设计稿 `.tag:hover` 的前景色：`accent` → `on-accent`。
 TextStyle _tagChipText(TextStyle base, AppPalette p, {bool hovered = false}) {
   final double size = (base.fontSize ?? 15).clamp(11.0, 15.0) * 0.84;
   return base.copyWith(
     fontSize: size,
-    height: 1.36,
+    height: 1.78,
     fontWeight: FontWeight.w600,
     letterSpacing: 0,
     color: hovered ? p.onAccent : p.accent,
@@ -210,8 +218,7 @@ TextStyle liveHeadingStyle(TextStyle base, AppPalette p, int level) =>
     _headingStyle(base, p, level);
 
 /// 围栏代码块里一行的排版样式（等宽、小一号）。
-TextStyle liveCodeLineStyle(TextStyle base, AppPalette p) =>
-    _codeLine(base, p);
+TextStyle liveCodeLineStyle(TextStyle base, AppPalette p) => _codeLine(base, p);
 
 /// 折叠行：语法字符不落墨，但仍在文本里占着原来的偏移。
 TextStyle liveCollapsedStyle(TextStyle base) => _collapsed(base);
@@ -227,7 +234,8 @@ TextStyle liveMarkerStyle(
 TextStyle liveInvisibleStyle(TextStyle base) => _invisible(base);
 
 /// 有序列表序号的样式：强调色、半粗、等宽数字。
-TextStyle liveNumberStyle(TextStyle base, AppPalette p) => _numberStyle(base, p);
+TextStyle liveNumberStyle(TextStyle base, AppPalette p) =>
+    _numberStyle(base, p);
 
 /// 已完成任务项的正文：降一档颜色并划掉。
 TextStyle liveTaskDoneStyle(TextStyle base, AppPalette p) =>

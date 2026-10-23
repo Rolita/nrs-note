@@ -7,6 +7,7 @@ import 'package:nrs/core/utils/markdown_actions.dart';
 import 'package:nrs/core/utils/table_model.dart';
 import 'package:nrs/core/utils/table_selection.dart';
 import 'package:nrs/ui/editor/editor_context_menu.dart';
+import 'package:nrs/ui/common/notices.dart';
 import 'package:nrs/ui/editor/line_layout/line_editable_text.dart';
 import 'package:nrs/ui/editor/live_markdown.dart';
 import 'package:nrs/ui/editor/markdown_editor.dart';
@@ -163,13 +164,8 @@ void main() {
     _UndoCase('clear a block of cells', tableClearCells, selection: bodyCells),
     _UndoCase(
       'commit the F2 cell editor',
-      (TextEditingValue v) => setTableCellText(
-        v,
-        tableStart: 0,
-        row: 1,
-        column: 1,
-        text: '42',
-      ),
+      (TextEditingValue v) =>
+          setTableCellText(v, tableStart: 0, row: 1, column: 1, text: '42'),
       selection: TextSelection.collapsed(offset: one),
     ),
     _UndoCase(
@@ -177,17 +173,10 @@ void main() {
       (TextEditingValue v) => pasteValue(v, clipboardTwoByTwo),
       selection: bodyCells,
     ),
-    _UndoCase(
-      'cut a rectangle',
-      (TextEditingValue v) {
-        final TableRange? range = TableRange.fromSelection(
-          v.text,
-          v.selection,
-        );
-        return range == null ? null : tableRangeClear(range);
-      },
-      selection: bodyCells,
-    ),
+    _UndoCase('cut a rectangle', (TextEditingValue v) {
+      final TableRange? range = TableRange.fromSelection(v.text, v.selection);
+      return range == null ? null : tableRangeClear(range);
+    }, selection: bodyCells),
   ];
 
   group('undo matrix', () {
@@ -197,12 +186,7 @@ void main() {
           tester,
           table,
         );
-        await expectOneUndo(
-          tester,
-          controller,
-          c.edit,
-          selection: c.selection,
-        );
+        await expectOneUndo(tester, controller, c.edit, selection: c.selection);
       });
     }
 
@@ -218,9 +202,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 600));
 
       final String before = controller.text;
-      tester.testTextInput.updateEditingValue(
-        replacementFor(controller, 'x'),
-      );
+      tester.testTextInput.updateEditingValue(replacementFor(controller, 'x'));
       await tester.pump(const Duration(milliseconds: 600));
       expect(controller.text, isNot(before));
 
@@ -242,7 +224,8 @@ void main() {
       void typeAt(String ch) {
         final TextSelection sel = controller.selection;
         controller.value = TextEditingValue(
-          text: sel.textBefore(controller.text) +
+          text:
+              sel.textBefore(controller.text) +
               ch +
               sel.textAfter(controller.text),
           selection: TextSelection.collapsed(
@@ -331,7 +314,8 @@ void main() {
       void typeAt(int at, String ch) {
         controller.selection = TextSelection.collapsed(offset: at);
         controller.value = TextEditingValue(
-          text: controller.text.substring(0, at) +
+          text:
+              controller.text.substring(0, at) +
               ch +
               controller.text.substring(at),
           selection: TextSelection.collapsed(offset: at + ch.length),
@@ -406,15 +390,7 @@ void main() {
         tester,
         table,
       );
-      const List<String> marks = <String>[
-        '名称',
-        '乙',
-        '数量',
-        '一',
-        '2',
-        '二',
-        '备注',
-      ];
+      const List<String> marks = <String>['名称', '乙', '数量', '一', '2', '二', '备注'];
       const List<String> typed = <String>['a', 'b', 'c', 'd', 'e', 'f', 'g'];
       final List<String> states = <String>[table];
 
@@ -424,7 +400,8 @@ void main() {
         final int at = controller.text.indexOf(marks[i]) + marks[i].length;
         controller.selection = TextSelection.collapsed(offset: at);
         controller.value = TextEditingValue(
-          text: controller.text.substring(0, at) +
+          text:
+              controller.text.substring(0, at) +
               typed[i] +
               controller.text.substring(at),
           selection: TextSelection.collapsed(offset: at + 1),
@@ -435,11 +412,7 @@ void main() {
 
       for (int i = marks.length - 1; i >= 0; i--) {
         await pressCtrl(tester, LogicalKeyboardKey.keyZ);
-        expect(
-          controller.text,
-          states[i],
-          reason: '第 ${i + 1} 次撤销的正文不对',
-        );
+        expect(controller.text, states[i], reason: '第 ${i + 1} 次撤销的正文不对');
         expect(
           controller.selection.baseOffset,
           states[i].indexOf(marks[i]) + marks[i].length,
@@ -451,18 +424,13 @@ void main() {
       final int held = controller.selection.baseOffset;
       await pressCtrl(tester, LogicalKeyboardKey.keyZ);
       expect(controller.text, table);
-      expect(
-        controller.selection.baseOffset,
-        held,
-        reason: '栈底多按一次撤销不应移动光标',
-      );
+      expect(controller.selection.baseOffset, held, reason: '栈底多按一次撤销不应移动光标');
       await tester.pump(const Duration(seconds: 3));
     });
   });
 
   group('rectangle paste end to end', () {
-    const String host =
-        '| h1 | h2 |\n| --- | --- |\n| a | b |\n| c | d |';
+    const String host = '| h1 | h2 |\n| --- | --- |\n| a | b |\n| c | d |';
 
     late MarkdownSourceController controller;
     String? clipboard;
@@ -664,8 +632,7 @@ void main() {
   });
 
   group('IME over a rectangle', () {
-    const String imeTable =
-        '| a | b |\n| --- | --- |\n| c | d |\n| e | f |';
+    const String imeTable = '| a | b |\n| --- | --- |\n| c | d |\n| e | f |';
 
     testWidgets('composition never breaks the grid, and commits once', (
       WidgetTester tester,
@@ -696,21 +663,15 @@ void main() {
         }
       }
 
-      tester.testTextInput.updateEditingValue(
-        composingFor(controller, 'n'),
-      );
+      tester.testTextInput.updateEditingValue(composingFor(controller, 'n'));
       await tester.pump();
       expectTableShape();
 
-      tester.testTextInput.updateEditingValue(
-        composingFor(controller, 'ni'),
-      );
+      tester.testTextInput.updateEditingValue(composingFor(controller, 'ni'));
       await tester.pump();
       expectTableShape();
 
-      tester.testTextInput.updateEditingValue(
-        replacementFor(controller, '你'),
-      );
+      tester.testTextInput.updateEditingValue(replacementFor(controller, '你'));
       await tester.pump();
       expectTableShape();
 
@@ -737,41 +698,44 @@ void main() {
         '| a \\| b | 换行<br>第二行 | `x \\| y` |\n'
         '| 反斜杠 \\\\ | 尾随 |  |';
 
-    test('copy → paste rebuilds the same grid, byte for byte on the way back', () {
-      final TableBlock block = TableBlock.parse(source, 0)!;
-      final TableRange all = TableRange(
-        block: block,
-        anchorRow: 0,
-        anchorColumn: 0,
-        focusRow: block.bodyRows.length - 1,
-        focusColumn: block.columns - 1,
-      );
-      final List<List<String>> original = TableGrid.fromBlock(block).rows;
+    test(
+      'copy → paste rebuilds the same grid, byte for byte on the way back',
+      () {
+        final TableBlock block = TableBlock.parse(source, 0)!;
+        final TableRange all = TableRange(
+          block: block,
+          anchorRow: 0,
+          anchorColumn: 0,
+          focusRow: block.bodyRows.length - 1,
+          focusColumn: block.columns - 1,
+        );
+        final List<List<String>> original = TableGrid.fromBlock(block).rows;
 
-      final String copied = all.markdown;
-      expect(copied, contains(r'\|'));
-      expect(copied, contains('<br>'));
-      expect(copied, contains(r'`x \| y`'));
+        final String copied = all.markdown;
+        expect(copied, contains(r'\|'));
+        expect(copied, contains('<br>'));
+        expect(copied, contains(r'`x \| y`'));
 
-      final TextEditingValue pasted = pasteValue(
-        const TextEditingValue(
-          text: '',
-          selection: TextSelection.collapsed(offset: 0),
-        ),
-        copied,
-      );
-      final TableBlock again = TableBlock.parse(pasted.text, 0)!;
-      expect(TableGrid.fromBlock(again).rows, original);
+        final TextEditingValue pasted = pasteValue(
+          const TextEditingValue(
+            text: '',
+            selection: TextSelection.collapsed(offset: 0),
+          ),
+          copied,
+        );
+        final TableBlock again = TableBlock.parse(pasted.text, 0)!;
+        expect(TableGrid.fromBlock(again).rows, original);
 
-      final TableRange allAgain = TableRange(
-        block: again,
-        anchorRow: 0,
-        anchorColumn: 0,
-        focusRow: again.bodyRows.length - 1,
-        focusColumn: again.columns - 1,
-      );
-      expect(allAgain.markdown, copied, reason: '再次复制不应重复转义');
-    });
+        final TableRange allAgain = TableRange(
+          block: again,
+          anchorRow: 0,
+          anchorColumn: 0,
+          focusRow: again.bodyRows.length - 1,
+          focusColumn: again.columns - 1,
+        );
+        expect(allAgain.markdown, copied, reason: '再次复制不应重复转义');
+      },
+    );
 
     test('the painted cell keeps the source length and never re-escapes', () {
       const String raw = r'a \| b<br>c';
@@ -809,8 +773,7 @@ void main() {
     });
 
     test('deleting the header promotes the next row and keeps the divider', () {
-      const String text =
-          '| a | b |\n| --- | --- |\n| c | d |\n| e | f |';
+      const String text = '| a | b |\n| --- | --- |\n| c | d |\n| e | f |';
       final TableBlock block = TableBlock.parse(text, 0)!;
       final TableEditResult result = TableCommands.deleteRow(block, 0);
 
@@ -832,10 +795,7 @@ void main() {
       );
 
       expect(block.columns, 1);
-      expect(
-        TableCommands.deleteColumn(block, row: 1, column: 0),
-        isNull,
-      );
+      expect(TableCommands.deleteColumn(block, row: 1, column: 0), isNull);
       expect(tableDeleteColumns(value), isNull);
 
       // The keyboard's structural delete goes through the range, not the menu.
@@ -1051,6 +1011,8 @@ void main() {
       );
       final FocusNode focus = FocusNode();
       addTearDown(focus.dispose);
+      final NoticeController notices = NoticeController();
+      addTearDown(notices.dispose);
       String? clipboard = tsv(501, 2);
 
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -1072,12 +1034,28 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           theme: AppTheme.build(AppPalette.light),
-          home: Scaffold(
-            body: MarkdownEditor(
-              controller: controller,
-              focusNode: focus,
-              scrollController: ScrollController(),
-              fontSize: 15.5,
+          home: NoticeScope(
+            controller: notices,
+            child: Scaffold(
+              body: Stack(
+                children: <Widget>[
+                  MarkdownEditor(
+                    controller: controller,
+                    focusNode: focus,
+                    scrollController: ScrollController(),
+                    fontSize: 15.5,
+                  ),
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: Align(
+                      alignment: Alignment.topCenter,
+                      child: NoticeHost(controller: notices),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -1090,7 +1068,9 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
       await tester.pump();
-      await tester.pumpAndSettle();
+      // The notice has its own countdown, so settle only its entrance instead
+      // of letting `pumpAndSettle` run the whole 8s error window out.
+      await tester.pump(const Duration(milliseconds: 250));
 
       expect(controller.text, before);
       expect(find.textContaining('粘贴内容过大'), findsOneWidget);
@@ -1109,7 +1089,9 @@ void main() {
 
     Future<void> mount(WidgetTester tester) async {
       await pumpEditor(tester, menuTable);
-      state = tester.state<LineEditableTextState>(find.byType(LineEditableText));
+      state = tester.state<LineEditableTextState>(
+        find.byType(LineEditableText),
+      );
     }
 
     Map<String, MenuAction> actionsFor(
@@ -1259,10 +1241,7 @@ void main() {
       await mount(tester);
       final TableRange column = TableRange.columnsOf(block(), 1, 1);
       final Map<String, MenuAction> actions = actionsFor(
-        TextEditingValue(
-          text: menuTable,
-          selection: column.toTextSelection(),
-        ),
+        TextEditingValue(text: menuTable, selection: column.toTextSelection()),
         intended: column,
       );
 
@@ -1285,10 +1264,7 @@ void main() {
       final TableBlock parsed = TableBlock.parse(oneColumn, 0)!;
       final TableRange column = TableRange.columnsOf(parsed, 0, 0);
       final Map<String, MenuAction> actions = actionsFor(
-        TextEditingValue(
-          text: oneColumn,
-          selection: column.toTextSelection(),
-        ),
+        TextEditingValue(text: oneColumn, selection: column.toTextSelection()),
         intended: column,
       );
 
@@ -1390,7 +1366,11 @@ Future<void> expectOneUndo(
   final TextEditingValue after = controller.value;
 
   await pressCtrl(tester, LogicalKeyboardKey.keyZ);
-  expect(controller.text, before.text, reason: 'Ctrl+Z did not restore the table');
+  expect(
+    controller.text,
+    before.text,
+    reason: 'Ctrl+Z did not restore the table',
+  );
   expect(controller.selection.isValid, isTrue);
   expect(
     controller.selection.start,
@@ -1398,7 +1378,11 @@ Future<void> expectOneUndo(
   );
 
   await pressCtrl(tester, LogicalKeyboardKey.keyY);
-  expect(controller.text, after.text, reason: 'Ctrl+Y did not reapply the edit');
+  expect(
+    controller.text,
+    after.text,
+    reason: 'Ctrl+Y did not reapply the edit',
+  );
   expect(controller.selection.isValid, isTrue);
   expect(
     controller.selection.start,
@@ -1439,9 +1423,7 @@ TextEditingValue composingFor(
   final String after = v.text.substring(to);
   return TextEditingValue(
     text: before + preedit + after,
-    selection: TextSelection.collapsed(
-      offset: before.length + preedit.length,
-    ),
+    selection: TextSelection.collapsed(offset: before.length + preedit.length),
     composing: TextRange(
       start: before.length,
       end: before.length + preedit.length,

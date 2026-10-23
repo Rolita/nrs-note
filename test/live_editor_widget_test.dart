@@ -8,11 +8,15 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/core/theme/app_theme.dart';
+import 'package:nrs/core/theme/theme_presets.dart';
+import 'package:nrs/core/utils/table_model.dart';
+import 'package:nrs/core/utils/table_selection.dart';
 import 'package:nrs/data/models/note.dart';
 import 'package:nrs/ui/editor/selection_wash.dart';
 import 'package:nrs/ui/editor/line_layout/line_editable_text.dart';
 import 'package:nrs/ui/editor/line_layout/line_layout_engine.dart';
 import 'package:nrs/ui/editor/line_layout/render_line_editable.dart';
+import 'package:nrs/ui/editor/live_markdown.dart' show kTagPadX;
 import 'package:nrs/ui/editor/markdown_editor.dart';
 
 /// These tests exist because the whole live editor leans on two assumptions that
@@ -31,6 +35,8 @@ void main() {
     WidgetTester tester,
     String text, {
     FocusNode? focusNode,
+    ValueChanged<String>? onWikilinkTap,
+    EdgeInsets padding = EdgeInsets.zero,
   }) async {
     final MarkdownSourceController controller = MarkdownSourceController(
       text: text,
@@ -44,6 +50,8 @@ void main() {
             focusNode: focusNode ?? FocusNode(),
             scrollController: ScrollController(),
             fontSize: 15.5,
+            padding: padding,
+            onWikilinkTap: onWikilinkTap,
           ),
         ),
       ),
@@ -78,6 +86,75 @@ void main() {
     await tester.sendEventToBinding(mouse.hover(Offset.zero));
     await tester.pumpAndSettle();
     expect(fill().fill, AppPalette.light.accentSoft, reason: '移开应恢复');
+  });
+
+  testWidgets('行首标签的胶囊与行中标签同形，左边内边距不被裁掉', (WidgetTester tester) async {
+    const String text = '#欢迎 #欢迎\n正文 #欢迎';
+    final MarkdownSourceController controller = await pump(tester, text);
+    // 光标停在第二行行首：第一行的两枚标签都保持胶囊态，第二行开头的
+    // 正文也不该被让位逻辑误伤。
+    controller.selection = const TextSelection.collapsed(offset: 8);
+    await tester.pumpAndSettle();
+
+    final RenderLineEditable field = tester.allRenderObjects
+        .whereType<RenderLineEditable>()
+        .first;
+    final LineDocumentLayout layout = field.lineLayout!;
+    final LaidOutLine tagLine = layout.laidOut[0];
+    final LaidOutLine plainLine = layout.laidOut[1];
+
+    // 行首标签让出一颗胶囊的左内边距；普通正文行照旧贴着正文列。
+    expect(tagLine.insets.left, kTagPadX);
+    expect(plainLine.insets, EdgeInsets.zero);
+    expect(tagLine.gutter, kTagPadX);
+
+    Rect glyphs(LaidOutLine line, int from, int to) => line.painter
+        .getBoxesForSelection(TextSelection(baseOffset: from, extentOffset: to))
+        .first
+        .toRect();
+
+    final Rect first = glyphs(tagLine, 0, 3);
+    final Rect second = glyphs(tagLine, 4, 7);
+    // 底片按渲染层的同一公式从字形左缘往外铺 kTagPadX。行首那枚的起点正好
+    // 压在正文列边缘（0）——没有被渲染对象裁掉，左边的内边距和中段一样在。
+    final double firstPillLeft = tagLine.gutter + first.left - kTagPadX;
+    final double secondPillLeft = tagLine.gutter + second.left - kTagPadX;
+    expect(firstPillLeft, 0);
+    expect(secondPillLeft, greaterThan(0));
+    expect(
+      tagLine.gutter + first.left - firstPillLeft,
+      kTagPadX,
+      reason: '行首胶囊：字形退进底片 kTagPadX',
+    );
+    expect(
+      tagLine.gutter + second.left - secondPillLeft,
+      kTagPadX,
+      reason: '行中胶囊：字形退进底片 kTagPadX',
+    );
+  });
+
+  testWidgets('点击双链把目标交给宿主，代码里的方括号不算', (WidgetTester tester) async {
+    const String text = '看 [[target]] 和 `[[code]]` 结尾';
+    final List<String> opened = <String>[];
+    await pump(tester, text, onWikilinkTap: opened.add);
+    final RenderLineEditable field = tester.allRenderObjects
+        .whereType<RenderLineEditable>()
+        .first;
+
+    Offset pointIn(int offset) {
+      final Rect local = field.getLocalRectForCaret(
+        TextPosition(offset: offset),
+      );
+      return field.localToGlobal(local.topLeft) + Offset(2, local.height / 2);
+    }
+
+    await tester.tapAt(pointIn(text.indexOf('target') + 2));
+    await tester.pumpAndSettle();
+    expect(opened, <String>['target']);
+
+    await tester.tapAt(pointIn(text.indexOf('[[code]]') + 5));
+    await tester.pumpAndSettle();
+    expect(opened, <String>['target'], reason: '行内代码里的方括号不是链接');
   });
 
   /// Renders [text] into its own [RepaintBoundary] and hands back the pixels, so
@@ -143,6 +220,38 @@ void main() {
     });
     return _Pixels(width, height, bytes, palette);
   }
+
+  testWidgets('行首的标签胶囊与行中的一样宽（底片夹取在画布坐标里做）', (WidgetTester tester) async {
+    final _Pixels px = await shoot(
+      tester,
+      '#欢迎 #欢迎\n正文',
+      const TextSelection.collapsed(offset: 8),
+    );
+
+    // 底片是 accentSoft；按列数出两条实心带，字形叠上去的列像素少，用阈值
+    // 跳过。两枚同字的胶囊必须一样宽——旧实现先在画笔坐标里夹左缘再平移
+    // gutter，行首那段让出来的 6px 会被平移吃掉，第一枚窄一条内边距。
+    final List<(int, int)> runs = <(int, int)>[];
+    int? start;
+    for (int x = 0; x < px.width; x++) {
+      int n = 0;
+      for (int y = 0; y < px.height; y++) {
+        if (px.isColor(AppPalette.light.accentSoft, x, y)) n++;
+      }
+      if (n > 4) {
+        start ??= x;
+      } else if (start != null) {
+        runs.add((start, x - 1));
+        start = null;
+      }
+    }
+    if (start != null) runs.add((start, px.width - 1));
+
+    expect(runs, hasLength(2), reason: '一行里的两枚标签各是一条底片');
+    final int first = runs[0].$2 - runs[0].$1;
+    final int second = runs[1].$2 - runs[1].$1;
+    expect(first, closeTo(second, 1), reason: '行首胶囊不该少一条左边内边距');
+  });
 
   int widgetCount(InlineSpan span) {
     if (span is WidgetSpan) return 1;
@@ -276,6 +385,60 @@ void main() {
     expect(cursor(), SystemMouseCursors.text);
   });
 
+  testWidgets('列表序号左边的页边留白不给输入光标', (WidgetTester tester) async {
+    await pump(
+      tester,
+      '1. 第一项\n正文\n',
+      padding: const EdgeInsets.fromLTRB(40, 0, 40, 0),
+    );
+    final RenderLineEditable field = tester.allRenderObjects
+        .whereType<RenderLineEditable>()
+        .first;
+    final Offset origin = field.localToGlobal(Offset.zero);
+    final double middle = field.lineLayout!.laidOut.first.height / 2;
+    MouseCursor? cursor() => tester
+        .widget<LineEditableText>(find.byKey(const Key('nrs-editor-field')))
+        .mouseCursor;
+    final TestPointer mouse = TestPointer(1, PointerDeviceKind.mouse);
+
+    await tester.sendEventToBinding(mouse.hover(origin + Offset(-20, middle)));
+    await tester.pump();
+    expect(
+      cursor(),
+      SystemMouseCursors.basic,
+      reason: '正文列左边的页边不是编辑区，别提示成输入光标',
+    );
+
+    await tester.sendEventToBinding(mouse.hover(origin + Offset(4, middle)));
+    await tester.pump();
+    expect(cursor(), SystemMouseCursors.text, reason: '序号本身可以点开编辑');
+
+    await tester.sendEventToBinding(mouse.hover(origin + Offset(60, middle)));
+    await tester.pump();
+    expect(cursor(), SystemMouseCursors.text);
+  });
+
+  testWidgets('嵌套列表序号前的缩进也不给输入光标', (WidgetTester tester) async {
+    await pump(tester, '  - 子项\n正文\n');
+    final RenderLineEditable field = tester.allRenderObjects
+        .whereType<RenderLineEditable>()
+        .first;
+    final Offset origin = field.localToGlobal(Offset.zero);
+    final double middle = field.lineLayout!.laidOut.first.height / 2;
+    MouseCursor? cursor() => tester
+        .widget<LineEditableText>(find.byKey(const Key('nrs-editor-field')))
+        .mouseCursor;
+    final TestPointer mouse = TestPointer(1, PointerDeviceKind.mouse);
+
+    await tester.sendEventToBinding(mouse.hover(origin + Offset(8, middle)));
+    await tester.pump();
+    expect(cursor(), SystemMouseCursors.basic, reason: '序号前面的缩进没有字形');
+
+    await tester.sendEventToBinding(mouse.hover(origin + Offset(30, middle)));
+    await tester.pump();
+    expect(cursor(), SystemMouseCursors.text, reason: '圆点所在的标记区可以点开编辑');
+  });
+
   testWidgets('only the painted marker itself opens a list line', (
     WidgetTester tester,
   ) async {
@@ -303,6 +466,134 @@ void main() {
     await tester.tapAt(origin + Offset(number + 60, middle));
     await tester.pump();
     expect(line().slot.revealedMarkers, isFalse);
+  });
+
+  group('列表子树折叠', () {
+    const String text = '- 父\n  1. 子\n  2. 次子\n- 末尾';
+
+    RenderLineEditable fieldOf(WidgetTester tester) =>
+        tester.allRenderObjects.whereType<RenderLineEditable>().first;
+
+    Future<void> collapse(WidgetTester tester) async {
+      final RenderLineEditable field = fieldOf(tester);
+      final TestPointer mouse = TestPointer(1, PointerDeviceKind.mouse);
+      // 展开的箭头只在悬停这一行时显形；先停上去再点。
+      await tester.sendEventToBinding(
+        mouse.hover(field.foldHandles().single.row.center),
+      );
+      await tester.pump();
+      await tester.sendEventToBinding(
+        mouse.down(field.foldHandles().single.button.center),
+      );
+      await tester.sendEventToBinding(mouse.up());
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('点箭头收起子树，再点一次展开', (WidgetTester tester) async {
+      final MarkdownSourceController controller = await pump(
+        tester,
+        text,
+        padding: const EdgeInsets.fromLTRB(40, 0, 40, 0),
+      );
+      controller.selection = const TextSelection.collapsed(offset: 1);
+      await tester.pump();
+      final RenderLineEditable field = fieldOf(tester);
+      final double openHeight = field.lineLayout!.height;
+      final double hiddenRows =
+          field.lineLayout!.laidOut[1].height +
+          field.lineLayout!.laidOut[2].height;
+      expect(field.foldHandles().single.folded, isFalse);
+      expect(field.foldHandles().single.ellipsis, isNull, reason: '展开时不提示省略');
+
+      await collapse(tester);
+      expect(field.foldHandles().single.folded, isTrue);
+      expect(
+        field.foldHandles().single.ellipsis,
+        isNotNull,
+        reason: '收起后行尾接上省略号',
+      );
+      expect(field.lineLayout!.laidOut[1].height, 0);
+      expect(field.lineLayout!.laidOut[2].height, 0);
+      expect(field.lineLayout!.height, closeTo(openHeight - hiddenRows, 0.01));
+      expect(controller.selection.extentOffset, 1, reason: '点箭头不是点正文，光标不动');
+
+      final TestPointer mouse = TestPointer(2, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(
+        mouse.down(field.foldHandles().single.button.center),
+      );
+      await tester.sendEventToBinding(mouse.up());
+      await tester.pumpAndSettle();
+
+      expect(field.foldHandles().single.folded, isFalse);
+      expect(field.foldHandles().single.ellipsis, isNull, reason: '展开后省略号消失');
+      expect(field.lineLayout!.height, closeTo(openHeight, 0.01));
+      expect(controller.selection.extentOffset, 1);
+    });
+
+    testWidgets('悬停折叠箭头给点击光标', (WidgetTester tester) async {
+      await pump(
+        tester,
+        text,
+        padding: const EdgeInsets.fromLTRB(40, 0, 40, 0),
+      );
+      final RenderLineEditable field = fieldOf(tester);
+      final ListFoldHandle handle = field.foldHandles().single;
+      MouseCursor? cursor() => tester
+          .widget<LineEditableText>(find.byKey(const Key('nrs-editor-field')))
+          .mouseCursor;
+      final TestPointer mouse = TestPointer(1, PointerDeviceKind.mouse);
+
+      await tester.sendEventToBinding(mouse.hover(handle.row.center));
+      await tester.pump();
+      expect(cursor(), SystemMouseCursors.text, reason: '行内是正文，照常输入');
+
+      await tester.sendEventToBinding(mouse.hover(handle.button.center));
+      await tester.pump();
+      expect(cursor(), SystemMouseCursors.click, reason: '箭头是一次点击');
+    });
+
+    testWidgets('光标走进收起的子树时自动展开', (WidgetTester tester) async {
+      final MarkdownSourceController controller = await pump(
+        tester,
+        text,
+        padding: const EdgeInsets.fromLTRB(40, 0, 40, 0),
+      );
+      final RenderLineEditable field = fieldOf(tester);
+
+      await collapse(tester);
+      expect(field.foldHandles().single.folded, isTrue);
+
+      controller.selection = TextSelection.collapsed(offset: text.indexOf('子'));
+      await tester.pumpAndSettle();
+
+      expect(
+        field.foldHandles().single.folded,
+        isFalse,
+        reason: '看不见的行不能放光标，宁可把子树展开',
+      );
+    });
+
+    testWidgets('折叠键跟着编辑平移，插入前言也不丢', (WidgetTester tester) async {
+      final MarkdownSourceController controller = await pump(
+        tester,
+        text,
+        padding: const EdgeInsets.fromLTRB(40, 0, 40, 0),
+      );
+      final RenderLineEditable field = fieldOf(tester);
+
+      await collapse(tester);
+      expect(field.foldHandles().single.folded, isTrue);
+
+      controller.value = TextEditingValue(
+        text: '前言\n$text',
+        selection: const TextSelection.collapsed(offset: 0),
+      );
+      await tester.pumpAndSettle();
+
+      final ListFoldHandle handle = field.foldHandles().single;
+      expect(handle.lineStart, '前言\n'.length);
+      expect(handle.folded, isTrue, reason: '折叠键按行首偏移平移，换了上文也还落在同一个列表项上');
+    });
   });
 
   testWidgets('a rule is a line across the column, not three hyphens', (
@@ -599,9 +890,9 @@ void main() {
     LaidOutLine line() => field.lineLayout!.laidOut.single;
     expect(line().slot.revealedMarkers, isFalse);
 
-    // 序号槽位：正文列左边那一段。
+    // 序号槽位：正文列左边那一段。点最左端，光标落在标记起点、直接改序号。
     await tester.tapAt(
-      field.localToGlobal(Offset(line().slot.width / 2, line().top + 8)),
+      field.localToGlobal(Offset(line().slot.indent + 1, line().top + 8)),
     );
     await tester.pumpAndSettle();
 
@@ -640,6 +931,134 @@ void main() {
 
     expect(line().slot.revealedMarkers, isFalse, reason: '点正文不该展开标记');
     expect(line().paintedFrom, line().source.paintStart);
+  });
+
+  /// 嵌套列表的序号摊开后仍要停在原来的层级上：缩进由槽位保留，序号不会被
+  /// 打回行首；光标也落在序号起点，输入直接改序号。
+  testWidgets('点嵌套列表的序号，源码留在自己的缩进上', (WidgetTester tester) async {
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
+    final MarkdownSourceController controller = await pump(
+      tester,
+      '- 父\n  2. [ ] 子',
+      focusNode: focus,
+    );
+    focus.requestFocus();
+    tester.testTextInput.register();
+    await tester.pumpAndSettle();
+
+    final RenderLineEditable field = tester.allRenderObjects
+        .whereType<RenderLineEditable>()
+        .first;
+    LaidOutLine row() => field.lineLayout!.laidOut[1];
+    final double indent = row().slot.indent;
+    expect(indent, greaterThan(0), reason: '第二行是嵌套项');
+
+    await tester.tapAt(field.localToGlobal(Offset(indent + 4, row().top + 8)));
+    await tester.pumpAndSettle();
+
+    final LaidOutLine revealed = row();
+    expect(revealed.slot.revealedMarkers, isTrue);
+    expect(revealed.paintedFrom, revealed.source.markerStart, reason: '缩进不进正文');
+    expect(revealed.gutter, closeTo(indent, 0.01), reason: '序号仍从缩进后起排');
+    expect(
+      controller.selection.extentOffset,
+      revealed.source.markerStart,
+      reason: '光标落在序号起点',
+    );
+
+    final Rect digit = field
+        .getBoxesForSelection(
+          TextSelection(
+            baseOffset: revealed.source.markerStart,
+            extentOffset: revealed.source.markerStart + 1,
+          ),
+        )
+        .first
+        .toRect();
+    expect(digit.left, closeTo(indent, 0.5), reason: '序号字形留在缩进之后');
+    expect(
+      field
+          .getLocalRectForCaret(
+            TextPosition(offset: revealed.source.markerStart),
+          )
+          .left,
+      closeTo(indent, 0.5),
+    );
+  });
+
+  /// 点 `1.` 的中间或右边时，光标落在点中的字间，而不是被拽回标记最左边。
+  testWidgets('点序号的不同位置，光标落在点中的字间', (WidgetTester tester) async {
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
+    final MarkdownSourceController controller = await pump(
+      tester,
+      '1. 甲',
+      focusNode: focus,
+    );
+    focus.requestFocus();
+    await tester.pumpAndSettle();
+
+    final RenderLineEditable field = tester.allRenderObjects
+        .whereType<RenderLineEditable>()
+        .first;
+    LaidOutLine line() => field.lineLayout!.laidOut.single;
+
+    // 先在标记起点点一下摊开源码，量出 `1` 和 `.` 各自结束的 x：槽位宽度
+    // 与摊开后的前缀用同一套字体度量，量一次两边通用。
+    await tester.tapAt(
+      field.localToGlobal(Offset(line().slot.indent + 1, line().top + 8)),
+    );
+    await tester.pumpAndSettle();
+    expect(line().slot.revealedMarkers, isTrue);
+    double endOf(int offset) => field
+        .getBoxesForSelection(
+          TextSelection(baseOffset: 0, extentOffset: offset),
+        )
+        .last
+        .toRect()
+        .right;
+    final double oneEnd = endOf(1);
+    final double dotEnd = endOf(2);
+    expect(dotEnd, greaterThan(oneEnd + 2), reason: '`.` 要有足够的宽度做左右两半');
+
+    // 点正文收起标记，回到槽位里的序号。
+    Future<void> hide() async {
+      final Rect glyph = field
+          .getBoxesForSelection(
+            const TextSelection(baseOffset: 3, extentOffset: 4),
+          )
+          .first
+          .toRect();
+      await tester.tapAt(field.localToGlobal(glyph.center));
+      await tester.pumpAndSettle();
+      expect(line().slot.revealedMarkers, isFalse);
+    }
+
+    await hide();
+
+    // `1` 和 `.` 的中间：落点离「1 之后」这条缝只有 1px，光标应停在那里。
+    await tester.tapAt(field.localToGlobal(Offset(oneEnd + 1, line().top + 8)));
+    await tester.pumpAndSettle();
+    expect(line().slot.revealedMarkers, isTrue);
+    expect(
+      controller.selection.extentOffset,
+      1,
+      reason: '点 1 和 . 的中间，光标落在两者之间',
+    );
+    expect(
+      field.getLocalRectForCaret(const TextPosition(offset: 1)).left,
+      closeTo(oneEnd, 1),
+      reason: '光标画在点中的位置，不在行首',
+    );
+
+    await hide();
+
+    // `.` 的右边：落点离「. 之后」这条缝只有 1px，光标应停在 `.` 之后。
+    await tester.tapAt(field.localToGlobal(Offset(dotEnd + 1, line().top + 8)));
+    await tester.pumpAndSettle();
+    expect(line().slot.revealedMarkers, isTrue);
+    expect(controller.selection.extentOffset, 2, reason: '点 . 的右边，光标落在 . 之后');
   });
 
   /// Pointing at a character and getting a different one back is the bug that
@@ -767,6 +1186,52 @@ void main() {
     }
   });
 
+  testWidgets('从列表正文第一个字拖选，不会把隐藏的标记一起选中', (WidgetTester tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    try {
+      const String body = '1. [x] 任务列表\n';
+      final MarkdownSourceController controller = await pump(tester, body);
+      // 光标停在别处，列表标记保持折叠态 —— 屏幕上只有正文，没有 `1. [x] `。
+      controller.selection = const TextSelection.collapsed(offset: 0);
+      await tester.pump();
+      final RenderLineEditable field = tester.allRenderObjects
+          .whereType<RenderLineEditable>()
+          .first;
+      final SourceLine line = field.lineLayout!.lines.first;
+      final int bodyStart = line.paintStart;
+      expect(body.substring(0, bodyStart), '1. [x] ');
+
+      Rect glyph(int index) => field
+          .getBoxesForSelection(
+            TextSelection(baseOffset: index, extentOffset: index + 1),
+          )
+          .first
+          .toRect()
+          .shift(field.localToGlobal(Offset.zero));
+
+      final TestGesture drag = await tester.startGesture(
+        glyph(bodyStart).centerLeft + const Offset(1, 0),
+      );
+      await tester.pump();
+      await drag.moveTo(glyph(bodyStart + 3).center);
+      await tester.pump();
+      await drag.up();
+      await tester.pumpAndSettle();
+
+      expect(
+        controller.selection.start,
+        bodyStart,
+        reason: '标记在屏幕上没显示，不该跟着正文一起被选中',
+      );
+      expect(
+        controller.selection.textInside(controller.text),
+        isNot(contains('[')),
+      );
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
   /// Continuation has to survive the trip through the real field, not just hold
   /// in the pure rule table (`nrs_test.dart` covers that end): the formatter only
   /// runs when the platform actually delivers a newline to `EditableText`, which
@@ -804,6 +1269,51 @@ void main() {
 
     expect(controller.text, '普通段落\n- 甲\n- \n1. 乙\n');
     expect(controller.selection.baseOffset, caret + 3, reason: '光标应落在新记号之后');
+  });
+
+  /// 空子项上的第二次回车只负责“上一级”：它要退回父级并生成父级记号，而不是
+  /// 把标记删光留一条裸行；这同样是走平台真实送来的 newline，不是直接调规则表。
+  testWidgets('a second Enter on a nested item steps out to its parent', (
+    WidgetTester tester,
+  ) async {
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
+    final MarkdownSourceController controller = await pump(
+      tester,
+      '- 甲\n  - 乙',
+      focusNode: focus,
+    );
+    focus.requestFocus();
+    await tester.pump();
+
+    // Caret at the end of the child line: `- 甲\n  - 乙` is 9 characters.
+    const int caret = 9;
+    controller.selection = const TextSelection.collapsed(offset: caret);
+    await tester.pump();
+
+    // First Enter: a fresh child marker.
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '- 甲\n  - 乙\n',
+        selection: TextSelection.collapsed(offset: caret + 1),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(controller.text, '- 甲\n  - 乙\n  - ');
+    expect(controller.selection.baseOffset, controller.text.length);
+
+    // Second Enter: the empty child steps out. No blank line is left behind.
+    final int empty = controller.text.length;
+    tester.testTextInput.updateEditingValue(
+      TextEditingValue(
+        text: '${controller.text}\n',
+        selection: TextSelection.collapsed(offset: empty + 1),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(controller.text, '- 甲\n  - 乙\n- ');
+    expect(controller.selection.baseOffset, controller.text.length);
   });
 
   /// The empty paper below the last line is part of the editing surface: a
@@ -2258,6 +2768,64 @@ void main() {
     );
   });
 
+  testWidgets('a column selection tints only the chips inside that column', (
+    WidgetTester tester,
+  ) async {
+    // The wash is a rectangle of *cells*, but a chip's fill used to be driven by
+    // the linear source range. Selecting the `就写` column therefore also lit
+    // every `Ctrl + …` chip in the column to its right: those characters sit
+    // between the selection's two ends, so `ctx.selected` called them selected
+    // even though the wash never touched their cells. user:
+    // 「表格我只选中的一列，为什么旁边的代码也被选中了」
+    const String text =
+        '| 想要 | 就写 | 快捷键 |\n'
+        '| --- | --- | --- |\n'
+        '| 加粗 | `**文字**` | `Ctrl + B` |\n'
+        '| 斜体 | `*文字*` | `Ctrl + I` |\n';
+    final TableBlock block = TableBlock.parse(text, 0)!;
+    final _Pixels px = await shoot(
+      tester,
+      text,
+      TableRange.columnsOf(block, 1, 1).toTextSelection(),
+      // The theme in the report: its selection is blue, so a tinted chip cannot
+      // be confused with the neutral wash or with antialiased glyphs.
+      palette: ThemePresets.of(ThemePresetId.midnight).dark,
+    );
+
+    final List<List<int>> bands = px.bandsOf(px.palette.selectionEdge, 40);
+    expect(bands, hasLength(2), reason: '选一列只有上下两条外框');
+    final int top = bands.first.last;
+    final int bottom = bands.last.first;
+    final int left = px.firstOf(px.palette.selectionEdge, top);
+    final int right = px.lastOf(px.palette.selectionEdge, top);
+
+    final Color selectedChip = Color.alphaBlend(
+      px.palette.selection,
+      px.palette.surfaceSunken,
+    );
+
+    int tinted(int x0, int x1) {
+      int n = 0;
+      for (int y = top + 2; y < bottom - 1; y++) {
+        for (int x = x0; x <= x1; x++) {
+          if (px.isColor(selectedChip, x, y, tolerance: 6)) n++;
+        }
+      }
+      return n;
+    }
+
+    expect(
+      tinted(left + 2, right - 2),
+      greaterThan(200),
+      reason: '选中的那一列里的代码胶囊应该带上选区底色',
+    );
+    expect(
+      tinted(right + 2, px.width - 1),
+      lessThan(60),
+      reason: '右边那一列没有选中，里面的代码胶囊不该披上选中色',
+    );
+  });
+
   testWidgets('an inline code band in a cell cannot cover the table border', (
     WidgetTester tester,
   ) async {
@@ -2548,6 +3116,47 @@ void main() {
       visible,
       greaterThan((caret.height / 2).round()),
       reason: '光标被代码块的底色盖住了：${caret.height.round()} 行里只有 $visible 个光标像素',
+    );
+  });
+
+  testWidgets('a quote shows its `>` once the caret enters', (
+    WidgetTester tester,
+  ) async {
+    final MarkdownSourceController controller = await pump(
+      tester,
+      '> 引用\n正文\n',
+    );
+    final RenderLineEditable re = editable(tester) as RenderLineEditable;
+
+    TextSpan? prefix() {
+      TextSpan? found;
+      void walk(InlineSpan span) {
+        if (found != null || span is! TextSpan) return;
+        if (span.text == '> ') {
+          found = span;
+          return;
+        }
+        for (final InlineSpan child in span.children ?? const <InlineSpan>[]) {
+          walk(child);
+        }
+      }
+
+      walk(re.lineLayout!.laidOut.first.painter.text!);
+      return found;
+    }
+
+    expect(prefix()!.style!.color!.a, 0, reason: '未揭示时 `>` 只透明、不缩字');
+
+    controller.selection = const TextSelection.collapsed(offset: 2);
+    controller.repaint();
+    await tester.pumpAndSettle();
+
+    // 行尾前缀只改颜色、不改字体度量，排版缓存曾把这一行当成「没变」，
+    // 光标移进来后复用旧 painter，`>` 就永远不显形。
+    expect(
+      prefix()!.style!.color!.a,
+      greaterThan(0),
+      reason: '光标移进引用行后 `>` 应显形',
     );
   });
 }

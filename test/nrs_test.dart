@@ -36,10 +36,10 @@ void main() {
     });
 
     test('tags are the #标签 typed in the body', () {
-      expect(
-        Note.tagsInBody('# 标题\n\n见 #写作/计划 和 #写作,还有 (入门)\n'),
-        <String>['写作/计划', '写作'],
-      );
+      expect(Note.tagsInBody('# 标题\n\n见 #写作/计划 和 #写作,还有 (入门)\n'), <String>[
+        '写作/计划',
+        '写作',
+      ]);
       // Issues, code blocks and other people's `#`: none of these are tags.
       expect(
         Note.tagsInBody(
@@ -817,7 +817,8 @@ Setext 标题
 
   /// Pressing Enter at the end of a list item has to keep the list going: a new
   /// bullet for a bullet, the *next number* for an ordered item, a fresh empty
-  /// box for a task — and an empty item has to let the user *out*.
+  /// box for a task. An empty item steps *out*: one level to its parent while a
+  /// nested one is open, and off the list entirely at the top.
   ///
   /// The rule table here mirrors `EPUB Reader V7`'s `MarkdownListContinueFormatter`
   /// (the reference the user pointed at), including the detail that a checked
@@ -884,7 +885,7 @@ Setext 标题
       expect(enter('  - [ ] 甲', 9).text, '  - [ ] 甲\n  - [ ] ');
     });
 
-    test('an empty item ends the list instead of nesting deeper', () {
+    test('an empty top-level item ends the list instead of nesting deeper', () {
       // The realistic shape: content above, an empty item under it. Enter there
       // clears the marker out and leaves a plain blank line, so the next thing
       // typed is a paragraph again.
@@ -897,6 +898,116 @@ Setext 标题
         expect(out.text.trim(), isEmpty, reason: empty);
         expect(out.selection.baseOffset, out.text.length, reason: empty);
       }
+    });
+
+    test('an empty nested item steps out to its parent level', () {
+      const String text = '- 甲\n  - 乙\n  - ';
+      final TextEditingValue out = enter(text, text.length);
+      expect(out.text, '- 甲\n  - 乙\n- ');
+      expect(
+        out.selection.baseOffset,
+        out.text.length,
+        reason: 'the caret belongs after the parent-level marker',
+      );
+
+      // One rung at a time: a grandchild steps out to its own parent, not to
+      // the top. The indent is whatever the parent line used.
+      const String deep = '- 甲\n  - 乙\n    - 丙\n    - ';
+      expect(enter(deep, deep.length).text, '- 甲\n  - 乙\n    - 丙\n  - ');
+      const String tabbed = '- 甲\n\t- 乙\n\t- ';
+      expect(enter(tabbed, tabbed.length).text, '- 甲\n\t- 乙\n- ');
+    });
+
+    test('stepping out keeps the kind of item the user was writing', () {
+      const String task = '- [ ] 甲\n  - [x] 乙\n  - [ ] ';
+      expect(enter(task, task.length).text, '- [ ] 甲\n  - [x] 乙\n- [ ] ');
+      // The bullet character is the user's and survives the step out.
+      const String star = '- 甲\n  * 乙\n  * ';
+      expect(enter(star, star.length).text, '- 甲\n  * 乙\n* ');
+    });
+
+    test('stepping out of an ordered child takes the parent next number', () {
+      const String one = '1. 甲\n   1. 乙\n   2. ';
+      expect(enter(one, one.length).text, '1. 甲\n   1. 乙\n2. ');
+
+      // The child's own number counts children, not siblings of its parent.
+      const String three = '1. 甲\n   1. 乙\n   2. 丙\n   3. ';
+      expect(enter(three, three.length).text, '1. 甲\n   1. 乙\n   2. 丙\n2. ');
+
+      const String task = '6. [ ] 事\n   1. [ ] 次\n   2. [ ] ';
+      expect(enter(task, task.length).text, '6. [ ] 事\n   1. [ ] 次\n7. [ ] ');
+    });
+
+    test('stepping out pushes the parent numbers below it down', () {
+      // 出列表不增减行数，但仍然改了列表结构：新父项后面的同级序号必须跟着后移。
+      const String text = '1. 甲\n   1. 子\n   2. \n2. 乙\n3. 丙';
+      final TextEditingValue out = enter(text, text.indexOf('\n2. 乙'));
+      expect(out.text, '1. 甲\n   1. 子\n2. \n3. 乙\n4. 丙');
+      expect(
+        out.selection.baseOffset,
+        '1. 甲\n   1. 子\n2. '.length,
+        reason: 'the caret stays after the new item\'s marker',
+      );
+
+      // The outer list's first number is the user's and survives the renumber.
+      const String fromFifteen = '15. 甲\n    1. 子\n    2. \n16. 乙';
+      final TextEditingValue out2 = enter(
+        fromFifteen,
+        fromFifteen.indexOf('\n16. 乙'),
+      );
+      expect(out2.text, '15. 甲\n    1. 子\n16. \n17. 乙');
+    });
+
+    test('stepping out consumes the Enter instead of leaving a blank line', () {
+      // 空子项出列表的那一下回车只负责“上一级”，不该在下面再留一行空白；
+      // 原本就在下面的内容仍留在下一行。
+      const String text = '- 甲\n  - 乙\n  - \n- 丙';
+      final TextEditingValue out = enter(text, text.indexOf('\n- 丙'));
+      expect(out.text, '- 甲\n  - 乙\n- \n- 丙');
+      expect(out.selection.baseOffset, '- 甲\n  - 乙\n- '.length);
+    });
+
+    test('an indented empty item with no parent above ends the list', () {
+      // Indentation alone does not make a parent: with a paragraph above there
+      // is no level to step out to, so Enter takes the marker away as at the top.
+      const String plain = '正文\n  - ';
+      expect(enter(plain, plain.length).text, '正文\n\n');
+      const String alone = '  - ';
+      final TextEditingValue out = enter(alone, alone.length);
+      expect(out.text.trim(), isEmpty);
+      expect(out.selection.baseOffset, out.text.length);
+    });
+
+    test('a parent cut off by other content starts the sequence over at 1', () {
+      // 父级序号和这个子列表之间隔着正文 / 分割线：退出来的那一条接的是新
+      // 列表，不是上面那串被隔断的序号。
+      const String paragraph = '5. 甲\n6. 乙\n\n正文\n\n   1. 子\n   2. ';
+      expect(
+        enter(paragraph, paragraph.length).text,
+        '5. 甲\n6. 乙\n\n正文\n\n   1. 子\n1. ',
+      );
+
+      const String rule =
+          '5. [ ] 甲\n6. [ ] 乙\n\n---\n\n   1. [ ] 子\n   2. [ ] ';
+      expect(
+        enter(rule, rule.length).text,
+        '5. [ ] 甲\n6. [ ] 乙\n\n---\n\n   1. [ ] 子\n1. [ ] ',
+      );
+
+      // The separator the user writes survives, as it does within one level.
+      const String paren = '5. 甲\n\n正文\n\n   1. 子\n   2) ';
+      expect(enter(paren, paren.length).text, '5. 甲\n\n正文\n\n   1. 子\n1) ');
+    });
+
+    test('a bullet steps out across content without taking a number', () {
+      const String text = '5. 甲\n6. 乙\n\n正文\n\n   - 子\n   - ';
+      expect(enter(text, text.length).text, '5. 甲\n6. 乙\n\n正文\n\n   - 子\n- ');
+    });
+
+    test('blank lines between the levels keep the parent sequence going', () {
+      // 被回车隔开（空行）不算：父级序号照常接续。
+      const String text = '6. 乙\n\n   1. 子\n   2. ';
+      expect(enter(text, text.length).text, '6. 乙\n\n   1. 子\n7. ');
     });
 
     test('an item continues even when more text follows it', () {
@@ -1039,6 +1150,15 @@ Setext 标题
         text.indexOf('\n17.') + 1,
       );
       expect(out.text, '15. [ ] 甲\n16. [ ] 丙');
+    });
+
+    test('stepping an empty child out renumbers the parent list', () {
+      // 真实输入框里的顺序：续行格式化器先出列表，再由重编号器接手。出列表
+      // 不增减行数，所以重编号是续行格式化器自己强制触发的。
+      const String text = '1. 甲\n   1. 子\n   2. \n2. 乙';
+      final TextEditingValue out = enterAt(text, text.indexOf('\n2. 乙'));
+      expect(out.text, '1. 甲\n   1. 子\n2. \n3. 乙');
+      expect(out.selection.baseOffset, '1. 甲\n   1. 子\n2. '.length);
     });
 
     test('a plain ordered list renumbers the same way', () {
@@ -1356,10 +1476,8 @@ Setext 标题
         base: base,
         palette: palette,
         text: () => doc,
-        selection: () => TextSelection(
-          baseOffset: 2,
-          extentOffset: doc.indexOf('加粗') + 2,
-        ),
+        selection: () =>
+            TextSelection(baseOffset: 2, extentOffset: doc.indexOf('加粗') + 2),
       );
       addTearDown(blocks.dispose);
       final LineDocumentLayout layout = layoutLines(
@@ -1643,5 +1761,4 @@ Setext 标题
       expect(v.text, '$sheet\n$block');
     });
   });
-
 }

@@ -8,8 +8,8 @@ import '../../core/theme/app_tokens.dart';
 /// The narrow strip on the far left.
 ///
 /// It holds only what does not fit in the title bar's three regions: the tag
-/// view at the top, and settings pinned to the bottom where it is always in
-/// the same place.
+/// view at the top, and the vault utilities — trash, settings — pinned to the
+/// bottom where they are always in the same place.
 ///
 /// Selection is marked the same way here as in every other column: an
 /// `accentSoft` square with a 2px `accent` bar against its left edge. One
@@ -19,11 +19,13 @@ class AppRail extends StatelessWidget {
     super.key,
     required this.view,
     required this.onSelectView,
+    required this.onOpenTrash,
     required this.onOpenSettings,
   });
 
   final SidebarView view;
   final ValueChanged<SidebarView> onSelectView;
+  final VoidCallback onOpenTrash;
   final VoidCallback onOpenSettings;
 
   @override
@@ -47,6 +49,12 @@ class AppRail extends StatelessWidget {
             onPressed: () => onSelectView(SidebarView.tags),
           ),
           const Spacer(),
+          _RailButton(
+            icon: LucideIcons.trash2,
+            tooltip: '回收站',
+            onPressed: onOpenTrash,
+          ),
+          const SizedBox(height: AppSpace.xs),
           _RailButton(
             icon: LucideIcons.settings,
             tooltip: '设置',

@@ -10,6 +10,7 @@ import '../../core/theme/app_tokens.dart';
 import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/table_model.dart';
 import '../../core/utils/table_selection.dart';
+import '../common/notices.dart';
 import 'line_layout/line_editable_text.dart';
 
 // --------------------------------------------------------------- layout rules
@@ -152,7 +153,12 @@ Future<void> showAppMenu(
               child: _EditorContextMenu(
                 entries: entries,
                 anchor: anchor,
-                onDismiss: () => Navigator.of(routeContext).maybePop(),
+                // `pop` rather than `maybePop`: a row may push its own route
+                // (a dialog, say) in the same tap. `maybePop` yields to
+                // `willPop`'s future and then abandons the pop because the
+                // history's top changed, which would leave this route's
+                // invisible barrier swallowing every click underneath it.
+                onDismiss: () => Navigator.of(routeContext).pop(),
               ),
             );
           },
@@ -608,16 +614,8 @@ List<MenuNode> buildEditorMenu({
             children: <MenuNode>[
               alignRow('默认对齐', LucideIcons.text, TableAlign.none),
               alignRow('左对齐', LucideIcons.alignLeft, TableAlign.left),
-              alignRow(
-                '居中',
-                LucideIcons.alignCenter,
-                TableAlign.center,
-              ),
-              alignRow(
-                '右对齐',
-                LucideIcons.alignRight,
-                TableAlign.right,
-              ),
+              alignRow('居中', LucideIcons.alignCenter, TableAlign.center),
+              alignRow('右对齐', LucideIcons.alignRight, TableAlign.right),
             ],
           ),
           MenuSubmenu(
@@ -819,9 +817,7 @@ Future<void> pasteIntoEditor(
   if (!state.mounted) return;
   final String? refusal = pasteGridRefusal(text);
   if (refusal != null) {
-    ScaffoldMessenger.maybeOf(
-      state.context,
-    )?.showSnackBar(SnackBar(content: Text(refusal)));
+    showSplitNotice(state.context, refusal, kind: NoticeKind.error);
     return;
   }
 
@@ -1163,11 +1159,7 @@ class _MenuInfoRow extends StatelessWidget {
           SizedBox(
             width: 20,
             child: Center(
-              child: Icon(
-                LucideIcons.sigma,
-                size: 13,
-                color: p.textTertiary,
-              ),
+              child: Icon(LucideIcons.sigma, size: 13, color: p.textTertiary),
             ),
           ),
           const SizedBox(width: AppSpace.sm),
@@ -1299,11 +1291,7 @@ class _MenuRowState extends State<_MenuRow> {
               ],
               if (widget.submenu) ...<Widget>[
                 const SizedBox(width: AppSpace.xs + 2),
-                Icon(
-                  LucideIcons.chevronRight,
-                  size: 14,
-                  color: p.textTertiary,
-                ),
+                Icon(LucideIcons.chevronRight, size: 14, color: p.textTertiary),
               ],
               if (widget.checked) ...<Widget>[
                 const SizedBox(width: AppSpace.xs + 2),

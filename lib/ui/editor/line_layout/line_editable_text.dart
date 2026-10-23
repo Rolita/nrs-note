@@ -550,6 +550,7 @@ class LineEditableText extends StatefulWidget {
     this.lineBlockFor,
     this.revealSelection,
     this.markerRevealLine,
+    this.foldedLines = const <int>{},
     this.markerStyle,
   }) : assert(obscuringCharacter.length == 1),
        autocorrect =
@@ -776,6 +777,12 @@ class LineEditableText extends StatefulWidget {
   /// 这一行的 `- ` / `1. ` / `[ ] ` 会摊进正文，成为可以被点到、被改的字符；
   /// 其余行的标记仍由 [markerStyle] 画在槽位里。为 null 时都不摊开。
   final int? markerRevealLine;
+
+  /// 收起的列表项行首偏移集合。
+  ///
+  /// 键是行首偏移而不是行号：编辑让行号漂移，源码偏移在宿主那边可以跟着
+  /// 一次编辑平移；这里只按当前源码扫描出来的折叠项匹配。
+  final Set<int> foldedLines;
 
   /// 列表标记（圆点 / 序号 / 复选框 / 导轨）的绘制样式。
   ///
@@ -6047,6 +6054,7 @@ class LineEditableTextState extends State<LineEditableText>
                                     revealSelection: widget.revealSelection
                                         ?.call(),
                                     markerRevealLine: widget.markerRevealLine,
+                                    foldedLines: widget.foldedLines,
                                     markerStyle: widget.markerStyle,
                                   ),
                                 ),
@@ -6209,6 +6217,7 @@ class _Editable extends MultiChildRenderObjectWidget {
     this.lineBlockFor,
     this.revealSelection,
     this.markerRevealLine,
+    this.foldedLines = const <int>{},
     this.markerStyle,
   }) : selectionHeightStyle =
            selectionHeightStyle ?? LineEditableText.defaultSelectionHeightStyle,
@@ -6270,6 +6279,9 @@ class _Editable extends MultiChildRenderObjectWidget {
   /// 点开了标记的列表行，见 [LineEditableText.markerRevealLine]。
   final int? markerRevealLine;
 
+  /// 收起的列表项行首偏移，见 [LineEditableText.foldedLines]。
+  final Set<int> foldedLines;
+
   @override
   RenderEditable createRenderObject(BuildContext context) {
     return RenderLineEditable(
@@ -6319,6 +6331,7 @@ class _Editable extends MultiChildRenderObjectWidget {
       lineBlockFor: lineBlockFor,
       revealSelection: revealSelection,
       markerRevealLine: markerRevealLine,
+      foldedLines: foldedLines,
       markerStyle: markerStyle,
     );
   }
@@ -6374,6 +6387,7 @@ class _Editable extends MultiChildRenderObjectWidget {
       ..lineBlockFor = lineBlockFor
       ..revealSelection = revealSelection
       ..markerRevealLine = markerRevealLine
+      ..foldedLines = foldedLines
       ..markerStyle = markerStyle
       ..setPromptRectRange(promptRectRange);
   }

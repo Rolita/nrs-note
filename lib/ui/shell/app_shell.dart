@@ -9,11 +9,15 @@ import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../core/utils/markdown_outline.dart';
 import '../../data/models/note.dart';
+import '../../data/storage/note_store.dart';
 import '../../state/notes_controller.dart';
 import '../../state/settings_controller.dart';
 import '../common/app_widgets.dart';
+import '../common/delete_dialog.dart';
+import '../common/notices.dart';
 import '../editor/editor_pane.dart';
 import '../editor/outline_panel.dart';
+import 'data_safety_dialogs.dart';
 import 'function_rail.dart';
 import 'note_list_panel.dart';
 import 'settings_dialog.dart';
@@ -34,6 +38,7 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   final GlobalKey<EditorPaneState> _editorKey = GlobalKey<EditorPaneState>();
   final FocusNode _shellFocus = FocusNode(debugLabel: 'nrs-shell');
+  final NoticeController _notices = NoticeController();
 
   SidebarView _view = SidebarView.files;
   int _cursorLine = 0;
@@ -42,10 +47,14 @@ class _AppShellState extends State<AppShell> {
   @override
   void initState() {
     super.initState();
-    // Prefer the newest note on first paint.
+    // Prefer the newest note on first paint. A restored empty tab strip is a
+    // state the user chose (they closed every tab), not an empty selection to
+    // heal — `tabSessionRestored` keeps this from undoing it.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final NotesController notes = context.read<NotesController>();
-      if (notes.selectedId == null && notes.allNotes.isNotEmpty) {
+      if (notes.selectedId == null &&
+          notes.allNotes.isNotEmpty &&
+          !notes.tabSessionRestored) {
         notes.select(notes.allNotes.first.id);
       }
     });
@@ -57,6 +66,7 @@ class _AppShellState extends State<AppShell> {
   @override
   void dispose() {
     _stopVaultSync?.call();
+    _notices.dispose();
     _shellFocus.dispose();
     super.dispose();
   }
@@ -65,31 +75,23 @@ class _AppShellState extends State<AppShell> {
     if (!mounted) return;
     final String? notice = await context.read<NotesController>().syncFromDisk();
     if (!mounted || notice == null) return;
-    _toast(notice);
+    _toast(notice, kind: NoticeKind.info, detail: '检测到外部修改');
   }
 
-  void _toast(String message, {String? actionLabel, VoidCallback? onAction}) {
-    if (!mounted) return;
-    final AppPalette p = context.palette;
-    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
-    messenger.hideCurrentSnackBar();
-    messenger.showSnackBar(
-      SnackBar(
-        duration: Duration(seconds: onAction == null ? 2 : 6),
-        content: Row(
-          children: <Widget>[
-            Icon(LucideIcons.circleCheck, size: 15, color: p.success),
-            const SizedBox(width: 10),
-            Expanded(child: Text(message)),
-          ],
-        ),
-        action: onAction == null
-            ? null
-            : SnackBarAction(
-                label: actionLabel ?? '撤销',
-                textColor: p.accent,
-                onPressed: onAction,
-              ),
+  void _toast(
+    String message, {
+    NoticeKind kind = NoticeKind.success,
+    String? detail,
+    String? actionLabel,
+    VoidCallback? onAction,
+  }) {
+    _notices.show(
+      NoticeData(
+        message: message,
+        kind: kind,
+        detail: detail,
+        actionLabel: actionLabel,
+        onAction: onAction,
       ),
     );
   }
@@ -111,89 +113,31 @@ class _AppShellState extends State<AppShell> {
   static String _displayTitle(Note note) =>
       note.title.trim().isEmpty ? '未命名笔记' : note.title.trim();
 
-  /// Deletes one note, with a dialog that shows exactly which file disappears.
+  /// Deletes one note, with a dialog that shows exactly which file moves.
   Future<void> _confirmDelete(Note note) async {
-    final AppPalette p = context.palette;
     final NotesController notes = context.read<NotesController>();
     final String title = _displayTitle(note);
-    // Snapshot before the file disappears so "撤销" can rebuild it byte for byte.
-    final String backup = note.toMarkdown();
-    final String fileName = note.fileName;
-    final String folderPath = note.folderPath;
     final String path = note.relativePath;
 
-    final bool? confirmed = await showDialog<bool>(
-      context: context,
-      barrierColor: p.overlay,
-      builder: (BuildContext context) => AlertDialog(
-        title: const Text('删除这篇笔记?'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Text('「$title」将从笔记库中移除。'),
-            const SizedBox(height: AppSpace.md),
-            Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpace.sm + 2,
-                vertical: AppSpace.sm,
-              ),
-              decoration: BoxDecoration(
-                color: p.surfaceSunken,
-                borderRadius: AppRadius.smAll,
-                border: Border.all(color: p.outlineSoft),
-              ),
-              child: Row(
-                children: <Widget>[
-                  Icon(
-                    LucideIcons.fileText,
-                    size: 13,
-                    color: p.textTertiary,
-                  ),
-                  const SizedBox(width: 7),
-                  Expanded(
-                    child: Text(
-                      path,
-                      style: TextStyle(
-                        fontSize: AppText.caption,
-                        fontFamily: AppFonts.mono,
-                        fontFamilyFallback: AppFonts.monoFallback,
-                        color: p.textSecondary,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: p.danger,
-              // A solid `danger` fill cannot assume anything about the palette:
-              // a deep red wants white text, a light salmon wants black. Let the
-              // actual contrast decide instead of the brightness flag.
-              foregroundColor: AppPalette.readableOn(p.danger),
-            ),
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
+    final bool? confirmed = await showDeleteDialog(
+      context,
+      title: '删除这篇笔记？',
+      message: '「$title」将移入回收站，可在左侧功能栏的回收站中恢复。',
+      targets: <DeleteTarget>[DeleteTarget(name: title, meta: path)],
     );
 
     if (confirmed != true) return;
-    await notes.deleteNote(note);
+    final DeleteOutcome outcome = await notes.deleteNotes(<Note>[note]);
+    if (outcome.deleted == 0) return;
     _toast(
-      '已删除「$title」',
+      '已移入回收站',
+      detail: title,
       actionLabel: '撤销',
-      onAction: () =>
-          notes.restoreNote(backup, fileName, folderPath: folderPath),
+      onAction: outcome.receipts.isEmpty
+          ? null
+          : () => notes.restoreTrashEntries(<String>[
+              for (final TrashEntry entry in outcome.receipts) entry.id,
+            ]),
     );
   }
 
@@ -201,111 +145,127 @@ class _AppShellState extends State<AppShell> {
   /// dialog above; several get their titles listed, because a bulk delete is
   /// exactly where "what am I about to lose" needs to be on screen.
   ///
-  /// Every file is snapshotted before it goes, so one 「撤销」 puts the whole
-  /// batch back. A note whose name was taken in the meantime is restored under
-  /// its own ` 2` name rather than overwriting the newer file — that is the
-  /// store's `writeNewMarkdown`, not this dialog's, job.
+  /// Every file moves into the trash, so one 「撤销」 puts the whole batch back.
+  /// A note whose name was taken in the meantime is restored under its own
+  /// ` 2` name rather than overwriting the newer file — that is the store's
+  /// `writeNewMarkdown`, not this dialog's, job.
   Future<void> _confirmDeleteMany(List<Note> targets) async {
     if (targets.isEmpty) return;
     if (targets.length == 1) return _confirmDelete(targets.single);
 
-    final AppPalette p = context.palette;
     final NotesController notes = context.read<NotesController>();
-    final List<DeletedNote> backups = <DeletedNote>[
-      for (final Note note in targets)
-        (
-          raw: note.toMarkdown(),
-          fileName: note.fileName,
-          folderPath: note.folderPath,
-        ),
-    ];
     final List<String> titles = targets.map(_displayTitle).toList();
     const int listed = 5;
 
-    final bool? confirmed = await showDialog<bool>(
-      context: context,
-      barrierColor: p.overlay,
-      builder: (BuildContext context) => AlertDialog(
-        title: Text('删除这 ${targets.length} 篇笔记?'),
-        content: SizedBox(
-          width: 340,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              const Text('连同磁盘上的 .md 文件一起移除。'),
-              const SizedBox(height: AppSpace.md),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: AppSpace.sm + 2,
-                  vertical: AppSpace.sm,
-                ),
-                decoration: BoxDecoration(
-                  color: p.surfaceSunken,
-                  borderRadius: AppRadius.smAll,
-                  border: Border.all(color: p.outlineSoft),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    for (final String title in titles.take(listed))
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 1.5),
-                        child: Text(
-                          title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: AppText.caption,
-                            color: p.textSecondary,
-                          ),
-                        ),
-                      ),
-                    if (titles.length > listed)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 1.5),
-                        child: Text(
-                          '…还有 ${titles.length - listed} 篇',
-                          style: TextStyle(
-                            fontSize: AppText.caption,
-                            color: p.textTertiary,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ],
+    final bool? confirmed = await showDeleteDialog(
+      context,
+      title: '删除这 ${targets.length} 篇笔记？',
+      message: '将移入回收站，可在左侧功能栏的回收站中恢复。',
+      targets: <DeleteTarget>[
+        for (final Note note in targets.take(listed))
+          DeleteTarget(
+            name: _displayTitle(note),
+            meta: note.folderPath.isEmpty ? '根目录' : note.folderPath,
           ),
-        ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: p.danger,
-              // A solid `danger` fill cannot assume anything about the palette:
-              // a deep red wants white text, a light salmon wants black. Let the
-              // actual contrast decide instead of the brightness flag.
-              foregroundColor: AppPalette.readableOn(p.danger),
-            ),
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
+      ],
+      overflowLabel: titles.length > listed
+          ? '…还有 ${titles.length - listed} 篇'
+          : null,
     );
 
     if (confirmed != true) return;
-    await notes.deleteNotes(targets);
+    final DeleteOutcome outcome = await notes.deleteNotes(targets);
+    if (outcome.deleted == 0) return;
+    final bool clean = outcome.failed == 0;
     _toast(
-      '已删除 ${targets.length} 篇笔记',
+      clean ? '已移入回收站' : '${outcome.deleted} 篇移入回收站',
+      detail: clean ? '${outcome.deleted} 篇笔记' : '${outcome.failed} 篇未能删除',
       actionLabel: '撤销',
-      onAction: () => notes.restoreNotes(backups),
+      onAction: outcome.receipts.isEmpty
+          ? null
+          : () => notes.restoreTrashEntries(<String>[
+              for (final TrashEntry entry in outcome.receipts) entry.id,
+            ]),
     );
+  }
+
+  /// Deletes a folder and the notes inside it.
+  ///
+  /// The dialog counts the notes first, because one folder action can take many
+  /// notes at once. The controller then refuses while everything is still in
+  /// place if the folder holds anything the note trash cannot restore; that
+  /// refusal is reported as an error notice rather than a half-done delete.
+  Future<bool> _confirmDeleteFolder(String folderPath) async {
+    final NotesController notes = context.read<NotesController>();
+    final String folder = Note.normalizeFolderPath(folderPath);
+    if (folder.isEmpty) return false;
+    final String name = folder.split('/').last;
+    final int noteCount = notes.allNotes
+        .where(
+          (Note note) =>
+              note.folderPath == folder ||
+              note.folderPath.startsWith('$folder/'),
+        )
+        .length;
+    final int subfolders = notes.folders
+        .where((String path) => path.startsWith('$folder/'))
+        .length;
+
+    final bool? confirmed = await showDeleteDialog(
+      context,
+      title: '删除文件夹「$name」？',
+      message: noteCount == 0
+          ? '文件夹里没有笔记，删除后不会进入回收站。'
+          : '文件夹里的 $noteCount 篇笔记将移入回收站，可在左侧功能栏的回收站中恢复。',
+      targets: <DeleteTarget>[
+        DeleteTarget(
+          name: folder,
+          icon: LucideIcons.folder,
+          monoName: true,
+          meta: subfolders > 0 ? '$subfolders 个子文件夹' : null,
+        ),
+      ],
+      warning: '若里面还有不是笔记的文件，整个删除会被取消。',
+    );
+
+    if (confirmed != true) return false;
+    final FolderDeleteOutcome outcome = await notes.deleteFolder(folder);
+    final bool undoable = outcome.receipts.isNotEmpty;
+    void undo() => notes.restoreTrashEntries(<String>[
+      for (final TrashEntry entry in outcome.receipts) entry.id,
+    ]);
+
+    if (outcome.blocked != null) {
+      _toast('未能删除文件夹「$name」', kind: NoticeKind.error, detail: outcome.blocked);
+      return false;
+    }
+    if (outcome.removed) {
+      if (outcome.deleted == 0) {
+        _toast('已删除空文件夹「$name」');
+        return true;
+      }
+      _toast(
+        '已删除文件夹「$name」',
+        detail: '${outcome.deleted} 篇笔记已移入回收站',
+        actionLabel: undoable ? '撤销' : null,
+        onAction: undoable ? undo : null,
+      );
+      return true;
+    }
+    // The folder stayed. When nothing could be deleted the controller's error
+    // banner already names the note and the reason; otherwise report the split
+    // honestly and still offer to undo the notes that did move.
+    if (outcome.deleted == 0 && outcome.failed > 0) return false;
+    _toast(
+      '文件夹「$name」未删除',
+      kind: NoticeKind.error,
+      detail: outcome.failed > 0
+          ? '${outcome.deleted} 篇已移入回收站,${outcome.failed} 篇失败'
+          : '里面还有别的内容',
+      actionLabel: undoable ? '撤销' : null,
+      onAction: undoable ? undo : null,
+    );
+    return outcome.deleted > 0;
   }
 
   void _createNote() {
@@ -316,7 +276,8 @@ class _AppShellState extends State<AppShell> {
     final NotesController notes = context.read<NotesController>();
     final SettingsController settings = context.read<SettingsController>();
     return <ShortcutActivator, VoidCallback>{
-      const SingleActivator(LogicalKeyboardKey.keyN, control: true): _createNote,
+      const SingleActivator(LogicalKeyboardKey.keyN, control: true):
+          _createNote,
       const SingleActivator(LogicalKeyboardKey.comma, control: true): () =>
           showSettingsDialog(context),
       const SingleActivator(LogicalKeyboardKey.backslash, control: true):
@@ -325,22 +286,26 @@ class _AppShellState extends State<AppShell> {
         LogicalKeyboardKey.keyF,
         control: true,
         shift: true,
-      ): () => settings.focusMode = !settings.focusMode,
+      ): () =>
+          settings.focusMode = !settings.focusMode,
       const SingleActivator(
         LogicalKeyboardKey.keyO,
         control: true,
         shift: true,
-      ): () => settings.outlineVisible = !settings.outlineVisible,
+      ): () =>
+          settings.outlineVisible = !settings.outlineVisible,
       const SingleActivator(
         LogicalKeyboardKey.arrowUp,
         control: true,
         alt: true,
-      ): () => notes.selectAdjacentInList(notes.visibleNotes, -1),
+      ): () =>
+          notes.selectAdjacentInList(notes.visibleNotes, -1),
       const SingleActivator(
         LogicalKeyboardKey.arrowDown,
         control: true,
         alt: true,
-      ): () => notes.selectAdjacentInList(notes.visibleNotes, 1),
+      ): () =>
+          notes.selectAdjacentInList(notes.visibleNotes, 1),
       // Ctrl+Tab walks the open tabs, the way every tabbed app does.
       const SingleActivator(LogicalKeyboardKey.tab, control: true): () =>
           notes.selectAdjacentTab(1),
@@ -348,7 +313,8 @@ class _AppShellState extends State<AppShell> {
         LogicalKeyboardKey.tab,
         control: true,
         shift: true,
-      ): () => notes.selectAdjacentTab(-1),
+      ): () =>
+          notes.selectAdjacentTab(-1),
       const SingleActivator(LogicalKeyboardKey.escape): () {
         if (settings.focusMode) settings.focusMode = false;
       },
@@ -366,114 +332,141 @@ class _AppShellState extends State<AppShell> {
     final SettingsController settings = context.watch<SettingsController>();
     final bool zen = settings.focusMode;
 
-    return CallbackShortcuts(
-      bindings: _globalShortcuts(),
-      child: Focus(
-        focusNode: _shellFocus,
-        autofocus: true,
-        child: Scaffold(
-          backgroundColor: p.canvas,
-          // The title bar aligns its tabs to the editor and its outline button
-          // to the outline, so it has to know where those two seams are — and
-          // they depend on the window width (the outline steps aside in a
-          // narrow window) as well as on both drag handles.
-          body: LayoutBuilder(
-            builder: (BuildContext context, BoxConstraints c) {
-              final bool showOutline =
-                  !zen &&
-                  settings.outlineVisible &&
-                  c.maxWidth >= AppLayout.outlineMinShellWidth;
-              final double leftInset = zen
-                  ? 0
-                  : AppLayout.railWidth +
-                        (settings.sidebarCollapsed
-                            ? 0
-                            : settings.listWidth +
-                                  AppLayout.resizeHandleWidth);
-              // The outline button aligns with the *panel*, not with the drag
-              // handle in front of it, so the handle's width is not counted.
-              final double rightInset = showOutline ? settings.outlineWidth : 0;
-
-              return Column(
-                children: <Widget>[
-                  // The app's own caption: drag to move, double-click to
-                  // maximize, and the three window buttons. It stays in focus
-                  // mode too — without it there would be no way to move the
-                  // window at all.
-                  AppTitleBar(
-                    view: _view,
-                    onSelectView: _selectView,
-                    onToggleSidebar: _toggleSidebar,
-                    onCreateNote: _createNote,
-                    leftInset: leftInset,
-                    rightInset: rightInset,
-                  ),
-                  if (error != null) _ErrorBanner(message: error),
-                  Expanded(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: <Widget>[
-                        // The rail keeps only what has no place in the caption:
-                        // the tag view and settings.
-                        if (!zen)
-                          AppRail(
-                            view: _view,
-                            onSelectView: _selectView,
-                            onOpenSettings: () => showSettingsDialog(context),
+    return NoticeScope(
+      controller: _notices,
+      child: CallbackShortcuts(
+        bindings: _globalShortcuts(),
+        child: Focus(
+          focusNode: _shellFocus,
+          autofocus: true,
+          child: Scaffold(
+            backgroundColor: p.canvas,
+            // The title bar aligns its tabs to the editor and its outline button
+            // to the outline, so it has to know where those two seams are — and
+            // they depend on the window width (the outline steps aside in a
+            // narrow window) as well as on both drag handles.
+            body: LayoutBuilder(
+              builder: (BuildContext context, BoxConstraints c) {
+                final bool showOutline =
+                    !zen &&
+                    settings.outlineVisible &&
+                    c.maxWidth >= AppLayout.outlineMinShellWidth;
+                final double leftInset = zen
+                    ? 0
+                    : AppLayout.railWidth +
+                          (settings.sidebarCollapsed
+                              ? 0
+                              : settings.listWidth +
+                                    AppLayout.resizeHandleWidth);
+                // The outline button aligns with the *panel*, not with the drag
+                // handle in front of it, so the handle's width is not counted.
+                final double rightInset = showOutline
+                    ? settings.outlineWidth
+                    : 0;
+                return Column(
+                  children: <Widget>[
+                    // The app's own caption: drag to move, double-click to
+                    // maximize, and the three window buttons. It stays in focus
+                    // mode too — without it there would be no way to move the
+                    // window at all.
+                    AppTitleBar(
+                      view: _view,
+                      onSelectView: _selectView,
+                      onToggleSidebar: _toggleSidebar,
+                      onCreateNote: _createNote,
+                      leftInset: leftInset,
+                      rightInset: rightInset,
+                    ),
+                    if (error != null) _ErrorBanner(message: error),
+                    Expanded(
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        children: <Widget>[
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: <Widget>[
+                              // The rail keeps only what has no place in the caption:
+                              // the tag view and settings.
+                              if (!zen)
+                                AppRail(
+                                  view: _view,
+                                  onSelectView: _selectView,
+                                  onOpenTrash: () => showTrashDialog(context),
+                                  onOpenSettings: () =>
+                                      showSettingsDialog(context),
+                                ),
+                              // The panes each get a handle on the edge that faces the
+                              // editor, and each handle is carved out of the pane it
+                              // follows, so its hairline lands on the seam and the
+                              // boundary reads the same everywhere.
+                              if (!zen &&
+                                  !settings.sidebarCollapsed) ...<Widget>[
+                                SizedBox(
+                                  width: settings.listWidth,
+                                  child: NoteListPanel(
+                                    view: _view,
+                                    onCreateNote: _createNote,
+                                    onDeleteNotes: _confirmDeleteMany,
+                                    onDeleteFolder: _confirmDeleteFolder,
+                                    onSwitchView: _selectView,
+                                  ),
+                                ),
+                                ResizeHandle(
+                                  background: p.sidebar,
+                                  onDelta: (double d) => settings.listWidth =
+                                      settings.listWidth + d,
+                                ),
+                              ],
+                              Expanded(
+                                child: EditorPane(
+                                  key: _editorKey,
+                                  onDelete: _confirmDelete,
+                                  onOpenSearch: () =>
+                                      _selectView(SidebarView.search),
+                                  onCursorLineChanged: (int line) {
+                                    if (line == _cursorLine) return;
+                                    setState(() => _cursorLine = line);
+                                  },
+                                ),
+                              ),
+                              if (showOutline) ...<Widget>[
+                                // The handle sits left of the outline, so dragging it
+                                // rightwards narrows the column.
+                                ResizeHandle(
+                                  background: p.surface,
+                                  onDelta: (double d) => settings.outlineWidth =
+                                      settings.outlineWidth - d,
+                                ),
+                                _OutlineRegion(
+                                  currentLine: _cursorLine,
+                                  width: settings.outlineWidth,
+                                  onSelect: (int line) => _editorKey
+                                      .currentState
+                                      ?.goToHeading(line),
+                                ),
+                              ],
+                            ],
                           ),
-                        // The panes each get a handle on the edge that faces the
-                        // editor, and each handle is carved out of the pane it
-                        // follows, so its hairline lands on the seam and the
-                        // boundary reads the same everywhere.
-                        if (!zen && !settings.sidebarCollapsed) ...<Widget>[
-                          SizedBox(
-                            width: settings.listWidth,
-                            child: NoteListPanel(
-                              view: _view,
-                              onCreateNote: _createNote,
-                              onDeleteNotes: _confirmDeleteMany,
-                              onSwitchView: _selectView,
+                          // The notice lives in the window's top-right corner,
+                          // where the eye already is after a toolbar action.
+                          // It may overlap the outline; the countdown is short
+                          // and it is the one piece of chrome allowed to float.
+                          Positioned(
+                            top: AppSpace.xs,
+                            left: 10,
+                            right: 10,
+                            child: Align(
+                              alignment: Alignment.topRight,
+                              child: NoticeHost(controller: _notices),
                             ),
                           ),
-                          ResizeHandle(
-                            background: p.sidebar,
-                            onDelta: (double d) =>
-                                settings.listWidth = settings.listWidth + d,
-                          ),
                         ],
-                        Expanded(
-                          child: EditorPane(
-                            key: _editorKey,
-                            onDelete: _confirmDelete,
-                            onOpenSearch: () =>
-                                _selectView(SidebarView.search),
-                            onCursorLineChanged: (int line) {
-                              if (line == _cursorLine) return;
-                              setState(() => _cursorLine = line);
-                            },
-                          ),
-                        ),
-                        if (showOutline) ...<Widget>[
-                          // The handle sits left of the outline, so dragging it
-                          // rightwards narrows the column.
-                          ResizeHandle(
-                            background: p.surface,
-                            onDelta: (double d) =>
-                                settings.outlineWidth = settings.outlineWidth - d,
-                          ),
-                          _OutlineRegion(
-                            currentLine: _cursorLine,
-                            width: settings.outlineWidth,
-                            onSelect: (int line) =>
-                                _editorKey.currentState?.goToHeading(line),
-                          ),
-                        ],
-                      ],
+                      ),
                     ),
-                  ),
-                ],
-              );
-            },
+                  ],
+                );
+              },
+            ),
           ),
         ),
       ),

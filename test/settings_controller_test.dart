@@ -139,6 +139,30 @@ void main() {
     });
   });
 
+  group('标签会话', () {
+    test('没存过 → null，和「标签全关了」的空列表区分开', () async {
+      final (:settings, :prefs) = await load();
+      expect(settings.sessionTabs, isNull);
+      expect(settings.sessionSelectedTab, isNull);
+    });
+
+    test('四个标签和选中的第四个一起往返，空标签栏也原样记住', () async {
+      final (:settings, :prefs) = await load();
+
+      settings.saveSession(<String>['a', 'b', 'c', 'd'], 'd');
+      expect(settings.sessionTabs, <String>['a', 'b', 'c', 'd']);
+      expect(settings.sessionSelectedTab, 'd');
+
+      settings.saveSession(const <String>[], null);
+      expect(settings.sessionTabs, isEmpty);
+      expect(
+        prefs.containsKey('nrs.sessionSelected'),
+        isFalse,
+        reason: '没有选中页就删掉 key，别留个空串冒充选中',
+      );
+    });
+  });
+
   group('restoreTheme', () {
     test('两个 key 一起回滚，一颗残留都不留', () async {
       final (:settings, :prefs) = await load();
