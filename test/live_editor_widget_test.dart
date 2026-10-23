@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nrs/app.dart';
 import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/core/theme/app_theme.dart';
 import 'package:nrs/core/theme/theme_presets.dart';
@@ -63,6 +64,48 @@ void main() {
   /// The render object the framework actually positions carets with.
   RenderEditable editable(WidgetTester tester) =>
       tester.allRenderObjects.whereType<RenderEditable>().first;
+
+  testWidgets('标题框保持主题选区色，透明只给正文', (WidgetTester tester) async {
+    final TextEditingController title = TextEditingController(text: '快速入门');
+    final FocusNode titleFocus = FocusNode();
+    addTearDown(title.dispose);
+    addTearDown(titleFocus.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.build(AppPalette.light),
+        home: Scaffold(
+          body: MarkdownEditor(
+            controller: MarkdownSourceController(text: '正文'),
+            focusNode: FocusNode(),
+            scrollController: ScrollController(),
+            fontSize: 15.5,
+            padding: EdgeInsets.zero,
+            header: TextField(controller: title, focusNode: titleFocus),
+          ),
+        ),
+      ),
+    );
+    titleFocus.requestFocus();
+    await tester.pumpAndSettle();
+
+    final EditableText titleField = tester.widget<EditableText>(
+      find.descendant(
+        of: find.byType(TextField),
+        matching: find.byType(EditableText),
+      ),
+    );
+    expect(
+      titleField.selectionColor,
+      AppPalette.light.selection,
+      reason: '标题的选区高亮必须是可见的',
+    );
+    expect(
+      tester.widget<LineEditableText>(find.byType(LineEditableText))
+          .selectionColor,
+      Colors.transparent,
+      reason: '正文洗色由 EditorSelectionPainter 画',
+    );
+  });
 
   testWidgets('鼠标悬停标签时胶囊变实心，移开恢复', (WidgetTester tester) async {
     const String text = '前 #日常 后';
@@ -1059,6 +1102,92 @@ void main() {
     await tester.pumpAndSettle();
     expect(line().slot.revealedMarkers, isTrue);
     expect(controller.selection.extentOffset, 2, reason: '点 . 的右边，光标落在 . 之后');
+  });
+
+  /// 缩进槽里没有字形：点在那里属于「这一行正文的起点」，不能算点开标记。
+  /// 否则光标会被夹回 `3. ` 的起点，接着输入（含输入法组合）就把文字插进
+  /// 标记前面，`  3. [ ] 子` 变成 `  qie3. [ ] 子`。
+  testWidgets('点嵌套列表的缩进槽，光标落在正文起点而不是标记前面', (
+    WidgetTester tester,
+  ) async {
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
+    const String text = '- 父\n  3. [ ] 子';
+    final MarkdownSourceController controller = await pump(
+      tester,
+      text,
+      focusNode: focus,
+    );
+    focus.requestFocus();
+    tester.testTextInput.register();
+    await tester.pumpAndSettle();
+
+    final RenderLineEditable field = tester.allRenderObjects
+        .whereType<RenderLineEditable>()
+        .first;
+    LaidOutLine row() => field.lineLayout!.laidOut[1];
+    final int paintStart = row().source.paintStart;
+    final double indent = row().slot.indent;
+    expect(indent, greaterThan(4), reason: '第二行是嵌套项，缩进槽应当可点');
+
+    // 缩进槽中点：在标记带的纵向范围内，但完全落在标记字形左边。
+    await tester.tapAt(field.localToGlobal(Offset(indent / 2, row().top + 8)));
+    await tester.pumpAndSettle();
+
+    expect(row().slot.revealedMarkers, isFalse, reason: '点缩进不该摊开标记');
+    expect(
+      controller.selection,
+      TextSelection.collapsed(offset: paintStart),
+      reason: '光标应落在标记之后、正文起点',
+    );
+    expect(paintStart, greaterThan(row().source.markerStart));
+
+    // 模拟输入法还没上屏的组合串：必须接在标记后面，标记留在行首。
+    final int caret = controller.selection.baseOffset;
+    tester.testTextInput.updateEditingValue(
+      TextEditingValue(
+        text: text.replaceRange(caret, caret, 'qie'),
+        selection: TextSelection.collapsed(offset: caret + 3),
+        composing: TextRange(start: caret, end: caret + 3),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(controller.text, '- 父\n  3. [ ] qie子');
+  });
+
+  /// 标记摊开后缩进槽仍是空白：点它等同点正文，光标同样归到正文起点，
+  /// 不能借 revealed 的 `paintedFrom = markerStart` 退回标记之前。
+  testWidgets('标记摊开后点缩进槽，光标也不退回标记起点', (WidgetTester tester) async {
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
+    final MarkdownSourceController controller = await pump(
+      tester,
+      '- 父\n  3. [ ] 子',
+      focusNode: focus,
+    );
+    focus.requestFocus();
+    await tester.pumpAndSettle();
+
+    final RenderLineEditable field = tester.allRenderObjects
+        .whereType<RenderLineEditable>()
+        .first;
+    LaidOutLine row() => field.lineLayout!.laidOut[1];
+    final double indent = row().slot.indent;
+
+    await tester.tapAt(field.localToGlobal(Offset(indent + 4, row().top + 8)));
+    await tester.pumpAndSettle();
+    expect(row().slot.revealedMarkers, isTrue);
+
+    final int paintStart = row().source.paintStart;
+    await tester.tapAt(field.localToGlobal(Offset(indent / 2, row().top + 8)));
+    await tester.pumpAndSettle();
+
+    expect(row().slot.revealedMarkers, isFalse, reason: '点缩进等同点正文，标记收起');
+    expect(
+      controller.selection,
+      TextSelection.collapsed(offset: paintStart),
+      reason: '光标仍落在正文起点，不得回到 markerStart',
+    );
   });
 
   /// Pointing at a character and getting a different one back is the bug that
@@ -2947,6 +3076,21 @@ void main() {
     expect(bandTop, greaterThan(0), reason: '代码色带找不到上沿');
     expect(fill(left, bandTop - 1), isFalse, reason: '圆角没有切出来：色带左上角还是实心的');
     expect(fill(left + 4, bandTop - 1), isTrue, reason: '圆角削掉了端部整整一行，色带的上沿不平');
+
+    // One chip, not three: the zero-size backticks sit on a different baseline
+    // box than the code between them, so grouping boxes by `top` used to flush
+    // three fills with page-colored gaps where the backticks' padding is.
+    int bandBottom = bandY;
+    while (bandBottom + 1 < px.height && fill(left, bandBottom + 1)) {
+      bandBottom++;
+    }
+    for (int y = bandTop + 4; y <= bandBottom - 4; y++) {
+      final int rowLeft = leftAt(y);
+      final int rowRight = rightAt(y);
+      for (int x = rowLeft + 4; x <= rowRight - 4; x++) {
+        expect(px.isSurface(x, y), isFalse, reason: '代码胶囊在 x=$x, y=$y 处被切成两段');
+      }
+    }
   });
 
   testWidgets('inline code in a table cell is a padded, rounded chip', (
@@ -3159,6 +3303,78 @@ void main() {
       reason: '光标移进引用行后 `>` 应显形',
     );
   });
+
+  /// 拖动滚动条是滚动，不是选中文字。
+  ///
+  /// 滚动条画在滚动视图的右缘、输入框外面，按下会先落到编辑器那层裸
+  /// `Listener` 上；没有拦截时它被当成「正文旁的留白」，按下即锚定选区，
+  /// 往下拖就成了选中文字。这里按住条的上端往下拖，选区必须原地不动。
+  testWidgets('dragging the scrollbar scrolls instead of selecting text', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final String text = List<String>.generate(
+      120,
+      (int i) => '第 $i 行正文',
+    ).join('\n');
+    final MarkdownSourceController controller = MarkdownSourceController(
+      text: text,
+    );
+    addTearDown(controller.dispose);
+    final FocusNode focus = FocusNode();
+    addTearDown(focus.dispose);
+    final ScrollController scroll = ScrollController();
+    addTearDown(scroll.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        // 桌面才有滚动条：`MaterialScrollBehavior` 只在 linux / macOS / windows
+        // 上给竖向滚动视图加条，主题里的 platform 就是它读到的那一个。
+        theme: AppTheme.build(
+          AppPalette.light,
+        ).copyWith(platform: TargetPlatform.windows),
+        scrollBehavior: const NrsScrollBehavior(),
+        home: Scaffold(
+          body: MarkdownEditor(
+            controller: controller,
+            focusNode: focus,
+            scrollController: scroll,
+            fontSize: 15.5,
+            padding: EdgeInsets.zero,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    focus.requestFocus();
+    await tester.pump();
+
+    expect(scroll.position.maxScrollExtent, greaterThan(0), reason: '内容要能滚动才有条');
+
+    // 按在视口右缘的滚动条轨道上（8px 条 + 两侧 2px 边距 = 最右 12px），
+    // 往下拖一段：这一段是滚动条的地盘，输入框里的选区不能跟着动。
+    const Offset onBar = Offset(795, 30);
+    controller.selection = const TextSelection.collapsed(offset: 0);
+    await tester.pump();
+
+    final TestGesture drag = await tester.startGesture(
+      onBar,
+      kind: PointerDeviceKind.mouse,
+    );
+    await drag.moveBy(const Offset(0, 140));
+    await tester.pump();
+    await drag.up();
+    await tester.pumpAndSettle();
+
+    expect(
+      controller.selection,
+      const TextSelection.collapsed(offset: 0),
+      reason: '按住滚动条往下拉不该选中任何文字',
+    );
+  });
 }
 
 class _Pixels {
@@ -3174,10 +3390,9 @@ class _Pixels {
   ///
   /// The edge is stroked on the pixel grid, so its own pixels land on the exact
   /// value and need no room at all. A looser window starts reading *ink* as
-  /// edge instead: 石墨素白's accent is a near-black grey (`#2A2A28`) only 15
-  /// levels off `textPrimary` (`#1B1B1A`), and at `tolerance: 24` a row of
-  /// glyphs reached the same pixel count as a real box edge — which is why a
-  /// part-of-a-table selection used to report a phantom band through its middle.
+  /// edge instead: at `tolerance: 24` a row of glyphs reached the same pixel
+  /// count as a real box edge — which is why a part-of-a-table selection used
+  /// to report a phantom band through its middle.
   /// 16 is where the leak starts, so this sits safely below it.
   static const int edgeTolerance = 12;
 

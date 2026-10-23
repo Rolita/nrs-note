@@ -70,7 +70,11 @@ class _ParsedCell {
   final String text;
 
   /// Absolute offset of [text]'s first character.
-  final int offset;
+  ///
+  /// Mutable: a measurement is reused when its table moves because lines were
+  /// inserted or removed above it. Rebinding only shifts the offsets; the
+  /// painted text and every `TextPainter` stay untouched.
+  int offset;
 }
 
 class _RowData {
@@ -82,17 +86,31 @@ class _RowData {
     required this.cells,
   });
 
-  final int line;
-  final int start;
+  /// Source line index. Mutable for the same reason as [_ParsedCell.offset]:
+  /// reusing a table after an edit above it only rebinds lines and offsets.
+  int line;
+  int start;
 
   /// One past the row's last source character (the line break excluded). The
   /// selection uses it to decide whether this row is part of the washed block.
-  final int end;
+  int end;
   final bool header;
   final List<_ParsedCell> cells;
 
   /// Same cells with measured geometry, filled by [_measureTable].
   final List<_CellData> data = <_CellData>[];
+
+  /// Moves this row to a new source line and offset after an edit above it.
+  void rebind({required int line, required int start, required int end}) {
+    final int delta = start - this.start;
+    this.line = line;
+    this.start = start;
+    this.end = end;
+    if (delta == 0) return;
+    for (final _ParsedCell cell in cells) {
+      cell.offset += delta;
+    }
+  }
 }
 
 /// One inline code token in a cell, as range data for the cell painter.

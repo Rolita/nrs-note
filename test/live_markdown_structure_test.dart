@@ -513,15 +513,14 @@ void main() {
     test('引用的竖线恰好占住它藏起来的标记宽度', () {
       const String text = '> 引用\n';
       final SourceLine line = scanSourceLines(text).first;
-      final TextSpan tree =
-          LiveLineStyle(
-                base: base,
-                palette: palette,
-                source: text,
-              ).spanFor(line)
-              as TextSpan;
+      final LiveLineStyle style = LiveLineStyle(
+        base: base,
+        palette: palette,
+        source: text,
+      );
+      final TextSpan tree = style.spanFor(line) as TextSpan;
       final TextSpan prefix = spanWith(tree, '> ')!;
-      expect(prefix.style!.color!.a, 0, reason: '未揭示时前缀只透明、不缩字');
+      expect(prefix.style!.color!.a, 0, reason: '未揭示时前缀不落墨');
 
       double widthOf(TextStyle style) {
         final TextPainter tp = TextPainter(
@@ -533,8 +532,24 @@ void main() {
         return width;
       }
 
-      // 竖线就画在这段空位的中心：正文起点不会因揭示而左右跳。
-      expect(widthOf(prefix.style!), closeTo(widthOf(base), 0.001));
+      // 前缀压成零宽后，它原来的宽度由左内边距顶着：竖线画在这段空位里，
+      // 软换行的续行也从这一列起排，不会退回竖线上。
+      expect(
+        style.insetFor(line).left,
+        closeTo(widthOf(base), 0.001),
+        reason: '未揭示时前缀宽度由内边距顶上',
+      );
+
+      // 光标落进这一行时前缀恢复占宽、内边距收回，正文起点仍是同一列。
+      final LiveLineStyle revealed = LiveLineStyle(
+        base: base,
+        palette: palette,
+        source: text,
+        reveal: () => const TextSelection.collapsed(offset: 2),
+      );
+      expect(revealed.insetFor(line), EdgeInsets.zero);
+      expect(spanWith(revealed.spanFor(line) as TextSpan, '> ')!.style!.color!.a,
+          greaterThan(0));
     });
 
     test('行内代码是一颗带底片的胶囊，编辑时退回源码', () {

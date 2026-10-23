@@ -23,7 +23,7 @@ import 'line_marker_style.dart';
 /// 交给 `layoutLines`，或交给 `LineEditableText` 的 `lineStyleFor` /
 /// `lineHeightFor`。两者都实现了值相等，重建等价的实例不会让渲染层丢掉
 /// 布局缓存。
-class LiveLineStyle {
+class LiveLineStyle implements LineStyleKeyed {
   LiveLineStyle({
     required this.base,
     required this.palette,
@@ -245,10 +245,6 @@ class LiveLineStyle {
           accent: false,
           on: on,
           hover: hover,
-          // 引用的 `>` 未揭示时透明但仍占着 `> ` 的宽度：左侧那条强调色竖线
-          // 就画在这个空位里，正文依旧从竖线右侧起排。压成零宽会让竖线没有
-          // 落脚处，只能压在第一个字上。
-          keepMarkerWidth: true,
         );
       default:
         span = _inlineOrPlain(body, style, at, hover: hover);
@@ -436,6 +432,13 @@ class LiveLineStyle {
   /// 起铺、字退进去；标签被光标摊开成源码时底片不再画，内边距也一起收掉。
   EdgeInsets insetFor(SourceLine line) {
     switch (line.kind) {
+      case LineBlockKind.quote:
+        // 引用行未揭示时 `>` 压成零宽，前缀原来的宽度改由左内边距承担：
+        // 软换行的续行因此与首行正文同列起排，不会退回到竖线上。揭示时
+        // 前缀自己重新占宽、内边距收回，正文起点前后不变，不会左右跳。
+        return _revealed(line)
+            ? EdgeInsets.zero
+            : EdgeInsets.only(left: _quotePrefixWidth(line));
       case LineBlockKind.code:
       case LineBlockKind.fence:
         return const EdgeInsets.symmetric(horizontal: kCodeBlockInset);
@@ -463,6 +466,28 @@ class LiveLineStyle {
     if (sel == null || !sel.isValid || sel.start < 0) return false;
     return sel.end >= line.start && sel.start <= line.start + end;
   }
+
+  /// 引用前缀（`>` 及其缩进）的排版宽度，按前缀文本缓存。
+  ///
+  /// 揭示前后正文的起点必须一致：未揭示时前缀压成零宽、这份宽度由
+  /// [insetFor] 的左内边距顶上；揭示时前缀恢复原宽、内边距收回。
+  double _quotePrefixWidth(SourceLine line) {
+    final String prefix = line.text.substring(
+      line.markerStart - line.start,
+      line.markerEnd - line.start,
+    );
+    return _quoteWidths.putIfAbsent(prefix, () {
+      final TextPainter painter = TextPainter(
+        text: TextSpan(text: prefix, style: styleFor(line)),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      final double width = painter.width;
+      painter.dispose();
+      return width;
+    });
+  }
+
+  final Map<String, double> _quoteWidths = <String, double>{};
 
   /// 固定行高；`null` 表示按测量结果。
   ///
@@ -541,6 +566,18 @@ class LiveLineStyle {
   @override
   int get hashCode =>
       Object.hash(base, palette, reveal, hoverTag, source, markerRevealLine);
+
+  /// 语义键：**不含** [source]。
+  ///
+  /// 编辑一次源码就变，但没被编辑的行排版结果一模一样。渲染层拿它比较
+  /// 新旧解析器：键相同就不丢布局，让编辑走 [relayoutOnEdit] 的行级增量；
+  /// 键不同（换了主题、揭示行、悬停标签）才整体重排。
+  ///
+  /// 这里故意不复用 [==]：那一份把 [source] 也算进去，正是编辑后布局
+  /// 被整体丢弃的根源。
+  @override
+  Object get styleKey =>
+      Object.hash(base, palette, reveal, hoverTag, markerRevealLine);
 }
 
 /// 标题行开头的 `#` 连同它后面的空白。

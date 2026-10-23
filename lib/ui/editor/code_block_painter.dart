@@ -81,6 +81,26 @@ class CodeBlockPainter extends CustomPainter {
   /// for a drag, which is why this is a callback rather than [controller.selection].
   final TextSelection? Function() selection;
 
+  /// 上一次扫描的文本与结果。滚动、光标闪烁会反复重画，而文本没变时围栏块的
+  /// 位置一个字节都不会动——不必每帧把整篇源码再扫一遍。
+  String? _rangesText;
+  List<CodeBlockRange> _ranges = const <CodeBlockRange>[];
+
+  /// 实际执行过全篇围栏扫描的次数，供测试确认滚动期不再扫描。
+  @visibleForTesting
+  static int debugRangeScans = 0;
+
+  List<CodeBlockRange> _rangesOf(String text) {
+    if (_rangesText == text) return _ranges;
+    debugRangeScans++;
+    _rangesText = text;
+    _ranges = codeBlockRanges(text);
+    return _ranges;
+  }
+
+  /// 语言标签的排版结果按标签文本缓存。只在可见块上画，通常 0~2 个。
+  final Map<String, TextPainter> _labels = <String, TextPainter>{};
+
   @override
   void paint(Canvas canvas, Size size) {
     final RenderLineEditable? field = editable();
@@ -88,7 +108,7 @@ class CodeBlockPainter extends CustomPainter {
     if (field == null || box == null) return;
 
     final String text = controller.text;
-    final List<CodeBlockRange> ranges = codeBlockRanges(text);
+    final List<CodeBlockRange> ranges = _rangesOf(text);
     if (ranges.isEmpty) return;
 
     final TextSelection? sel = selection();
@@ -96,6 +116,9 @@ class CodeBlockPainter extends CustomPainter {
 
     final Rect bounds = Offset.zero & size;
     final Paint paint = Paint()..color = fill;
+    final double top = field.visibleDocumentTop;
+    final double bottom = field.visibleDocumentBottom;
+    final Set<String> usedLabels = <String>{};
     canvas.save();
     canvas.clipRect(bounds);
     for (final CodeBlockRange range in ranges) {
@@ -103,6 +126,11 @@ class CodeBlockPainter extends CustomPainter {
       // 不再逐字形求包围盒——那需要把每一行的盒子逐一取回来再并起来。
       final Rect? rows = field.blockRectFor(range.start, range.end);
       if (rows == null) continue;
+      // 视口外的块不用画；块矩形已按布局缓存，这一判据只省绘制与标签。
+      if (rows.bottom < top - kCodeSlabBottomPad ||
+          rows.top > bottom + kCodeSlabTopPad) {
+        continue;
+      }
 
       final Rect local = Rect.fromLTRB(
         0,
@@ -131,10 +159,14 @@ class CodeBlockPainter extends CustomPainter {
           sel.end >= range.start) {
         continue;
       }
-      final TextPainter tp = TextPainter(
-        text: TextSpan(text: label, style: labelStyle),
-        textDirection: TextDirection.ltr,
-      )..layout();
+      usedLabels.add(label);
+      final TextPainter tp = _labels.putIfAbsent(
+        label,
+        () => TextPainter(
+          text: TextSpan(text: label, style: labelStyle),
+          textDirection: TextDirection.ltr,
+        )..layout(),
+      );
       tp.paint(
         canvas,
         Offset(
@@ -142,9 +174,17 @@ class CodeBlockPainter extends CustomPainter {
           slab.top + kCodeSlabLabelTop,
         ),
       );
-      tp.dispose();
     }
     canvas.restore();
+
+    // 这一帧没用上的标签排版结果留着只会越积越多：丢掉并释放。
+    if (_labels.length > usedLabels.length) {
+      _labels.removeWhere((String key, TextPainter tp) {
+        if (usedLabels.contains(key)) return false;
+        tp.dispose();
+        return true;
+      });
+    }
   }
 
   @override

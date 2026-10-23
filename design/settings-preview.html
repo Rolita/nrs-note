@@ -1,0 +1,848 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>设置面板重构 · 4 套方案 · nrs</title>
+<style>
+/* ============================================================
+   画廊页外壳：中性深底，不参与被评审的界面。
+   ============================================================ */
+:root{
+  --pg-bg:#0C0C0F; --pg-card:#141418; --pg-line:#232329; --pg-line2:#2E2E36;
+  --pg-fg:#E7E7EC; --pg-mut:#8A8A94; --pg-dim:#61616B;
+  --font:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","PingFang SC",system-ui,sans-serif;
+  --mono:"Cascadia Code","Cascadia Mono",Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{min-height:100%}
+body{
+  font-family:var(--font);font-size:13px;line-height:1.5;
+  background:var(--pg-bg);color:var(--pg-fg);-webkit-font-smoothing:antialiased;
+}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;padding:0}
+svg{display:block;flex:none}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#33333B;border-radius:6px;border:3px solid transparent;background-clip:content-box}
+
+.wrap{max-width:1460px;margin:0 auto;padding:34px 30px 110px}
+.head h1{font-size:23px;font-weight:650;letter-spacing:-.2px}
+.head p{color:var(--pg-mut);margin-top:7px;max-width:100ch}
+.head p b{color:var(--pg-fg);font-weight:600}
+
+.controls{
+  position:sticky;top:0;z-index:30;margin:22px -30px 28px;padding:12px 30px;
+  background:rgba(12,12,15,.84);backdrop-filter:blur(10px);
+  border-top:1px solid var(--pg-line);border-bottom:1px solid var(--pg-line);
+  display:flex;flex-wrap:wrap;gap:22px;align-items:center;
+}
+.grp{display:flex;align-items:center;gap:7px}
+.grp>.gl{font-size:11px;font-weight:650;letter-spacing:.5px;color:var(--pg-dim);text-transform:uppercase}
+.tg{
+  display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--pg-mut);
+  background:var(--pg-card);border:1px solid var(--pg-line2);border-radius:7px;padding:4px 11px;
+  transition:color .12s,border-color .12s,background .12s;
+}
+.tg:hover{color:var(--pg-fg)}
+.tg[aria-pressed="true"]{color:#fff;background:#23232B;border-color:#4A4A57}
+.tg .sw{width:9px;height:9px;border-radius:50%;flex:none}
+
+.scheme{margin:0 0 56px}
+.scheme-hd{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;margin-bottom:5px}
+.scheme-hd .idx{font-family:var(--mono);font-size:12px;color:var(--pg-dim);border:1px solid var(--pg-line2);border-radius:5px;padding:1px 7px}
+.scheme-hd h2{font-size:18px;font-weight:650;letter-spacing:-.1px}
+.scheme-hd .ref{font-size:12px;color:var(--pg-dim);padding-bottom:2px}
+.scheme-desc{color:var(--pg-mut);max-width:104ch;margin:2px 0 16px}
+.scheme-desc b{color:var(--pg-fg);font-weight:600}
+.stage{display:flex;justify-content:center}
+
+.foot{margin-top:36px;padding-top:20px;border-top:1px solid var(--pg-line);color:var(--pg-dim);font-size:12px;line-height:1.7}
+.foot code{font-family:var(--mono);font-size:11.5px;color:var(--pg-mut)}
+
+/* ============================================================
+   设计令牌：与应用 AppPalette 的 25 个语义令牌一一对应
+   ============================================================ */
+.panel[data-m="light"]{
+  --canvas:#F7F7F5; --sidebar:#F1F1EF; --surface:#FCFCFB; --raised:#FFFFFF;
+  --sunken:#EFEFED; --outline:#DCDCD9; --outline-soft:#E9E9E6; --rule:#D5D5D1;
+  --t1:#1B1B1A; --t2:#5C5C59; --t3:#8C8C88;
+  --accent:#2A2A28; --accent-soft:#E9E9E6; --on-accent:#FFFFFF;
+  --success:#2E8B62; --success-soft:#E3F0E8;
+  --danger:#C0392B; --danger-soft:#FAE7E4;
+  --hover:rgba(20,20,30,.045);
+  --shadow:0 18px 44px rgba(18,18,26,.14),0 2px 8px rgba(18,18,26,.07);
+  --cap-close:#C42B1C;
+}
+.panel[data-m="dark"]{
+  --canvas:#151514; --sidebar:#1A1A19; --surface:#1F1F1E; --raised:#272726;
+  --sunken:#101010; --outline:#2F2F2E; --outline-soft:#242423; --rule:#3A3A38;
+  --t1:#E9E9E6; --t2:#9E9E9A; --t3:#6E6E6A;
+  --accent:#EDEDEA; --accent-soft:#2E2E2C; --on-accent:#141413;
+  --success:#6FC29A; --success-soft:#17281F;
+  --danger:#E5796B; --danger-soft:#2E1A17;
+  --hover:rgba(255,255,255,.06);
+  --shadow:0 18px 44px rgba(0,0,0,.6),0 3px 10px rgba(0,0,0,.4);
+  --cap-close:#C42B1C;
+}
+
+.panel{
+  position:relative;display:flex;flex-direction:column;font-family:var(--font);
+  font-size:13px;line-height:1.45;color:var(--t1);
+  background:var(--surface);border:1px solid var(--outline);border-radius:11px;
+  overflow:hidden;box-shadow:var(--shadow);
+}
+.panel ::-webkit-scrollbar{width:9px}
+.panel ::-webkit-scrollbar-thumb{background:var(--outline);border-radius:6px;border:3px solid transparent;background-clip:content-box}
+
+.ic{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.i-sm{width:14px;height:14px}
+.i-lg{width:18px;height:18px}
+.sp{flex:1;min-width:0}
+.mono{font-family:var(--mono)}
+
+/* ---------------- 通用控件 ---------------- */
+.p-title{font-size:17px;font-weight:650;letter-spacing:-.25px;color:var(--t1)}
+.p-sub{font-size:11.5px;color:var(--t3)}
+.ibtn{
+  width:28px;height:28px;display:grid;place-items:center;border-radius:6px;
+  color:var(--t3);transition:background .12s,color .12s;
+}
+.ibtn:hover{background:var(--hover);color:var(--t1)}
+.ibtn-sm{width:24px;height:24px;display:grid;place-items:center;border-radius:5px;color:var(--t3);transition:background .12s,color .12s;flex:none}
+.ibtn-sm:hover{background:var(--danger-soft);color:var(--danger)}
+
+.row{display:flex;align-items:center;gap:16px;padding:9px 0}
+.row-t{flex:1;min-width:0}
+.row-l{font-size:13px;font-weight:500;color:var(--t1)}
+.row-h{font-size:11.5px;line-height:1.5;color:var(--t3);margin-top:1px}
+.row-c{flex:none;display:flex;align-items:center;gap:6px}
+.row-stack{flex-direction:column;align-items:stretch;gap:8px}
+.row-stack .row-c{width:100%}
+
+.swrow{display:inline-flex;align-items:center;gap:7px}
+.sw-txt{font-size:11.5px;color:var(--t3)}
+.sw{
+  width:34px;height:18px;border-radius:9px;background:var(--sunken);
+  border:1px solid var(--outline);position:relative;display:inline-block;flex:none;
+  transition:background .16s,border-color .16s;
+}
+.sw-k{
+  position:absolute;left:2px;top:2px;width:12px;height:12px;border-radius:50%;
+  background:var(--t3);transition:left .16s,background .16s;
+}
+.sw.on{background:var(--accent);border-color:var(--accent)}
+.sw.on .sw-k{left:17px;background:var(--on-accent)}
+
+.seg{display:inline-flex;padding:2px;gap:1px;background:var(--sunken);border:1px solid var(--outline-soft);border-radius:7px}
+.segb{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 9px;border-radius:5px;font-size:12px;font-weight:500;color:var(--t2);transition:background .12s,color .12s;cursor:pointer;white-space:nowrap}
+.segb:hover{color:var(--t1)}
+.segb.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+
+.fld{
+  display:flex;align-items:center;gap:6px;height:30px;padding:0 8px;min-width:0;
+  background:var(--raised);border:1px solid var(--outline);border-radius:5px;
+  font-size:12.5px;color:var(--t1);
+}
+.fld-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fld-grow{width:100%}
+.fld .mono{font-size:11.5px}
+
+.sl-wrap{flex:1;display:flex;align-items:center;gap:10px;min-width:0}
+.sl{flex:1;height:18px;display:flex;align-items:center;position:relative;min-width:60px}
+.sl-t{position:relative;width:100%;height:3px;border-radius:2px;background:var(--sunken)}
+.sl-f{position:absolute;left:0;top:0;height:3px;border-radius:2px;background:var(--accent)}
+.sl-k{position:absolute;top:1.5px;width:12px;height:12px;border-radius:50%;background:var(--accent);transform:translate(-50%,-50%);top:50%}
+.sl-v{flex:none;width:46px;text-align:right;font-family:var(--mono);font-size:11.5px;color:var(--t3)}
+
+.tbtn{
+  display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 8px;border-radius:6px;
+  font-size:12px;font-weight:500;color:var(--t2);transition:background .12s,color .12s;
+}
+.tbtn:hover{background:var(--raised);color:var(--t1)}
+
+/* 配色方案小卡 */
+.boards{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:9px 0 13px}
+.boards.two{grid-template-columns:1fr 1fr}
+.board{position:relative;border:1px solid var(--outline);border-radius:8px;overflow:hidden;background:var(--raised);cursor:pointer;transition:border-color .12s,box-shadow .12s}
+.board:hover{border-color:var(--t3)}
+.board.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.bm{height:46px;display:flex}
+.bm-side{width:31%;padding:6px 5px;display:flex;flex-direction:column;gap:3.5px}
+.bm-side i{display:block;height:3px;border-radius:2px}
+.bm-doc{flex:1;padding:7px 6px;display:flex;flex-direction:column;gap:4px}
+.bm-doc b{display:block;height:3px;border-radius:2px;width:100%}
+.board-name{display:flex;align-items:center;gap:4px;padding:5px 8px;border-top:1px solid var(--outline-soft);font-size:11.5px;color:var(--t2);white-space:nowrap;overflow:hidden}
+.board.on .board-name{color:var(--t1);font-weight:600}
+.board-name .ic{width:12px;height:12px;color:var(--accent);flex:none}
+.board-pen{position:absolute;right:3px;top:3px;width:18px;height:18px;display:grid;place-items:center;border-radius:4px;background:var(--raised);border:1px solid var(--outline-soft);color:var(--t2)}
+.board-pen .ic{width:10px;height:10px}
+
+/* 笔记库 */
+.path{background:var(--sunken);border:1px solid var(--outline-soft);border-radius:7px;padding:10px 11px;margin:8px 0 2px}
+.path-top{display:flex;align-items:flex-start;gap:8px;font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--t2);word-break:break-all}
+.path-top .ic{color:var(--t3);margin-top:1px}
+.path-meta{display:flex;align-items:center;gap:6px;margin-top:9px;font-size:11.5px;color:var(--t3)}
+.path-note{font-size:11px;line-height:1.55;color:var(--t3);margin-top:8px}
+
+/* 模板规则 */
+.rules{padding:2px 0 2px}
+.rules-h{font-size:11.5px;line-height:1.55;color:var(--t3);padding:2px 0 8px}
+.rule{display:flex;align-items:center;gap:6px;padding:3px 0}
+.rule .fld{flex:1}
+.rule .mid{color:var(--t3)}
+.addrow{display:flex;align-items:center;gap:6px;padding:7px 0 0;font-size:12px;font-weight:500;color:var(--t2);cursor:pointer}
+.addrow:hover{color:var(--t1)}
+
+/* 关于 */
+.about{display:flex;align-items:center;gap:12px;padding:4px 0}
+.logo{
+  width:36px;height:36px;flex:none;display:grid;place-items:center;border-radius:7px;
+  background:var(--accent-soft);border:1px solid var(--outline);
+  font-size:18px;font-weight:700;color:var(--accent);
+}
+.about-t{font-size:13px;font-weight:600;color:var(--t1)}
+.about-s{font-size:11.5px;color:var(--t3);margin-top:1px}
+
+/* 快捷键 */
+.sc{display:flex;align-items:center;gap:12px;padding:4px 0}
+.kbd{
+  flex:none;min-width:118px;padding:2px 6px;text-align:left;font-family:var(--mono);font-size:11px;
+  font-weight:600;color:var(--t2);background:var(--sunken);border:1px solid var(--outline-soft);border-radius:3px;
+}
+.sc-l{font-size:12px;color:var(--t2)}
+.sc-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 30px}
+
+/* ============================================================
+   方案 A · 侧栏导航 + 连续长页（对话框 780×588）
+   ============================================================ */
+.panel.a{width:780px;height:588px}
+.a .ph{display:flex;align-items:center;gap:10px;height:50px;flex:none;padding:0 12px 0 18px;border-bottom:1px solid var(--outline-soft)}
+.a-body{flex:1;display:flex;min-height:0}
+.a-nav{width:186px;flex:none;display:flex;flex-direction:column;padding:10px 8px 10px;background:var(--canvas);border-right:1px solid var(--outline-soft)}
+.a-search{
+  display:flex;align-items:center;gap:6px;height:28px;padding:0 7px;margin:0 3px 9px;
+  background:var(--raised);border:1px solid var(--outline);border-radius:6px;
+  font-size:12px;color:var(--t3);
+}
+.a-search .kbd-s{font-family:var(--mono);font-size:10px;color:var(--t3);border:1px solid var(--outline-soft);border-radius:3px;padding:0 4px}
+.nav-i{
+  position:relative;display:flex;align-items:center;gap:9px;height:30px;padding:0 9px;border-radius:6px;
+  font-size:12.5px;color:var(--t2);cursor:pointer;transition:background .12s,color .12s;
+}
+.nav-i:hover{background:var(--hover);color:var(--t1)}
+.nav-i.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.nav-i.on::before{content:"";position:absolute;left:-8px;top:50%;transform:translateY(-50%);width:2px;height:15px;border-radius:0 2px 2px 0;background:var(--accent)}
+.a-note{display:flex;align-items:center;gap:5px;padding:2px 9px;font-size:11px;color:var(--t3)}
+.a-note .ic{width:12px;height:12px;color:var(--success)}
+.a-main{flex:1;min-width:0;overflow-y:auto;padding:16px 22px 30px}
+.a-sec{margin-bottom:24px}
+.a-sec-t{font-size:15px;font-weight:650;letter-spacing:-.15px;color:var(--t1)}
+.a-sec-d{font-size:11.5px;line-height:1.55;color:var(--t3);margin:2px 0 4px;max-width:62ch}
+.a-main .row{border-bottom:1px solid var(--outline-soft)}
+.a-main .row:last-child{border-bottom:0}
+.a-main .row-stack{border-bottom:1px solid var(--outline-soft)}
+
+/* ============================================================
+   方案 B · 顶部标签 + 卡片矩阵（对话框 840×620）
+   ============================================================ */
+.panel.b{width:840px;height:620px}
+.b .ph{display:flex;align-items:center;gap:14px;height:52px;flex:none;padding:0 12px 0 18px;border-bottom:1px solid var(--outline-soft)}
+.b-tabs{display:flex;align-items:center;gap:2px;height:100%;overflow:hidden}
+.b-tab{
+  position:relative;display:flex;align-items:center;gap:6px;height:100%;padding:0 10px;
+  font-size:12.5px;color:var(--t2);cursor:pointer;transition:color .12s;
+}
+.b-tab .ic{width:14px;height:14px;color:var(--t3)}
+.b-tab:hover{color:var(--t1)}
+.b-tab.on{color:var(--accent);font-weight:600}
+.b-tab.on .ic{color:var(--accent)}
+.b-tab.on::after{content:"";position:absolute;left:8px;right:8px;bottom:-1px;height:2px;border-radius:2px 2px 0 0;background:var(--accent)}
+.b-body{flex:1;min-height:0;overflow-y:auto;background:var(--canvas)}
+.b-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:16px 18px 28px;align-items:start}
+.card{background:var(--raised);border:1px solid var(--outline-soft);border-radius:9px;padding:13px 14px 10px}
+.card.wide{grid-column:1 / -1}
+.card-h{display:flex;align-items:center;gap:7px;font-size:11px;font-weight:650;letter-spacing:.5px;text-transform:uppercase;color:var(--t3);padding-bottom:2px}
+.card-h .ic{width:13px;height:13px;color:var(--t3)}
+.b-grid .row{padding:8px 0;border-bottom:1px solid var(--outline-soft)}
+.b-grid .row:last-child{border-bottom:0}
+.b-grid .row-stack{border-bottom:1px solid var(--outline-soft)}
+.b-grid .boards{padding:8px 0 11px}
+.card .path{margin:7px 0 2px}
+.card .rules-h{font-size:11px}
+.card .about{padding:6px 0 2px}
+.card .sc{padding:3.5px 0}
+.card .kbd{min-width:108px}
+
+/* ============================================================
+   方案 C · 全窗口设置（应用窗口 1000×640）
+   ============================================================ */
+.panel.c{width:1000px;height:640px;border-radius:11px}
+.c-title{display:flex;align-items:center;height:36px;flex:none;background:var(--canvas);border-bottom:1px solid var(--outline-soft);padding:0 0 0 14px}
+.c-mark{display:flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600;color:var(--t2)}
+.c-mark i{width:9px;height:9px;border-radius:2px;background:var(--accent);display:block}
+.c-cap{display:flex;height:100%;margin-left:auto}
+.c-cap b{width:42px;height:100%;display:grid;place-items:center;color:var(--t2);font-weight:400}
+.c-cap b svg{width:10px;height:10px;stroke:currentColor;fill:none;stroke-width:1.1}
+.c-cap b:hover{background:var(--hover);color:var(--t1)}
+.c-cap b.cl:hover{background:var(--cap-close);color:#fff}
+.c-body{flex:1;display:flex;min-height:0}
+.c-nav{width:232px;flex:none;display:flex;flex-direction:column;padding:20px 12px 14px;background:var(--canvas)}
+.c-nav-t{font-size:19px;font-weight:650;letter-spacing:-.3px;color:var(--t1);padding:0 10px 12px}
+.c-search{display:flex;align-items:center;gap:6px;height:30px;padding:0 8px;margin:0 4px 12px;background:var(--raised);border:1px solid var(--outline);border-radius:6px;font-size:12px;color:var(--t3)}
+.c-nav .nav-i{height:32px;padding:0 10px;font-size:13px}
+.c-nav .nav-i.on::before{left:-12px}
+.c-done{
+  height:32px;margin:12px 4px 8px;border-radius:7px;background:var(--accent);color:var(--on-accent);
+  font-size:13px;font-weight:600;display:grid;place-items:center;transition:opacity .12s;
+}
+.c-done:hover{opacity:.86}
+.c-nav-f{text-align:center;font-size:10.5px;color:var(--t3)}
+.c-main{flex:1;min-width:0;overflow-y:auto;background:var(--surface)}
+.c-inner{max-width:660px;padding:30px 44px 48px}
+.c-sec{margin-bottom:30px}
+.c-sec-t{font-size:19px;font-weight:650;letter-spacing:-.3px;color:var(--t1)}
+.c-sec-d{font-size:12px;line-height:1.6;color:var(--t3);margin:3px 0 8px;max-width:62ch}
+.c-rule{height:1px;background:var(--rule);margin:10px 0 2px}
+.c-inner .row{padding:13px 0;border-bottom:1px solid var(--outline-soft)}
+.c-inner .row:last-child{border-bottom:0}
+.c-inner .row-stack{border-bottom:1px solid var(--outline-soft);padding-bottom:15px}
+.c-inner .row-l{font-size:13.5px}
+.c-inner .row-h{font-size:12px}
+.c-inner .boards{max-width:520px}
+.c-inner .path{padding:12px 13px}
+
+/* ============================================================
+   方案 D · 抽屉 + 实时预览（对话框 920×600）
+   ============================================================ */
+.panel.d{width:920px;height:600px}
+.d .ph{display:flex;align-items:center;gap:10px;height:50px;flex:none;padding:0 12px 0 18px;border-bottom:1px solid var(--outline-soft)}
+.d-body{flex:1;display:flex;min-height:0}
+.d-list{width:486px;flex:none;overflow-y:auto;padding:8px 18px 22px;background:var(--surface)}
+.acc{border-bottom:1px solid var(--outline-soft)}
+.acc:last-child{border-bottom:0}
+.acc-h{display:flex;align-items:center;gap:8px;height:40px;cursor:pointer;color:var(--t2);font-size:13px}
+.acc-h:hover{color:var(--t1)}
+.acc-h .chev{color:var(--t3);margin-right:-2px}
+.acc-h .ic{color:var(--t3)}
+.acc-t{font-weight:600;color:var(--t1);font-size:13px}
+.acc-s{margin-left:auto;font-size:11px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.acc-body{padding:0 2px 12px}
+.acc-body .row{padding:8px 0;border-bottom:1px solid var(--outline-soft)}
+.acc-body .row:last-child{border-bottom:0}
+.acc-body .row-stack{border-bottom:1px solid var(--outline-soft)}
+.acc-body .boards{padding:8px 0 11px}
+.d-prev{flex:1;min-width:0;display:flex;flex-direction:column;gap:10px;padding:14px 16px 18px;background:var(--sidebar);border-left:1px solid var(--outline-soft);overflow-y:auto}
+.pv-h{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:650;letter-spacing:.5px;text-transform:uppercase;color:var(--t3)}
+.pv-win{
+  border:1px solid var(--outline);border-radius:8px;overflow:hidden;background:var(--canvas);
+  box-shadow:0 8px 20px rgba(0,0,0,.14);flex:none;
+}
+.pv-tb{height:22px;display:flex;align-items:flex-end;gap:3px;padding:0 6px;border-bottom:1px solid var(--outline-soft);background:var(--canvas)}
+.pv-tb i{display:block;height:12px;border-radius:3px 3px 0 0;width:52px;background:var(--surface)}
+.pv-tb i+i{width:38px;background:transparent}
+.pv-tb b{width:7px;height:7px;border-radius:50%;background:var(--outline);margin-left:auto;margin-bottom:7px}
+.pv-body{display:flex;height:158px}
+.pv-side{width:88px;flex:none;background:var(--sidebar);border-right:1px solid var(--outline-soft);padding:7px 5px}
+.pv-side i{display:block;height:4px;border-radius:2px;background:var(--t3);opacity:.35;margin-bottom:7px}
+.pv-side i:hover{opacity:.6}
+.pv-side i.on{background:var(--accent);opacity:.55;position:relative}
+.pv-side i.on::before{content:"";position:absolute;left:-5px;top:-2px;width:1px;height:8px;background:var(--accent)}
+.pv-ed{flex:1;background:var(--surface);padding:12px 13px}
+.pv-ed h4{font-size:10.5px;font-weight:650;color:var(--t1);margin-bottom:6px}
+.pv-ed p{height:4px;border-radius:2px;background:var(--t3);opacity:.28;margin-bottom:5px}
+.pv-ed p.s{width:62%}
+.pv-ed p.m{width:80%}
+.pv-ed span{display:inline-block;height:9px;padding:0 6px;border-radius:4px;background:var(--accent-soft);border:1px solid var(--accent);opacity:.5;margin-top:3px;font-size:7px;line-height:9px;color:var(--accent)}
+.pv-cap{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--t2)}
+.pv-cap .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);border:1px solid var(--outline)}
+.pv-sw{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}
+.pv-sw .s{border:1px solid var(--outline-soft);border-radius:5px;overflow:hidden;background:var(--raised)}
+.pv-sw .s i{display:block;height:18px;border-bottom:1px solid var(--outline-soft)}
+.pv-sw .s b{display:block;font-family:var(--mono);font-size:9.5px;font-weight:500;color:var(--t3);padding:2px 5px}
+.pv-btn{
+  height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;gap:6px;
+  font-size:12px;font-weight:600;border:1px solid transparent;
+}
+.pv-btn.primary{background:var(--accent);color:var(--on-accent)}
+.pv-btn.ghost{background:var(--raised);border-color:var(--outline);color:var(--t2)}
+.pv-note{font-size:11px;line-height:1.6;color:var(--t3);margin-top:auto;padding-top:2px}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 4.5 4.5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-chevronDown" viewBox="0 0 24 24"><path d="m5 9 7 7 7-7"/></symbol>
+  <symbol id="i-chevronRight" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9.5 7V5h5v2M6.5 7l1 12.5a1.5 1.5 0 0 0 1.5 1.4h6a1.5 1.5 0 0 0 1.5-1.4L17.5 7"/></symbol>
+  <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.4 0 2-.9 2-1.9 0-1.3-1-1.7-1-2.9 0-1 .8-1.8 1.9-1.8h1.6A4 4 0 0 0 20.5 10c0-3.6-3.8-6.5-8.5-6.5Z"/><circle cx="8" cy="9.5" r="1.1"/><circle cx="12" cy="7.5" r="1.1"/><circle cx="8.2" cy="14" r="1.1"/></symbol>
+  <symbol id="i-type" viewBox="0 0 24 24"><path d="M5 6.5V5h14v1.5M12 5v14M9 19h6"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17z"/><path d="m14 7 3 3"/></symbol>
+  <symbol id="i-layout" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M9.5 9.5v10"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1a2 2 0 0 1 1.5.7l1 1.2h7.4A2.5 2.5 0 0 1 21 9.4v7.1a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/></symbol>
+  <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M6.5 9.5h1M10 9.5h1M13.5 9.5h1M17 9.5h1M6.5 12.8h1M10 12.8h1M13.5 12.8h1M17 12.8h1M8 15.6h8"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.6"/></symbol>
+  <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.2A8.2 8.2 0 0 1 9.8 4a8.4 8.4 0 1 0 10.2 10.2Z"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M13 5h6v6M19 5l-8 8M18 14.5V19a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 19V8a1.5 1.5 0 0 1 1.5-1.5H10"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7"/><path d="M20 4.5V9h-4.5"/></symbol>
+  <symbol id="i-arrowRight" viewBox="0 0 24 24"><path d="M4.5 12h15M14 6.5l5.5 5.5-5.5 5.5"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12s3.6-6.5 9.5-6.5S21.5 12 21.5 12s-3.6 6.5-9.5 6.5S2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.6"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M13.5 3.5H7A2.5 2.5 0 0 0 4.5 6v12A2.5 2.5 0 0 0 7 20.5h10a2.5 2.5 0 0 0 2.5-2.5V9.5z"/><path d="M13.5 3.5v6h6"/></symbol>
+</defs></svg>
+
+<div class="wrap">
+  <div class="head">
+    <h1>设置面板重构 · 4 套布局方案</h1>
+    <p>四套方案共用同一组设计令牌（石墨素白色板）、同一套字号阶梯（11.5 / 12 / 13 / 15 / 17）、同一套控件语言（开关、分段控件、滑杆、下拉、文本按钮）。<b>差别只来自信息架构与容器形态</b>：设置是浮层还是整窗、导航在上还是在左、要不要实时预览。点亮下方开关可只保留你中意的方案，也可以切到暗色检查两套皮肤下的表现。</p>
+  </div>
+
+  <div class="controls">
+    <div class="grp"><span class="gl">方案</span><span id="scheme-btns"></span></div>
+    <div class="grp"><span class="gl">模式</span><span id="mode-btns"></span></div>
+  </div>
+
+  <div id="board"></div>
+
+  <div class="foot">
+    四套都不引入新的设计令牌：面板底色 <code>surface</code>、卡片 <code>surfaceRaised</code>、凹陷区 <code>surfaceSunken</code>、描边 <code>outline</code> / <code>outlineSoft</code>、强调色 <code>accent</code> 全部沿用现有 <code>AppPalette</code>。
+    选定的方案会被改写为 Flutter 弹窗（或整窗页面），设置项本身、控制器与持久化逻辑不变。
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   一、导航分组
+   ============================================================ */
+const NAV = [
+  {icon:'palette', label:'外观'},
+  {icon:'type', label:'排版'},
+  {icon:'pencil', label:'编辑器'},
+  {icon:'layout', label:'模板'},
+  {icon:'folder', label:'笔记库'},
+  {icon:'keyboard', label:'快捷键'},
+  {icon:'info', label:'关于'}
+];
+
+/* ============================================================
+   二、配色方案小卡
+   ============================================================ */
+const BOARDS = {
+  light:[
+    {name:'石墨素白', on:true, c:{canvas:'#F7F7F5', sidebar:'#F1F1EF', surface:'#FCFCFB', accent:'#2A2A28'}},
+    {name:'午夜靛',   c:{canvas:'#F6F7FA', sidebar:'#EEF1F6', surface:'#FBFCFE', accent:'#4A56C4'}},
+    {name:'高对比',   c:{canvas:'#FAFAFA', sidebar:'#F4F4F5', surface:'#FFFFFF', accent:'#0D9488'}},
+    {name:'自定义',   custom:true, c:{canvas:'#F4F1EA', sidebar:'#EDE8DE', surface:'#FBF8F2', accent:'#B0543C'}}
+  ],
+  dark:[
+    {name:'石墨素白', on:true, c:{canvas:'#151514', sidebar:'#1A1A19', surface:'#1F1F1E', accent:'#EDEDEA'}},
+    {name:'午夜靛',   c:{canvas:'#0E0F13', sidebar:'#131419', surface:'#17181E', accent:'#8B94F2'}},
+    {name:'高对比',   c:{canvas:'#09090B', sidebar:'#0E0E11', surface:'#121215', accent:'#2DD4BF'}},
+    {name:'自定义',   custom:true, c:{canvas:'#1A1714', sidebar:'#211D19', surface:'#26211C', accent:'#DE8A6B'}}
+  ]
+};
+
+const SHORTCUTS = [
+  ['Ctrl + N','新建笔记'],
+  ['Ctrl + S','立即保存'],
+  ['Ctrl + K','插入链接'],
+  ['Ctrl + B / I','加粗 / 斜体'],
+  ['Ctrl + E','行内代码'],
+  ['Ctrl + Shift + E','代码块'],
+  ['Ctrl + 1…3 / 0','标题级别 / 正文'],
+  ['Ctrl + Alt + ↑ ↓','上一篇 / 下一篇'],
+  ['Ctrl + \\','收起或展开侧边栏'],
+  ['Ctrl + Shift + O','显示 / 隐藏大纲'],
+  ['Ctrl + Shift + F','专注模式'],
+  ['Ctrl + ,','打开设置']
+];
+
+/* ============================================================
+   三、原子控件
+   ============================================================ */
+const ic = (id, cls = '') => `<svg class="ic ${cls}"><use href="#i-${id}"/></svg>`;
+const mono = (t) => `<span class="mono">${t}</span>`;
+
+const sw = (on) => `<span class="sw ${on ? 'on' : ''}"><span class="sw-k"></span></span>`;
+const swRow = (on, label) => `<span class="swrow"><span class="sw-txt">${label}</span>${sw(on)}</span>`;
+
+const seg = (items, idx) => `<span class="seg">${items.map((it, i) =>
+  `<span class="segb ${i === idx ? 'on' : ''}">${it.icon ? ic(it.icon, 'i-sm') : ''}${it.label ? `<span>${it.label}</span>` : ''}</span>`
+).join('')}</span>`;
+
+const row = (label, hint, ctl) => `
+  <div class="row">
+    <div class="row-t">
+      <div class="row-l">${label}</div>
+      ${hint ? `<div class="row-h">${hint}</div>` : ''}
+    </div>
+    <div class="row-c">${ctl}</div>
+  </div>`;
+
+const rowStack = (label, hint, ctl) => `
+  <div class="row row-stack">
+    <div class="row-t">
+      <div class="row-l">${label}</div>
+      ${hint ? `<div class="row-h">${hint}</div>` : ''}
+    </div>
+    <div class="row-c">${ctl}</div>
+  </div>`;
+
+const sliderRow = (label, val, min, max, unit) => {
+  const pct = ((val - min) / (max - min)) * 100;
+  return `
+  <div class="row">
+    <div class="row-t" style="flex:none;width:84px"><div class="row-l">${label}</div></div>
+    <div class="sl-wrap">
+      <div class="sl"><div class="sl-t"><div class="sl-f" style="width:${pct}%"></div><div class="sl-k" style="left:${pct}%"></div></div></div>
+      <div class="sl-v">${val} ${unit}</div>
+    </div>
+  </div>`;
+};
+
+const fld = (text, icon) => `<div class="fld">${icon ? ic(icon, 'i-sm') : ''}<span class="fld-t">${text}</span></div>`;
+const selectFld = (text) => `<div class="fld" style="min-width:138px"><span class="fld-t">${text}</span>${ic('chevronDown', 'i-sm')}</div>`;
+const pathFld = (text) => `
+  <div class="fld fld-grow" style="background:var(--sunken);border-color:var(--outline-soft)">
+    ${ic('folder', 'i-sm')}<span class="fld-t mono">${text}</span><span class="sp"></span>${ic('chevronDown', 'i-sm')}
+  </div>`;
+
+const tbtn = (label, icon) => `<button class="tbtn">${icon ? ic(icon, 'i-sm') : ''}${label}</button>`;
+
+const boardMini = (b) => `
+  <div class="bm" style="background:${b.canvas}">
+    <div class="bm-side" style="background:${b.sidebar}">
+      <i style="background:${b.accent};opacity:.55;width:70%"></i>
+      <i style="background:${b.accent};opacity:.22;width:88%"></i>
+      <i style="background:${b.accent};opacity:.22;width:56%"></i>
+    </div>
+    <div class="bm-doc" style="background:${b.surface}">
+      <b style="background:${b.accent};opacity:.8;width:64%"></b>
+      <b style="background:${b.accent};opacity:.30;width:94%"></b>
+      <b style="background:${b.accent};opacity:.22;width:78%"></b>
+    </div>
+  </div>`;
+
+const boardsHTML = (mode, two) => `
+  <div class="boards ${two ? 'two' : ''}">
+    ${BOARDS[mode].map((b) => `
+      <div class="board ${b.on ? 'on' : ''}">
+        ${boardMini(b.c)}
+        <div class="board-name">${b.on ? ic('check') : ''}${b.name}</div>
+        ${b.custom ? `<span class="board-pen">${ic('pencil')}</span>` : ''}
+      </div>`).join('')}
+  </div>`;
+
+const pathCard = () => `
+  <div class="path">
+    <div class="path-top">${ic('folder', 'i-sm')}<span>C:\\Users\\Kotori\\Documents\\NRS Notes</span></div>
+    <div class="path-meta"><span>128 篇笔记 · 46 280 字 · 23 个标签</span><span class="sp"></span>${tbtn('打开文件夹', 'external')}${tbtn('重新载入', 'refresh')}</div>
+    <div class="path-note">每篇笔记都是一个独立的 .md 文件，可以用任何编辑器打开、同步或备份。</div>
+  </div>`;
+
+const ruleRow = (folder, template) => `
+  <div class="rule">
+    ${fld(folder, 'folder')}
+    <span class="mid">${ic('arrowRight', 'i-sm')}</span>
+    ${fld(template, 'file')}
+    <button class="ibtn-sm">${ic('trash', 'i-sm')}</button>
+  </div>`;
+
+const rulesHTML = () => `
+  <div class="rules">
+    <div class="rules-h">新笔记落在匹配的文件夹时，用对应模板填满空正文；更深的文件夹优先。</div>
+    ${ruleRow('工作', '会议记录')}
+    ${ruleRow('读书', '读书笔记')}
+    <div class="addrow">${ic('plus', 'i-sm')} 添加规则</div>
+  </div>`;
+
+const aboutHTML = () => `
+  <div class="about">
+    <div class="logo">N</div>
+    <div>
+      <div class="about-t">NRS · Markdown 笔记</div>
+      <div class="about-s">版本 1.0.0 · Flutter 桌面应用 · 本地优先，数据完全属于你</div>
+    </div>
+  </div>`;
+
+const shortcutsHTML = () => SHORTCUTS.map(([k, l]) =>
+  `<div class="sc"><span class="kbd">${k}</span><span class="sc-l">${l}</span></div>`).join('');
+
+/* ============================================================
+   四、分组内容
+   ============================================================ */
+const appearance = (mode, two) => `
+  ${boardsHTML(mode, two)}
+  ${row('明暗模式', '跟随系统会随 Windows 的浅色 / 深色模式切换',
+    seg([{icon:'monitor', label:'跟随'}, {icon:'sun', label:'浅色'}, {icon:'moon', label:'深色'}], 0))}
+  ${row('侧边栏', 'Ctrl + \\', swRow(true, '已展开'))}`;
+
+const typography = () => `
+  ${sliderRow('正文字号', 17, 13, 22, 'pt')}
+  ${sliderRow('侧边栏宽度', 288, 236, 420, 'px')}`;
+
+const editor = () => `
+  ${row('显示大纲', 'Ctrl + Shift + O', swRow(true, '开'))}
+  ${row('专注模式', '隐藏功能栏、侧边栏与大纲，只留下文字', swRow(false, '关'))}
+  ${row('打字机模式', '光标始终停在屏幕中间', swRow(true, '开'))}
+  ${row('默认排序', '文件列表与搜索结果都按它排列', selectFld('修改时间 · 新→旧'))}`;
+
+const templates = () => `
+  ${rowStack('模板文件夹', '填库里任意文件夹的路径，支持子文件夹（如 工作/模板）。', pathFld('模板/工作'))}
+  ${row('新建笔记时套用文件夹模板', '只填空笔记的正文；模板文件夹里的笔记不受影响', swRow(true, '开'))}
+  ${rulesHTML()}
+  ${row('模板快捷键', '2 个模板已绑定', tbtn('管理', 'keyboard'))}`;
+
+const about = () => aboutHTML();
+
+/* ============================================================
+   五、方案 A · 侧栏导航 + 连续长页
+   ============================================================ */
+const secA = (title, desc, body) => `
+  <div class="a-sec">
+    <div class="a-sec-t">${title}</div>
+    ${desc ? `<div class="a-sec-d">${desc}</div>` : ''}
+    ${body}
+  </div>`;
+
+const panelA = (m) => `
+<div class="panel a" data-m="${m}">
+  <div class="ph">
+    <span class="p-title">设置</span>
+    <span class="p-sub">所有更改即时生效</span>
+    <span class="sp"></span>
+    <button class="ibtn">${ic('x')}</button>
+  </div>
+  <div class="a-body">
+    <aside class="a-nav">
+      <div class="a-search">${ic('search', 'i-sm')}<span>搜索设置</span><span class="sp"></span><span class="kbd-s">Ctrl K</span></div>
+      ${NAV.map((n, i) => `<div class="nav-i ${i === 0 ? 'on' : ''}">${ic(n.icon)}<span>${n.label}</span></div>`).join('')}
+      <span class="sp"></span>
+      <div class="a-note">${ic('check', 'i-sm')} 设置已自动保存</div>
+    </aside>
+    <div class="a-main">
+      ${secA('外观', '整个应用共用一套色板。「自定义」用的是你自己的配色，点它右上角的铅笔可以逐个颜色调整。', appearance(m))}
+      ${secA('排版', '只影响阅读区域，侧边栏宽度在两个面板之间拖拽也会同步。', typography())}
+      ${secA('编辑器', null, editor())}
+      ${secA('模板', '模板文件夹里的笔记既是模板，也是普通笔记。', templates())}
+      ${secA('笔记库', null, pathCard())}
+      ${secA('快捷键', null, shortcutsHTML())}
+      ${secA('关于', null, about())}
+    </div>
+  </div>
+</div>`;
+
+/* ============================================================
+   六、方案 B · 顶部标签 + 卡片矩阵
+   ============================================================ */
+const card = (icon, title, body, wide) => `
+  <section class="card ${wide ? 'wide' : ''}">
+    <div class="card-h">${ic(icon)}<span>${title}</span></div>
+    ${body}
+  </section>`;
+
+const panelB = (m) => `
+<div class="panel b" data-m="${m}">
+  <div class="ph">
+    <span class="p-title">设置</span>
+    <div class="b-tabs">
+      ${NAV.map((n, i) => `<div class="b-tab ${i === 0 ? 'on' : ''}">${ic(n.icon)}<span>${n.label}</span></div>`).join('')}
+    </div>
+    <span class="sp"></span>
+    <button class="ibtn">${ic('x')}</button>
+  </div>
+  <div class="b-body">
+    <div class="b-grid">
+      ${card('palette', '外观', appearance(m), true)}
+      ${card('type', '排版', typography(), false)}
+      ${card('pencil', '编辑器', editor(), false)}
+      ${card('layout', '模板', templates(), true)}
+      ${card('folder', '笔记库', pathCard(), false)}
+      ${card('info', '关于', about(), false)}
+      ${card('keyboard', '快捷键', `<div class="sc-grid">${shortcutsHTML()}</div>`, true)}
+    </div>
+  </div>
+</div>`;
+
+/* ============================================================
+   七、方案 C · 全窗口设置
+   ============================================================ */
+const secC = (title, desc, body) => `
+  <div class="c-sec">
+    <div class="c-sec-t">${title}</div>
+    ${desc ? `<div class="c-sec-d">${desc}</div>` : ''}
+    <div class="c-rule"></div>
+    ${body}
+  </div>`;
+
+const panelC = (m) => `
+<div class="panel c" data-m="${m}">
+  <div class="c-title">
+    <div class="c-mark"><i></i><span>NRS</span></div>
+    <div class="c-cap">
+      <b><svg viewBox="0 0 10 10"><path d="M0 5.5h10"/></svg></b>
+      <b><svg viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9"/></svg></b>
+      <b class="cl"><svg viewBox="0 0 10 10"><path d="M.5.5l9 9M9.5.5l-9 9"/></svg></b>
+    </div>
+  </div>
+  <div class="c-body">
+    <aside class="c-nav">
+      <div class="c-nav-t">设置</div>
+      <div class="c-search">${ic('search', 'i-sm')}<span>搜索设置</span><span class="sp"></span><span class="mono" style="font-size:10px;border:1px solid var(--outline-soft);border-radius:3px;padding:0 4px">Ctrl K</span></div>
+      ${NAV.map((n, i) => `<div class="nav-i ${i === 0 ? 'on' : ''}">${ic(n.icon)}<span>${n.label}</span></div>`).join('')}
+      <span class="sp"></span>
+      <button class="c-done">完成</button>
+      <div class="c-nav-f">Esc 关闭 · Ctrl + , 打开</div>
+    </aside>
+    <main class="c-main">
+      <div class="c-inner">
+        ${secC('外观', '整个应用共用一套色板。外观类的改动会立刻画到窗口上，不需要点保存。', appearance(m, false))}
+        ${secC('排版', '只影响阅读区域。拖动侧边栏与编辑栏的交界也会同步这里的数值。', typography())}
+        ${secC('编辑器', null, editor())}
+        ${secC('模板', '模板文件夹里的笔记既是模板，也是普通笔记。', templates())}
+        ${secC('笔记库', '这里只读展示笔记库的位置与规模；换位置请在首次启动时选择。', pathCard())}
+        ${secC('快捷键', null, shortcutsHTML())}
+        ${secC('关于', null, about())}
+      </div>
+    </main>
+  </div>
+</div>`;
+
+/* ============================================================
+   八、方案 D · 抽屉 + 实时预览
+   ============================================================ */
+const acc = (open, icon, title, summary, body) => `
+  <div class="acc">
+    <div class="acc-h">
+      <span class="chev">${ic(open ? 'chevronDown' : 'chevronRight', 'i-sm')}</span>
+      ${ic(icon, 'i-sm')}
+      <span class="acc-t">${title}</span>
+      ${open ? '' : `<span class="acc-s">${summary}</span>`}
+    </div>
+    ${open ? `<div class="acc-body">${body}</div>` : ''}
+  </div>`;
+
+const previewPane = (m) => `
+  <div class="d-prev">
+    <div class="pv-h">${ic('eye', 'i-sm')} 实时预览</div>
+    <div class="pv-win">
+      <div class="pv-tb"><i></i><i></i><b></b></div>
+      <div class="pv-body">
+        <div class="pv-side">
+          <i></i><i></i><i class="on"></i><i></i><i></i>
+        </div>
+        <div class="pv-ed">
+          <h4>Markdown 语法</h4>
+          <p></p><p class="m"></p><p class="s"></p>
+          <span>#入门</span>
+        </div>
+      </div>
+    </div>
+    <div class="pv-cap"><span class="dot"></span><span>石墨素白 · ${m === 'dark' ? '暗色' : '亮色'} · 正文 17 pt</span></div>
+    <div class="pv-sw">
+      <div class="s"><i style="background:var(--canvas)"></i><b>canvas</b></div>
+      <div class="s"><i style="background:var(--sidebar)"></i><b>sidebar</b></div>
+      <div class="s"><i style="background:var(--surface)"></i><b>surface</b></div>
+      <div class="s"><i style="background:var(--accent)"></i><b>accent</b></div>
+    </div>
+    <button class="pv-btn primary">${ic('palette', 'i-sm')}编辑自定义配色</button>
+    <button class="pv-btn ghost">${ic('plus', 'i-sm')}从当前方案新建</button>
+    <div class="pv-note">字号、宽度与配色都会在同一次刷新里生效；浮动层不会挡住这块预览。</div>
+  </div>`;
+
+const panelD = (m) => `
+<div class="panel d" data-m="${m}">
+  <div class="ph">
+    <span class="p-title">设置</span>
+    <span class="p-sub">左侧调整 · 右侧即时预览</span>
+    <span class="sp"></span>
+    <button class="ibtn">${ic('x')}</button>
+  </div>
+  <div class="d-body">
+    <div class="d-list">
+      ${acc(true, 'palette', '外观', '', appearance(m, true))}
+      ${acc(true, 'type', '排版', '', typography())}
+      ${acc(false, 'pencil', '编辑器', '大纲 · 打字机 · 排序', '')}
+      ${acc(false, 'layout', '模板', '2 条文件夹规则', '')}
+      ${acc(false, 'folder', '笔记库', '128 篇笔记', '')}
+      ${acc(false, 'keyboard', '快捷键', '12 个组合键', '')}
+      ${acc(false, 'info', '关于', '版本 1.0.0', '')}
+    </div>
+    ${previewPane(m)}
+  </div>
+</div>`;
+
+/* ============================================================
+   九、方案清单与渲染
+   ============================================================ */
+const SCHEMES = [
+  {
+    id:'a', name:'侧栏导航 · 连续长页', ref:'参考 VS Code 设置 · macOS 系统设置',
+    desc:'左栏是固定的<b>分组导航</b>，右侧把全部分组排成一条连续长页；分组之间只靠节标题与留白分隔，没有再套一层卡片边框。导航即锚点，搜索框可以跨分组过滤。改动最小、信息冗余最少，长列表读起来最连贯。',
+    render: panelA
+  },
+  {
+    id:'b', name:'顶部标签 · 卡片矩阵', ref:'参考 Raycast · Linear',
+    desc:'分组做成<b>两列卡片矩阵</b>，内容长的一栏（外观 / 模板 / 快捷键）横跨两列。顶部标签是锚点，一屏之内同时能看到多个分组的轮廓。分区边界最清楚，代价是卡片边框把可用宽度切得更碎。',
+    render: panelB
+  },
+  {
+    id:'c', name:'全窗口设置', ref:'参考 Obsidian · Cursor',
+    desc:'设置不再是一个浮层，而是<b>取代编辑器占据整个窗口</b>：左侧导航、右侧居中单列（660px 阅读宽度），字号更大、留白更多，底部有明确的「完成」。适合设置项继续增加、需要长期生长的形态，也顺手解决了小弹窗里滚动条打架的问题。',
+    render: panelC
+  },
+  {
+    id:'d', name:'抽屉 · 实时预览', ref:'参考 Figma · Xcode',
+    desc:'左侧是<b>手风琴分组</b>（默认只展开常用两组），右侧常驻一块应用预览与当前色板摘要。调字号、换配色时右侧立刻反映，不用来回关窗口确认。<b>适合以「外观调整」为主要使用场景的人</b>，代价是每组都要多点一下才能展开。',
+    render: panelD
+  }
+];
+
+const state = { s:{a:true,b:true,c:true,d:true}, mode:'light' };
+
+function renderBoard(){
+  const list = SCHEMES.filter(s => state.s[s.id]);
+  document.getElementById('board').innerHTML = list.length ? list.map(s => `
+    <section class="scheme">
+      <div class="scheme-hd">
+        <span class="idx">${s.id.toUpperCase()}</span>
+        <h2>${s.name}</h2>
+        <span class="ref">${s.ref}</span>
+      </div>
+      <p class="scheme-desc">${s.desc}</p>
+      <div class="stage">${s.render(state.mode)}</div>
+    </section>`).join('') : '<p class="scheme-desc">至少勾选一套方案。</p>';
+}
+
+function controls(){
+  const sb = document.getElementById('scheme-btns');
+  sb.innerHTML = SCHEMES.map(s =>
+    `<button class="tg" data-scheme="${s.id}" aria-pressed="${state.s[s.id]}"><span class="sw" style="background:${s.id === 'c' ? '#2DD4BF' : s.id === 'b' ? '#4A56C4' : '#2A2A28'}"></span>${s.id.toUpperCase()} · ${s.name.split(' ')[0]}</button>`
+  ).join('');
+  sb.querySelectorAll('.tg').forEach(b => b.addEventListener('click', () => {
+    const id = b.dataset.scheme;
+    if (state.s[id] && Object.values(state.s).filter(Boolean).length === 1) return;
+    state.s[id] = !state.s[id];
+    b.setAttribute('aria-pressed', String(state.s[id]));
+    renderBoard();
+  }));
+
+  const mb = document.getElementById('mode-btns');
+  mb.innerHTML = ['light','dark'].map(m => `<button class="tg" data-mode="${m}" aria-pressed="${state.mode === m}">${m === 'light' ? '亮色' : '暗色'}</button>`).join('');
+  mb.querySelectorAll('.tg').forEach(b => b.addEventListener('click', () => {
+    state.mode = b.dataset.mode;
+    mb.querySelectorAll('.tg').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.mode === state.mode)));
+    renderBoard();
+  }));
+}
+
+controls();
+renderBoard();
+</script>
+</body>
+</html>

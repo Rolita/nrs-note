@@ -23,7 +23,7 @@ import 'package:flutter/material.dart';
 /// arbitrary dark board to render against.
 ///
 /// The accent is no longer a fixed amber. [light] and [dark] now hold the
-/// *石墨素白 / Graphite* preset — the shipped default — and every other preset
+/// *曜石 / Obsidian* preset — the shipped default — and every other preset
 /// (or a user's custom colours) arrives through the very same 25 colour tokens.
 @immutable
 class AppPalette extends ThemeExtension<AppPalette> {
@@ -102,7 +102,7 @@ class AppPalette extends ThemeExtension<AppPalette> {
   final Color textTertiary;
 
   /// Selection, focus, tags, the current row — the colour spent on the thing
-  /// the user is looking at. Neutral grey in 石墨素白, a real hue elsewhere.
+  /// the user is looking at. 曜石's blue in the default board, other hues elsewhere.
   final Color accent;
 
   final Color accentHover;
@@ -143,66 +143,66 @@ class AppPalette extends ThemeExtension<AppPalette> {
 
   bool get isDark => brightness == Brightness.dark;
 
-  /// 石墨素白 / Graphite, light face: neutral grey with a near-black ink accent.
+  /// 曜石 / Obsidian, light face: cool neutral grey-blue with a blue accent.
   ///
   /// 默认预设。测试夹具把它当作「一个亮色板」用，不关心它具体是哪一套方案。
   static const AppPalette light = AppPalette(
     brightness: Brightness.light,
-    canvas: Color(0xFFF7F7F5),
-    sidebar: Color(0xFFF1F1EF),
-    surface: Color(0xFFFCFCFB),
+    canvas: Color(0xFFF3F5F8),
+    sidebar: Color(0xFFEBEEF2),
+    surface: Color(0xFFFAFBFC),
     surfaceRaised: Color(0xFFFFFFFF),
-    surfaceSunken: Color(0xFFEFEFED),
-    outline: Color(0xFFDCDCD9),
-    outlineSoft: Color(0xFFE9E9E6),
-    rule: Color(0xFFD5D5D1),
-    textPrimary: Color(0xFF1B1B1A),
-    textSecondary: Color(0xFF5C5C59),
-    textTertiary: Color(0xFF8C8C88),
-    accent: Color(0xFF2A2A28),
-    accentHover: Color(0xFF111110),
-    accentSoft: Color(0xFFE9E9E6),
+    surfaceSunken: Color(0xFFE7EAEF),
+    outline: Color(0xFFD6DAE2),
+    outlineSoft: Color(0xFFE5E8EE),
+    rule: Color(0xFFCDD2DB),
+    textPrimary: Color(0xFF101419),
+    textSecondary: Color(0xFF4D5565),
+    textTertiary: Color(0xFF838B99),
+    accent: Color(0xFF2F6FEB),
+    accentHover: Color(0xFF245BCC),
+    accentSoft: Color(0xFFE3EBFB),
     onAccent: Color(0xFFFFFFFF),
-    success: Color(0xFF2E8B62),
-    successSoft: Color(0xFFE3F0E8),
-    warning: Color(0xFFB06B1B),
-    warningSoft: Color(0xFFF7EADA),
-    danger: Color(0xFFC0392B),
-    dangerSoft: Color(0xFFFAE7E4),
-    selection: Color(0x282A2A28),
-    selectionEdge: Color(0xFF2A2A28),
+    success: Color(0xFF2E7D5B),
+    successSoft: Color(0xFFE0EFE6),
+    warning: Color(0xFFA9762C),
+    warningSoft: Color(0xFFF6EBD9),
+    danger: Color(0xFFC0453C),
+    dangerSoft: Color(0xFFFAE6E3),
+    selection: Color(0x332F6FEB),
+    selectionEdge: Color(0xFF2F6FEB),
     shadow: Color(0x14000000),
     overlay: Color(0x33000000),
   );
 
-  /// 石墨素白 / Graphite, dark face: warm-neutral greys, near-white ink accent.
+  /// 曜石 / Obsidian, dark face: a deep cool grey-blue ladder, blue accent.
   static const AppPalette dark = AppPalette(
     brightness: Brightness.dark,
-    canvas: Color(0xFF151514),
-    sidebar: Color(0xFF1A1A19),
-    surface: Color(0xFF1F1F1E),
-    surfaceRaised: Color(0xFF272726),
-    surfaceSunken: Color(0xFF101010),
-    outline: Color(0xFF2F2F2E),
-    outlineSoft: Color(0xFF242423),
-    rule: Color(0xFF3A3A38),
-    textPrimary: Color(0xFFE9E9E6),
-    textSecondary: Color(0xFF9E9E9A),
-    textTertiary: Color(0xFF6E6E6A),
-    accent: Color(0xFFEDEDEA),
-    accentHover: Color(0xFFFFFFFF),
-    accentSoft: Color(0xFF2E2E2C),
-    onAccent: Color(0xFF141413),
-    success: Color(0xFF6FC29A),
-    successSoft: Color(0xFF17281F),
-    warning: Color(0xFFE0964A),
-    warningSoft: Color(0xFF33240F),
-    danger: Color(0xFFE5796B),
-    dangerSoft: Color(0xFF2E1A17),
-    selection: Color(0x38EDEDEA),
+    canvas: Color(0xFF0A0D12),
+    sidebar: Color(0xFF0E1219),
+    surface: Color(0xFF131820),
+    surfaceRaised: Color(0xFF1A2029),
+    surfaceSunken: Color(0xFF06080C),
+    outline: Color(0xFF252C37),
+    outlineSoft: Color(0xFF19202A),
+    rule: Color(0xFF2D3541),
+    textPrimary: Color(0xFFE6EAF0),
+    textSecondary: Color(0xFF98A2B3),
+    textTertiary: Color(0xFF6F7A88),
+    accent: Color(0xFF5C9CF5),
+    accentHover: Color(0xFF7CB2FF),
+    accentSoft: Color(0xFF15263D),
+    onAccent: Color(0xFF0A1626),
+    success: Color(0xFF4FAE7F),
+    successSoft: Color(0xFF10241B),
+    warning: Color(0xFFD19A5E),
+    warningSoft: Color(0xFF2A2014),
+    danger: Color(0xFFE06A6A),
+    dangerSoft: Color(0xFF2A1818),
+    selection: Color(0x4D5C9CF5),
     // `ThemePresets` derives this from `accent` (lightness × 0.86) at runtime;
     // it is copied here as a literal only to keep this palette `const`.
-    selectionEdge: Color(0xFFCFCFC6),
+    selectionEdge: Color(0xFF3081F2),
     shadow: Color(0x66000000),
     overlay: Color(0x99000000),
   );
@@ -446,12 +446,23 @@ enum AppPaletteToken {
       this == AppPaletteToken.shadow ||
       this == AppPaletteToken.overlay;
 
-  /// The 12 tokens the editor shows before 「高级」 is switched on.
-  ///
-  /// Surface 5 + line 3 + text 3 + the accent itself: the colours that actually
-  /// change how the app looks. The 6 status colours and the 4 floating-layer
-  /// colours are what the advanced switch reveals.
-  static const List<AppPaletteToken> featured = <AppPaletteToken>[
+  /// The 6 tokens 「简单」 shows: the colours a person can picture by name —
+  /// the two background planes, the content plane, the two text weights, and
+  /// the accent. A strict subset of [normal], so going up a tier never takes
+  /// an option away.
+  static const List<AppPaletteToken> simple = <AppPaletteToken>[
+    canvas,
+    sidebar,
+    surface,
+    textPrimary,
+    textSecondary,
+    accent,
+  ];
+
+  /// The 12 tokens 「普通」 shows: surface 5 + line 3 + text 3 + the accent
+  /// itself — the colours that actually change how the app looks. The 6 status
+  /// colours and the 4 floating-layer colours belong to 「高级」.
+  static const List<AppPaletteToken> normal = <AppPaletteToken>[
     canvas,
     sidebar,
     surface,

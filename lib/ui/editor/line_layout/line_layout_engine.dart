@@ -13,7 +13,8 @@ library;
 import 'dart:math' as math;
 import 'dart:ui' show BoxHeightStyle, BoxWidthStyle;
 
-import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter/foundation.dart'
+    show listEquals, visibleForTesting;
 import 'package:flutter/painting.dart';
 
 import 'line_block_view.dart';
@@ -24,6 +25,16 @@ export 'line_layout_model.dart';
 
 /// 一行的文字样式。实时 Markdown 会在这里返回标题/代码/正文样式。
 typedef LineStyleResolver = TextStyle Function(SourceLine line);
+
+/// 解析器的语义键：两个不同实例只要 [styleKey] 相同，对**没改动的行**就给
+/// 出完全一样的排版。
+///
+/// 宿主每次重建都会换一个新实例（`LiveLineStyle` 带着新源码重建），渲染层
+/// 不能因此丢掉整篇布局——文本变化由编辑差分负责。真正改变排版规则的事情
+/// （主题、正文样式、悬停标签、标记摊开）才应该改变这个键。
+abstract interface class LineStyleKeyed {
+  Object? get styleKey;
+}
 
 /// 一行的固定高度，`null` 表示按测量结果。
 ///
@@ -50,7 +61,7 @@ typedef LineInsetResolver = EdgeInsets Function(SourceLine line);
 /// 出来；一行一个 `TextPainter` 又承载不了 widget 端帽。所以底片由渲染层按
 /// 这个出口自己画：先铺一块圆角矩形，再把这一行的字画在上面。
 class LineFillRun {
-  const LineFillRun({
+  LineFillRun({
     required this.from,
     required this.to,
     required this.fill,
@@ -89,6 +100,13 @@ class LineFillRun {
 
   /// 片段字体；只用来量底片的高度与基线位置。
   final TextStyle style;
+
+  /// 底片高度（含上下内边距）与基线相对片段顶部的下沉量。
+  ///
+  /// 绘制期每帧都要这两个值，量它们却要新建一个 [TextPainter]。首次绘制时
+  /// 量一次存在这里，之后只画矩形；样式/字号变了会换一份新的 run 对象。
+  double? measuredHeight;
+  double? measuredDrop;
 }
 
 /// 按行取圆角底片；`null` 表示这一行没有底片。
@@ -148,7 +166,10 @@ class LaidOutLine {
   final int paintedFrom;
 
   /// 行顶在文档坐标里的 y。
-  final double top;
+  ///
+  /// 局部重排（[relayoutLines]）会复用未变行的整个对象，只按新的累计高度
+  /// 平移这个值，所以它不是 final。
+  double top;
 
   final double height;
 
@@ -170,6 +191,12 @@ class LaidOutLine {
 
   /// 这一行要铺在文字下面的圆角底片（行内代码），坐标相对 [painter]。
   final List<LineFillRun> fills;
+
+  /// 这一行每条视觉行的基线（相对行顶），铺底片时按它分组。
+  ///
+  /// `TextPainter.computeLineMetrics()` 每帧重算是纯浪费：视觉行的切分在布局
+  /// 期就固定了，基线也随之固定。首次铺底片时算一次存在这里。
+  List<double>? visualBaselines;
 
   /// 这一行被某个折叠的祖先藏起来了：保留在 [LineDocumentLayout.laidOut]
   /// 里以维持行号对齐，但高度为 0，不测量、不绘制、不参与命中。
@@ -230,7 +257,43 @@ class LineDocumentLayout {
   /// 被藏起来的行号 → 折叠它的可见祖先行号。
   final Map<int, int> _hiddenUnder;
 
+  /// [blockRect] 的结果按 `(start, end)` 备忘：代码块卡片每帧都会问同一批块。
+  final Map<(int, int), Rect?> _blockRects = <(int, int), Rect?>{};
+
+  /// 实际执行过全行扫描的 [blockRect] 次数，供测试确认缓存生效。
+  @visibleForTesting
+  int debugBlockRectComputes = 0;
+
   bool _disposed = false;
+
+  /// 与文档坐标 `[top, bottom]` 纵向相交的源码行下标区间 `[from, to)`。
+  ///
+  /// [laidOut] 按 `top` 递增（含零高的隐藏行），所以起点用二分找，止点从起点
+  /// 顺序推进即可。绘制层只遍历这个区间，滚动成本因此与总行数脱钩。
+  ({int from, int to}) lineRangeBetween(double top, double bottom) {
+    if (laidOut.isEmpty || bottom < top) return (from: 0, to: 0);
+    int from = _lineIndexAtOrBefore(top);
+    int to = from;
+    while (to < laidOut.length && laidOut[to].top <= bottom) {
+      to++;
+    }
+    return (from: from, to: to);
+  }
+
+  /// 文档坐标 [y] 落在（或刚越过）的源码行下标；不过滤零高的隐藏行。
+  int _lineIndexAtOrBefore(double y) {
+    int lo = 0;
+    int hi = laidOut.length - 1;
+    while (lo < hi) {
+      final int mid = (lo + hi + 1) >> 1;
+      if (laidOut[mid].top <= y) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return lo;
+  }
 
   /// 把落在折叠子树里的偏移收回到可见位置。
   ///
@@ -317,7 +380,14 @@ class LineDocumentLayout {
           .clamp(0, text.length);
     }
     final double localX = point.dx - line.gutter;
-    if (localX < 0) return line.paintedFrom;
+    if (localX < 0) {
+      // 标记摊进正文后槽位只剩缩进；缩进不是字形，落在它上面应归到正文起点。
+      // 沿用 paintedFrom（摊开时为 markerStart）会把光标停在 `3. ` 之前，
+      // 接着输入就把文字插进标记里（`qie'huan3. [ ]`）。
+      return line.slot.revealedMarkers
+          ? line.source.paintStart
+          : line.paintedFrom;
+    }
     final double maxWidth = math.max(
       1.0,
       width - line.gutter - line.insets.right,
@@ -349,7 +419,13 @@ class LineDocumentLayout {
   /// 的观感），纵向铺满整条视觉行——上下两行的盒子因此首尾相接，行与行之间
   /// 的缝隙由画笔（`EditorSelectionPainter`）统一扣出来，而不是靠行距留白。
   /// 从行首选起的选区还会盖住左侧标记槽位。
-  List<Rect> selectionRects(int baseOffset, int extentOffset) {
+  ///
+  /// [visible] 给定时只遍历与它纵向相交的行：绘制一帧不必产出屏幕外的矩形。
+  List<Rect> selectionRects(
+    int baseOffset,
+    int extentOffset, {
+    Rect? visible,
+  }) {
     int a = baseOffset.clamp(0, text.length);
     int b = extentOffset.clamp(0, text.length);
     if (a > b) {
@@ -359,8 +435,12 @@ class LineDocumentLayout {
     }
     if (a == b) return const <Rect>[];
 
+    final ({int from, int to}) range = visible == null
+        ? (from: 0, to: laidOut.length)
+        : lineRangeBetween(visible.top, visible.bottom);
     final List<Rect> out = <Rect>[];
-    for (final LaidOutLine line in laidOut) {
+    for (int index = range.from; index < range.to; index++) {
+      final LaidOutLine line = laidOut[index];
       final SourceLine source = line.source;
       // 自绘行（表格）按格子成块选中：这一行没有字形盒子可量，矩形由它
       // 自己回答，引擎只负责换算到文档坐标。
@@ -446,7 +526,10 @@ class LineDocumentLayout {
       b = swap;
     }
     if (a == b) return null;
+    final (int, int) key = (a, b);
+    if (_blockRects.containsKey(key)) return _blockRects[key];
 
+    debugBlockRectComputes++;
     double top = double.infinity;
     double bottom = -double.infinity;
     for (final LaidOutLine line in laidOut) {
@@ -458,8 +541,10 @@ class LineDocumentLayout {
         bottom = math.max(bottom, line.top + visual.top + visual.height);
       }
     }
-    if (!top.isFinite || bottom <= top) return null;
-    return Rect.fromLTRB(0, top, width, bottom);
+    final Rect? result = top.isFinite && bottom > top
+        ? Rect.fromLTRB(0, top, width, bottom)
+        : null;
+    return _blockRects[key] = result;
   }
 
   /// [localTop]（相对行顶）落在哪条视觉行。
@@ -487,16 +572,7 @@ class LineDocumentLayout {
   }
 
   int _lineIndexAtY(double y) {
-    int lo = 0;
-    int hi = laidOut.length - 1;
-    while (lo < hi) {
-      final int mid = (lo + hi + 1) >> 1;
-      if (laidOut[mid].top <= y) {
-        lo = mid;
-      } else {
-        hi = mid - 1;
-      }
-    }
+    int lo = _lineIndexAtOrBefore(y);
     // 零高的行（折叠子树的成员、收起的闭围栏）不占像素：落点归到它上方
     // 最近一条真正画出来的行，否则点击会被吸进看不见的源码。
     while (lo > 0 && laidOut[lo].height <= 0) {
@@ -504,6 +580,9 @@ class LineDocumentLayout {
     }
     return lo;
   }
+
+  /// 是否已经释放或交出所有权（此后任何几何方法都不可再用）。
+  bool get disposed => _disposed;
 
   /// 释放所有行的 [TextPainter]。布局对象作废后不能再调用任何几何方法。
   ///
@@ -515,6 +594,77 @@ class LineDocumentLayout {
     for (final LaidOutLine line in laidOut) {
       if (!line.fromCache) line.painter.dispose();
     }
+  }
+
+  /// 交出所有权：之后 [dispose] 变成空操作。
+  ///
+  /// 局部重排会把未变行的 [LaidOutLine]（连同 `TextPainter`）整体搬进新布局；
+  /// 旧布局随即作废，如果它再释放一遍这些 painter，新布局就会拿着已释放的
+  /// 对象继续测量。
+  void handOverOwnership() {
+    _disposed = true;
+  }
+
+  /// 揭示选区从 [before] 变到 [after] 时，需要重排的行号集合。
+  ///
+  /// 逐行签名 = 「选区与本行 `[start, end]` 的钳制交集」+「折叠光标落点」。
+  /// `LiveLineStyle` 对一行的选区依赖（`_revealed`、`_caretOn`、`_tagRevealed`、
+  /// `_inlineOrPlain`、`fillsFor`、`insetFor`）全部能由它导出：交集落在行内
+  /// 的哪一段，决定标记摊开与否、行内 token 是否露出源码、标签是否让出内边距。
+  ///
+  /// 计算只在「新旧选区并集覆盖的行区间」内逐行比较，标点（折叠光标）移动
+  /// 只碰两行；框选整篇（Ctrl+A）会得到全文，那是一次允许的全量重排。
+  ///
+  /// 表格行额外连带整段表格 run：表格整表重测时会换掉整块行视图，只重排
+  /// 其中几行会让其余行继续指向已释放的行块。
+  Set<int> revealDirtyLines(TextSelection? before, TextSelection? after) {
+    if (laidOut.isEmpty) return const <int>{};
+    final bool beforeValid =
+        before != null && before.isValid && before.start >= 0;
+    final bool afterValid = after != null && after.isValid && after.start >= 0;
+    if (!beforeValid && !afterValid) return const <int>{};
+
+    int first = laidOut.length - 1;
+    int last = 0;
+    if (beforeValid) {
+      first = math.min(first, _lineIndexAtOffset(before.start));
+      last = math.max(last, _lineIndexAtOffset(before.end));
+    }
+    if (afterValid) {
+      first = math.min(first, _lineIndexAtOffset(after.start));
+      last = math.max(last, _lineIndexAtOffset(after.end));
+    }
+
+    final Set<int> dirty = <int>{};
+    for (int i = first; i <= last; i++) {
+      final SourceLine source = laidOut[i].source;
+      if (_revealSignature(source, before) !=
+          _revealSignature(source, after)) {
+        dirty.add(i);
+      }
+    }
+    if (dirty.isEmpty) return dirty;
+
+    // 表格 run 连带：table / tableHeader / tableDivider 的连续行属于同一张表，
+    // 只要有一行被判脏，整段一起重建。
+    final Set<int> expanded = <int>{};
+    for (final int i in dirty) {
+      int from = i;
+      int to = i;
+      if (_isTableLine(laidOut[i].source.kind)) {
+        while (from > 0 && _isTableLine(laidOut[from - 1].source.kind)) {
+          from--;
+        }
+        while (to + 1 < laidOut.length &&
+            _isTableLine(laidOut[to + 1].source.kind)) {
+          to++;
+        }
+      }
+      for (int k = from; k <= to; k++) {
+        expanded.add(k);
+      }
+    }
+    return expanded;
   }
 }
 
@@ -610,6 +760,33 @@ class _MeasuredLine {
   int generation;
 }
 
+/// 一轮按行布局的成本计数，供测试与性能夹具观测。
+///
+/// [paintersMeasured] 是本轮真正执行了 `TextPainter.layout()` 的可见行数；
+/// [cacheHits] 是从 [LineLayoutCache] 原样取回 painter 的行数；[blockResolves]
+/// 是向 [LineBlockResolver]（表格等自绘行）索要内容的次数。三者不互斥：
+/// 一块行既不测量也不命中缓存（高度被 [LineHeightResolver] 压成 0 的行仍会
+/// 测量，隐藏行两种都不算）。
+class LineLayoutStats {
+  int paintersMeasured = 0;
+  int cacheHits = 0;
+  int blockResolves = 0;
+
+  /// 本轮真正重建（解析 span / 重新测量）的行数；隐藏占位行不算。
+  int rebuiltLines = 0;
+
+  /// 局部重排里整对象复用的行数。
+  int reusedLines = 0;
+
+  void reset() {
+    paintersMeasured = 0;
+    cacheHits = 0;
+    blockResolves = 0;
+    rebuiltLines = 0;
+    reusedLines = 0;
+  }
+}
+
 /// 对 [text] 做一次按行布局。
 ///
 /// [contentWidth] 是正文列（不是整行）的可用宽度；列表行的实际排版宽度
@@ -630,6 +807,7 @@ LineDocumentLayout layoutLines({
   Set<int> foldedLines = const <int>{},
   LineLayoutMetrics metrics = const LineLayoutMetrics(),
   LineLayoutCache? cache,
+  LineLayoutStats? stats,
 }) {
   cache?._begin();
   final List<SourceLine> sources = scanSourceLines(text);
@@ -638,22 +816,11 @@ LineDocumentLayout layoutLines({
   // 哪些列表项的子树现在收起。父行自己也藏在上一个折叠里时跳过：它的
   // 箭头看不见，展开状态等祖先展开后自然恢复。这样每个被藏的行都只认
   // 最近一层**可见**的折叠，光标吸附一步就能回到看得见的地方。
-  final Map<int, ListFold> foldByParent = <int, ListFold>{
-    for (final ListFold fold in scanListFolds(sources)) fold.parentIndex: fold,
-  };
-  final Set<int> hiddenLines = <int>{};
-  final Map<int, int> hiddenUnder = <int, int>{};
-  final Set<int> foldedParents = <int>{};
-  for (int i = 0; i < sources.length; i++) {
-    final ListFold? fold = foldByParent[i];
-    if (fold == null || hiddenLines.contains(i)) continue;
-    if (!foldedLines.contains(sources[i].start)) continue;
-    foldedParents.add(i);
-    for (int k = i + 1; k <= fold.lastIndex; k++) {
-      hiddenLines.add(k);
-      hiddenUnder[k] = i;
-    }
-  }
+  final _FoldPlan folds = _planFolds(sources, foldedLines);
+  final Map<int, ListFold> foldByParent = folds.byParent;
+  final Set<int> hiddenLines = folds.hidden;
+  final Map<int, int> hiddenUnder = folds.hiddenUnder;
+  final Set<int> foldedParents = folds.foldedParents;
   final LineBlockContext blockContext = LineBlockContext(
     contentWidth: contentWidth,
     textScaler: textScaler,
@@ -670,31 +837,7 @@ LineDocumentLayout layoutLines({
     if (hiddenLines.contains(i)) {
       // 零高的占位行：不取样式、不测量、不进缓存，只为让行号与源码一一
       // 对应。绘制与命中都会跳过它，几何出口会把它折回可见的父项。
-      final TextPainter painter = TextPainter(
-        text: TextSpan(text: '', style: baseStyle),
-        textDirection: textDirection,
-        textScaler: textScaler,
-      )..layout();
-      out.add(
-        LaidOutLine(
-          source: source,
-          top: top,
-          height: 0,
-          slot: MarkerSlot.none,
-          painter: painter,
-          visuals: <VisualLine>[
-            VisualLine(
-              index: 0,
-              top: 0,
-              height: 0,
-              start: source.paintStart,
-              end: source.end,
-              width: 0,
-            ),
-          ],
-          hidden: true,
-        ),
-      );
+      out.add(_hiddenLine(source, top, baseStyle, textScaler, textDirection));
       continue;
     }
 
@@ -733,104 +876,45 @@ LineDocumentLayout layoutLines({
       revealedMarkers: markersInline,
     );
     _updateRailCentres(source, slot, railCentres, metrics);
-    final LineBlockView? block = blockFor?.call(source, blockContext);
-    final EdgeInsets insets = block == null
-        ? (insetFor?.call(source) ?? EdgeInsets.zero)
-        : EdgeInsets.zero;
-    final double maxWidth = math.max(
-      1.0,
-      contentWidth - insets.horizontal - slot.width,
+    final _LineMeasured measured = _measureOneLine(
+      source: source,
+      text: text,
+      style: style,
+      slot: slot,
+      contentWidth: contentWidth,
+      textScaler: textScaler,
+      textDirection: textDirection,
+      blockContext: blockContext,
+      blockFor: blockFor,
+      spanFor: spanFor,
+      fillFor: fillFor,
+      insetFor: insetFor,
+      heightFor: heightFor,
+      markersInline: markersInline,
+      index: i,
+      cache: cache,
+      stats: stats,
     );
-    final int paintedFrom = markersInline
-        ? source.markerStart
-        : source.paintStart;
-    final String painted = text.substring(paintedFrom, source.end);
-    final InlineSpan? custom = block == null ? spanFor?.call(source) : null;
-    final InlineSpan? usable = custom != null && custom.toPlainText() == painted
-        ? custom
-        : null;
-    // 底片的偏移是相对这一行排出来的文字算的，span 树退回纯文本时那些偏移
-    // 也就不成立了（端帽的内边距会跟着消失），所以只在 span 可用时铺底片。
-    final List<LineFillRun> fills = block == null && usable != null
-        ? (fillFor?.call(source) ?? const <LineFillRun>[])
-        : const <LineFillRun>[];
-    final double? override = block != null ? null : heightFor?.call(source);
-    // 只有 span 树不改变任何字体度量时才缓存：颜色、底片、装饰线不影响
-    // 排版，可以忽略；字重、字体、字号、字距会影响宽度，必须逐层比对。
-    final bool cacheable =
-        block == null &&
-        (usable == null || _spanUsesBaseMetrics(usable, style));
-    final bool pooled = cacheable && cache != null;
-    final _LineKey key = (
-      painted,
-      style,
-      maxWidth,
-      textScaler,
-      textDirection,
-      override,
-    );
-    final _MeasuredLine? measured = pooled ? cache._take(i, key) : null;
-
-    final TextPainter painter;
-    final double height;
-    final List<VisualLine> visuals;
-    if (measured != null) {
-      painter = measured.painter;
-      height = measured.height;
-      visuals = _shiftVisuals(measured.visuals, measured.base, paintedFrom);
-    } else {
-      painter = TextPainter(
-        text: block != null
-            ? TextSpan(text: '', style: style)
-            : (usable ?? TextSpan(text: painted, style: style)),
-        textDirection: textDirection,
-        textScaler: textScaler,
-      )..layout(maxWidth: maxWidth);
-
-      final double rowHeight = _rowHeight(style);
-      height = block?.height ?? override ?? math.max(painter.height, rowHeight);
-      visuals = block != null
-          ? <VisualLine>[
-              VisualLine(
-                index: 0,
-                top: 0,
-                height: block.height,
-                start: source.start,
-                end: source.end,
-                width: block.width,
-              ),
-            ]
-          : _visualsOf(
-              source,
-              painter,
-              height,
-              override != null,
-              maxWidth,
-              paintedFrom,
-            );
-      if (pooled) {
-        cache._put(i, key, painter, height, paintedFrom, visuals);
-      }
-    }
 
     out.add(
       LaidOutLine(
         source: source,
         top: top,
-        height: height,
+        height: measured.height,
         slot: slot,
-        insets: insets,
-        painter: painter,
-        visuals: visuals,
-        block: block,
-        fills: fills,
-        fromCache: pooled,
+        insets: measured.insets,
+        painter: measured.painter,
+        visuals: measured.visuals,
+        block: measured.block,
+        fills: measured.fills,
+        fromCache: measured.fromCache,
         fold: foldByParent[i],
         folded: foldedParents.contains(i),
-        paintedFrom: paintedFrom,
+        paintedFrom: measured.paintedFrom,
       ),
     );
-    top += height;
+    stats?.rebuiltLines++;
+    top += measured.height;
   }
 
   cache?._end();
@@ -845,6 +929,804 @@ LineDocumentLayout layoutLines({
     hiddenUnder: hiddenUnder,
   );
 }
+
+/// 一行的测量产物。全量与局部重排共用 [_measureOneLine] 的返回值。
+typedef _LineMeasured = ({
+  TextPainter painter,
+  double height,
+  List<VisualLine> visuals,
+  List<LineFillRun> fills,
+  int paintedFrom,
+  EdgeInsets insets,
+  LineBlockView? block,
+  bool fromCache,
+});
+
+/// 测量并排版一行。
+///
+/// 全量 [layoutLines] 与局部 [relayoutLines] 都走这里：解析 span、铺底片、
+/// 取固定行高、缓存命中、建 `TextPainter`、切视觉行——只有一份，避免两条
+/// 路径各自漂移。
+///
+/// [cache] 为 `null` 时一律新建 painter、不进池（局部重排的要求：脏行多半
+/// 因揭示变化而不可缓存，入池会把「键相同但 span 树已变」的旧 painter 留给
+/// 下一次全量布局）。
+_LineMeasured _measureOneLine({
+  required SourceLine source,
+  required String text,
+  required TextStyle style,
+  required MarkerSlot slot,
+  required double contentWidth,
+  required TextScaler textScaler,
+  required TextDirection textDirection,
+  required LineBlockContext blockContext,
+  required LineBlockResolver? blockFor,
+  required LineSpanResolver? spanFor,
+  required LineFillResolver? fillFor,
+  required LineInsetResolver? insetFor,
+  required LineHeightResolver? heightFor,
+  required bool markersInline,
+  required int index,
+  required LineLayoutCache? cache,
+  required LineLayoutStats? stats,
+}) {
+  final LineBlockView? block = blockFor?.call(source, blockContext);
+  stats?.blockResolves++;
+  final EdgeInsets insets = block == null
+      ? (insetFor?.call(source) ?? EdgeInsets.zero)
+      : EdgeInsets.zero;
+  final double maxWidth = math.max(
+    1.0,
+    contentWidth - insets.horizontal - slot.width,
+  );
+  final int paintedFrom = markersInline ? source.markerStart : source.paintStart;
+  final String painted = text.substring(paintedFrom, source.end);
+  final InlineSpan? custom = block == null ? spanFor?.call(source) : null;
+  final InlineSpan? usable = custom != null && custom.toPlainText() == painted
+      ? custom
+      : null;
+  // 底片的偏移是相对这一行排出来的文字算的，span 树退回纯文本时那些偏移
+  // 也就不成立了（端帽的内边距会跟着消失），所以只在 span 可用时铺底片。
+  final List<LineFillRun> fills = block == null && usable != null
+      ? (fillFor?.call(source) ?? const <LineFillRun>[])
+      : const <LineFillRun>[];
+  final double? override = block != null ? null : heightFor?.call(source);
+  // 只有 span 树不改变任何字体度量时才缓存：颜色、底片、装饰线不影响
+  // 排版，可以忽略；字重、字体、字号、字距会影响宽度，必须逐层比对。
+  final bool cacheable =
+      block == null && (usable == null || _spanUsesBaseMetrics(usable, style));
+  final bool pooled = cacheable && cache != null;
+  final _LineKey key = (
+    painted,
+    style,
+    maxWidth,
+    textScaler,
+    textDirection,
+    override,
+  );
+  final _MeasuredLine? measured = pooled ? cache._take(index, key) : null;
+
+  final TextPainter painter;
+  final double height;
+  final List<VisualLine> visuals;
+  if (measured != null) {
+    painter = measured.painter;
+    height = measured.height;
+    visuals = _shiftVisuals(measured.visuals, measured.base, paintedFrom);
+    stats?.cacheHits++;
+  } else {
+    painter = TextPainter(
+      text: block != null
+          ? TextSpan(text: '', style: style)
+          : (usable ?? TextSpan(text: painted, style: style)),
+      textDirection: textDirection,
+      textScaler: textScaler,
+    )..layout(maxWidth: maxWidth);
+    stats?.paintersMeasured++;
+
+    final double rowHeight = _rowHeight(style);
+    height = block?.height ?? override ?? math.max(painter.height, rowHeight);
+    visuals = block != null
+        ? <VisualLine>[
+            VisualLine(
+              index: 0,
+              top: 0,
+              height: block.height,
+              start: source.start,
+              end: source.end,
+              width: block.width,
+            ),
+          ]
+        : _visualsOf(
+            source,
+            painter,
+            height,
+            override != null,
+            maxWidth,
+            paintedFrom,
+          );
+    if (pooled) {
+      cache._put(index, key, painter, height, paintedFrom, visuals);
+    }
+  }
+
+  return (
+    painter: painter,
+    height: height,
+    visuals: visuals,
+    fills: fills,
+    paintedFrom: paintedFrom,
+    insets: insets,
+    block: block,
+    fromCache: pooled,
+  );
+}
+
+/// 局部重排：只重建 [dirtyLines] 里的行，其余行整对象复用。
+///
+/// 前提是「文本、宽度、字号缩放、方向、基础样式、`markerRevealLine`、折叠
+/// 状态」都没变——那些变化会改变行结构、槽位或隐藏行映射，只能走全量。
+/// 调用方（渲染对象）负责判断；这里对文本/宽度/度量再做一次兜底，前提不成立
+/// 时直接退回 [layoutLines]，绝不把错误状态静默接受。
+///
+/// 复用行的 `LaidOutLine` 对象会被搬进新布局，只平移 [LaidOutLine.top]；
+/// 旧布局随即 `handOverOwnership()`，不能再释放这些 painter。脏行的旧
+/// painter 按所有权处理：池化的留给下一次全量布局自然淘汰，非池化的当场释放。
+LineDocumentLayout relayoutLines({
+  required LineDocumentLayout previous,
+  required Set<int> dirtyLines,
+  required String text,
+  required TextStyle baseStyle,
+  required double contentWidth,
+  TextScaler textScaler = TextScaler.noScaling,
+  TextDirection textDirection = TextDirection.ltr,
+  LineStyleResolver? styleFor,
+  LineHeightResolver? heightFor,
+  LineSpanResolver? spanFor,
+  LineFillResolver? fillFor,
+  LineInsetResolver? insetFor,
+  LineBlockResolver? blockFor,
+  int? markerRevealLine,
+  Set<int> foldedLines = const <int>{},
+  LineLayoutMetrics metrics = const LineLayoutMetrics(),
+  LineLayoutStats? stats,
+}) {
+  if (previous.text != text ||
+      previous.width != contentWidth ||
+      previous.metrics != metrics) {
+    return layoutLines(
+      text: text,
+      baseStyle: baseStyle,
+      contentWidth: contentWidth,
+      textScaler: textScaler,
+      textDirection: textDirection,
+      styleFor: styleFor,
+      heightFor: heightFor,
+      spanFor: spanFor,
+      fillFor: fillFor,
+      insetFor: insetFor,
+      blockFor: blockFor,
+      markerRevealLine: markerRevealLine,
+      foldedLines: foldedLines,
+      metrics: metrics,
+      stats: stats,
+    );
+  }
+
+  final List<SourceLine> sources = previous.lines;
+  final List<LaidOutLine> laidOut = List<LaidOutLine>.of(previous.laidOut);
+  final LineBlockContext blockContext = LineBlockContext(
+    contentWidth: contentWidth,
+    textScaler: textScaler,
+    textDirection: textDirection,
+  );
+  double top = 0;
+  for (int i = 0; i < laidOut.length; i++) {
+    final LaidOutLine old = laidOut[i];
+    // 隐藏占位行与未变行：整对象复用（painter、槽位、导轨、底片、视觉行
+    // 全部保留），只把行顶平移到新的累计高度。
+    if (old.hidden || !dirtyLines.contains(i)) {
+      old.top = top;
+      top += old.height;
+      stats?.reusedLines++;
+      continue;
+    }
+
+    final SourceLine source = old.source;
+    final TextStyle style = styleFor?.call(source) ?? baseStyle;
+    // 槽位沿用上一轮：纯选区变化不改列表几何（样式与选区无关），导轨也不变。
+    final MarkerSlot slot = old.slot;
+    final bool markersInline =
+        source.isList &&
+        markerRevealLine != null &&
+        markerRevealLine == source.start;
+    if (!old.fromCache) old.painter.dispose();
+    final _LineMeasured measured = _measureOneLine(
+      source: source,
+      text: text,
+      style: style,
+      slot: slot,
+      contentWidth: contentWidth,
+      textScaler: textScaler,
+      textDirection: textDirection,
+      blockContext: blockContext,
+      blockFor: blockFor,
+      spanFor: spanFor,
+      fillFor: fillFor,
+      insetFor: insetFor,
+      heightFor: heightFor,
+      markersInline: markersInline,
+      index: i,
+      cache: null,
+      stats: stats,
+    );
+    laidOut[i] = LaidOutLine(
+      source: source,
+      top: top,
+      height: measured.height,
+      slot: slot,
+      insets: measured.insets,
+      painter: measured.painter,
+      visuals: measured.visuals,
+      block: measured.block,
+      fills: measured.fills,
+      fold: old.fold,
+      folded: old.folded,
+      paintedFrom: measured.paintedFrom,
+    );
+    stats?.rebuiltLines++;
+    top += measured.height;
+  }
+
+  previous.handOverOwnership();
+  return LineDocumentLayout._(
+    text: text,
+    lines: sources,
+    laidOut: laidOut,
+    width: contentWidth,
+    height: top,
+    metrics: metrics,
+    hiddenUnder: previous._hiddenUnder,
+  );
+}
+
+/// 编辑后的局部重排：只重建被编辑波及的行，其余行换壳复用。
+///
+/// [editStart] / [removedLength] / [insertedLength] 描述新旧文本之间**唯一**的
+/// 替换区间（公共前缀与公共后缀求出，新文本坐标）。返回 `null` 表示这次编辑
+/// 超出了安全增量范围（行结构变化、行内容对不上、前提不成立），调用方必须
+/// 退回 [layoutLines]——宁可慢一次，也不接受几何有偏差的布局。
+///
+/// 复用的判据是「源码行本身没变」：行文本、种类、层级、序号、标记偏移全部
+/// 相同，只有绝对偏移按字符差平移；再加上揭示签名不变（变了的那一行单独
+/// 重排）。行高、视觉行、底片、表格行块都跟着旧对象走，因此不会重新解析
+/// span、也不会重新测量。
+///
+/// 结构传播按方案 §8 处理：被编辑波及的表格扩到整张表、围栏扩到整块、
+/// 列表结构变化扩到整个列表组；其余情况一旦发现有行对不上就整体退回全量。
+LineDocumentLayout? relayoutOnEdit({
+  required LineDocumentLayout previous,
+  required String text,
+  required int editStart,
+  required int removedLength,
+  required int insertedLength,
+  required TextStyle baseStyle,
+  required double contentWidth,
+  TextScaler textScaler = TextScaler.noScaling,
+  TextDirection textDirection = TextDirection.ltr,
+  LineStyleResolver? styleFor,
+  LineHeightResolver? heightFor,
+  LineSpanResolver? spanFor,
+  LineFillResolver? fillFor,
+  LineInsetResolver? insetFor,
+  LineBlockResolver? blockFor,
+  int? markerRevealLine,
+  Set<int> foldedLines = const <int>{},
+  LineLayoutMetrics metrics = const LineLayoutMetrics(),
+  TextSelection? revealBefore,
+  TextSelection? revealAfter,
+  LineLayoutStats? stats,
+}) {
+  if (previous.width != contentWidth || previous.metrics != metrics) return null;
+  if (editStart < 0 || removedLength < 0 || insertedLength < 0) return null;
+
+  final int oldLength = previous.text.length;
+  final int oldTail = editStart + removedLength;
+  final int newTail = editStart + insertedLength;
+  if (oldTail > oldLength || newTail > text.length) return null;
+  if (oldLength - oldTail != text.length - newTail) return null;
+  // 尾部必须逐字符相同：不一致说明传入的区间不是这两份文本的真实差分，
+  // 后面的「偏移平移」前提就不成立了。
+  if (newTail < text.length &&
+      previous.text.substring(oldTail) != text.substring(newTail)) {
+    return null;
+  }
+
+  final List<SourceLine> sources = scanSourceLines(text);
+  if (sources.isEmpty) return null;
+  final int charDelta = insertedLength - removedLength;
+  final int lineDelta = sources.length - previous.lines.length;
+
+  int from = _sourceIndexAtOffset(sources, editStart) - 1;
+  if (from < 0) from = 0;
+  int to = _sourceIndexAtOffset(sources, newTail);
+  if (to > sources.length - 1) to = sources.length - 1;
+  if (from > to) from = to;
+
+  // 表格整段连带：表一旦重测就换了整块行视图，只重建其中几行会让其余行
+  // continue 指向已作废的行块。
+  bool tableTouched = false;
+  bool fenceTouched = false;
+  bool listTouched = false;
+  for (int i = from; i <= to; i++) {
+    final LineBlockKind kind = sources[i].kind;
+    if (_isTableLine(kind)) tableTouched = true;
+    if (kind == LineBlockKind.fence || kind == LineBlockKind.code) {
+      fenceTouched = true;
+    }
+    if (sources[i].isList) listTouched = true;
+  }
+  // 表格与围栏必须**整块重建**，不能「换壳复用」：表格的列宽来自整表重测，
+  // 每个单元格的 `LineBlockView` 都跟着换；围栏的跨行 token（块注释、多行
+  // 字符串）让后面没改字的代码行也可能换色。两者都记成强制重建区间。
+  int? forceFrom;
+  int? forceTo;
+  if (tableTouched) {
+    while (from > 0 && _isTableLine(sources[from - 1].kind)) {
+      from--;
+    }
+    while (to + 1 < sources.length && _isTableLine(sources[to + 1].kind)) {
+      to++;
+    }
+    forceFrom = from;
+    forceTo = to;
+  }
+  if (fenceTouched) {
+    from = _fenceBlockStart(sources, from);
+    to = _fenceBlockEnd(sources, to);
+    forceFrom = forceFrom == null ? from : math.min(forceFrom, from);
+    forceTo = forceTo == null ? to : math.max(forceTo, to);
+  }
+
+  // 列表结构变化（增删行、层级/序号/标记变化）会改变导轨与槽位，dirty 要
+  // 扩到整个列表组；纯正文改字不影响别人的导轨，不必扩张。
+  if (listTouched && (lineDelta != 0 || _structureChanged(previous, sources, from, to))) {
+    from = _railGroupStart(sources, from);
+    to = _railGroupEnd(sources, to);
+  }
+
+  final _FoldPlan folds = _planFolds(sources, foldedLines);
+  final LineBlockContext blockContext = LineBlockContext(
+    contentWidth: contentWidth,
+    textScaler: textScaler,
+    textDirection: textDirection,
+  );
+  final List<double?> railCentres = List<double?>.filled(6, null);
+  final List<LaidOutLine> out = <LaidOutLine>[];
+  double top = 0;
+
+  // 已经认领过的旧行。区间内的匹配按绝对偏移查旧行，必须防两行同时认领
+  // 同一个旧行——重建分支会释放旧 painter，第二次复用就会拿到已释放的对象。
+  final Set<int> claimed = <int>{};
+
+  for (int i = 0; i < sources.length; i++) {
+    final SourceLine source = sources[i];
+    // 候选旧行与它应有的偏移平移量。
+    int? oldIndex;
+    int oldDelta = 0;
+    if (i < from) {
+      oldIndex = i;
+    } else if (i > to) {
+      oldIndex = i - lineDelta;
+      oldDelta = charDelta;
+    } else {
+      // 区间内没有行号映射：按绝对偏移找旧行。编辑点之前偏移不变，之后
+      // 整体平移 `charDelta`——两种都试，内容对得上就是同一行。
+      final int at = _sourceIndexAtOffset(previous.lines, source.start);
+      if (at < previous.lines.length &&
+          previous.lines[at].start == source.start &&
+          previous.lines[at].text == source.text) {
+        oldIndex = at;
+      } else {
+        final int shifted = source.start - charDelta;
+        final int at2 = _sourceIndexAtOffset(previous.lines, shifted);
+        if (at2 < previous.lines.length &&
+            previous.lines[at2].start == shifted &&
+            previous.lines[at2].text == source.text) {
+          oldIndex = at2;
+          oldDelta = charDelta;
+        }
+      }
+    }
+    if (oldIndex != null &&
+        (oldIndex < 0 ||
+            oldIndex >= previous.laidOut.length ||
+            claimed.contains(oldIndex))) {
+      oldIndex = null;
+    }
+    if (oldIndex != null) claimed.add(oldIndex);
+    final LaidOutLine? old = oldIndex == null
+        ? null
+        : previous.laidOut[oldIndex];
+
+    if (folds.hidden.contains(i)) {
+      // 零高占位行：旧行也是隐藏行时可以连同空 painter 一起搬过来，否则新建。
+      final bool reusePainter = old != null && old.hidden;
+      final LaidOutLine hidden = _hiddenLine(
+        source,
+        top,
+        baseStyle,
+        textScaler,
+        textDirection,
+        reusePainter ? old.painter : null,
+      );
+      if (reusePainter) {
+        stats?.reusedLines++;
+      } else {
+        if (old != null && !old.fromCache) old.painter.dispose();
+        stats?.rebuiltLines++;
+      }
+      out.add(hidden);
+      continue;
+    }
+
+    // 候选复用行：源码行本身必须没变，只有绝对偏移平移。
+    final bool revealSame =
+        old != null &&
+        _revealSignature(old.source, revealBefore) ==
+            _revealSignature(source, revealAfter);
+    final bool markersInline =
+        source.isList &&
+        markerRevealLine != null &&
+        markerRevealLine == source.start;
+    // 落在强制重建区间（整张表 / 整个围栏块）的行即便源码一字未改也不能
+    // 换壳复用：它们的测量结果依赖整块上下文。
+    final bool forced =
+        (forceFrom != null && i >= forceFrom && i <= forceTo!);
+    if (old != null &&
+        !forced &&
+        !old.hidden &&
+        revealSame &&
+        old.slot.revealedMarkers == markersInline &&
+        _sameSourceLine(old.source, source, oldDelta)) {
+      final MarkerSlot bare = MarkerSlot(
+        level: old.slot.level,
+        indent: old.slot.indent,
+        marker: old.slot.marker,
+        digitWidth: old.slot.digitWidth,
+      );
+      final List<double> rails = _railsFor(
+        source,
+        sources,
+        i,
+        railCentres,
+        bare,
+        metrics,
+      );
+      final MarkerSlot slot = MarkerSlot(
+        level: bare.level,
+        indent: bare.indent,
+        marker: bare.marker,
+        digitWidth: bare.digitWidth,
+        ownRailAbove:
+            source.isList && bare.level > 0 && railCentres[bare.level] != null,
+        railXs: rails,
+        revealedMarkers: markersInline,
+      );
+      _updateRailCentres(source, slot, railCentres, metrics);
+      final int shift = oldDelta;
+      final LaidOutLine reused = LaidOutLine(
+        source: source,
+        top: top,
+        height: old.height,
+        slot: slot,
+        insets: old.insets,
+        painter: old.painter,
+        visuals: shift == 0 ? old.visuals : _shiftVisuals(old.visuals, 0, shift),
+        block: old.block,
+        fills: old.fills,
+        fromCache: old.fromCache,
+        paintedFrom: old.paintedFrom + shift,
+        fold: folds.byParent[i],
+        folded: folds.foldedParents.contains(i),
+      );
+      reused.visualBaselines = old.visualBaselines;
+      out.add(reused);
+      stats?.reusedLines++;
+      top += reused.height;
+      continue;
+    }
+
+    // 需要重建的行：重新取样式、槽位与测量结果。
+    final TextStyle style = styleFor?.call(source) ?? baseStyle;
+    final MarkerSlot bare = _slotOf(
+      source,
+      style,
+      text,
+      textScaler,
+      textDirection,
+      metrics,
+      const <double>[],
+    );
+    final List<double> rails = _railsFor(
+      source,
+      sources,
+      i,
+      railCentres,
+      bare,
+      metrics,
+    );
+    final MarkerSlot slot = MarkerSlot(
+      level: bare.level,
+      indent: bare.indent,
+      marker: bare.marker,
+      digitWidth: bare.digitWidth,
+      ownRailAbove:
+          source.isList && bare.level > 0 && railCentres[bare.level] != null,
+      railXs: rails,
+      revealedMarkers: markersInline,
+    );
+    _updateRailCentres(source, slot, railCentres, metrics);
+    if (old != null && !old.fromCache) old.painter.dispose();
+    final _LineMeasured measured = _measureOneLine(
+      source: source,
+      text: text,
+      style: style,
+      slot: slot,
+      contentWidth: contentWidth,
+      textScaler: textScaler,
+      textDirection: textDirection,
+      blockContext: blockContext,
+      blockFor: blockFor,
+      spanFor: spanFor,
+      fillFor: fillFor,
+      insetFor: insetFor,
+      heightFor: heightFor,
+      markersInline: markersInline,
+      index: i,
+      cache: null,
+      stats: stats,
+    );
+    out.add(
+      LaidOutLine(
+        source: source,
+        top: top,
+        height: measured.height,
+        slot: slot,
+        insets: measured.insets,
+        painter: measured.painter,
+        visuals: measured.visuals,
+        block: measured.block,
+        fills: measured.fills,
+        fold: folds.byParent[i],
+        folded: folds.foldedParents.contains(i),
+        paintedFrom: measured.paintedFrom,
+      ),
+    );
+    stats?.rebuiltLines++;
+    top += measured.height;
+  }
+
+  previous.handOverOwnership();
+  return LineDocumentLayout._(
+    text: text,
+    lines: sources,
+    laidOut: out,
+    width: contentWidth,
+    height: top,
+    metrics: metrics,
+    hiddenUnder: folds.hiddenUnder,
+  );
+}
+
+/// 两行的源码内容与结构是否一致；[delta] 是行首偏移应有的平移量。
+bool _sameSourceLine(SourceLine before, SourceLine after, int delta) =>
+    after.text == before.text && _sameStructure(before, after, delta);
+
+/// 两行的**结构**是否一致（不看正文）：种类、层级、序号、标记偏移。
+///
+/// 只改正文不该让整组列表重排——导轨与槽位只由结构决定；只有结构变了才需要
+/// 把脏区扩到整个列表组。
+bool _sameStructure(SourceLine before, SourceLine after, int delta) {
+  return after.start == before.start + delta &&
+      after.kind == before.kind &&
+      after.headingLevel == before.headingLevel &&
+      after.indent == before.indent &&
+      after.nestLevel == before.nestLevel &&
+      after.number == before.number &&
+      after.checked == before.checked &&
+      after.fenceOpens == before.fenceOpens &&
+      after.markerStart - after.start == before.markerStart - before.start &&
+      after.markerEnd - after.start == before.markerEnd - before.start &&
+      after.leadEnd - after.start == before.leadEnd - before.start &&
+      after.paintStart - after.start == before.paintStart - before.start;
+}
+
+/// 新文本里偏移 [offset] 落在（或刚越过）的源码行下标。
+int _sourceIndexAtOffset(List<SourceLine> lines, int offset) {
+  int lo = 0;
+  int hi = lines.length - 1;
+  while (lo < hi) {
+    final int mid = (lo + hi + 1) >> 1;
+    if (lines[mid].start <= offset) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return lo;
+}
+
+/// dirty 区间 `[from, to]` 里是否有行结构变了（不再是同一行、列表几何变了）。
+bool _structureChanged(
+  LineDocumentLayout previous,
+  List<SourceLine> sources,
+  int from,
+  int to,
+) {
+  if (sources.length != previous.lines.length) return true;
+  for (int i = from; i <= to && i < sources.length; i++) {
+    if (!_sameStructure(previous.lines[i], sources[i], 0)) return true;
+  }
+  return false;
+}
+
+/// 围栏块的开围栏行；找不到时退回 [i]（结构异常，交给逐行校验兜底）。
+int _fenceBlockStart(List<SourceLine> lines, int i) {
+  int j = i;
+  while (j >= 0) {
+    final SourceLine line = lines[j];
+    if (line.kind == LineBlockKind.fence && line.fenceOpens) return j;
+    if (j == 0) break;
+    if (line.kind != LineBlockKind.fence && line.kind != LineBlockKind.code) {
+      break;
+    }
+    j--;
+  }
+  return i;
+}
+
+/// 围栏块的闭合围栏行（未闭合时到文档末尾）。
+int _fenceBlockEnd(List<SourceLine> lines, int i) {
+  int j = i;
+  while (j + 1 < lines.length) {
+    final SourceLine next = lines[j + 1];
+    if (next.kind != LineBlockKind.fence && next.kind != LineBlockKind.code) {
+      break;
+    }
+    j++;
+    if (next.kind == LineBlockKind.fence) break;
+  }
+  return j;
+}
+
+/// 列表组的起点：往上跳过列表行、空行与缩进续行。
+int _railGroupStart(List<SourceLine> lines, int i) {
+  int j = i;
+  while (j > 0) {
+    final SourceLine prev = lines[j - 1];
+    if (prev.isList ||
+        prev.text.trim().isEmpty ||
+        prev.text.startsWith(RegExp(r'\s'))) {
+      j--;
+      continue;
+    }
+    break;
+  }
+  return j;
+}
+
+/// 列表组的终点：往下跳过列表行、空行与缩进续行。
+int _railGroupEnd(List<SourceLine> lines, int i) {
+  int j = i;
+  while (j + 1 < lines.length) {
+    final SourceLine next = lines[j + 1];
+    if (next.isList ||
+        next.text.trim().isEmpty ||
+        next.text.startsWith(RegExp(r'\s'))) {
+      j++;
+      continue;
+    }
+    break;
+  }
+  return j;
+}
+
+/// 折叠规划：哪些行被藏起来、藏在哪一项下面、哪些项自己收起。
+typedef _FoldPlan = ({
+  Map<int, ListFold> byParent,
+  Set<int> foldedParents,
+  Set<int> hidden,
+  Map<int, int> hiddenUnder,
+});
+
+_FoldPlan _planFolds(List<SourceLine> sources, Set<int> foldedLines) {
+  final Map<int, ListFold> byParent = <int, ListFold>{
+    for (final ListFold fold in scanListFolds(sources)) fold.parentIndex: fold,
+  };
+  final Set<int> hidden = <int>{};
+  final Map<int, int> hiddenUnder = <int, int>{};
+  final Set<int> foldedParents = <int>{};
+  for (int i = 0; i < sources.length; i++) {
+    final ListFold? fold = byParent[i];
+    if (fold == null || hidden.contains(i)) continue;
+    if (!foldedLines.contains(sources[i].start)) continue;
+    foldedParents.add(i);
+    for (int k = i + 1; k <= fold.lastIndex; k++) {
+      hidden.add(k);
+      hiddenUnder[k] = i;
+    }
+  }
+  return (
+    byParent: byParent,
+    foldedParents: foldedParents,
+    hidden: hidden,
+    hiddenUnder: hiddenUnder,
+  );
+}
+
+/// 零高占位行；[painter] 给定时直接借用（旧布局同为隐藏行）。
+LaidOutLine _hiddenLine(
+  SourceLine source,
+  double top,
+  TextStyle baseStyle,
+  TextScaler textScaler,
+  TextDirection textDirection, [
+  TextPainter? painter,
+]) {
+  return LaidOutLine(
+    source: source,
+    top: top,
+    height: 0,
+    slot: MarkerSlot.none,
+    painter:
+        painter ??
+        (TextPainter(
+          text: TextSpan(text: '', style: baseStyle),
+          textDirection: textDirection,
+          textScaler: textScaler,
+        )..layout()),
+    visuals: <VisualLine>[
+      VisualLine(
+        index: 0,
+        top: 0,
+        height: 0,
+        start: source.paintStart,
+        end: source.end,
+        width: 0,
+      ),
+    ],
+    hidden: true,
+  );
+}
+
+/// 一行在揭示选区下的签名；`(-1, -1, -1)` 表示这一行完全不受选区影响。
+///
+/// [a]/[b] 是选区与本行 `[start, end]` 的钳制交集，[caret] 是折叠光标落在
+/// 本行时的偏移（非折叠选区为 -1）。`LiveLineStyle` 的选区依赖都由此导出：
+/// 交集覆盖到行 → 块级标记摊开；交集落在某个行内 token 上 → token 露出源码；
+/// 标签前缀被覆盖 → 左内边距收回。
+typedef _RevealSignature = (int a, int b, int caret);
+
+_RevealSignature _revealSignature(SourceLine line, TextSelection? selection) {
+  if (selection == null || !selection.isValid || selection.start < 0) {
+    return (-1, -1, -1);
+  }
+  if (selection.end < line.start || selection.start > line.end) {
+    return (-1, -1, -1);
+  }
+  return (
+    math.max(selection.start, line.start),
+    math.min(selection.end, line.end),
+    selection.isCollapsed ? selection.start : -1,
+  );
+}
+
+/// 表格 run 的行种类：一张表的所有行。
+bool _isTableLine(LineBlockKind kind) =>
+    kind == LineBlockKind.table ||
+    kind == LineBlockKind.tableHeader ||
+    kind == LineBlockKind.tableDivider;
 
 /// 一段样式的整行高度。
 ///

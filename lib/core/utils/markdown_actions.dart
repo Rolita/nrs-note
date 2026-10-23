@@ -2129,6 +2129,28 @@ MarkdownEditFn insertWikilink() {
   };
 }
 
+/// Inserts an already-rendered template at the selection, in one edit.
+///
+/// [cursorOffset] is measured in [text], from its first character — the offset
+/// `tp.file.cursor()` recorded while the template was rendered. Clamping it to
+/// the inserted text keeps a stale marker from pushing the caret into the
+/// prose that follows. Without a marker the caret lands at the end of what was
+/// inserted, which is also where a hand-typed block would leave it.
+MarkdownEditFn insertTemplateText(String text, {int? cursorOffset}) {
+  return (TextEditingValue raw) {
+    final TextEditingValue v = _normalised(raw);
+    final int at = v.selection.start;
+    final String next = v.text.replaceRange(at, v.selection.end, text);
+    final int caret = cursorOffset == null
+        ? at + text.length
+        : at + cursorOffset.clamp(0, text.length);
+    return TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: caret.clamp(0, next.length)),
+    );
+  };
+}
+
 /// Inserts a standalone block at the caret, guaranteeing blank lines around it.
 MarkdownEditFn insertBlock(String snippet, {int? caretOffset}) {
   return (TextEditingValue raw) {

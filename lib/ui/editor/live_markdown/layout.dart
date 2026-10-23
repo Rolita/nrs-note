@@ -55,7 +55,7 @@ double _lineHeightOf(TextStyle base) =>
 
 /// How much text is laid out above source line [line], in paragraph
 /// coordinates — the measure the pane needs to put a line at a given place on
-/// screen ("jump to heading", typewriter centring).
+/// screen ("jump to heading", scroll the caret line into view).
 ///
 /// The whole prefix goes through **one** [TextPainter] pass, so a paragraph that
 /// wrapped is counted at the width it will really be painted at. That pass can

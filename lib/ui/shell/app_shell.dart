@@ -12,11 +12,18 @@ import '../../data/models/note.dart';
 import '../../data/storage/note_store.dart';
 import '../../state/notes_controller.dart';
 import '../../state/settings_controller.dart';
+import '../../state/template_settings.dart';
+import '../../templates/template_error.dart';
+import '../../templates/template_interpreter.dart';
+import '../../templates/template_service.dart';
 import '../common/app_widgets.dart';
 import '../common/delete_dialog.dart';
 import '../common/notices.dart';
 import '../editor/editor_pane.dart';
 import '../editor/outline_panel.dart';
+import '../templates/template_interaction.dart';
+import '../templates/template_new_note_dialog.dart';
+import '../templates/template_picker.dart';
 import 'data_safety_dialogs.dart';
 import 'function_rail.dart';
 import 'note_list_panel.dart';
@@ -37,8 +44,14 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   final GlobalKey<EditorPaneState> _editorKey = GlobalKey<EditorPaneState>();
+  final GlobalKey<NoteListPanelState> _listKey =
+      GlobalKey<NoteListPanelState>();
   final FocusNode _shellFocus = FocusNode(debugLabel: 'nrs-shell');
   final NoticeController _notices = NoticeController();
+  final TemplateService _templates = const TemplateService();
+
+  late final NotesController _notes;
+  late final SettingsController _settings;
 
   SidebarView _view = SidebarView.files;
   int _cursorLine = 0;
@@ -47,15 +60,18 @@ class _AppShellState extends State<AppShell> {
   @override
   void initState() {
     super.initState();
+    _notes = context.read<NotesController>();
+    _settings = context.read<SettingsController>();
+    _notes.onBlankNoteCreated = _applyFolderTemplate;
     // Prefer the newest note on first paint. A restored empty tab strip is a
     // state the user chose (they closed every tab), not an empty selection to
     // heal — `tabSessionRestored` keeps this from undoing it.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final NotesController notes = context.read<NotesController>();
-      if (notes.selectedId == null &&
-          notes.allNotes.isNotEmpty &&
-          !notes.tabSessionRestored) {
-        notes.select(notes.allNotes.first.id);
+      if (!mounted) return;
+      if (_notes.selectedId == null &&
+          _notes.allNotes.isNotEmpty &&
+          !_notes.tabSessionRestored) {
+        _notes.select(_notes.allNotes.first.id);
       }
     });
     // Coming back to the window is when an edit made in another program can be
@@ -65,6 +81,7 @@ class _AppShellState extends State<AppShell> {
 
   @override
   void dispose() {
+    _notes.onBlankNoteCreated = null;
     _stopVaultSync?.call();
     _notices.dispose();
     _shellFocus.dispose();
@@ -269,15 +286,213 @@ class _AppShellState extends State<AppShell> {
   }
 
   void _createNote() {
-    context.read<NotesController>().createNote();
+    _notes.createNote();
+  }
+
+  // --------------------------------------------------------------- templates
+
+  Future<void> _openTemplatePicker() async {
+    if (!mounted) return;
+    final String folder = _settings.templatesFolder;
+    final TemplatePickerResult? result = await showTemplatePicker(
+      context,
+      templates: _templates.discoverTemplates(_notes.allNotes, folder),
+      templatesFolder: folder,
+      canInsert: _notes.selectedNote != null,
+    );
+    if (!mounted || result == null) return;
+
+    switch (result.action) {
+      case TemplatePickerAction.insert:
+        final Note? template = result.template;
+        if (template != null) await _insertTemplate(template);
+      case TemplatePickerAction.newNote:
+        final Note? template = result.template;
+        if (template != null) await _createNoteFromTemplate(template);
+      case TemplatePickerAction.openFolder:
+        await _showTemplatesFolder();
+      case TemplatePickerAction.newTemplate:
+        await _createTemplateNote();
+      case TemplatePickerAction.edit:
+        final Note? template = result.template;
+        if (template != null) _notes.select(template.id);
+    }
+  }
+
+  Future<void> _insertTemplate(Note template) async {
+    final Note? target = _notes.draft ?? _notes.selectedNote;
+    if (target == null) return;
+    final EditorPaneState? editor = _editorKey.currentState;
+    final String selection = editor?.selectedBodyText ?? '';
+    try {
+      final NtlRenderResult rendered = await _templates.render(
+        template: template,
+        note: target,
+        notes: _notes.allNotes,
+        interaction: TemplateDialogInteraction(context),
+        selection: selection,
+        vaultRoot: _notes.vaultLocation,
+      );
+      if (!mounted || _notes.selectedNote?.id != target.id) return;
+      // One edit: a single undo takes the whole template back out.
+      _editorKey.currentState?.insertTemplate(
+        rendered.text,
+        cursorOffset: rendered.cursorOffset,
+      );
+    } on TemplateCancelled {
+      // Closing a prompt is not a failure: the editor was never touched.
+    } catch (e) {
+      if (!mounted) return;
+      _toast('模板渲染失败', kind: NoticeKind.error, detail: '$e');
+    }
+  }
+
+  /// Runs one of the user's template shortcuts.
+  ///
+  /// The binding stores a note id, so a template that was deleted or renamed
+  /// away simply stops firing. 「插入」 needs an open note; 「新建」 never does.
+  Future<void> _runTemplateHotkey(TemplateHotkey hotkey) async {
+    Note? template;
+    for (final Note note in _notes.allNotes) {
+      if (note.id == hotkey.templateId) {
+        template = note;
+        break;
+      }
+    }
+    if (template == null || !mounted) return;
+
+    if (hotkey.action == TemplateAction.create) {
+      await _createNoteFromTemplate(template);
+      return;
+    }
+    if (_notes.draft == null && _notes.selectedNote == null) {
+      _toast(
+        '没有打开的笔记',
+        kind: NoticeKind.info,
+        detail: '先打开一篇笔记，或把动作改成「新建笔记」',
+      );
+      return;
+    }
+    await _insertTemplate(template);
+  }
+
+  Future<void> _createNoteFromTemplate(Note template) async {
+    final String? title = await showTemplateNewNoteDialog(
+      context,
+      templateTitle: template.title,
+    );
+    if (!mounted || title == null) return;
+    final Note note = _notes.createNote(title: title, runCreationHook: false);
+    await _renderIntoBlankNote(template, note, explicit: true);
+  }
+
+  /// Renders [template] into [note] and writes it only while the note is still
+  /// empty. Shared by the explicit new-note flow and folder automation; the
+  /// write itself re-checks emptiness because a prompt can stay open for a
+  /// while and the user may already be typing underneath it.
+  Future<void> _renderIntoBlankNote(
+    Note template,
+    Note note, {
+    required bool explicit,
+  }) async {
+    final Note fresh = _notes.allNotes.firstWhere(
+      (Note n) => n.id == note.id,
+      orElse: () => note,
+    );
+    if (fresh.body.isNotEmpty) {
+      if (explicit) {
+        _toast('模板未套用', kind: NoticeKind.info, detail: '笔记里已经有内容了');
+      }
+      return;
+    }
+
+    try {
+      final NtlRenderResult rendered = await _templates.render(
+        template: template,
+        note: fresh,
+        notes: _notes.allNotes,
+        interaction: TemplateDialogInteraction(context),
+        vaultRoot: _notes.vaultLocation,
+      );
+      if (!mounted) return;
+      final bool applied = await _notes.applyBodyIfEmpty(
+        note.id,
+        rendered.text,
+      );
+      if (!mounted) return;
+      if (!applied) {
+        if (explicit) {
+          _toast('模板未套用', kind: NoticeKind.info, detail: '笔记里已经有内容了');
+        }
+        return;
+      }
+      await _placeCaretIn(
+        note.id,
+        rendered.cursorOffset ?? rendered.text.length,
+      );
+    } on TemplateCancelled {
+      if (!mounted) return;
+      _toast(
+        explicit ? '已取消模板' : '已取消模板套用',
+        kind: NoticeKind.info,
+        detail: '笔记保留为空',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      _toast('模板渲染失败', kind: NoticeKind.error, detail: '$e');
+    }
+  }
+
+  Future<void> _placeCaretIn(String noteId, int offset) async {
+    if (!mounted || _notes.selectedNote?.id != noteId) return;
+    // The editor rebinds the new body on its next build; setting the caret
+    // before that would clamp it into the still-empty old text.
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || _notes.selectedNote?.id != noteId) return;
+    _editorKey.currentState?.placeCaretAt(offset);
+  }
+
+  /// The controller hook: every blank note created through the normal paths
+  /// gets its folder's template, unless the user turned the switch off.
+  Future<void> _applyFolderTemplate(Note note) async {
+    if (!mounted || !_settings.autoApplyFolderTemplates) return;
+    final Note? template = _templates.folderTemplateFor(
+      notes: _notes.allNotes,
+      folderPath: note.folderPath,
+      templatesFolder: _settings.templatesFolder,
+      rules: _settings.folderTemplateRules,
+    );
+    if (template == null || !mounted) return;
+    await _renderIntoBlankNote(template, note, explicit: false);
+  }
+
+  Future<void> _showTemplatesFolder() async {
+    final String folder = _settings.templatesFolder;
+    if (!await _notes.ensureFolder(folder)) return;
+    if (!mounted) return;
+    _selectView(SidebarView.files);
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    _listKey.currentState?.revealFolder(folder);
+  }
+
+  Future<void> _createTemplateNote() async {
+    final String folder = _settings.templatesFolder;
+    if (!await _notes.ensureFolder(folder)) return;
+    if (!mounted) return;
+    _selectView(SidebarView.files);
+    _notes.createNote(title: '新模板', folderPath: folder, runCreationHook: false);
   }
 
   Map<ShortcutActivator, VoidCallback> _globalShortcuts() {
     final NotesController notes = context.read<NotesController>();
     final SettingsController settings = context.read<SettingsController>();
-    return <ShortcutActivator, VoidCallback>{
+    final Map<ShortcutActivator, VoidCallback> bindings =
+        <ShortcutActivator, VoidCallback>{
       const SingleActivator(LogicalKeyboardKey.keyN, control: true):
           _createNote,
+      const SingleActivator(LogicalKeyboardKey.keyP, control: true):
+          _openTemplatePicker,
       const SingleActivator(LogicalKeyboardKey.comma, control: true): () =>
           showSettingsDialog(context),
       const SingleActivator(LogicalKeyboardKey.backslash, control: true):
@@ -319,6 +534,31 @@ class _AppShellState extends State<AppShell> {
         if (settings.focusMode) settings.focusMode = false;
       },
     };
+
+    // Template bindings come from settings, so they are added on top of the
+    // built-ins. putIfAbsent keeps a stale or hand-edited binding from
+    // replacing the built-in shortcut it collides with; the hotkey dialog
+    // refuses such chords in the first place.
+    for (final TemplateHotkey hotkey in settings.templateHotkeys.values) {
+      if (!hotkey.isValid) continue;
+      final LogicalKeyboardKey? key = LogicalKeyboardKey.findKeyByKeyId(
+        hotkey.keyId,
+      );
+      if (key == null) continue;
+      bindings.putIfAbsent(
+        SingleActivator(
+          key,
+          control: hotkey.control,
+          alt: hotkey.alt,
+          shift: hotkey.shift,
+          includeRepeats: false,
+        ),
+        () => () {
+          _runTemplateHotkey(hotkey);
+        },
+      );
+    }
+    return bindings;
   }
 
   @override
@@ -386,11 +626,12 @@ class _AppShellState extends State<AppShell> {
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: <Widget>[
                               // The rail keeps only what has no place in the caption:
-                              // the tag view and settings.
+                              // the tag view and the vault utilities.
                               if (!zen)
                                 AppRail(
                                   view: _view,
                                   onSelectView: _selectView,
+                                  onOpenTemplates: _openTemplatePicker,
                                   onOpenTrash: () => showTrashDialog(context),
                                   onOpenSettings: () =>
                                       showSettingsDialog(context),
@@ -404,6 +645,7 @@ class _AppShellState extends State<AppShell> {
                                 SizedBox(
                                   width: settings.listWidth,
                                   child: NoteListPanel(
+                                    key: _listKey,
                                     view: _view,
                                     onCreateNote: _createNote,
                                     onDeleteNotes: _confirmDeleteMany,

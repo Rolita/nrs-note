@@ -81,6 +81,36 @@ void main() {
     });
   });
 
+  test('底片按视觉基线合并，不因字号不同的盒子上沿而拆开', () {
+    final List<TextBox> boxes = <TextBox>[
+      TextBox.fromLTRBD(8, 24, 11, 24, TextDirection.ltr),
+      TextBox.fromLTRBD(12, 9, 30, 30, TextDirection.ltr),
+      TextBox.fromLTRBD(33, 24, 37, 24, TextDirection.ltr),
+    ];
+
+    final List<({int line, double left, double right})> merged =
+        groupFillBoxesByLine(boxes, <double>[24]);
+
+    expect(merged, hasLength(1));
+    expect(merged.single.line, 0);
+    expect(merged.single.left, 8);
+    expect(merged.single.right, 37);
+  });
+
+  test('折行的底片按视觉行各留一块', () {
+    final List<TextBox> boxes = <TextBox>[
+      TextBox.fromLTRBD(8, 9, 40, 30, TextDirection.ltr),
+      TextBox.fromLTRBD(12, 39, 44, 60, TextDirection.ltr),
+    ];
+
+    final List<({int line, double left, double right})> merged =
+        groupFillBoxesByLine(boxes, <double>[24, 54]);
+
+    expect(merged, hasLength(2));
+    expect(merged.first, (line: 0, left: 8, right: 40));
+    expect(merged.last, (line: 1, left: 12, right: 44));
+  });
+
   test('reuses painters for unchanged lines and shifts their visuals', () {
     final LineLayoutCache cache = LineLayoutCache();
     addTearDown(cache.dispose);

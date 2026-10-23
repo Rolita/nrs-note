@@ -17,11 +17,13 @@ void main() {
   }
 
   group('默认值', () {
-    test('空 prefs → 石墨素白 / 跟随系统 / 没有自定义层', () async {
+    test('空 prefs → 曜石 / 跟随系统 / 三套都没有覆盖层', () async {
       final (:settings, :prefs) = await load();
-      expect(settings.themePreset, ThemePresetId.graphite);
+      expect(settings.themePreset, ThemePresetId.obsidian);
       expect(settings.theme, ThemePreference.system);
-      expect(settings.customPalette, isNull);
+      for (final ThemePresetId id in ThemePresetId.values) {
+        expect(settings.overrideFor(id), isNull, reason: id.name);
+      }
       expect(settings.paletteFor(Brightness.light).accent, AppPalette.light.accent);
       expect(settings.paletteFor(Brightness.dark).canvas, AppPalette.dark.canvas);
     });
@@ -29,8 +31,8 @@ void main() {
     test('老用户的明暗偏好留着，退役的琥珀色板一点都不留', () async {
       final (:settings, :prefs) = await load(<String, Object>{'nrs.theme': 'dark'});
       expect(settings.theme, ThemePreference.dark);
-      expect(settings.themePreset, ThemePresetId.graphite);
-      // 25 个令牌逐个等于石墨素白 —— 比「不等于某个琥珀值」更强的检查。
+      expect(settings.themePreset, ThemePresetId.obsidian);
+      // 25 个令牌逐个等于曜石 —— 比「不等于某个琥珀值」更强的检查。
       for (final AppPaletteToken t in AppPaletteToken.values) {
         expect(
           settings.paletteFor(Brightness.light).colorOf(t),
@@ -53,7 +55,7 @@ void main() {
       int notifications = 0;
       settings.addListener(() => notifications++);
 
-      settings.themePreset = ThemePresetId.graphite; // 已经是它
+      settings.themePreset = ThemePresetId.obsidian; // 已经是它
       expect(notifications, 0);
       expect(prefs.containsKey('nrs.themePreset'), isFalse);
 
@@ -67,74 +69,126 @@ void main() {
     test('认不出的串兜底，且不改写存储（好让降级仍然读得懂）', () async {
       final (:settings, :prefs) =
           await load(<String, Object>{'nrs.themePreset': 'amber'});
-      expect(settings.themePreset, ThemePresetId.graphite);
+      expect(settings.themePreset, ThemePresetId.obsidian);
       expect(prefs.getString('nrs.themePreset'), 'amber');
     });
   });
 
-  group('自定义层的预览 / 提交分工', () {
+  group('预设覆盖层的预览 / 提交分工', () {
+    PaletteOverride edited(ThemePresetId id, Color canvas) =>
+        ThemePresets.seed(id).withToken(
+          Brightness.light,
+          AppPaletteToken.canvas,
+          canvas,
+        );
+
     test('preview 立刻生效但不落盘，commit 才写', () async {
       final (:settings, :prefs) = await load();
-      settings.themePreset = ThemePresetId.custom;
+      settings.themePreset = ThemePresetId.midnight;
 
-      final CustomPalette board = ThemePresets.seed(ThemePresetId.vivid);
-      settings.previewCustomPalette(board);
+      final PaletteOverride board = edited(ThemePresetId.midnight,
+          const Color(0xFF010203));
+      settings.previewOverride(ThemePresetId.midnight, board);
 
       expect(settings.paletteFor(Brightness.light).canvas,
-          ThemePresets.of(ThemePresetId.vivid).light.canvas);
-      expect(settings.customPalette!.light.canvas, board.light.canvas);
-      expect(prefs.getString('nrs.themeCustom'), isNull);
+          const Color(0xFF010203));
+      expect(settings.overrideFor(ThemePresetId.midnight)!.light.canvas,
+          const Color(0xFF010203));
+      expect(prefs.getString('nrs.themeOverride.midnight'), isNull);
 
-      settings.commitCustomPalette(board);
-      expect(prefs.getString('nrs.themeCustom'), board.raw);
+      settings.commitOverride(ThemePresetId.midnight, board);
+      expect(prefs.getString('nrs.themeOverride.midnight'), board.raw);
     });
 
     test('commit 同一个 raw 不写盘也不再通知', () async {
       final (:settings, :prefs) = await load();
-      settings.themePreset = ThemePresetId.custom;
-      final CustomPalette board = ThemePresets.seed(ThemePresetId.vivid);
-      settings.commitCustomPalette(board);
+      final PaletteOverride board = edited(ThemePresetId.obsidian,
+          const Color(0xFF010203));
+      settings.commitOverride(ThemePresetId.obsidian, board);
 
       int notifications = 0;
       settings.addListener(() => notifications++);
-      settings.commitCustomPalette(board);
+      settings.commitOverride(ThemePresetId.obsidian, board);
       expect(notifications, 0);
-      expect(prefs.getString('nrs.themeCustom'), board.raw);
+      expect(prefs.getString('nrs.themeOverride.obsidian'), board.raw);
     });
 
     test('preview 的草稿压过盘上的值，直到 commit 把它清掉', () async {
       final (:settings, :prefs) = await load();
-      settings.themePreset = ThemePresetId.custom;
+      settings.themePreset = ThemePresetId.vivid;
 
-      final CustomPalette stored = ThemePresets.seed(ThemePresetId.vivid);
-      settings.commitCustomPalette(stored);
+      final PaletteOverride stored = edited(ThemePresetId.vivid,
+          const Color(0xFF010203));
+      settings.commitOverride(ThemePresetId.vivid, stored);
 
-      final CustomPalette draft = stored.withToken(
+      final PaletteOverride draft = stored.withToken(
         Brightness.light,
         AppPaletteToken.canvas,
-        const Color(0xFF010203),
+        const Color(0xFF040506),
       );
-      settings.previewCustomPalette(draft);
-      expect(settings.paletteFor(Brightness.light).canvas, const Color(0xFF010203));
-      expect(prefs.getString('nrs.themeCustom'), stored.raw);
+      settings.previewOverride(ThemePresetId.vivid, draft);
+      expect(settings.paletteFor(Brightness.light).canvas,
+          const Color(0xFF040506));
+      expect(prefs.getString('nrs.themeOverride.vivid'), stored.raw);
 
-      settings.commitCustomPalette(draft);
-      expect(prefs.getString('nrs.themeCustom'), draft.raw);
-      expect(settings.paletteFor(Brightness.light).canvas, const Color(0xFF010203));
+      settings.commitOverride(ThemePresetId.vivid, draft);
+      expect(prefs.getString('nrs.themeOverride.vivid'), draft.raw);
+      expect(settings.paletteFor(Brightness.light).canvas,
+          const Color(0xFF040506));
+    });
+
+    test('三套预设各存各的，改一套绝不串到另一套', () async {
+      final (:settings, :prefs) = await load();
+
+      final PaletteOverride board = edited(ThemePresetId.obsidian,
+          const Color(0xFF010203));
+      settings.commitOverride(ThemePresetId.obsidian, board);
+      expect(prefs.getString('nrs.themeOverride.midnight'), isNull);
+      expect(settings.overrideFor(ThemePresetId.midnight), isNull);
+
+      settings.themePreset = ThemePresetId.midnight;
+      expect(
+        settings.paletteFor(Brightness.light).canvas,
+        ThemePresets.of(ThemePresetId.midnight).light.canvas,
+        reason: '曜石的覆盖层不该出现在午夜靛里',
+      );
+
+      settings.themePreset = ThemePresetId.obsidian;
+      expect(settings.paletteFor(Brightness.light).canvas,
+          const Color(0xFF010203));
+    });
+
+    test('clearOverride 只把那一套还原成出厂色', () async {
+      final (:settings, :prefs) = await load();
+      settings.commitOverride(
+        ThemePresetId.midnight,
+        edited(ThemePresetId.midnight, const Color(0xFF010203)),
+      );
+      settings.commitOverride(
+        ThemePresetId.vivid,
+        edited(ThemePresetId.vivid, const Color(0xFF040506)),
+      );
+
+      settings.clearOverride(ThemePresetId.midnight);
+
+      expect(settings.overrideFor(ThemePresetId.midnight), isNull);
+      expect(prefs.containsKey('nrs.themeOverride.midnight'), isFalse);
+      expect(prefs.containsKey('nrs.themeOverride.vivid'), isTrue);
     });
 
     test('themeSignature 跟着草稿与落盘一起变', () async {
       final (:settings, :prefs) = await load();
       final String before = settings.themeSignature;
 
-      final CustomPalette board = ThemePresets.seed(ThemePresetId.midnight);
-      settings.previewCustomPalette(board);
+      final PaletteOverride board = edited(ThemePresetId.obsidian,
+          const Color(0xFF010203));
+      settings.previewOverride(ThemePresetId.obsidian, board);
       expect(settings.themeSignature, isNot(before));
 
-      settings.commitCustomPalette(board);
+      settings.commitOverride(ThemePresetId.obsidian, board);
       expect(
         settings.themeSignature,
-        '${ThemePresetId.graphite.name}|${board.raw}',
+        '${ThemePresetId.obsidian.name}|${board.raw}',
       );
     });
   });
@@ -164,54 +218,73 @@ void main() {
   });
 
   group('restoreTheme', () {
-    test('两个 key 一起回滚，一颗残留都不留', () async {
-      final (:settings, :prefs) = await load();
-      final ({ThemePresetId preset, CustomPalette? custom}) snapshot =
-          (preset: settings.themePreset, custom: settings.customPalette);
+    PaletteOverride board(ThemePresetId id, Color canvas) =>
+        ThemePresets.seed(id).withToken(
+          Brightness.light,
+          AppPaletteToken.canvas,
+          canvas,
+        );
 
-      settings.themePreset = ThemePresetId.custom;
-      settings.commitCustomPalette(ThemePresets.seed(ThemePresetId.midnight));
-      expect(prefs.containsKey('nrs.themeCustom'), isTrue);
-      expect(prefs.getString('nrs.themePreset'), 'custom');
+    test('预设与那一套的覆盖层一起回滚，一颗残留都不留', () async {
+      final (:settings, :prefs) = await load();
+      final ({ThemePresetId preset, PaletteOverride? override}) snapshot =
+          (preset: settings.themePreset, override: settings.overrideFor(settings.themePreset));
+
+      settings.commitOverride(
+        ThemePresetId.obsidian,
+        board(ThemePresetId.obsidian, const Color(0xFF010203)),
+      );
+      expect(prefs.containsKey('nrs.themeOverride.obsidian'), isTrue);
+      expect(settings.paletteFor(Brightness.light).canvas,
+          const Color(0xFF010203));
 
       settings.restoreTheme(snapshot);
 
       expect(settings.themePreset, ThemePresetId.fallback);
-      // 默认值不写盘：删掉 key 而不是写 'graphite'。
+      // 默认值不写盘：删掉 key 而不是写 'obsidian'。
       expect(prefs.containsKey('nrs.themePreset'), isFalse);
-      expect(prefs.containsKey('nrs.themeCustom'), isFalse);
-      expect(settings.customPalette, isNull);
+      expect(prefs.containsKey('nrs.themeOverride.obsidian'), isFalse);
+      expect(settings.overrideFor(ThemePresetId.obsidian), isNull);
       expect(settings.paletteFor(Brightness.light).accent, AppPalette.light.accent);
     });
 
-    test('回滚到「进入前就有一套自定义层」的那一支', () async {
+    test('回滚到「进入前就有一套覆盖层」的那一支', () async {
       final (:settings, :prefs) = await load();
-      final CustomPalette original = ThemePresets.seed(ThemePresetId.vivid);
-      settings.themePreset = ThemePresetId.custom;
-      settings.commitCustomPalette(original);
+      settings.themePreset = ThemePresetId.vivid;
+      final PaletteOverride original =
+          board(ThemePresetId.vivid, const Color(0xFF010203));
+      settings.commitOverride(ThemePresetId.vivid, original);
 
-      final ({ThemePresetId preset, CustomPalette? custom}) snapshot =
-          (preset: settings.themePreset, custom: settings.customPalette);
-      settings.commitCustomPalette(original.withToken(
-        Brightness.dark,
-        AppPaletteToken.canvas,
-        const Color(0xFF010203),
-      ));
-      expect(settings.paletteFor(Brightness.dark).canvas, const Color(0xFF010203));
+      final ({ThemePresetId preset, PaletteOverride? override}) snapshot =
+          (preset: settings.themePreset, override: settings.overrideFor(settings.themePreset));
+      settings.commitOverride(
+        ThemePresetId.vivid,
+        original.withToken(
+          Brightness.dark,
+          AppPaletteToken.canvas,
+          const Color(0xFF040506),
+        ),
+      );
+      expect(settings.paletteFor(Brightness.dark).canvas,
+          const Color(0xFF040506));
 
       settings.restoreTheme(snapshot);
-      expect(settings.themePreset, ThemePresetId.custom);
-      expect(prefs.getString('nrs.themeCustom'), original.raw);
-      expect(settings.paletteFor(Brightness.dark).canvas, original.dark.canvas);
+      expect(settings.themePreset, ThemePresetId.vivid);
+      expect(prefs.getString('nrs.themeOverride.vivid'), original.raw);
+      expect(settings.overrideFor(ThemePresetId.vivid)!.dark.canvas,
+          original.dark.canvas);
     });
 
     test('草稿也会被回滚清掉——preview 之后取消不应该留下内存里的层', () async {
       final (:settings, :prefs) = await load();
-      final ({ThemePresetId preset, CustomPalette? custom}) snapshot =
-          (preset: settings.themePreset, custom: settings.customPalette);
-      settings.previewCustomPalette(ThemePresets.seed(ThemePresetId.vivid));
+      final ({ThemePresetId preset, PaletteOverride? override}) snapshot =
+          (preset: settings.themePreset, override: settings.overrideFor(settings.themePreset));
+      settings.previewOverride(
+        ThemePresetId.obsidian,
+        board(ThemePresetId.obsidian, const Color(0xFF010203)),
+      );
       settings.restoreTheme(snapshot);
-      expect(settings.customPalette, isNull);
+      expect(settings.overrideFor(ThemePresetId.obsidian), isNull);
     });
   });
 }

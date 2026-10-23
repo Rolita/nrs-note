@@ -1221,6 +1221,86 @@ void main() {
     });
   });
 
+  group('模板套用', () {
+    test('新笔记触发一次创建钩子，模板新建可以跳过它', () async {
+      final NotesController notes = await _open(_MemoryStore());
+      int calls = 0;
+      final Completer<Note> seen = Completer<Note>();
+      notes.onBlankNoteCreated = (Note note) async {
+        calls++;
+        if (!seen.isCompleted) seen.complete(note);
+      };
+
+      final Note withHook = notes.createNote();
+      expect((await seen.future).id, withHook.id);
+
+      final Note direct = notes.createNote(runCreationHook: false);
+      await pumpEventQueue();
+      expect(calls, 1, reason: '用模板新建时不能再套一层文件夹模板');
+      expect(direct.id, isNot(withHook.id));
+    });
+
+    test('空笔记写入模板并立即保存；有字时绝不覆盖', () async {
+      final _MemoryStore store = _MemoryStore();
+      final NotesController notes = await _open(store);
+
+      final Note blank = notes.createNote();
+      expect(await notes.applyBodyIfEmpty(blank.id, '# 模板正文'), isTrue);
+      expect(notes.draft!.body, '# 模板正文');
+      expect(
+        store.notes.firstWhere((Note n) => n.id == blank.id).body,
+        '# 模板正文',
+      );
+
+      final Note typed = notes.createNote();
+      notes.updateBody('我自己写的');
+      expect(await notes.applyBodyIfEmpty(typed.id, '# 模板正文'), isFalse);
+      expect(notes.draft!.body, '我自己写的');
+      await notes.saveNow();
+      expect(
+        store.notes.firstWhere((Note n) => n.id == typed.id).body,
+        '我自己写的',
+      );
+    });
+
+    test('切换到别的笔记后，模板仍写到目标笔记而不是当前草稿', () async {
+      final _MemoryStore store = _MemoryStore(<Note>[_note('旧笔记')]);
+      final NotesController notes = await _open(store);
+      final Note created = notes.createNote();
+      final Note other = notes.allNotes.firstWhere(
+        (Note n) => n.id != created.id,
+      );
+      notes.select(other.id);
+
+      expect(await notes.applyBodyIfEmpty(created.id, '模板内容'), isTrue);
+      expect(notes.draft!.id, other.id);
+      expect(notes.draft!.body, isEmpty);
+      expect(
+        store.notes.firstWhere((Note n) => n.id == created.id).body,
+        '模板内容',
+      );
+    });
+
+    test('用户抢在模板渲染完成前输入，钩子的写入被拒绝', () async {
+      final NotesController notes = await _open(_MemoryStore());
+      final Completer<bool> applied = Completer<bool>();
+      final Completer<void> typing = Completer<void>();
+
+      notes.onBlankNoteCreated = (Note note) async {
+        await typing.future; // prompt 打开期间用户开始打字
+        applied.complete(await notes.applyBodyIfEmpty(note.id, '模板内容'));
+      };
+
+      final Note created = notes.createNote();
+      notes.updateBody('抢在模板前输入');
+      typing.complete();
+
+      expect(await applied.future, isFalse);
+      expect(notes.draft!.body, '抢在模板前输入');
+      expect(notes.noteById(created.id)!.body, '抢在模板前输入');
+    });
+  });
+
   group('标签栏会话', () {
     test('四个标签按原顺序回来，选中的还是第四个', () async {
       final List<Note> seed = <Note>[

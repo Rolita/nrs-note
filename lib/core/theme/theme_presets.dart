@@ -5,23 +5,25 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import 'app_palette.dart';
 
-/// The colour schemes the app ships, plus the sentinel for "the user's own".
+/// The colour schemes the app ships.
 ///
 /// `values` order is the order the picker shows them in, and [fallback] — the
 /// default for a fresh install *and* for an existing install that upgrades from
 /// the retired amber board — is deliberately first.
+///
+/// Every scheme is editable in place: the user's changes live as a per-preset
+/// [PaletteOverride], so editing 曜石 never touches 午夜靛.
 enum ThemePresetId {
-  graphite('石墨素白', LucideIcons.penLine),
+  obsidian('曜石', LucideIcons.gem),
   midnight('午夜靛', LucideIcons.moonStar),
-  vivid('高对比', LucideIcons.zap),
-  custom('自定义', LucideIcons.slidersHorizontal);
+  vivid('高对比', LucideIcons.zap);
 
   const ThemePresetId(this.label, this.icon);
 
   final String label;
   final IconData icon;
 
-  static const ThemePresetId fallback = ThemePresetId.graphite;
+  static const ThemePresetId fallback = ThemePresetId.obsidian;
 }
 
 /// One named scheme: a light face and a dark face.
@@ -39,11 +41,11 @@ class ThemePreset {
 
 /// The three built-in schemes, the resolver, and the editor's starting point.
 abstract final class ThemePresets {
-  /// 石墨素白 reuses the hand-written constants, so [AppPalette.light] /
+  /// 曜石 reuses the hand-written constants, so [AppPalette.light] /
   /// [AppPalette.dark] *are* this preset — which is what lets the existing
   /// test fixtures keep using those two names unchanged.
-  static const ThemePreset _graphite = ThemePreset(
-    id: ThemePresetId.graphite,
+  static const ThemePreset _obsidian = ThemePreset(
+    id: ThemePresetId.obsidian,
     light: AppPalette.light,
     dark: AppPalette.dark,
   );
@@ -156,44 +158,41 @@ abstract final class ThemePresets {
     ),
   );
 
-  /// The three real schemes, in picker order.
-  ///
-  /// [ThemePresetId.custom] is **not** in here — it is a sentinel meaning "use
-  /// the user's overlay", not a scheme of its own.
+  /// The three schemes, in picker order.
   static final List<ThemePreset> builtIn = <ThemePreset>[
-    _graphite,
+    _obsidian,
     _midnight,
     _vivid,
   ];
 
-  /// Looks a preset up by id. Anything unknown, and [ThemePresetId.custom],
-  /// falls back to 石墨素白.
+  /// Looks a preset up by id. Anything unknown falls back to 曜石.
   static ThemePreset of(ThemePresetId id) {
     for (final ThemePreset p in builtIn) {
       if (p.id == id) return p;
     }
-    return _graphite;
+    return _obsidian;
   }
 
-  /// The palette actually in force: the custom overlay when the preset is
-  /// [ThemePresetId.custom] *and* an overlay exists, the built-in board
-  /// otherwise. A `vivid` selection is never overridden by a stale custom layer.
+  /// The palette actually in force for [preset]: the user's overlay when this
+  /// preset has one, the built-in board otherwise.
+  ///
+  /// The overlay is keyed by preset, so customising one scheme can never leak
+  /// into another.
   static AppPalette resolve({
     required ThemePresetId preset,
-    required CustomPalette? custom,
+    required PaletteOverride? override,
     required Brightness brightness,
   }) {
-    if (preset == ThemePresetId.custom && custom != null) {
-      return custom.paletteFor(brightness);
-    }
+    final PaletteOverride? layer = override;
+    if (layer != null) return layer.paletteFor(brightness);
     return of(preset).paletteFor(brightness);
   }
 
   /// Where the editor starts: a full copy of [from]'s two boards, so seeding
   /// from a scheme and touching nothing changes nothing on screen.
-  static CustomPalette seed(ThemePresetId from) {
+  static PaletteOverride seed(ThemePresetId from) {
     final ThemePreset p = of(from);
-    return CustomPalette(light: p.light, dark: p.dark);
+    return PaletteOverride(light: p.light, dark: p.dark);
   }
 }
 
@@ -273,14 +272,14 @@ Color overlayFor(Brightness brightness) => brightness == Brightness.dark
     ? const Color(0x99000000)
     : const Color(0x33000000);
 
-/// A user-authored board: both faces, 25 absolute colours each.
+/// A user's edits to **one** preset: both faces, 25 absolute colours each.
 ///
-/// Both faces are stored in full rather than as a diff against a preset, so the
-/// object is self-contained — it does not need to remember which scheme it was
-/// seeded from, and reordering or retiring a preset can never shift it.
+/// Both faces are stored in full rather than as a diff against the preset, so
+/// the object is self-contained — it does not need to remember which scheme it
+/// was seeded from, and reordering or retiring a preset can never shift it.
 @immutable
-class CustomPalette {
-  CustomPalette({required this.light, required this.dark})
+class PaletteOverride {
+  PaletteOverride({required this.light, required this.dark})
     : raw = _encode(light, dark);
 
   final AppPalette light;
@@ -294,20 +293,20 @@ class CustomPalette {
       brightness == Brightness.dark ? dark : light;
 
   /// Replaces one token on one face.
-  CustomPalette withToken(
+  PaletteOverride withToken(
     Brightness brightness,
     AppPaletteToken token,
     Color value,
   ) => withTokens(brightness, <AppPaletteToken, Color>{token: value});
 
   /// Replaces every token present in [values] on one face.
-  CustomPalette withTokens(
+  PaletteOverride withTokens(
     Brightness brightness,
     Map<AppPaletteToken, Color> values,
   ) {
     if (values.isEmpty) return this;
     final AppPalette next = paletteFor(brightness).withTokens(values);
-    return CustomPalette(
+    return PaletteOverride(
       light: brightness == Brightness.dark ? light : next,
       dark: brightness == Brightness.dark ? next : dark,
     );
@@ -316,11 +315,12 @@ class CustomPalette {
   /// Reads a board back from [raw]; returns null when it is missing, empty or
   /// does not parse.
   ///
-  /// Forward-compatible on purpose: token keys that were unknown are ignored,
-  /// and token keys that are absent fall back to 石墨素白's value, so a board
-  /// written by an older build still loads after a token is added. `"v"` is the
-  /// migration hook for the day a token's *meaning* changes.
-  static CustomPalette? decode(String? raw) {
+  /// [base] is the preset this overlay belongs to: token keys it does not
+  /// mention fall back to that preset's built-in value, not to 曜石's, so an
+  /// overlay written by an older build still lands on the right board after a
+  /// token is added. Unknown keys are ignored, and `"v"` is the migration hook
+  /// for the day a token's *meaning* changes.
+  static PaletteOverride? decode(String? raw, {required ThemePresetId base}) {
     if (raw == null || raw.trim().isEmpty) return null;
     final Object? parsed;
     try {
@@ -334,10 +334,10 @@ class CustomPalette {
     final Object? darkRaw = parsed['dark'];
     if (lightRaw is! Map || darkRaw is! Map) return null;
 
-    final ThemePreset base = ThemePresets.of(ThemePresetId.fallback);
-    return CustomPalette(
-      light: _merge(base.light, lightRaw),
-      dark: _merge(base.dark, darkRaw),
+    final ThemePreset seed = ThemePresets.of(base);
+    return PaletteOverride(
+      light: _merge(seed.light, lightRaw),
+      dark: _merge(seed.dark, darkRaw),
     );
   }
 

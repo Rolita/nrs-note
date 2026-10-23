@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 
+import 'line_layout/line_layout_engine.dart';
 import 'line_layout/render_line_editable.dart';
 
 /// Width of the wash an empty line gets while it is part of a selection.
@@ -95,6 +96,21 @@ class EditorSelectionPainter extends CustomPainter {
 
   final Color color;
 
+  /// 上一次算过的空行起点：文本没变、选区没变，整篇扫描的结果就完全一样。
+  String? _blankText;
+  TextSelection? _blankSelection;
+  List<int> _blankStarts = const <int>[];
+
+  List<int> _blankStartsOf(String text, TextSelection selection) {
+    if (_blankText == text && _blankSelection == selection) {
+      return _blankStarts;
+    }
+    _blankText = text;
+    _blankSelection = selection;
+    _blankStarts = selectedBlankLineStarts(text, selection);
+    return _blankStarts;
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     final TextSelection selection = controller.selection;
@@ -107,6 +123,9 @@ class EditorSelectionPainter extends CustomPainter {
 
     final Paint paint = Paint()..color = color;
     final Rect bounds = Offset.zero & size;
+    // 只产出与视口相交的盒子：选了 200 行时，屏幕外的洗色没有意义。
+    final Rect visible = field.visibleDocumentRect;
+    final LineDocumentLayout? layout = field.lineLayout;
 
     void drawBand(Rect local) {
       if (local.width <= 0 || local.height <= 0) return;
@@ -139,18 +158,34 @@ class EditorSelectionPainter extends CustomPainter {
     // Every ordinary run in the selection. A zero-width band is a newline —
     // the engine reports one for every line the selection only brushes — and
     // has no pixels of its own to wash.
-    for (final Rect glyph in field.selectionBands(selection)) {
+    for (final Rect glyph in field.selectionBands(
+      selection,
+      visible: visible,
+    )) {
       if (glyph.width <= 0) continue;
       drawBand(bandOf(glyph));
     }
 
+    // Which empty lines the selection covers, narrowed to the visible ones
+    // before the per-line geometry query.
+    int visibleFrom = 0;
+    int visibleTo = controller.text.length;
+    if (layout != null) {
+      final ({int from, int to}) range = layout.lineRangeBetween(
+        visible.top,
+        visible.bottom,
+      );
+      if (range.to <= range.from) return;
+      visibleFrom = layout.lines[range.from].start;
+      visibleTo = layout.lines[range.to - 1].end;
+    }
+
     // An empty line has no glyphs at all, so it gets the narrow bar instead.
-    for (final int start in selectedBlankLineStarts(
-      controller.text,
-      selection,
-    )) {
+    for (final int start in _blankStartsOf(controller.text, selection)) {
+      if (start < visibleFrom || start > visibleTo) continue;
       for (final Rect glyph in field.selectionBands(
         TextSelection(baseOffset: start, extentOffset: start + 1),
+        visible: visible,
       )) {
         drawBand(bandOf(glyph, width: kBlankLineSelectionWidth));
       }

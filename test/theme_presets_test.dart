@@ -19,13 +19,16 @@ int countDifferences(AppPalette a, AppPalette b) => AppPaletteToken.values
 
 void main() {
   group('预设目录', () {
-    test('三套内置，顺序即选择器顺序，默认是石墨素白', () {
-      expect(ThemePresetId.values.length, 4);
+    test('三套内置，顺序即选择器顺序，默认是曜石', () {
+      expect(ThemePresetId.values.length, 3);
       expect(ThemePresets.builtIn.length, 3);
       expect(ThemePresets.builtIn.first.id, ThemePresetId.fallback);
-      expect(ThemePresetId.fallback, ThemePresetId.graphite);
-      // 自定义是哨兵而不是一套色板，所以它排在最后且不进目录。
-      expect(ThemePresetId.values.last, ThemePresetId.custom);
+      expect(ThemePresetId.fallback, ThemePresetId.obsidian);
+      // 目录顺序与枚举顺序一致，选择器不会漏格子。
+      expect(
+        ThemePresets.builtIn.map((ThemePreset p) => p.id).toList(),
+        ThemePresetId.values,
+      );
     });
 
     test('每套的亮面/暗面 brightness 与命名相符', () {
@@ -47,14 +50,15 @@ void main() {
       }
     });
 
-    test('石墨素白就是 AppPalette.light / dark', () {
-      expectSameBoard(ThemePresets.of(ThemePresetId.graphite).light, AppPalette.light);
-      expectSameBoard(ThemePresets.of(ThemePresetId.graphite).dark, AppPalette.dark);
+    test('曜石就是 AppPalette.light / dark', () {
+      expectSameBoard(ThemePresets.of(ThemePresetId.obsidian).light, AppPalette.light);
+      expectSameBoard(ThemePresets.of(ThemePresetId.obsidian).dark, AppPalette.dark);
     });
 
-    test('未知 id 与 custom 都落到石墨素白', () {
-      expectSameBoard(ThemePresets.of(ThemePresetId.custom).light, AppPalette.light);
-      expectSameBoard(ThemePresets.of(ThemePresetId.custom).dark, AppPalette.dark);
+    test('of 按 id 取到对应那一套', () {
+      for (final ThemePreset preset in ThemePresets.builtIn) {
+        expect(ThemePresets.of(preset.id).id, preset.id);
+      }
     });
   });
 
@@ -66,11 +70,17 @@ void main() {
       expect(names.length, 25);
     });
 
-    test('精选 12 个，剩下的 13 个由高级开关放出', () {
-      expect(AppPaletteToken.featured.length, 12);
+    test('三档：简单 6 个、普通 12 个，剩下的由高级放出', () {
+      expect(AppPaletteToken.simple.length, 6);
+      expect(AppPaletteToken.normal.length, 12);
+      // 简单是普通的真子集，普通是全部 25 个的真子集。
+      expect(
+        AppPaletteToken.normal.toSet().containsAll(AppPaletteToken.simple),
+        isTrue,
+      );
       final Set<AppPaletteToken> rest = AppPaletteToken.values
           .toSet()
-          .difference(AppPaletteToken.featured.toSet());
+          .difference(AppPaletteToken.normal.toSet());
       expect(rest.length, 13);
       // 只有三个带 alpha 的令牌需要 alpha 滑块。
       expect(
@@ -155,19 +165,24 @@ void main() {
     });
   });
 
-  group('CustomPalette 编解码', () {
+  group('PaletteOverride 编解码', () {
     test('往返后 25×2 全等', () {
       for (final ThemePreset preset in ThemePresets.builtIn) {
-        final CustomPalette seeded = ThemePresets.seed(preset.id);
-        final CustomPalette decoded = CustomPalette.decode(seeded.raw)!;
+        final PaletteOverride seeded = ThemePresets.seed(preset.id);
+        final PaletteOverride decoded = PaletteOverride.decode(
+          seeded.raw,
+          base: preset.id,
+        )!;
         expectSameBoard(decoded.light, preset.light, reason: preset.id.name);
         expectSameBoard(decoded.dark, preset.dark, reason: preset.id.name);
       }
     });
 
     test('alpha 字节无损', () {
-      final CustomPalette decoded =
-          CustomPalette.decode(ThemePresets.seed(ThemePresetId.midnight).raw)!;
+      final PaletteOverride decoded = PaletteOverride.decode(
+        ThemePresets.seed(ThemePresetId.midnight).raw,
+        base: ThemePresetId.midnight,
+      )!;
       expect(decoded.light.selection, const Color(0x334A56C4));
       expect(decoded.dark.selection, const Color(0x4D8B94F2));
       expect(decoded.light.shadow, const Color(0x14000000));
@@ -175,19 +190,31 @@ void main() {
     });
 
     test('6 位 hex 视为不透明', () {
-      final CustomPalette decoded = CustomPalette.decode(
+      final PaletteOverride decoded = PaletteOverride.decode(
         '{"v":1,"light":{"canvas":"f7f7f5"},"dark":{"canvas":"151514"}}',
+        base: ThemePresetId.obsidian,
       )!;
       expect(decoded.light.canvas, const Color(0xFFF7F7F5));
       expect(decoded.dark.canvas, const Color(0xFF151514));
-      // 没写进 JSON 的键兜石墨素白，而不是崩掉。
+      // 没写进 JSON 的键兜这一套自己的出厂色，而不是崩掉。
       expect(decoded.light.rule, AppPalette.light.rule);
       expect(decoded.dark.accent, AppPalette.dark.accent);
     });
 
-    test('前向兼容：未知键忽略、缺失键兜默认、v 只是迁移钩子', () {
-      final CustomPalette decoded = CustomPalette.decode(
+    test('缺失的键兜的是所属预设的出厂色，不是曜石', () {
+      final PaletteOverride decoded = PaletteOverride.decode(
+        '{"light":{"canvas":"ff010203"},"dark":{}}',
+        base: ThemePresetId.vivid,
+      )!;
+      expect(decoded.light.canvas, const Color(0xFF010203));
+      expect(decoded.light.rule, ThemePresets.of(ThemePresetId.vivid).light.rule);
+      expect(decoded.dark.canvas, ThemePresets.of(ThemePresetId.vivid).dark.canvas);
+    });
+
+    test('前向兼容：未知键忽略、v 只是迁移钩子', () {
+      final PaletteOverride decoded = PaletteOverride.decode(
         '{"v":2,"light":{"canvas":"ff010203","futureToken":"ff040506"},"dark":{}}',
+        base: ThemePresetId.obsidian,
       )!;
       expect(decoded.light.canvas, const Color(0xFF010203));
       expect(decoded.light.rule, AppPalette.light.rule);
@@ -195,68 +222,94 @@ void main() {
     });
 
     test('解不出来就返回 null，不抛异常', () {
-      expect(CustomPalette.decode(null), isNull);
-      expect(CustomPalette.decode(''), isNull);
-      expect(CustomPalette.decode('   '), isNull);
-      expect(CustomPalette.decode('not json'), isNull);
-      expect(CustomPalette.decode('{}'), isNull);
-      expect(CustomPalette.decode('[1,2]'), isNull);
-      // light 在但 dark 不是一张表。
-      expect(CustomPalette.decode('{"light":{},"dark":4}'), isNull);
+      for (final String? raw in <String?>[
+        null,
+        '',
+        '   ',
+        'not json',
+        '{}',
+        '[1,2]',
+        '{"light":{},"dark":4}',
+      ]) {
+        expect(
+          PaletteOverride.decode(raw, base: ThemePresetId.obsidian),
+          isNull,
+          reason: raw,
+        );
+      }
     });
 
     test('withToken 只动指定那一面', () {
-      final CustomPalette board = ThemePresets.seed(ThemePresetId.vivid);
-      final CustomPalette next =
-          board.withToken(Brightness.dark, AppPaletteToken.canvas, const Color(0xFF010203));
+      final PaletteOverride board = ThemePresets.seed(ThemePresetId.vivid);
+      final PaletteOverride next = board.withToken(
+        Brightness.dark,
+        AppPaletteToken.canvas,
+        const Color(0xFF010203),
+      );
       expect(next.dark.canvas, const Color(0xFF010203));
       expect(next.light.canvas, board.light.canvas);
       // raw 必须跟着走，否则备忘键与脏检查都会说谎。
       expect(next.raw, isNot(board.raw));
-      expect(CustomPalette.decode(next.raw)!.dark.canvas, const Color(0xFF010203));
+      expect(
+        PaletteOverride.decode(next.raw, base: ThemePresetId.vivid)!.dark.canvas,
+        const Color(0xFF010203),
+      );
     });
   });
 
   group('resolve', () {
-    test('没有自定义层时 custom 也只是石墨素白', () {
-      expectSameBoard(
-        ThemePresets.resolve(
-          preset: ThemePresetId.custom,
-          custom: null,
-          brightness: Brightness.dark,
-        ),
-        AppPalette.dark,
-      );
+    test('没有覆盖层时用内置色板', () {
+      for (final ThemePreset preset in ThemePresets.builtIn) {
+        expectSameBoard(
+          ThemePresets.resolve(
+            preset: preset.id,
+            override: null,
+            brightness: Brightness.light,
+          ),
+          preset.light,
+          reason: preset.id.name,
+        );
+        expectSameBoard(
+          ThemePresets.resolve(
+            preset: preset.id,
+            override: null,
+            brightness: Brightness.dark,
+          ),
+          preset.dark,
+          reason: preset.id.name,
+        );
+      }
     });
 
-    test('选了 built-in 就绝不被残留的自定义层顶掉', () {
-      final CustomPalette stale = ThemePresets.seed(ThemePresetId.midnight)
-          .withToken(Brightness.light, AppPaletteToken.canvas, const Color(0xFF123456));
+    test('有覆盖层时那一层说了算', () {
+      final PaletteOverride board = ThemePresets.seed(ThemePresetId.midnight);
       expectSameBoard(
         ThemePresets.resolve(
-          preset: ThemePresetId.vivid,
-          custom: stale,
-          brightness: Brightness.light,
-        ),
-        ThemePresets.of(ThemePresetId.vivid).light,
-      );
-    });
-
-    test('custom + 有层 → 用那一层', () {
-      final CustomPalette board = ThemePresets.seed(ThemePresetId.midnight);
-      expectSameBoard(
-        ThemePresets.resolve(
-          preset: ThemePresetId.custom,
-          custom: board,
+          preset: ThemePresetId.midnight,
+          override: board,
           brightness: Brightness.dark,
         ),
         ThemePresets.of(ThemePresetId.midnight).dark,
+      );
+
+      final PaletteOverride edited = board.withToken(
+        Brightness.light,
+        AppPaletteToken.canvas,
+        const Color(0xFF123456),
+      );
+      expect(
+        ThemePresets.resolve(
+          preset: ThemePresetId.midnight,
+          override: edited,
+          brightness: Brightness.light,
+        ).canvas,
+        const Color(0xFF123456),
       );
     });
 
     test('seed 出来的两块板子与源方案逐令牌相等', () {
       for (final ThemePreset preset in ThemePresets.builtIn) {
-        final CustomPalette seeded = ThemePresets.seed(preset.id);
+        final PaletteOverride seeded = ThemePresets.seed(preset.id);
         expectSameBoard(seeded.paletteFor(Brightness.light), preset.light);
         expectSameBoard(seeded.paletteFor(Brightness.dark), preset.dark);
       }

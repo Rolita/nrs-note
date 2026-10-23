@@ -12,6 +12,7 @@ import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart' hide TableCell, TableRow;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
@@ -19,11 +20,13 @@ import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/markdown_outline.dart';
 import '../../core/utils/table_model.dart';
 import '../../core/utils/table_selection.dart';
+import '../../state/settings_controller.dart';
 import '../common/notices.dart';
 import 'code_block_painter.dart';
 import 'editor_context_menu.dart';
 import 'line_layout/line_editable_text.dart';
 import 'line_layout/line_layout_engine.dart';
+import 'line_layout/line_layout_pool.dart';
 import 'line_layout/live_line_style.dart';
 import 'line_layout/render_line_editable.dart';
 import 'list_fold_painter.dart';
@@ -1091,11 +1094,18 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// 就要重新测量，所以只在正文样式或主题变化时重建。
   LiveTableBlocks? _tableBlocks;
 
+  /// 跨笔记挂起行布局的池（P5a）：切走一篇笔记时输入框把布局挂进来，切回来
+  /// 直接采用，只重排少数行。容量只留最近两篇，避免整篇 `TextPainter` 堆积。
+  late final LineLayoutPool _layoutPool = LineLayoutPool();
+
   LiveTableBlocks _resolveTableBlocks(TextStyle style, AppPalette palette) {
     final LiveTableBlocks? cached = _tableBlocks;
     if (cached != null && cached.base == style && cached.palette == palette) {
       return cached;
     }
+    // 旧表块即将被释放，挂起布局里的表格行会指向已释放的行视图：整池丢掉，
+    // 宁可切回来重排一次，也不接受悬空的行块。
+    _layoutPool.clear();
     cached?.dispose();
     return _tableBlocks = LiveTableBlocks(
       base: style,
@@ -1379,6 +1389,10 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// 这一次按下是在点折叠箭头；抬手不能再去落光标。
   bool _foldPress = false;
 
+  /// 这一次按下落在滚动条上。滚动条压在滚动视图的右缘、不在输入框里，所以
+  /// 按下会先到这里；整段手势都得让给滚动条，抬手也不能再碰光标/选区。
+  bool _scrollbarPress = false;
+
   TextSelection? _lastFoldSelection;
 
   /// The base offset of a drag that began **outside** the field's box.
@@ -1509,6 +1523,36 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     if (re == null) return false;
     final Offset bottom = re.localToGlobal(Offset(0, re.size.height));
     return globalPosition.dy > bottom.dy;
+  }
+
+  /// Whether [globalPosition] lands on the editor's scrollbar.
+  ///
+  /// The bar is painted over the right edge of the scroll view but is not a
+  /// child of the field, so its presses reach the raw [Listener] like any
+  /// other press on the paper around the column. Without this the
+  /// "outside the text" branch anchors a selection there, and dragging the
+  /// bar down selects text instead of scrolling. Measured the way
+  /// [RawScrollbar] hit-tests a mouse: the track (theme thickness plus its
+  /// cross-axis margin on either side) along the viewport's trailing edge.
+  bool _overScrollbar(Offset globalPosition) {
+    if (!widget.scrollController.hasClients) return false;
+    final ScrollPosition position = widget.scrollController.position;
+    if (position.axis != Axis.vertical ||
+        !position.hasPixels ||
+        position.maxScrollExtent <= position.minScrollExtent) {
+      return false;
+    }
+    final RenderObject? render =
+        position.context.storageContext.findRenderObject();
+    if (render is! RenderBox || !render.hasSize) return false;
+    final Rect viewport = render.localToGlobal(Offset.zero) & render.size;
+    final ScrollbarThemeData theme = ScrollbarTheme.of(context);
+    final double thickness = theme.thickness?.resolve(<WidgetState>{}) ?? 8;
+    final double margin = theme.crossAxisMargin ?? 2;
+    final double trailing =
+        viewport.right - (MediaQuery.maybeOf(context)?.padding.right ?? 0);
+    return globalPosition.dx >= trailing - thickness - margin * 2 &&
+        globalPosition.dx <= trailing;
   }
 
   /// Reports the source line the viewport starts on, whenever it is scrolled.
@@ -2409,6 +2453,28 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     // its own field handles the press, and running the editor's "outside the
     // text" drag here would select body text from a title click.
     if (_overHeader(event.position)) return;
+    // A press on the scrollbar is the scrollbar's: it is painted over the
+    // right edge of the viewport, outside the field's box, so the branch
+    // further down would take it for "the paper beside the text" and anchor a
+    // selection there — dragging the bar then selected text instead of
+    // scrolling.
+    if (_overScrollbar(event.position)) {
+      _scrollbarPress = true;
+      _downPosition = null;
+      _gestureMoved = false;
+      _outsideAnchor = null;
+      _grabbedRow = null;
+      _grabbed = null;
+      // The field's tap-outside unfocuses at the end of this very event; put
+      // the caret's focus back once that has landed, like a paper click does.
+      if (widget.focusNode.hasFocus) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || widget.focusNode.hasFocus) return;
+          widget.focusNode.requestFocus();
+        });
+      }
+      return;
+    }
     final bool secondary = event.buttons & kSecondaryMouseButton != 0;
     // 标签胶囊只在按下这一刻还铺着底片：输入框马上会把光标落进标签、退回
     // 源码，等到抬起再命中就找不到它了。悬停命中的区间是同一块胶囊的兜底，
@@ -2698,6 +2764,15 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
   void _onPointerUp(PointerUpEvent event) {
     _dragAnchor = null;
+    // The gesture was the scrollbar's from the first pixel; the caret and the
+    // selection it started from are none of its business.
+    if (_scrollbarPress) {
+      _scrollbarPress = false;
+      _downPosition = null;
+      _gestureMoved = false;
+      _endGesture();
+      return;
+    }
     if (_foldPress) {
       _foldPress = false;
       _downPosition = null;
@@ -2862,6 +2937,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   void _onPointerCancel(PointerCancelEvent event) {
     _dragAnchor = null;
     _foldPress = false;
+    _scrollbarPress = false;
     _markerCaret = null;
     _pendingMarker = null;
     _grabbedRow = null;
@@ -3116,6 +3192,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     widget.onLineTopProbe?.call(null);
     _cellText?.dispose();
     _cellFocus?.dispose();
+    _layoutPool.dispose();
     // The click guard deliberately outlives the pointer — the platform's word
     // selection lands a moment *after* the button comes up — but it must not
     // outlive the editor.
@@ -3130,7 +3207,15 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
   @override
   Widget build(BuildContext context) {
-    final AppPalette p = context.palette;
+    final AppPalette themed = context.palette;
+    // 切换配色时 `MaterialApp` 会逐帧补间 `ThemeData`，`ThemeData.lerp` 连
+    // `AppPalette` 一起补间；而按行排版把配色算进语义键（`LiveLineStyle`），
+    // 跟着逐帧的配色走等于在 180ms 里把整篇正文重排十几遍——切换主题的卡顿
+    // 就来自这里。正文取设置里已经落定的目标配色，只换一次布局；外壳的补间
+    // 不受影响。没有设置控制器时（组件测试直接挂编辑器）照旧用主题里的配色。
+    final SettingsController? settings =
+        Provider.of<SettingsController?>(context, listen: false);
+    final AppPalette p = settings?.paletteFor(themed.brightness) ?? themed;
     final TextStyle style = editorProseStyle(p, widget.fontSize);
     // 按行排版：每行按源码种类取样式与行高，列表标记由渲染层画。
     final LiveLineStyle lineStyle = _resolveLineStyle(style, p);
@@ -3387,6 +3472,10 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                                   mouseCursor: fieldCursor,
                                   cursorColor: p.accent,
                                   backgroundCursorColor: p.accent,
+                                  // 正文洗色由 `EditorSelectionPainter` 画（行间留缝），
+                                  // 字段自己不画。⛔ 不能靠外层 `DefaultSelectionStyle`
+                                  // 关闭：标题框也在这棵子树里，会被一起透明掉。
+                                  selectionColor: Colors.transparent,
                                   cursorWidth: 1.8,
                                   cursorRadius: const Radius.circular(1),
                                   keyboardType: TextInputType.multiline,
@@ -3412,9 +3501,8 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                                   // `RenderLineEditable.getBoxesForSelection` 直接转发按行
                                   // 引擎的 `selectionBands`（横向贴字形、纵向铺满视觉行），
                                   // 传进来的 `BoxWidthStyle` / `BoxHeightStyle` 会被忽略。
-                                  // 字段的底色依旧是透明的（见 `editor` 外层的
-                                  // `DefaultSelectionStyle`），洗色由 `EditorSelectionPainter`
-                                  // 自己画。
+                                  // 字段的底色是透明的（见上面的 `selectionColor`），
+                                  // 洗色由 `EditorSelectionPainter` 自己画。
                                   //
                                   // 行高由按行引擎给（见 `lineHeightFor`）；这个 strut 只
                                   // 留给继承来的那套单段排版做几何兜底，压到 1px 才不会被
@@ -3425,6 +3513,14 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                                     leading: 0,
                                   ),
                                   // 按行排版：每行按源码种类取样式、行高与 span 树。
+                                  // `lineLayoutKey` 是解析器的语义键（不含源码）：
+                                  // 每敲一个字都会重建 `LiveLineStyle`，渲染层靠这个
+                                  // 键认出「未被编辑的行排版仍然有效」，走编辑增量
+                                  // 而不是整篇重排。
+                                  lineLayoutKey: lineStyle.styleKey,
+                                  // 跨笔记复用：切走的布局挂进池，切回来直接采用。
+                                  layoutPool: _layoutPool,
+                                  layoutCacheDocument: widget.documentId,
                                   lineStyleFor: lineStyle.styleFor,
                                   lineHeightFor: lineStyle.heightFor,
                                   lineSpanFor: lineStyle.spanFor,
@@ -3531,16 +3627,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
             ),
           ),
         ),
-        Positioned.fill(
-          child: DefaultSelectionStyle.merge(
-            // The field's own wash tiles line to line. The bands, with their
-            // seams, are painted by `EditorSelectionPainter` on the paper
-            // behind this subtree. Only the main field is made transparent —
-            // the F2 cell editor is a sibling and keeps its normal highlight.
-            selectionColor: Colors.transparent,
-            child: editor,
-          ),
-        ),
+        Positioned.fill(child: editor),
         // 折叠箭头在字段的裁剪之外（顶级列表项的按钮落在页边距里），所以
         // 由编辑器这层画。几何按当前排版现取，滚动时跟着走。
         Positioned.fill(

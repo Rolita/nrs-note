@@ -14,6 +14,7 @@ import 'package:nrs/data/models/note.dart';
 import 'package:nrs/data/storage/note_store.dart';
 import 'package:nrs/state/notes_controller.dart';
 import 'package:nrs/state/settings_controller.dart';
+import 'package:nrs/state/template_settings.dart';
 import 'package:nrs/ui/common/app_widgets.dart';
 import 'package:nrs/ui/common/notices.dart';
 import 'package:nrs/ui/editor/editor_context_menu.dart';
@@ -27,6 +28,8 @@ import 'package:nrs/ui/shell/function_rail.dart';
 import 'package:nrs/ui/shell/note_list_panel.dart';
 import 'package:nrs/ui/shell/title_bar.dart';
 import 'package:nrs/ui/shell/vault_tree.dart';
+import 'package:nrs/ui/templates/template_new_note_dialog.dart';
+import 'package:nrs/ui/templates/template_picker.dart';
 
 /// A tiny vault so the shell can be built without touching the real one.
 class _VaultStore extends NoteStore {
@@ -164,7 +167,7 @@ void main() {
     SharedPreferences.setMockInitialValues(<String, Object>{
       'nrs.sort': sort.name,
       // Deliberately not the default board: the shell must hold up on the new
-      // `paletteFor` path, not just on 石墨素白.
+      // `paletteFor` path, not just on 曜石.
       'nrs.themePreset': 'vivid',
     });
     final SettingsController settings = await SettingsController.load();
@@ -206,8 +209,9 @@ void main() {
     expect(find.byType(NoteListPanel), findsOneWidget);
     expect(find.byType(OutlinePanel), findsOneWidget);
 
-    // The file panel names itself, and its four actions sit as one group at the
-    // header's right edge — 排序、展开 / 收起、新建文件夹、新建笔记, left to right.
+    // The file panel names itself, and its actions sit as one group at the
+    // header's right edge — 排序、展开 / 收起、新建文件夹、新建笔记, left to
+    // right.
     expect(find.text('文件'), findsOneWidget);
     const List<String> actions = <String>[
       '排序方式',
@@ -228,6 +232,23 @@ void main() {
     final Rect panel = tester.getRect(find.byType(NoteListPanel));
     expect(panel.right - previousRight, lessThanOrEqualTo(AppSpace.xs));
     expect(find.text('一篇笔记'), findsWidgets);
+
+    // 模板入口在左侧功能栏上方；底部工具组只留回收站和设置。
+    final Finder templates = find.descendant(
+      of: find.byType(AppRail),
+      matching: find.byTooltip('插入模板  ·  Ctrl+P'),
+    );
+    expect(templates, findsOneWidget);
+    expect(find.byTooltip('插入模板  ·  Ctrl+P'), findsOneWidget);
+    final Rect rail = tester.getRect(find.byType(AppRail));
+    final Rect templatesRect = tester.getRect(templates);
+    final Rect trash = tester.getRect(find.byTooltip('回收站'));
+    final Rect settingsButton = tester.getRect(
+      find.byTooltip('设置  ·  Ctrl+,'),
+    );
+    expect(templatesRect.top, lessThan(rail.center.dy));
+    expect(trash.top, greaterThan(rail.center.dy));
+    expect(settingsButton.top, greaterThan(trash.top));
   });
 
   testWidgets(
@@ -1430,5 +1451,159 @@ void main() {
 
     expect(find.byTooltip('全部收起'), findsOneWidget);
     expect(treeRow('A 笔记'), findsOneWidget);
+  });
+
+  testWidgets('Ctrl+P 打开模板选择器，Enter 把模板插进当前笔记', (
+    WidgetTester tester,
+  ) async {
+    final Note template = Note(
+      id: 'tpl',
+      title: '日报模板',
+      folderPath: '模板',
+      body: '## 今日进展\n\n- 完成了模板功能\n',
+      createdAt: DateTime(2026, 1, 1),
+      updatedAt: DateTime(2026, 1, 1),
+    );
+    final ({SettingsController settings, NotesController notes}) app =
+        await pumpShell(
+          tester,
+          vault: <Note>[note('a', '一篇笔记', DateTime(2026, 1, 2)), template],
+        );
+
+    // 功能栏的模板按钮和 Ctrl+P 打开的是同一个选择器。
+    await tester.tap(find.byTooltip('插入模板  ·  Ctrl+P'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TemplatePickerDialog), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.byType(TemplatePickerDialog), findsNothing);
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyP);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+    expect(find.byType(TemplatePickerDialog), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(TemplatePickerDialog), findsNothing);
+    expect(app.notes.draft?.body, contains('## 今日进展'));
+    expect(app.notes.draft?.body, contains('完成了模板功能'));
+
+    // Let the autosave debounce and the "已保存" timer run out.
+    await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('文件夹模板只在开关打开时套用到新建笔记', (
+    WidgetTester tester,
+  ) async {
+    final Note template = Note(
+      id: 'tpl',
+      title: '会议模板',
+      folderPath: '模板',
+      body: '# 会议\n\n## 议程\n',
+      createdAt: DateTime(2026, 1, 1),
+      updatedAt: DateTime(2026, 1, 1),
+    );
+    final ({SettingsController settings, NotesController notes}) app =
+        await pumpShell(
+          tester,
+          vault: <Note>[note('a', '一篇笔记', DateTime(2026, 1, 2)), template],
+        );
+    app.settings.folderTemplateRules = <FolderTemplateRule>[
+      const FolderTemplateRule(folderPath: '', templateId: 'tpl'),
+    ];
+    await tester.pump();
+
+    // 开关关着：新笔记是空的，规则不生效。
+    await tester.tap(find.byTooltip('新建笔记  ·  Ctrl+N'));
+    await tester.pumpAndSettle();
+    expect(app.notes.draft?.body, isEmpty);
+    await tester.pump(const Duration(seconds: 3));
+
+    app.settings.autoApplyFolderTemplates = true;
+    await tester.pump();
+    await tester.tap(find.byTooltip('新建笔记  ·  Ctrl+N'));
+    await tester.pumpAndSettle();
+
+    expect(app.notes.draft?.body, contains('# 会议'));
+    expect(app.notes.draft?.body, contains('## 议程'));
+
+    await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('模板快捷键按设置插入或新建，改动作后立刻生效', (
+    WidgetTester tester,
+  ) async {
+    final Note template = Note(
+      id: 'tpl',
+      title: '日报模板',
+      folderPath: '模板',
+      body: '## 今日进展\n\n- 用快捷键插入\n',
+      createdAt: DateTime(2026, 1, 1),
+      updatedAt: DateTime(2026, 1, 1),
+    );
+    final ({SettingsController settings, NotesController notes}) app =
+        await pumpShell(
+          tester,
+          vault: <Note>[note('a', '一篇笔记', DateTime(2026, 1, 2)), template],
+        );
+
+    app.settings.templateHotkeys = <String, TemplateHotkey>{
+      'tpl': TemplateHotkey(
+        templateId: 'tpl',
+        keyId: LogicalKeyboardKey.keyJ.keyId,
+        action: TemplateAction.insert,
+        control: true,
+        shift: true,
+      ),
+    };
+    await tester.pump();
+
+    Future<void> pressChord(LogicalKeyboardKey key) async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyEvent(key);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+    }
+
+    await pressChord(LogicalKeyboardKey.keyJ);
+    expect(app.notes.draft?.body, contains('用快捷键插入'));
+
+    // 在同一页面改动作和组合键：外壳必须跟着设置重新注册。
+    app.settings.templateHotkeys = <String, TemplateHotkey>{
+      'tpl': TemplateHotkey(
+        templateId: 'tpl',
+        keyId: LogicalKeyboardKey.keyK.keyId,
+        action: TemplateAction.create,
+        control: true,
+        shift: true,
+      ),
+    };
+    await tester.pump();
+
+    await pressChord(LogicalKeyboardKey.keyK);
+    expect(find.byType(TemplateNewNoteDialog), findsOneWidget);
+
+    await tester.enterText(
+      find.descendant(
+        of: find.byType(TemplateNewNoteDialog),
+        matching: find.byType(TextField),
+      ),
+      '今天的日报',
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(TemplateNewNoteDialog), findsNothing);
+    final Note created = app.notes.allNotes.firstWhere(
+      (Note n) => n.title == '今天的日报',
+    );
+    expect(created.body, contains('用快捷键插入'));
+
+    await tester.pump(const Duration(seconds: 3));
   });
 }

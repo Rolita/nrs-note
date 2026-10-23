@@ -115,8 +115,11 @@ void main() {
       if (find.byKey(Key('token-${t.name}')).evaluate().isNotEmpty) t,
   ];
 
-  Future<void> toggleAdvanced(WidgetTester tester) async {
-    await tester.tap(find.byType(Switch));
+  Future<void> selectTier(
+    WidgetTester tester,
+    ThemeEditorTier tier,
+  ) async {
+    await tester.tap(find.text(tier.label));
     await tester.pumpAndSettle();
   }
 
@@ -163,34 +166,39 @@ void main() {
     }
   }
 
-  testWidgets('进入编辑器就把「配色方案」切到自定义，并把当前板子交给它编辑', (WidgetTester tester) async {
+  testWidgets('进入编辑器就编辑当前那一套，且不会凭空造出覆盖层', (WidgetTester tester) async {
     await openEditor(
       tester,
       prefs: <String, Object>{'nrs.themePreset': 'midnight'},
     );
 
     expect(settings.themeEditing, isTrue);
-    expect(settings.themePreset, ThemePresetId.custom);
-    expect(settings.customPalette, isNotNull);
+    expect(settings.themePreset, ThemePresetId.midnight);
+    expect(settings.overrideFor(ThemePresetId.midnight), isNull);
     // 种子就是刚才那套方案，所以进去这一步不该有任何颜色跳变。
     expect(
       settings.paletteFor(Brightness.light).accent,
       ThemePresets.of(ThemePresetId.midnight).light.accent,
     );
+    expect(find.text('编辑「午夜靛」'), findsOneWidget);
   });
 
-  testWidgets('高级关着只有 12 行，打开后是全部 25 行', (WidgetTester tester) async {
+  testWidgets('三档：默认简单 6 行，普通 12 行，高级 25 行', (WidgetTester tester) async {
     await openEditor(tester);
 
-    expect(visibleTokens(tester).length, 12);
-    expect(visibleTokens(tester), AppPaletteToken.featured);
+    expect(visibleTokens(tester), AppPaletteToken.simple);
+    expect(visibleTokens(tester).length, 6);
 
-    await toggleAdvanced(tester);
+    await selectTier(tester, ThemeEditorTier.normal);
+    expect(visibleTokens(tester), AppPaletteToken.normal);
+    expect(visibleTokens(tester).length, 12);
+
+    await selectTier(tester, ThemeEditorTier.advanced);
     expect(visibleTokens(tester).length, 25);
 
-    // 再关回去，仍然只有精选的 12 个。
-    await toggleAdvanced(tester);
-    expect(visibleTokens(tester).length, 12);
+    // 再退回简单，仍然只有那 6 个。
+    await selectTier(tester, ThemeEditorTier.simple);
+    expect(visibleTokens(tester).length, 6);
   });
 
   testWidgets('浅色 / 深色 tab 各自编辑自己的那一面', (WidgetTester tester) async {
@@ -221,7 +229,7 @@ void main() {
     const Color accent = Color(0xFFF5E050);
     final AppPalette light = settings.paletteFor(Brightness.light);
     expect(light.accent, accent);
-    // 石墨素白的 onAccent 是白色，这里必须翻成黑色，否则主按钮读不出。
+    // 曜石的 onAccent 是白色，这里必须翻成黑色，否则主按钮读不出。
     expect(light.onAccent, AppPalette.readableOn(accent));
     expect(light.onAccent, isNot(AppPalette.light.onAccent));
     expect(light.accentHover, isNot(AppPalette.light.accentHover));
@@ -234,11 +242,11 @@ void main() {
 
   testWidgets('alpha 令牌：alpha 走独立通道，不动色相', (WidgetTester tester) async {
     await openEditor(tester);
-    await toggleAdvanced(tester);
+    await selectTier(tester, ThemeEditorTier.advanced);
 
     final Color before = settings.paletteFor(Brightness.light).selection;
     await openToken(tester, AppPaletteToken.selection);
-    await typeHex(tester, AppPaletteToken.selection, '802a2a28');
+    await typeHex(tester, AppPaletteToken.selection, '802f6feb');
 
     final Color after = settings.paletteFor(Brightness.light).selection;
     expect(after.a, closeTo(128 / 255, 0.002));
@@ -250,7 +258,7 @@ void main() {
 
   testWidgets('8 位 hex 直接生效（含 alpha 字节）', (WidgetTester tester) async {
     await openEditor(tester);
-    await toggleAdvanced(tester);
+    await selectTier(tester, ThemeEditorTier.advanced);
 
     await openToken(tester, AppPaletteToken.overlay);
     await typeHex(tester, AppPaletteToken.overlay, '33b45309');
@@ -274,8 +282,8 @@ void main() {
     );
   });
 
-  testWidgets('取消：两个 key 与颜色一起退回进入前，不留残留', (WidgetTester tester) async {
-    await openEditor(tester); // 进入前是石墨素白，且没有自定义层
+  testWidgets('取消：预设、覆盖层与颜色一起退回进入前，不留残留', (WidgetTester tester) async {
+    await openEditor(tester); // 进入前是曜石，且这一套没有覆盖层
 
     await openToken(tester, AppPaletteToken.canvas);
     await typeHex(tester, AppPaletteToken.canvas, 'ff010203');
@@ -291,8 +299,8 @@ void main() {
 
     expect(find.byType(ThemeEditorDialog), findsNothing);
     expect(settings.themeEditing, isFalse);
-    expect(settings.themePreset, ThemePresetId.graphite);
-    expect(settings.customPalette, isNull);
+    expect(settings.themePreset, ThemePresetId.obsidian);
+    expect(settings.overrideFor(ThemePresetId.obsidian), isNull);
     expect(
       settings.paletteFor(Brightness.light).canvas,
       AppPalette.light.canvas,
@@ -303,10 +311,10 @@ void main() {
     );
 
     final SharedPreferences prefs = await SharedPreferences.getInstance();
-    expect(prefs.containsKey('nrs.themeCustom'), isFalse);
+    expect(prefs.containsKey('nrs.themeOverride.obsidian'), isFalse);
   });
 
-  testWidgets('完成：落盘，重启后仍然读得到', (WidgetTester tester) async {
+  testWidgets('完成：覆盖层落盘，重启后仍然读得到', (WidgetTester tester) async {
     await openEditor(tester);
 
     await openToken(tester, AppPaletteToken.canvas);
@@ -317,47 +325,50 @@ void main() {
 
     expect(find.byType(ThemeEditorDialog), findsNothing);
     expect(settings.themeEditing, isFalse);
-    expect(settings.themePreset, ThemePresetId.custom);
+    expect(settings.themePreset, ThemePresetId.obsidian);
 
     // 「重启」：拿同一份 prefs 重新造一个控制器。
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     final SettingsController restarted = SettingsController(prefs);
-    expect(restarted.themePreset, ThemePresetId.custom);
+    expect(restarted.themePreset, ThemePresetId.obsidian);
     expect(
       restarted.paletteFor(Brightness.light).canvas,
       const Color(0xFF010203),
     );
+    // 另外两套一点没被动过。
+    expect(restarted.overrideFor(ThemePresetId.midnight), isNull);
   });
 
-  testWidgets('重置回石墨素白，且只有「完成」才把它落盘', (WidgetTester tester) async {
+  testWidgets('重置回当前这一套的出厂色，且只有「完成」才清掉覆盖层', (WidgetTester tester) async {
     await openEditor(
       tester,
       prefs: <String, Object>{'nrs.themePreset': 'vivid'},
     );
+    await openToken(tester, AppPaletteToken.canvas);
+    await typeHex(tester, AppPaletteToken.canvas, 'ff010203');
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    expect(prefs.containsKey('nrs.themeOverride.vivid'), isTrue);
+
+    await tester.tap(find.text('重置为内置'));
+    await tester.pumpAndSettle();
+
+    // 重置回的是高对比自己的出厂色，不是曜石。
     expect(
       settings.paletteFor(Brightness.light).canvas,
       ThemePresets.of(ThemePresetId.vivid).light.canvas,
     );
-
-    await tester.tap(find.text('重置为石墨素白'));
-    await tester.pumpAndSettle();
-
     expect(
-      settings.paletteFor(Brightness.light).canvas,
-      AppPalette.light.canvas,
-    );
-    final SharedPreferences prefs = await SharedPreferences.getInstance();
-    expect(
-      prefs.getString('nrs.themeCustom'),
-      isNull,
+      prefs.getString('nrs.themeOverride.vivid'),
+      isNotNull,
       reason: '重置只改草稿，落盘留给「完成」',
     );
 
     await tester.tap(find.text('完成'));
     await tester.pumpAndSettle();
+    expect(prefs.containsKey('nrs.themeOverride.vivid'), isFalse);
     expect(
-      CustomPalette.decode(prefs.getString('nrs.themeCustom'))!.light.canvas,
-      AppPalette.light.canvas,
+      settings.paletteFor(Brightness.light).canvas,
+      ThemePresets.of(ThemePresetId.vivid).light.canvas,
     );
   });
 
@@ -392,7 +403,7 @@ void main() {
       sampleAt(0xFF112233, down: true),
     ]);
     await openEditor(tester);
-    await toggleAdvanced(tester);
+    await selectTier(tester, ThemeEditorTier.advanced);
     await openToken(tester, AppPaletteToken.selection);
 
     await startEyedrop(tester);
@@ -494,31 +505,37 @@ void main() {
     expect(find.textContaining('当前进程没有回应'), findsNothing);
   });
 
-  testWidgets('配色方案：点「自定义」只切方案，铅笔才打开自定义面板', (WidgetTester tester) async {
+  testWidgets('配色方案：点格子只切方案，每格右上角的铅笔才打开编辑', (WidgetTester tester) async {
     ThemePresetId? switched;
-    bool edited = false;
+    ThemePresetId? edited;
     await tester.pumpWidget(
       MaterialApp(
         theme: AppTheme.build(AppPalette.light),
         home: Scaffold(
           body: ThemePresetPicker(
-            value: ThemePresetId.graphite,
+            value: ThemePresetId.obsidian,
             brightness: Brightness.light,
+            overrides: (ThemePresetId _) => null,
             onChanged: (ThemePresetId v) => switched = v,
-            onEditCustom: () => edited = true,
+            onEdit: (ThemePresetId v) => edited = v,
           ),
         ),
       ),
     );
     await tester.pump();
 
-    await tester.tap(find.byKey(const Key('preset-custom')));
+    await tester.tap(find.byKey(const Key('preset-vivid')));
     await tester.pumpAndSettle();
-    expect(switched, ThemePresetId.custom);
-    expect(edited, isFalse, reason: '点格子只是切到自己那套配色，不该弹面板');
+    expect(switched, ThemePresetId.vivid);
+    expect(edited, isNull, reason: '点格子只是切到那一套配色，不该弹面板');
 
-    await tester.tap(find.byIcon(LucideIcons.squarePen));
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('preset-midnight')),
+        matching: find.byIcon(LucideIcons.squarePen),
+      ),
+    );
     await tester.pumpAndSettle();
-    expect(edited, isTrue);
+    expect(edited, ThemePresetId.midnight, reason: '铅笔编辑的是它自己那一格');
   });
 }

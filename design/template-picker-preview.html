@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>模板界面重构 · 4 套方案 · nrs</title>
+<style>
+/* ============================================================
+   画廊页外壳：中性深底，不参与被评审的界面。
+   ============================================================ */
+:root{
+  --pg-bg:#0C0C0F; --pg-card:#141418; --pg-line:#232329; --pg-line2:#2E2E36;
+  --pg-fg:#E7E7EC; --pg-mut:#8A8A94; --pg-dim:#61616B;
+  --font:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","PingFang SC",system-ui,sans-serif;
+  --mono:"Cascadia Code","Cascadia Mono",Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{min-height:100%}
+body{
+  font-family:var(--font);font-size:13px;line-height:1.5;
+  background:var(--pg-bg);color:var(--pg-fg);-webkit-font-smoothing:antialiased;
+}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;padding:0}
+input{font:inherit;color:inherit;background:none;border:0;outline:none}
+svg{display:block;flex:none}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#33333B;border-radius:6px;border:3px solid transparent;background-clip:content-box}
+
+.wrap{max-width:1320px;margin:0 auto;padding:34px 30px 110px}
+.head h1{font-size:23px;font-weight:650;letter-spacing:-.2px}
+.head p{color:var(--pg-mut);margin-top:7px;max-width:104ch}
+.head p b{color:var(--pg-fg);font-weight:600}
+
+.controls{
+  position:sticky;top:0;z-index:30;margin:22px -30px 28px;padding:12px 30px;
+  background:rgba(12,12,15,.84);backdrop-filter:blur(10px);
+  border-top:1px solid var(--pg-line);border-bottom:1px solid var(--pg-line);
+  display:flex;flex-wrap:wrap;gap:22px;align-items:center;
+}
+.grp2{display:flex;align-items:center;gap:7px}
+.grp2>.gl{font-size:11px;font-weight:650;letter-spacing:.5px;color:var(--pg-dim);text-transform:uppercase}
+.tg{
+  display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--pg-mut);
+  background:var(--pg-card);border:1px solid var(--pg-line2);border-radius:7px;padding:4px 11px;
+  transition:color .12s,border-color .12s,background .12s;
+}
+.tg:hover{color:var(--pg-fg)}
+.tg[aria-pressed="true"]{color:#fff;background:#23232B;border-color:#4A4A57}
+
+.scheme{margin:0 0 58px;scroll-margin-top:64px}
+.scheme-hd{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;margin-bottom:5px}
+.scheme-hd .idx{font-family:var(--mono);font-size:12px;color:var(--pg-dim);border:1px solid var(--pg-line2);border-radius:5px;padding:1px 7px}
+.scheme-hd h2{font-size:18px;font-weight:650;letter-spacing:-.1px}
+.scheme-hd .ref{font-size:12px;color:var(--pg-dim);padding-bottom:2px}
+.scheme-desc{color:var(--pg-mut);max-width:104ch;margin:2px 0 16px}
+.scheme-desc b{color:var(--pg-fg);font-weight:600}
+.stage{display:flex;justify-content:center;width:100%;padding:26px 0 4px;overflow-x:auto}
+/* 面板是评审对象，尺寸必须与设计稿一致：不允许被 flex 压缩，窄屏时横向滚动。 */
+.stage>.panel{flex:0 0 auto;min-width:0;max-width:none}
+.cap{margin-top:14px;text-align:center;font-size:11.5px;color:var(--pg-dim);font-family:var(--mono)}
+.foot{margin-top:36px;padding-top:20px;border-top:1px solid var(--pg-line);color:var(--pg-dim);font-size:12px;line-height:1.7}
+.foot code{font-family:var(--mono);font-size:11.5px;color:var(--pg-mut)}
+
+/* ============================================================
+   设计令牌：与应用 AppPalette 的语义令牌一一对应（石墨素白）
+   ============================================================ */
+.panel[data-m="light"]{
+  --canvas:#F7F7F5; --sidebar:#F1F1EF; --surface:#FCFCFB; --raised:#FFFFFF;
+  --sunken:#EFEFED; --outline:#DCDCD9; --outline-soft:#E9E9E6; --rule:#D5D5D1;
+  --t1:#1B1B1A; --t2:#5C5C59; --t3:#8C8C88;
+  --accent:#2A2A28; --accent-hover:#111110; --accent-soft:#E9E9E6; --on-accent:#FFFFFF;
+  --success:#2E8B62; --success-soft:#E3F0E8;
+  --danger:#C0392B; --danger-soft:#FAE7E4;
+  --hover:rgba(20,20,30,.045);
+  --shadow:0 18px 44px rgba(18,18,26,.14),0 2px 8px rgba(18,18,26,.07);
+}
+.panel[data-m="dark"]{
+  --canvas:#151514; --sidebar:#1A1A19; --surface:#1F1F1E; --raised:#272726;
+  --sunken:#101010; --outline:#2F2F2E; --outline-soft:#242423; --rule:#3A3A38;
+  --t1:#E9E9E6; --t2:#9E9E9A; --t3:#6E6E6A;
+  --accent:#EDEDEA; --accent-hover:#FFFFFF; --accent-soft:#2E2E2C; --on-accent:#141413;
+  --success:#6FC29A; --success-soft:#17281F;
+  --danger:#E5796B; --danger-soft:#2E1A17;
+  --hover:rgba(255,255,255,.06);
+  --shadow:0 18px 44px rgba(0,0,0,.6),0 3px 10px rgba(0,0,0,.4);
+}
+
+.panel{
+  position:relative;display:flex;flex-direction:column;font-family:var(--font);
+  font-size:13px;line-height:1.45;color:var(--t1);
+  background:var(--raised);border:1px solid var(--outline);border-radius:11px;
+  overflow:hidden;box-shadow:var(--shadow);
+}
+.panel ::-webkit-scrollbar{width:9px;height:9px}
+.panel ::-webkit-scrollbar-thumb{background:var(--outline);border-radius:6px;border:3px solid transparent;background-clip:content-box}
+
+.ic{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.i-sm{width:14px;height:14px}
+.i-lg{width:18px;height:18px}
+.sp{flex:1;min-width:0}
+.mono{font-family:var(--mono)}
+
+/* 弹窗公共件 */
+.hd{display:flex;align-items:flex-start;gap:10px;padding:14px 12px 12px 18px;flex:none}
+.hd .tt{font-size:15px;font-weight:600;letter-spacing:-.1px;line-height:1.3}
+.hd .ss{font-size:10.5px;color:var(--t3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hd .mark{color:var(--accent);padding-top:2px}
+.close{width:20px;height:20px;display:grid;place-items:center;border-radius:3px;color:var(--t3);flex:none;transition:background .12s,color .12s}
+.close:hover{background:var(--hover);color:var(--t1)}
+.srch{height:32px;display:flex;align-items:center;gap:8px;padding:0 10px;background:var(--sunken);border:1px solid var(--outline);border-radius:7px;color:var(--t3);flex:none}
+.srch.focus{background:var(--accent-soft);border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent)}
+.srch input{flex:1;min-width:0;font-size:12.5px;color:var(--t1)}
+.srch input::placeholder{color:var(--t3)}
+.ft{display:flex;align-items:center;gap:8px;padding:10px 14px 10px 18px;border-top:1px solid var(--outline-soft);flex:none}
+.btn{height:28px;padding:0 12px;border-radius:7px;border:1px solid var(--outline);color:var(--t2);font-size:12.5px;font-weight:600;display:inline-flex;align-items:center;gap:6px;transition:background .12s,color .12s,border-color .12s}
+.btn:hover{background:var(--hover);color:var(--t1)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.btn.pri:hover{background:var(--accent-hover);border-color:var(--accent-hover);color:var(--on-accent)}
+.kbd{font-family:var(--mono);font-size:9.5px;line-height:1.7;padding:0 4px;border:1px solid var(--outline);border-radius:3px;background:var(--sunken);color:var(--t3);white-space:nowrap}
+.hint{display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--t3);white-space:nowrap}
+.hint .kbd{margin-right:0}
+.irow{position:relative;display:flex;align-items:center;gap:9px;padding:0 10px;border-radius:7px;cursor:pointer;transition:background .12s}
+.irow:hover{background:var(--hover)}
+.irow.sel{background:var(--accent-soft)}
+.irow.sel::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:2px;border-radius:2px;background:var(--accent)}
+.irow .fi{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;background:var(--sunken);border:1px solid var(--outline-soft);color:var(--t2);flex:none}
+.irow.sel .fi{background:var(--raised);border-color:var(--outline);color:var(--accent)}
+.irow .nm{font-size:12.5px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.irow .mt{font-size:10.5px;color:var(--t3);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.grp{font-size:10px;font-weight:600;letter-spacing:.55px;color:var(--t3);padding:10px 12px 5px}
+.list{flex:1;min-height:0;overflow:auto;padding:0 8px 8px}
+.ft-space{flex:1;min-width:0;overflow:hidden}
+
+/* ============================================================
+   方案 A · 双栏「库 + 预览」
+   ============================================================ */
+.tpl-a{width:780px;height:520px}
+.tpl-a .body{display:flex;flex:1;min-height:0}
+.tpl-a .lib{width:292px;flex:none;background:var(--sidebar);border-right:1px solid var(--outline-soft);display:flex;flex-direction:column;min-height:0}
+.tpl-a .lib .pad{padding:0 12px 10px}
+.tpl-a .irow{height:44px}
+.tpl-a .irow .mt{margin-top:1px}
+.tpl-a .pv{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--surface)}
+.tpl-a .pvhd{padding:15px 22px 12px;border-bottom:1px solid var(--outline-soft);flex:none}
+.tpl-a .pvh1{font-size:17px;font-weight:650;letter-spacing:-.25px;color:var(--t1)}
+.tpl-a .pvmeta{display:flex;align-items:center;gap:7px;margin-top:3px;font-size:10.5px;color:var(--t3);font-family:var(--mono)}
+.tpl-a .pvmeta .dot{width:3px;height:3px;border-radius:50%;background:var(--t3)}
+.tpl-a .doc{flex:1;min-height:0;overflow:auto;padding:16px 22px 18px;font-size:12.5px;line-height:1.72;color:var(--t2)}
+.tpl-a .doc[hidden]{display:none}
+.tpl-a .doc h1{font-size:19px;font-weight:650;letter-spacing:-.2px;color:var(--t1);margin:0 0 10px}
+.tpl-a .doc h2{font-size:14px;font-weight:650;color:var(--t1);margin:16px 0 5px}
+.tpl-a .doc p{margin:3px 0}
+.tpl-a .doc strong{color:var(--t1);font-weight:600}
+.tpl-a .doc code{font-family:var(--mono);font-size:11px;padding:1px 5px;border-radius:4px;background:var(--sunken);border:1px solid var(--outline-soft);color:var(--t1)}
+.tpl-a .doc ul{list-style:none;margin:2px 0}
+.tpl-a .doc li{position:relative;padding-left:17px;margin:2px 0}
+.tpl-a .doc li::before{content:"";position:absolute;left:5px;top:9px;width:4px;height:4px;border-radius:50%;background:var(--t3)}
+.tpl-a .doc .task li::before{display:none}
+.tpl-a .doc .task li::after{content:"";position:absolute;left:2px;top:5px;width:11px;height:11px;border:1px solid var(--rule);border-radius:3px}
+.tpl-a .doc blockquote{margin:9px 0;padding:2px 0 2px 11px;border-left:2px solid var(--accent);color:var(--t2)}
+.tpl-a .vars{display:flex;align-items:center;gap:6px;padding:9px 22px;border-top:1px solid var(--outline-soft);font-size:10.5px;color:var(--t3);flex:none}
+.tpl-a .var{font-family:var(--mono);font-size:10px;padding:1px 6px;border-radius:10px;border:1px solid var(--outline);color:var(--t2)}
+.tpl-a .doccap{font-size:10px;letter-spacing:.4px;color:var(--t3);font-weight:600;margin-bottom:2px}
+
+/* ============================================================
+   方案 B · 命令面板
+   ============================================================ */
+.tpl-b{width:560px;height:420px;background:var(--raised)}
+.tpl-b .pad{padding:0 12px 10px}
+.tpl-b .list{padding:0 8px 8px}
+.tpl-b .irow{height:34px;gap:8px;padding:0 9px}
+.tpl-b .irow .fi{width:20px;height:20px;border-radius:5px;background:transparent;border:0;color:var(--t3)}
+.tpl-b .irow.sel .fi{color:var(--accent);background:transparent}
+.tpl-b .irow .nm{flex:none}
+.tpl-b .irow .mt{margin-left:2px}
+.tpl-b .irow.sel::before{top:7px;bottom:7px}
+.tpl-b .grp{padding:9px 11px 4px}
+.tpl-b .ft{padding:9px 14px 9px 16px}
+.tpl-b .hint{font-size:10px}
+
+/* ============================================================
+   方案 C · 画廊卡片
+   ============================================================ */
+.tpl-c{width:860px;height:540px;background:var(--surface)}
+.tpl-c .chips{display:flex;align-items:center;gap:6px;padding:0 18px 12px;flex:none;flex-wrap:wrap}
+.chip{height:24px;padding:0 10px;border-radius:12px;border:1px solid var(--outline);font-size:11.5px;color:var(--t2);display:inline-flex;align-items:center;gap:5px;cursor:pointer;transition:background .12s,border-color .12s,color .12s}
+.chip:hover{background:var(--hover);color:var(--t1)}
+.chip.on{background:var(--accent-soft);border-color:var(--accent);color:var(--t1)}
+.chip .cnt{font-family:var(--mono);font-size:9.5px;color:var(--t3)}
+.tpl-c .grid{flex:1;min-height:0;overflow:auto;padding:0 18px 16px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;align-content:start}
+.card{border:1px solid var(--outline);border-radius:9px;background:var(--raised);overflow:hidden;display:flex;flex-direction:column;cursor:pointer;transition:transform .14s,border-color .12s,box-shadow .14s}
+.card:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(0,0,0,.12)}
+.card.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.card .thumb{height:84px;padding:11px 13px;background:var(--sunken);border-bottom:1px solid var(--outline-soft);position:relative;overflow:hidden}
+.card .thumb .ln{height:4px;border-radius:2px;background:var(--outline);margin-bottom:6px}
+.card .thumb .ln.h{height:7px;width:52%;background:var(--accent);opacity:.6;margin-bottom:8px}
+.card .thumb .ln.w2{width:86%}.card .thumb .ln.w3{width:64%}.card .thumb .ln.w4{width:92%}.card .thumb .ln.w5{width:44%}
+.card .thumb .code{display:flex;gap:4px;margin-top:9px}
+.card .thumb .code i{width:16px;height:4px;border-radius:2px;background:var(--rule);opacity:.8;display:block}
+.card .meta{padding:9px 12px 11px;display:flex;align-items:flex-start;gap:8px}
+.card .nm{font-size:12.5px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .sub{font-size:10.5px;color:var(--t3);margin-top:2px;display:flex;align-items:center;gap:5px;font-family:var(--mono)}
+.card .sub .dot{width:3px;height:3px;border-radius:50%;background:var(--t3);font-style:normal}
+.card .thumb .tick{position:absolute;right:9px;top:9px;width:16px;height:16px;border-radius:50%;background:var(--accent);color:var(--on-accent);display:none;place-items:center;font-size:10px;font-weight:700}
+.card.sel .thumb .tick{display:grid}
+
+/* ============================================================
+   方案 D · 右侧挂靠抽屉
+   ============================================================ */
+.tpl-d{width:940px;height:540px;flex-direction:row;background:var(--surface)}
+.d-editor{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--surface)}
+.d-editor .bar{height:38px;border-bottom:1px solid var(--outline-soft);display:flex;align-items:center;gap:8px;padding:0 14px;color:var(--t3);font-size:11.5px;flex:none}
+.d-editor .bar .pill{padding:1px 7px;border:1px solid var(--outline);border-radius:10px;font-size:10px;color:var(--t2)}
+.d-editor .page{flex:1;min-height:0;overflow:auto;padding:24px 34px 28px;font-size:13.5px;line-height:1.85;color:var(--t2)}
+.d-editor .page h1{font-size:24px;font-weight:650;letter-spacing:-.3px;color:var(--t1);margin-bottom:14px}
+.d-editor .page h2{font-size:15px;font-weight:650;color:var(--t1);margin:20px 0 6px}
+.d-editor .page p{margin:5px 0}
+.d-editor .page code{font-family:var(--mono);font-size:11.5px;padding:1px 5px;border-radius:4px;background:var(--sunken);border:1px solid var(--outline-soft);color:var(--t1)}
+.d-editor .page .caret{display:inline-block;width:1.5px;height:16px;background:var(--accent);vertical-align:-2px}
+.d-sheet{width:352px;flex:none;background:var(--sidebar);border-left:1px solid var(--outline);display:flex;flex-direction:column;min-height:0}
+.d-sheet .hd{padding:13px 10px 10px 16px}
+.d-sheet .pad{padding:0 12px 10px}
+.d-sheet .list{padding:0 8px 8px}
+.d-sheet .irow{height:auto;padding:8px 10px;align-items:flex-start;gap:9px}
+.d-sheet .irow .fi{margin-top:1px}
+.d-sheet .irow .nm{font-size:12.5px}
+.d-sheet .irow .sum{font-size:10.5px;line-height:1.55;color:var(--t3);margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.d-sheet .irow.sel .sum{color:var(--t2)}
+.d-sheet .ft{padding:10px 12px}
+.d-sheet .btn.pri{flex:1;justify-content:center}
+.d-sheet .subhint{display:flex;align-items:center;gap:6px;padding:0 14px 10px;font-size:10.5px;color:var(--t3)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="head">
+    <h1>模板界面重构 · 4 套方案</h1>
+    <p>当前模板界面是 540×560 的单栏弹窗：搜索 + 按文件夹分组 + 底部两个按钮，信息密度低、和编辑器没有关系。<b>下面 4 套都用同一套石墨素白令牌绘制，尺寸即实际弹窗尺寸，可直接照着实现。</b></p>
+  </header>
+
+  <div class="controls">
+    <div class="grp2">
+      <span class="gl">方案</span>
+      <button class="tg" data-go="all" aria-pressed="true">全部</button>
+      <button class="tg" data-go="a" aria-pressed="false">A · 双栏预览</button>
+      <button class="tg" data-go="b" aria-pressed="false">B · 命令面板</button>
+      <button class="tg" data-go="c" aria-pressed="false">C · 画廊卡片</button>
+      <button class="tg" data-go="d" aria-pressed="false">D · 侧栏抽屉</button>
+    </div>
+    <div class="grp2">
+      <span class="gl">明暗</span>
+      <button class="tg" data-mode="light" aria-pressed="false">亮色</button>
+      <button class="tg" data-mode="dark" aria-pressed="true">暗色</button>
+    </div>
+  </div>
+
+  <!-- ============================================================ A -->
+  <section class="scheme" data-s="a">
+    <div class="scheme-hd">
+      <span class="idx">A</span>
+      <h2>双栏「模板库 + 正文预览」</h2>
+      <span class="ref">780 × 520 · 推荐</span>
+    </div>
+    <p class="scheme-desc">左边是模板库（搜索、按文件夹分组、选中项用 <b>accentSoft 底 + 左侧 2px 强调竖线</b>），右边直接渲染模板正文。模板这种「必须先看内容再决定插不插」的东西，预览比标题重要；底部同时保留键盘提示与两个动作。</p>
+    <div class="stage">
+      <div class="panel tpl-a" data-m="dark">
+        <div class="hd">
+          <span class="mark"><svg class="ic i-lg" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="1.5"/><rect x="3" y="14" width="9" height="7" rx="1.5"/><rect x="16" y="14" width="5" height="7" rx="1.5"/></svg></span>
+          <div class="sp">
+            <div class="tt">模板</div>
+            <div class="ss">来自「模板」文件夹 · 7 个模板</div>
+          </div>
+          <button class="close" title="关闭"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+        </div>
+
+        <div class="body">
+          <div class="lib">
+            <div class="pad">
+              <div class="srch focus">
+                <svg class="ic i-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+                <input placeholder="搜索模板…" aria-label="搜索模板">
+              </div>
+            </div>
+            <div class="list">
+              <div class="grp">根目录</div>
+              <div class="irow sel" data-name="会议记录" data-path="模板/会议记录.md">
+                <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/><path d="M8 13h8M8 17h5"/></svg></span>
+                <div class="sp"><div class="nm">会议记录</div><div class="mt">今天 09:12</div></div>
+              </div>
+              <div class="irow" data-name="灵感速记" data-path="模板/灵感速记.md">
+                <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/><path d="M8 13h8M8 17h5"/></svg></span>
+                <div class="sp"><div class="nm">灵感速记</div><div class="mt">10月21日</div></div>
+              </div>
+              <div class="grp">周报</div>
+              <div class="irow" data-name="本周进展" data-path="模板/周报/本周进展.md">
+                <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/><path d="M8 13h8M8 17h5"/></svg></span>
+                <div class="sp"><div class="nm">本周进展</div><div class="mt">10月20日</div></div>
+              </div>
+              <div class="irow" data-name="下周计划" data-path="模板/周报/下周计划.md">
+                <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/><path d="M8 13h8M8 17h5"/></svg></span>
+                <div class="sp"><div class="nm">下周计划</div><div class="mt">10月18日</div></div>
+              </div>
+              <div class="grp">项目</div>
+              <div class="irow" data-name="项目启动清单" data-path="模板/项目/项目启动清单.md">
+                <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/><path d="M8 13h8M8 17h5"/></svg></span>
+                <div class="sp"><div class="nm">项目启动清单</div><div class="mt">10月12日</div></div>
+              </div>
+              <div class="irow" data-name="复盘 · 季度" data-path="模板/项目/复盘·季度.md">
+                <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/><path d="M8 13h8M8 17h5"/></svg></span>
+                <div class="sp"><div class="nm">复盘 · 季度</div><div class="mt">9月28日</div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="pv">
+            <div class="pvhd">
+              <div class="pvh1" data-pv-title>会议记录</div>
+              <div class="pvmeta"><span data-pv-path>模板/会议记录.md</span><span class="dot"></span><span>今天 09:12</span></div>
+            </div>
+            <div class="doc" data-doc="会议记录">
+              <h1>会议记录</h1>
+              <p><strong>日期</strong> · <code>{{date}}</code></p>
+              <p><strong>参会</strong> · <code>{{attendees}}</code></p>
+              <p><strong>主持</strong> · <code>{{host}}</code></p>
+              <h2>议题</h2>
+              <p>1. 上周遗留问题回看<br>2. 本周重点进展<br>3. 风险与阻塞</p>
+              <h2>结论</h2>
+              <blockquote>把每个决策写成一条能执行的动作，并指定负责人。</blockquote>
+              <h2>待办</h2>
+              <ul class="task">
+                <li>整理会议纪要，发到群里</li>
+                <li>跟进 <code>{{owner}}</code> 的排期</li>
+              </ul>
+            </div>
+            <div class="doc" data-doc="灵感速记" hidden>
+              <h1>灵感速记</h1>
+              <p><code>{{date}} {{time}}</code></p>
+              <h2>我看到的</h2>
+              <p>先写下事实，不加解释。</p>
+              <h2>我想到的</h2>
+              <p>把第一反应写下来，越具体越好。</p>
+              <h2>可以做什么</h2>
+              <ul><li>今天能做的一小步</li></ul>
+            </div>
+            <div class="doc" data-doc="本周进展" hidden>
+              <h1>本周进展</h1>
+              <p>第 <code>{{week}}</code> 周 · <code>{{range}}</code></p>
+              <h2>做完了</h2>
+              <ul><li>…</li></ul>
+              <h2>卡住了</h2>
+              <p>写清楚卡在哪一步、需要谁帮忙。</p>
+              <h2>下周</h2>
+              <ul><li>…</li></ul>
+            </div>
+            <div class="doc" data-doc="下周计划" hidden>
+              <h1>下周计划</h1>
+              <p><code>{{range}}</code></p>
+              <h2>三件最重要的事</h2>
+              <ul><li>…</li></ul>
+              <h2>不做的事</h2>
+              <p>写下这周主动放弃的内容，避免又排满。</p>
+            </div>
+            <div class="doc" data-doc="项目启动清单" hidden>
+              <h1>项目启动清单</h1>
+              <h2>目标</h2>
+              <p>一句话说清楚这个项目要改变什么。</p>
+              <h2>检查项</h2>
+              <ul class="task">
+                <li>明确负责人与验收标准</li>
+                <li>列出依赖与风险</li>
+                <li>约定第一次复盘时间</li>
+              </ul>
+            </div>
+            <div class="doc" data-doc="复盘 · 季度" hidden>
+              <h1>复盘 · 季度</h1>
+              <p><code>{{quarter}}</code></p>
+              <h2>预期 vs 实际</h2>
+              <p>先把数字摆出来，再解释。</p>
+              <h2>做对了什么</h2>
+              <blockquote>只写可以复制到下一个季度的方法。</blockquote>
+              <h2>下次换一种做法</h2>
+              <ul><li>…</li></ul>
+            </div>
+            <div class="vars">
+              <span>变量</span>
+              <span class="var">{{date}}</span>
+              <span class="var">{{attendees}}</span>
+              <span class="var">{{host}}</span>
+              <span class="sp"></span>
+              <span>插入时求值</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="ft">
+          <div class="ft-space">
+            <div class="hint">
+              <span class="kbd">↑</span><span class="kbd">↓</span><span>选择</span>
+              <span style="width:4px"></span>
+              <span class="kbd">Enter</span><span>插入</span>
+              <span style="width:4px"></span>
+              <span class="kbd">Ctrl+Enter</span><span>新建笔记</span>
+            </div>
+          </div>
+          <button class="btn"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>打开文件夹</button>
+          <button class="btn"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/><path d="M12 12v5M9.5 14.5h5"/></svg>新建笔记</button>
+          <button class="btn pri"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M20 4v7a4 4 0 0 1-4 4H5"/><path d="m9 11-4 4 4 4"/></svg>插入到当前笔记</button>
+        </div>
+      </div>
+    </div>
+    <div class="cap">弹窗 780×520 · 左栏 292px · 预热选中 + 预览同步 · 空态与「无匹配」复用现有文案</div>
+  </section>
+
+  <!-- ============================================================ B -->
+  <section class="scheme" data-s="b">
+    <div class="scheme-hd">
+      <span class="idx">B</span>
+      <h2>命令面板（Spotlight 式）</h2>
+      <span class="ref">560 × 420 · 最快</span>
+    </div>
+    <p class="scheme-desc">一个搜索框 + 一列紧凑结果，选中行右侧直接给出 <b>Enter</b> 键帽。没有预览、没有分组容器，纯键盘路径最短；代价是只能靠标题与路径判断内容。</p>
+    <div class="stage">
+      <div class="panel tpl-b" data-m="dark">
+        <div class="hd" style="padding:13px 12px 10px 16px">
+          <span class="mark"><svg class="ic i-sm" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="1.5"/><rect x="3" y="14" width="9" height="7" rx="1.5"/><rect x="16" y="14" width="5" height="7" rx="1.5"/></svg></span>
+          <div class="sp">
+            <div class="tt">模板</div>
+            <div class="ss">来自「模板」文件夹 · 7 个模板</div>
+          </div>
+          <button class="close" title="关闭"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+        </div>
+        <div class="pad">
+          <div class="srch focus">
+            <svg class="ic i-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+            <input placeholder="搜索模板…" aria-label="搜索模板">
+            <span class="kbd">Ctrl P</span>
+          </div>
+        </div>
+        <div class="list">
+          <div class="grp">根目录</div>
+          <div class="irow sel" data-name="会议记录" data-path="模板/会议记录.md">
+            <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/></svg></span>
+            <span class="nm">会议记录</span>
+            <span class="mt sp" style="text-align:left">模板/会议记录.md</span>
+            <span class="kbd">Enter</span>
+          </div>
+          <div class="irow" data-name="灵感速记" data-path="模板/灵感速记.md">
+            <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/></svg></span>
+            <span class="nm">灵感速记</span>
+            <span class="mt sp" style="text-align:left">模板/灵感速记.md</span>
+          </div>
+          <div class="grp">周报</div>
+          <div class="irow" data-name="本周进展" data-path="模板/周报/本周进展.md">
+            <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/></svg></span>
+            <span class="nm">本周进展</span>
+            <span class="mt sp" style="text-align:left">模板/周报/本周进展.md</span>
+          </div>
+          <div class="irow" data-name="下周计划" data-path="模板/周报/下周计划.md">
+            <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/></svg></span>
+            <span class="nm">下周计划</span>
+            <span class="mt sp" style="text-align:left">模板/周报/下周计划.md</span>
+          </div>
+          <div class="grp">项目</div>
+          <div class="irow" data-name="项目启动清单" data-path="模板/项目/项目启动清单.md">
+            <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/></svg></span>
+            <span class="nm">项目启动清单</span>
+            <span class="mt sp" style="text-align:left">模板/项目/项目启动清单.md</span>
+          </div>
+        </div>
+        <div class="ft">
+          <div class="ft-space">
+            <div class="hint"><span class="kbd">↑</span><span class="kbd">↓</span><span>选择</span><span style="width:4px"></span><span class="kbd">Ctrl+Enter</span><span>新建笔记</span></div>
+          </div>
+          <button class="btn">新建笔记</button>
+          <button class="btn pri">插入</button>
+        </div>
+      </div>
+    </div>
+    <div class="cap">弹窗 560×420 · 行高 34px · 支持模糊搜索 + ↑↓ 移动 · 不展示正文</div>
+  </section>
+
+  <!-- ============================================================ C -->
+  <section class="scheme" data-s="c">
+    <div class="scheme-hd">
+      <span class="idx">C</span>
+      <h2>画廊卡片</h2>
+      <span class="ref">860 × 540 · 最直观</span>
+    </div>
+    <p class="scheme-desc">顶部一排文件夹筛选 chips，下面 3 列卡片：卡面用抽象的行块暗示模板结构（标题、段落、代码块），底部是名称、所在文件夹与修改时间。模板数量变多时，卡片比长列表更容易扫。</p>
+    <div class="stage">
+      <div class="panel tpl-c" data-m="dark">
+        <div class="hd" style="padding:15px 12px 12px 18px">
+          <span class="mark"><svg class="ic i-lg" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="1.5"/><rect x="3" y="14" width="9" height="7" rx="1.5"/><rect x="16" y="14" width="5" height="7" rx="1.5"/></svg></span>
+          <div class="sp">
+            <div class="tt">模板</div>
+            <div class="ss">来自「模板」文件夹 · 7 个模板</div>
+          </div>
+          <button class="btn" style="margin-right:2px"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>新建模板</button>
+          <button class="close" title="关闭"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+        </div>
+        <div class="chips">
+          <button class="chip on">全部 <span class="cnt">7</span></button>
+          <button class="chip"><svg class="ic" style="width:12px;height:12px" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>根目录 <span class="cnt">2</span></button>
+          <button class="chip">周报 <span class="cnt">2</span></button>
+          <button class="chip">项目 <span class="cnt">2</span></button>
+          <button class="chip">复盘 <span class="cnt">1</span></button>
+        </div>
+        <div class="grid">
+          <div class="card sel" data-name="会议记录" data-path="模板/会议记录.md">
+            <div class="thumb"><span class="tick">✓</span><div class="ln h"></div><div class="ln w2"></div><div class="ln w4"></div><div class="ln h" style="width:34%"></div><div class="ln w3"></div><div class="ln w5"></div></div>
+            <div class="meta"><div class="sp"><div class="nm">会议记录</div><div class="sub"><span>根目录</span><span class="dot"></span><span>今天 09:12</span></div></div></div>
+          </div>
+          <div class="card" data-name="灵感速记" data-path="模板/灵感速记.md">
+            <div class="thumb"><span class="tick">✓</span><div class="ln h" style="width:38%"></div><div class="ln w3"></div><div class="ln h" style="width:30%"></div><div class="ln w2"></div><div class="ln w4"></div></div>
+            <div class="meta"><div class="sp"><div class="nm">灵感速记</div><div class="sub"><span>根目录</span><span class="dot"></span><span>10月21日</span></div></div></div>
+          </div>
+          <div class="card" data-name="本周进展" data-path="模板/周报/本周进展.md">
+            <div class="thumb"><span class="tick">✓</span><div class="ln h" style="width:46%"></div><div class="ln w4"></div><div class="ln w2"></div><div class="ln h" style="width:26%"></div><div class="ln w3"></div></div>
+            <div class="meta"><div class="sp"><div class="nm">本周进展</div><div class="sub"><span>周报</span><span class="dot"></span><span>10月20日</span></div></div></div>
+          </div>
+          <div class="card" data-name="下周计划" data-path="模板/周报/下周计划.md">
+            <div class="thumb"><span class="tick">✓</span><div class="ln h" style="width:40%"></div><div class="ln w2"></div><div class="ln w5"></div><div class="ln h" style="width:22%"></div><div class="ln w3"></div><div class="code"><i style="width:22px"></i><i style="width:14px"></i><i style="width:30px"></i></div></div>
+            <div class="meta"><div class="sp"><div class="nm">下周计划</div><div class="sub"><span>周报</span><span class="dot"></span><span>10月18日</span></div></div></div>
+          </div>
+          <div class="card" data-name="项目启动清单" data-path="模板/项目/项目启动清单.md">
+            <div class="thumb"><span class="tick">✓</span><div class="ln h" style="width:56%"></div><div class="ln w2"></div><div class="ln w3"></div><div class="ln h" style="width:24%"></div><div class="ln w4"></div></div>
+            <div class="meta"><div class="sp"><div class="nm">项目启动清单</div><div class="sub"><span>项目</span><span class="dot"></span><span>10月12日</span></div></div></div>
+          </div>
+          <div class="card" data-name="复盘 · 季度" data-path="模板/项目/复盘·季度.md">
+            <div class="thumb"><span class="tick">✓</span><div class="ln h" style="width:44%"></div><div class="ln w4"></div><div class="ln w3"></div><div class="ln h" style="width:28%"></div><div class="ln w2"></div></div>
+            <div class="meta"><div class="sp"><div class="nm">复盘 · 季度</div><div class="sub"><span>项目</span><span class="dot"></span><span>9月28日</span></div></div></div>
+          </div>
+        </div>
+        <div class="ft">
+          <div class="ft-space"><div class="hint"><span class="kbd">Enter</span><span>插入</span><span style="width:4px"></span><span class="kbd">Ctrl+Enter</span><span>新建笔记</span><span style="width:4px"></span><span class="kbd">Esc</span><span>关闭</span></div></div>
+          <button class="btn pri">插入到当前笔记</button>
+        </div>
+      </div>
+    </div>
+    <div class="cap">弹窗 860×540 · 卡片 3 列 · 选中的卡片用 accent 描边 + 右上角对勾 · 空态直接给「新建模板」</div>
+  </section>
+
+  <!-- ============================================================ D -->
+  <section class="scheme" data-s="d">
+    <div class="scheme-hd">
+      <span class="idx">D</span>
+      <h2>右侧挂靠抽屉</h2>
+      <span class="ref">侧栏 352px · 不遮正文</span>
+    </div>
+    <p class="scheme-desc">不再弹窗，而是从编辑区右侧滑出一条模板栏（贴边、与侧边栏共用底色）。写一段、插一个模板、接着写，模板栏可以一直开着；每个模板带两行摘要，弥补没有预览的问题。</p>
+    <div class="stage">
+      <div class="panel tpl-d" data-m="dark">
+        <div class="d-editor">
+          <div class="bar">
+            <span>项目周报</span><span class="pill">草稿</span>
+            <span class="sp"></span>
+            <span>今天 09:24</span>
+          </div>
+          <div class="page">
+            <h1>项目周报 · 第 42 周</h1>
+            <p>这一周主要在推进编辑器里的引用与列表排版。引用块的竖线现在会跟着软换行一直铺到段落末尾。</p>
+            <h2>本周进展</h2>
+            <p>· 引用块竖线覆盖全部视觉行<br>· 续行缩进与首行正文对齐<br>· 撤销栈按每次输入独立记录</p>
+            <p><span class="caret"></span></p>
+          </div>
+        </div>
+        <div class="d-sheet">
+          <div class="hd">
+            <span class="mark"><svg class="ic i-sm" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="1.5"/><rect x="3" y="14" width="9" height="7" rx="1.5"/><rect x="16" y="14" width="5" height="7" rx="1.5"/></svg></span>
+            <div class="sp">
+              <div class="tt" style="font-size:14px">模板</div>
+              <div class="ss">7 个模板 · 「模板」文件夹</div>
+            </div>
+            <button class="close" title="收起"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+          </div>
+          <div class="pad">
+            <div class="srch">
+              <svg class="ic i-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+              <input placeholder="搜索模板…" aria-label="搜索模板">
+            </div>
+          </div>
+          <div class="list">
+            <div class="grp">根目录</div>
+            <div class="irow sel" data-name="会议记录" data-path="模板/会议记录.md">
+              <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/></svg></span>
+              <div class="sp">
+                <div class="nm">会议记录</div>
+                <div class="sum">日期 · 参会 · 主持，议题 / 结论 / 待办三段式，决策写成可执行动作。</div>
+              </div>
+            </div>
+            <div class="irow" data-name="灵感速记" data-path="模板/灵感速记.md">
+              <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/></svg></span>
+              <div class="sp">
+                <div class="nm">灵感速记</div>
+                <div class="sum">我看到的 / 我想到的 / 可以做什么，先写事实再解释。</div>
+              </div>
+            </div>
+            <div class="grp">周报</div>
+            <div class="irow" data-name="本周进展" data-path="模板/周报/本周进展.md">
+              <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/></svg></span>
+              <div class="sp">
+                <div class="nm">本周进展</div>
+                <div class="sum">做完了 / 卡住了 / 下周，卡点要写清楚需要谁帮忙。</div>
+              </div>
+            </div>
+            <div class="irow" data-name="下周计划" data-path="模板/周报/下周计划.md">
+              <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/></svg></span>
+              <div class="sp">
+                <div class="nm">下周计划</div>
+                <div class="sum">三件最重要的事 + 明确不做的事，避免把下周排满。</div>
+              </div>
+            </div>
+            <div class="grp">项目</div>
+            <div class="irow" data-name="项目启动清单" data-path="模板/项目/项目启动清单.md">
+              <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/></svg></span>
+              <div class="sp">
+                <div class="nm">项目启动清单</div>
+                <div class="sum">目标、负责人、验收标准、依赖与第一次复盘时间。</div>
+              </div>
+            </div>
+            <div class="irow" data-name="复盘 · 季度" data-path="模板/项目/复盘·季度.md">
+              <span class="fi"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h9l5 5v12a1 1 0 0 1-1 1Z"/></svg></span>
+              <div class="sp">
+                <div class="nm">复盘 · 季度</div>
+                <div class="sum">预期 vs 实际、做对了什么、下次换一种做法。</div>
+              </div>
+            </div>
+          </div>
+          <div class="subhint"><span class="kbd">Enter</span><span>插入到光标处</span><span class="sp"></span><span class="kbd">Esc</span><span>收起</span></div>
+          <div class="ft">
+            <button class="btn" style="width:32px;justify-content:center;padding:0"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+            <button class="btn pri"><svg class="ic i-sm" viewBox="0 0 24 24"><path d="M20 4v7a4 4 0 0 1-4 4H5"/><path d="m9 11-4 4 4 4"/></svg>插入到当前笔记</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="cap">抽屉 352px（与文件树同宽）· 列表行含两行摘要 · 底部主按钮固定在栏内 · 不阻挡正文</div>
+  </section>
+
+  <div class="foot">
+    尺寸与令牌均取自应用：<code>AppSpace.xs 4 / sm 8 / md 12 / lg 16</code>、<code>AppRadius.xs 3 / sm 5 / md 7 / lg 10</code>、
+    <code>AppLayout.fieldHeight 32</code>。四套方案里的搜索框、键帽、按钮、分组标签均为现有组件语言，实现时不需要新造控件。
+  </div>
+</div>
+
+<script>
+(function () {
+  var folders = document.querySelectorAll('.panel');
+  function setMode(mode) {
+    folders.forEach(function (p) { p.setAttribute('data-m', mode); });
+    document.querySelectorAll('[data-mode]').forEach(function (b) {
+      b.setAttribute('aria-pressed', String(b.getAttribute('data-mode') === mode));
+    });
+  }
+  function setScheme(go) {
+    document.querySelectorAll('.scheme').forEach(function (s) {
+      s.style.display = (go === 'all' || s.getAttribute('data-s') === go) ? '' : 'none';
+    });
+    document.querySelectorAll('[data-go]').forEach(function (b) {
+      b.setAttribute('aria-pressed', String(b.getAttribute('data-go') === go));
+    });
+  }
+  document.querySelectorAll('[data-mode]').forEach(function (b) {
+    b.addEventListener('click', function () { setMode(b.getAttribute('data-mode')); });
+  });
+  document.querySelectorAll('[data-go]').forEach(function (b) {
+    b.addEventListener('click', function () { setScheme(b.getAttribute('data-go')); });
+  });
+
+  // A：选中行同步右侧预览
+  var panelA = document.querySelector('.tpl-a');
+  if (panelA) {
+    panelA.querySelectorAll('.irow').forEach(function (row) {
+      row.addEventListener('click', function () {
+        panelA.querySelectorAll('.irow').forEach(function (r) { r.classList.remove('sel'); });
+        row.classList.add('sel');
+        var name = row.getAttribute('data-name');
+        var path = row.getAttribute('data-path');
+        panelA.querySelector('[data-pv-title]').textContent = name;
+        panelA.querySelector('[data-pv-path]').textContent = path;
+        panelA.querySelectorAll('.doc').forEach(function (d) {
+          d.hidden = d.getAttribute('data-doc') !== name;
+        });
+      });
+    });
+  }
+
+  // C：选中卡片
+  var panelC = document.querySelector('.tpl-c');
+  if (panelC) {
+    panelC.querySelectorAll('.card').forEach(function (card) {
+      card.addEventListener('click', function () {
+        panelC.querySelectorAll('.card').forEach(function (c) { c.classList.remove('sel'); });
+        card.classList.add('sel');
+      });
+    });
+  }
+
+  // D：选中行
+  var panelD = document.querySelector('.tpl-d');
+  if (panelD) {
+    panelD.querySelectorAll('.irow').forEach(function (row) {
+      row.addEventListener('click', function () {
+        panelD.querySelectorAll('.irow').forEach(function (r) { r.classList.remove('sel'); });
+        row.classList.add('sel');
+      });
+    });
+  }
+
+  // 搜索过滤（A / B / D）
+  document.querySelectorAll('.srch input').forEach(function (input) {
+    input.addEventListener('input', function () {
+      var scope = input.closest('.panel');
+      var q = input.value.trim().toLowerCase();
+      scope.querySelectorAll('.irow').forEach(function (row) {
+        var hay = (row.getAttribute('data-name') || '') + ' ' + (row.getAttribute('data-path') || '');
+        row.style.display = q && hay.toLowerCase().indexOf(q) < 0 ? 'none' : '';
+      });
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -24,6 +24,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import 'line_layout_engine.dart';
+import 'line_layout_pool.dart';
 import 'line_marker_style.dart';
 import 'render_line_editable.dart';
 
@@ -542,6 +543,9 @@ class LineEditableText extends StatefulWidget {
     this.undoController,
     this.hintLocales,
     this.enableInlinePrediction,
+    this.lineLayoutKey,
+    this.layoutPool,
+    this.layoutCacheDocument,
     this.lineStyleFor,
     this.lineHeightFor,
     this.lineSpanFor,
@@ -731,6 +735,24 @@ class LineEditableText extends StatefulWidget {
   /// [MediaQueryData.letterSpacingOverride], and [MediaQueryData.wordSpacingOverride]
   /// regardless of its [TextStyle.inherit] value.
   final TextStyle style;
+
+  /// 行解析器的**语义键**（见 `LineStyleKeyed.styleKey`）。
+  ///
+  /// 宿主的 `LiveLineStyle` 每次重建都会给出新的闭包，按身份比较会让每次输入
+  /// 都丢掉整篇布局。这个键只含影响排版的配置、不含源码：键不变就说明未被
+  /// 编辑的行排版结果仍然有效，渲染层可以让编辑走行级增量。
+  ///
+  /// 为 null 时退回按身份比较（旧行为）。
+  final Object? lineLayoutKey;
+
+  /// 跨文档复用行布局的池；为 null 时只在本渲染对象内复用（P5a）。
+  ///
+  /// 换笔记时输入框会被整块重建，渲染对象销毁瞬间把布局挂进这个池，切回来
+  /// 直接采用，不再整篇重排。池由宿主（MarkdownEditor）持有并在销毁时释放。
+  final LineLayoutPool? layoutPool;
+
+  /// 当前文档的身份（笔记 id 加外部版本）；换文档即换这个值。
+  final String? layoutCacheDocument;
 
   /// 按行取排版样式；为 null 时整篇使用 [style]。
   ///
@@ -6045,6 +6067,10 @@ class LineEditableTextState extends State<LineEditableText>
                                     promptRectColor:
                                         widget.autocorrectionTextRectColor,
                                     clipBehavior: widget.clipBehavior,
+                                    lineLayoutKey: widget.lineLayoutKey,
+                                    layoutPool: widget.layoutPool,
+                                    layoutCacheDocument:
+                                        widget.layoutCacheDocument,
                                     lineStyleFor: widget.lineStyleFor,
                                     lineHeightFor: widget.lineHeightFor,
                                     lineSpanFor: widget.lineSpanFor,
@@ -6209,6 +6235,9 @@ class _Editable extends MultiChildRenderObjectWidget {
     this.promptRectRange,
     this.promptRectColor,
     required this.clipBehavior,
+    this.lineLayoutKey,
+    this.layoutPool,
+    this.layoutCacheDocument,
     this.lineStyleFor,
     this.lineHeightFor,
     this.lineSpanFor,
@@ -6265,6 +6294,9 @@ class _Editable extends MultiChildRenderObjectWidget {
   final TextRange? promptRectRange;
   final Color? promptRectColor;
   final Clip clipBehavior;
+  final Object? lineLayoutKey;
+  final LineLayoutPool? layoutPool;
+  final String? layoutCacheDocument;
   final LineStyleResolver? lineStyleFor;
   final LineHeightResolver? lineHeightFor;
   final LineSpanResolver? lineSpanFor;
@@ -6323,6 +6355,9 @@ class _Editable extends MultiChildRenderObjectWidget {
       promptRectRange: promptRectRange,
       promptRectColor: promptRectColor,
       clipBehavior: clipBehavior,
+      lineLayoutKey: lineLayoutKey,
+      layoutPool: layoutPool,
+      layoutCacheDocument: layoutCacheDocument,
       lineStyleFor: lineStyleFor,
       lineHeightFor: lineHeightFor,
       lineSpanFor: lineSpanFor,
@@ -6379,6 +6414,9 @@ class _Editable extends MultiChildRenderObjectWidget {
       ..paintCursorAboveText = paintCursorAboveText
       ..promptRectColor = promptRectColor
       ..clipBehavior = clipBehavior
+      ..lineLayoutKey = lineLayoutKey
+      ..layoutPool = layoutPool
+      ..layoutCacheDocument = layoutCacheDocument
       ..lineStyleFor = lineStyleFor
       ..lineHeightFor = lineHeightFor
       ..lineSpanFor = lineSpanFor

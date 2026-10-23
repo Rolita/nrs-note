@@ -40,6 +40,13 @@ class LiveTableBlocks {
   /// 源码行号 → 这一行的自绘内容。
   final Map<int, _TableLineBlock> _byLine = <int, _TableLineBlock>{};
 
+  /// 每张表一份记录：源码块不变、光标也不在同一格时直接复用。
+  final List<_TableRecord> _records = <_TableRecord>[];
+
+  /// 实际跑过几次整表测量。测试用它断言「只有变了的表才重测」。
+  @visibleForTesting
+  int debugTableMeasures = 0;
+
   /// 每张表最近一次算出的选区色带；`(a, b, bands)`。
   final Map<_Table, (int, int, List<_RowBand?>)> _bandCache =
       <_Table, (int, int, List<_RowBand?>)>{};
@@ -79,15 +86,19 @@ class LiveTableBlocks {
   }
 
   void _disposeBlocks() {
-    for (final _TableLineBlock block in _byLine.values) {
-      block.dispose();
+    for (final _TableRecord record in _records) {
+      record.dispose();
     }
+    _records.clear();
     _byLine.clear();
     _bandCache.clear();
   }
 
   void _measure(String source, LineBlockContext context, int caret) {
-    _disposeBlocks();
+    final bool environmentChanged =
+        context.contentWidth != _measuredWidth ||
+        context.textScaler != _measuredScaler ||
+        context.textDirection != _measuredDirection;
     _measuredText = source;
     _measuredBase = base;
     _measuredWidth = context.contentWidth;
@@ -95,18 +106,25 @@ class LiveTableBlocks {
     _measuredDirection = context.textDirection;
     _measuredCaret = caret;
 
-    final List<SourceLine> sources = scanSourceLines(source);
-    bool any = false;
-    for (final SourceLine line in sources) {
-      if (_isTableSource(line.kind)) {
-        any = true;
-        break;
-      }
-    }
-    if (!any) return;
+    // 列宽、行高和每个格子的 TextPainter 一起构成一张表的测量，只有环境变了
+    // 才会让所有表一起作废；源码或光标的变化按表处理。
+    if (environmentChanged) _disposeBlocks();
 
+    final List<SourceLine> sources = scanSourceLines(source);
     final List<String> lines = source.split('\n');
     final List<int> starts = <int>[for (final SourceLine s in sources) s.start];
+
+    // 旧记录按源码块配对。源码没变的表，测量结果原样可用，只需把行号和
+    // 偏移跟着上面的编辑挪一下。
+    final Map<String, List<_TableRecord>> pool =
+        <String, List<_TableRecord>>{};
+    for (final _TableRecord record in _records) {
+      (pool[record.key] ??= <_TableRecord>[]).add(record);
+    }
+
+    final List<_TableRecord> next = <_TableRecord>[];
+    _byLine.clear();
+
     // 格子的 span 树由渲染对象重画，芯片（标签、链接）拿不到 BuildContext，
     // 所以整棵树走 `plain` 上下文：格子里的行内代码不画胶囊，改由自绘层画。
     // 胶囊的选中色不在测量时决定：表格的选区是一个**格子矩形**，而线性选区
@@ -141,6 +159,35 @@ class LiveTableBlocks {
           break;
         }
       }
+
+      final String key = _sourceKeyOf(lines, i, last);
+      final List<_TableRecord>? available = pool[key];
+      final _TableRecord? reused =
+          available != null && available.isNotEmpty
+          ? available.removeLast()
+          : null;
+      if (reused != null) {
+        _rebind(
+          reused,
+          firstLine: i,
+          lastLine: last,
+          dividerLine: divider,
+          firstStart: starts[i],
+        );
+        final (int, int) edit = _editCellOf(reused.table, caret);
+        // 光标停在同一个格子里时，揭开的那一格没有变，整张表都不用重测。
+        if (edit.$1 == reused.editRow && edit.$2 == reused.editColumn) {
+          next.add(reused);
+          for (final _TableLineBlock block in reused.blocks) {
+            _byLine[block.row.line] = block;
+          }
+          i = last + 1;
+          continue;
+        }
+        reused.dispose();
+        _bandCache.remove(reused.table);
+      }
+
       final _Table table = _measureTable(
         lines: lines,
         starts: starts,
@@ -152,9 +199,12 @@ class LiveTableBlocks {
         editAt: caret,
         direction: context.textDirection,
       );
+      debugTableMeasures++;
+      final (int, int) edit = _editCellOf(table, caret);
+      final List<_TableLineBlock> blocks = <_TableLineBlock>[];
       for (int ri = 0; ri < table.rows.length; ri++) {
         final _RowData row = table.rows[ri];
-        _byLine[row.line] = _TableLineBlock(
+        final _TableLineBlock block = _TableLineBlock(
           table: table,
           row: row,
           rowIndex: ri,
@@ -167,9 +217,89 @@ class LiveTableBlocks {
           direction: context.textDirection,
           bandOf: (int index) => _bandOf(table, index),
         );
+        blocks.add(block);
+        _byLine[row.line] = block;
       }
+      next.add(
+        _TableRecord(
+          key: key,
+          firstLine: i,
+          lastLine: last,
+          dividerLine: divider,
+          firstStart: starts[i],
+          table: table,
+          blocks: blocks,
+          editRow: edit.$1,
+          editColumn: edit.$2,
+        ),
+      );
       i = last + 1;
     }
+
+    // 没配上源码块的旧表已经从文档里消失（或换了内容），连同格子的
+    // TextPainter 一起释放。
+    for (final List<_TableRecord> leftovers in pool.values) {
+      for (final _TableRecord record in leftovers) {
+        record.dispose();
+        _bandCache.remove(record.table);
+      }
+    }
+    _records
+      ..clear()
+      ..addAll(next);
+  }
+
+  /// 一张表的源码块（含分隔行）拼成匹配键。相同源码的表测量结果完全等价，
+  /// 所以重复的表互换记录也不影响显示。
+  static String _sourceKeyOf(List<String> lines, int first, int last) =>
+      lines.sublist(first, last + 1).join('\n');
+
+  /// 把复用的表挪到新的行号和源码偏移上。格子的文字与几何不动，只改绝对
+  /// 偏移，光标命中、选区和 chrome 才能继续落在正确的字符上。
+  void _rebind(
+    _TableRecord record, {
+    required int firstLine,
+    required int lastLine,
+    required int dividerLine,
+    required int firstStart,
+  }) {
+    final int lineShift = firstLine - record.firstLine;
+    final int offsetShift = firstStart - record.firstStart;
+    record
+      ..firstLine = firstLine
+      ..lastLine = lastLine
+      ..dividerLine = dividerLine
+      ..firstStart = firstStart;
+    if (lineShift == 0 && offsetShift == 0) return;
+    for (final _RowData row in record.table.rows) {
+      row.rebind(
+        line: row.line + lineShift,
+        start: row.start + offsetShift,
+        end: row.end + offsetShift,
+      );
+    }
+    final int tableId = record.table.rows.isEmpty
+        ? firstStart
+        : record.table.rows.first.start;
+    for (final _TableLineBlock block in record.blocks) {
+      block.tableId = tableId;
+    }
+  }
+
+  /// [caret] 落在哪个格子里。与 [_measureTable] 的 `editAt` 判定同一口径
+  /// （两端都算），复用时拿它和上次的格子比较。
+  static (int, int) _editCellOf(_Table table, int caret) {
+    if (caret < 0) return (-1, -1);
+    for (int r = 0; r < table.rows.length; r++) {
+      final _RowData row = table.rows[r];
+      for (int c = 0; c < row.cells.length; c++) {
+        final _ParsedCell cell = row.cells[c];
+        if (caret >= cell.offset && caret <= cell.offset + cell.text.length) {
+          return (r, c);
+        }
+      }
+    }
+    return (-1, -1);
   }
 
   /// 这一行就是表格块里的一行（分隔行不算，它不占像素）。
@@ -198,6 +328,41 @@ class LiveTableBlocks {
       _bandCache[table] = (a, b, bands);
     }
     return index >= 0 && index < bands.length ? bands[index] : null;
+  }
+}
+
+/// 一张表的测量记录：源码块、它的行号、以及上一次光标落在哪一格。
+///
+/// 记录拥有每一行的 [TextPainter]；复用时只改绝对偏移，重测时整份换掉。
+class _TableRecord {
+  _TableRecord({
+    required this.key,
+    required this.firstLine,
+    required this.lastLine,
+    required this.dividerLine,
+    required this.firstStart,
+    required this.table,
+    required this.blocks,
+    required this.editRow,
+    required this.editColumn,
+  });
+
+  final String key;
+  int firstLine;
+  int lastLine;
+  int dividerLine;
+  int firstStart;
+  final _Table table;
+  final List<_TableLineBlock> blocks;
+
+  /// 测量时光标所在的格子（行、列）；`-1` 表示光标不在表里。
+  int editRow;
+  int editColumn;
+
+  void dispose() {
+    for (final _TableLineBlock block in blocks) {
+      block.dispose();
+    }
   }
 }
 
@@ -241,7 +406,10 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
   final _RowData row;
   final int rowIndex;
   final int rowCount;
-  final int tableId;
+
+  /// 表的身份就是第一行的源码偏移；表在文档里移动后由 [_rebind] 更新，
+  /// 拖拽预览和 chrome 才能继续认得出它。
+  int tableId;
   final bool header;
 
   /// 块的最后一行：它负责闭合表格的底边。

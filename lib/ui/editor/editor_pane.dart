@@ -116,7 +116,6 @@ class EditorPaneState extends State<EditorPane> {
       if (lineMoved) {
         _lastCaretMove = DateTime.now();
         _reportOutlineLine(line);
-        _maybeTypewriter(line);
       }
     }
   }
@@ -162,6 +161,34 @@ class EditorPaneState extends State<EditorPane> {
     final TextEditingValue next = fn(_body.value);
     _body.value = next;
     context.read<NotesController>().updateBody(next.text);
+    _bodyFocus.requestFocus();
+  }
+
+  /// The body text selected in the editor, or an empty string.
+  ///
+  /// A template is rendered with this as `tp.file.selection()`, and a partial
+  /// replacement is why "insert" is not simply "append".
+  String get selectedBodyText {
+    final TextSelection selection = _body.selection;
+    if (!selection.isValid || selection.isCollapsed) return '';
+    return selection.textInside(_body.text);
+  }
+
+  /// Replaces the selection with an already-rendered template in one edit.
+  ///
+  /// The caller renders first; a failed or cancelled render never reaches this
+  /// method, so a bad template cannot leave half a block in the prose.
+  void insertTemplate(String text, {int? cursorOffset}) {
+    applyEdit(insertTemplateText(text, cursorOffset: cursorOffset));
+  }
+
+  /// Places the caret after the body was replaced from outside — the
+  /// template-new-note flow, whose cursor marker is only known once the note
+  /// exists and has rendered.
+  void placeCaretAt(int offset) {
+    final int at = offset.clamp(0, _body.text.length);
+    _body.revealSuppressed = false;
+    _body.selection = TextSelection.collapsed(offset: at);
     _bodyFocus.requestFocus();
   }
 
@@ -308,26 +335,6 @@ class EditorPaneState extends State<EditorPane> {
   void goToHeading(int line) {
     final SettingsController settings = context.read<SettingsController>();
     _goToHeading(line, editorProseStyle(context.palette, settings.proseSize));
-  }
-
-  void _maybeTypewriter(int line) {
-    if (!mounted) return;
-    if (!_bodyFocus.hasFocus) return;
-    if (!context.read<SettingsController>().typewriter) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      unawaited(
-        _scrollToLine(
-          line,
-          style: editorProseStyle(
-            context.palette,
-            context.read<SettingsController>().proseSize,
-          ),
-          anchor: 0.5,
-          duration: AppMotion.fast,
-        ),
-      );
-    });
   }
 
   // ------------------------------------------------------------------ build
@@ -520,12 +527,6 @@ class EditorPaneState extends State<EditorPane> {
             ),
           ),
           const SizedBox(width: AppSpace.sm),
-          AppIconButton(
-            icon: LucideIcons.alignVerticalJustifyCenter,
-            tooltip: '打字机模式',
-            active: settings.typewriter,
-            onPressed: () => settings.typewriter = !settings.typewriter,
-          ),
           AppIconButton(
             icon: LucideIcons.maximize,
             tooltip: '专注模式',
@@ -780,10 +781,6 @@ class EditorPaneState extends State<EditorPane> {
             text: '行 ${_cursorLine + 1},列 $_cursorColumn',
             color: p.textTertiary,
           ),
-          if (settings.typewriter) ...<Widget>[
-            const SizedBox(width: 14),
-            _Stat(text: '打字机', color: p.accent),
-          ],
           const Spacer(),
           if (note.taskTotal > 0) ...<Widget>[
             _Stat(

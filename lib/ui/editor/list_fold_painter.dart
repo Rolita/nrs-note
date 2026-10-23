@@ -62,6 +62,7 @@ class ListFoldPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round;
     final Paint fill = Paint()..color = hoverFill;
+    final Rect bounds = Offset.zero & size;
     TextPainter? ellipsis;
 
     try {
@@ -73,6 +74,8 @@ class ListFoldPainter extends CustomPainter {
           box.globalToLocal(handle.button.topLeft),
           box.globalToLocal(handle.button.bottomRight),
         );
+        // 视口外的箭头本来就会被画布裁掉，连路径都不用建。
+        if (!local.inflate(24).overlaps(bounds)) continue;
         if (hoveredButton == handle.lineStart) {
           canvas.drawRRect(
             RRect.fromRectAndRadius(local.deflate(1), const Radius.circular(4)),

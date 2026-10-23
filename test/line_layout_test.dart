@@ -723,8 +723,8 @@ void main() {
       );
       expect(
         layout.offsetAtPoint(Offset(row.slot.indent / 2, row.top + 8)),
-        line.markerStart,
-        reason: '缩进里的落点吸附到序号起点',
+        line.paintStart,
+        reason: '缩进不是字形，落点归到正文起点（否则输入会插到标记前面）',
       );
     });
 

@@ -10,23 +10,65 @@ import '../common/app_widgets.dart';
 import 'app_color_picker.dart';
 import 'preset_picker.dart';
 
-/// Opens the custom-colour editor.
+/// How much of the palette the editor exposes.
 ///
-/// Centred, behind a **transparent barrier**: the app behind is not dimmed,
-/// because it *is* the preview — every drag repaints the real shell, the real
-/// editor and the real dialogs. A scrim would demote that to looking at
-/// swatches, which is exactly what the editor exists to avoid.
-Future<void> showThemeEditorDialog(BuildContext context) {
+/// Three levels rather than a switch: 「简单」 is the default and lists only the
+/// colours a person can picture by name, 「普通」 is the twelve that actually
+/// shape the look, 「高级」 is every token.
+enum ThemeEditorTier {
+  simple(
+    '简单',
+    LucideIcons.sparkles,
+    '只列最常改的 6 个颜色：画布、侧栏、内容面、正文、次级文字、强调色。',
+  ),
+  normal(
+    '普通',
+    LucideIcons.slidersHorizontal,
+    '12 个常用令牌：表面、线条、文字与强调色。',
+  ),
+  advanced(
+    '高级',
+    LucideIcons.settings2,
+    '全部 25 个令牌，另含状态色与选区、投影、遮罩。',
+  );
+
+  const ThemeEditorTier(this.label, this.icon, this.hint);
+
+  final String label;
+  final IconData icon;
+  final String hint;
+
+  List<AppPaletteToken> get tokens => switch (this) {
+    ThemeEditorTier.simple => AppPaletteToken.simple,
+    ThemeEditorTier.normal => AppPaletteToken.normal,
+    ThemeEditorTier.advanced => AppPaletteToken.values,
+  };
+}
+
+/// Opens the palette editor for one scheme.
+///
+/// [preset] defaults to the scheme in force. Centred, behind a **transparent
+/// barrier**: the app behind is not dimmed, because it *is* the preview — every
+/// drag repaints the real shell, the real editor and the real dialogs. A scrim
+/// would demote that to looking at swatches, which is exactly what the editor
+/// exists to avoid.
+Future<void> showThemeEditorDialog(
+  BuildContext context, {
+  ThemePresetId? preset,
+}) {
   return showDialog<void>(
     context: context,
     barrierColor: Colors.transparent,
     barrierDismissible: false,
-    builder: (BuildContext _) => const ThemeEditorDialog(),
+    builder: (BuildContext _) => ThemeEditorDialog(preset: preset),
   );
 }
 
 class ThemeEditorDialog extends StatefulWidget {
-  const ThemeEditorDialog({super.key});
+  const ThemeEditorDialog({super.key, this.preset});
+
+  /// Which scheme to edit. Null means "the one in force".
+  final ThemePresetId? preset;
 
   @override
   State<ThemeEditorDialog> createState() => _ThemeEditorDialogState();
@@ -35,19 +77,24 @@ class ThemeEditorDialog extends StatefulWidget {
 class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
   late final SettingsController _settings;
 
-  /// Both keys as they were on entry — one whole pair, so 「取消」 leaves no
-  /// residue even if entering the editor had already switched the app to the
-  /// custom overlay.
-  late final ({ThemePresetId preset, CustomPalette? custom}) _snapshot;
+  /// The scheme being edited. Its overlay is the only storage this dialog
+  /// touches, so the other two schemes stay exactly as they shipped.
+  late final ThemePresetId _preset;
 
-  late CustomPalette _working;
+  /// That one scheme's overlay as it was on entry, so 「取消」 leaves nothing
+  /// behind.
+  late final ({ThemePresetId preset, PaletteOverride? override}) _snapshot;
+
+  late PaletteOverride _working;
 
   /// Which *face* is being edited. Not "which face is on screen": with 跟随系统
   /// the user may well be editing the dark board while looking at a light one.
   late Brightness _tab;
   bool _tabSet = false;
 
-  bool _advanced = false;
+  /// Which slice of the palette is on show. 「简单」 by default — the complaint
+  /// that started this tiering was that 25 tokens were too much to face.
+  ThemeEditorTier _tier = ThemeEditorTier.simple;
 
   /// The one expanded token, by accordion rule.
   AppPaletteToken? _open;
@@ -56,25 +103,25 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
   void initState() {
     super.initState();
     _settings = context.read<SettingsController>();
-    _snapshot = (preset: _settings.themePreset, custom: _settings.customPalette);
-    // Seeding from the preset in force gives a board whose colours *are* the
-    // ones on screen, so entering the editor changes nothing until the user
-    // moves something. An overlay that already exists wins: the editor is how
-    // you get back to it.
-    final ThemePresetId from = _snapshot.preset == ThemePresetId.custom
-        ? ThemePresetId.fallback
-        : _snapshot.preset;
-    _working = _snapshot.custom ?? ThemePresets.seed(from);
+    _preset = widget.preset ?? _settings.themePreset;
+    _snapshot = (
+      preset: _preset,
+      override: _settings.overrideFor(_preset),
+    );
+    // Seeding from the preset gives a board whose colours *are* the ones on
+    // screen, so entering the editor changes nothing until the user moves
+    // something. An overlay that already exists wins: the editor is how you
+    // get back to it.
+    _working = _snapshot.override ?? ThemePresets.seed(_preset);
     _settings.themeEditing = true;
 
-    // The two writes that notify are deferred past this frame. A dialog route is
+    // The write that notifies is deferred past this frame. A dialog route is
     // inflated *during* the build phase, and notifying there would mark the
-    // ancestor `Consumer` dirty mid-build. Deferring costs nothing: the board
-    // being previewed is the one already on screen.
+    // ancestor `Consumer` dirty mid-build. Callers already put [_preset] in
+    // force; this only catches a caller that did not.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _settings.themePreset = ThemePresetId.custom;
-      _settings.previewCustomPalette(_working);
+      _settings.themePreset = _preset;
     });
   }
 
@@ -102,13 +149,11 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
     });
   }
 
-  void _setAdvanced(bool value) {
+  void _setTier(ThemeEditorTier value) {
     setState(() {
-      _advanced = value;
-      // A token the basic view cannot show must not stay expanded behind it.
-      if (!value && _open != null && !AppPaletteToken.featured.contains(_open)) {
-        _open = null;
-      }
+      _tier = value;
+      // A token the new tier cannot show must not stay expanded behind it.
+      if (_open != null && !value.tokens.contains(_open)) _open = null;
     });
   }
 
@@ -129,19 +174,21 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
       if (token == AppPaletteToken.accent)
         ..._deriveFromAccent(color, face),
     };
-    final CustomPalette next = _working.withTokens(_tab, patch);
+    final PaletteOverride next = _working.withTokens(_tab, patch);
     setState(() => _working = next);
     if (commit) {
-      _settings.commitCustomPalette(next);
+      _settings.commitOverride(_preset, next);
     } else {
-      _settings.previewCustomPalette(next);
+      _settings.previewOverride(_preset, next);
     }
   }
 
+  /// Back to this scheme's factory colours — only this scheme, and only as a
+  /// draft: 「完成」 is what makes it stick.
   void _reset() {
-    final CustomPalette next = ThemePresets.seed(ThemePresetId.fallback);
+    final PaletteOverride next = ThemePresets.seed(_preset);
     setState(() => _working = next);
-    _settings.previewCustomPalette(next);
+    _settings.previewOverride(_preset, next);
   }
 
   void _cancel() {
@@ -152,8 +199,13 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
 
   void _done() {
     _settings.themeEditing = false;
-    _settings.commitCustomPalette(_working);
-    _settings.themePreset = ThemePresetId.custom;
+    // A board identical to the factory ones is not worth an overlay: clear it
+    // so the scheme reads as untouched.
+    if (_working.raw == ThemePresets.seed(_preset).raw) {
+      _settings.clearOverride(_preset);
+    } else {
+      _settings.commitOverride(_preset, _working);
+    }
     Navigator.of(context).pop();
   }
 
@@ -184,9 +236,7 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     final AppPalette face = _working.paletteFor(_tab);
-    final List<AppPaletteToken> visible = _advanced
-        ? AppPaletteToken.values
-        : AppPaletteToken.featured;
+    final List<AppPaletteToken> visible = _tier.tokens;
 
     return PopScope(
       // Escape and any other pop request mean the same thing as 「取消」.
@@ -202,11 +252,7 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              _Header(
-                brightness: Theme.of(context).brightness,
-                mode: _settings.theme.label,
-                onClose: _cancel,
-              ),
+              _Header(preset: _preset, onClose: _cancel),
               Divider(height: 1, color: p.outlineSoft),
               Padding(
                 padding: const EdgeInsets.fromLTRB(
@@ -262,10 +308,7 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: <Widget>[
-                            _AdvancedRow(
-                              value: _advanced,
-                              onChanged: _setAdvanced,
-                            ),
+                            _TierRow(value: _tier, onChanged: _setTier),
                             for (final TokenGroup group in TokenGroup.values)
                               if (visible.any(
                                 (AppPaletteToken t) => t.group == group,
@@ -318,7 +361,7 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
                 child: Row(
                   children: <Widget>[
                     AppTextButton(
-                      label: '重置为石墨素白',
+                      label: '重置为内置',
                       icon: LucideIcons.rotateCcw,
                       onPressed: _reset,
                     ),
@@ -342,14 +385,9 @@ class _ThemeEditorDialogState extends State<ThemeEditorDialog> {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({
-    required this.brightness,
-    required this.mode,
-    required this.onClose,
-  });
+  const _Header({required this.preset, required this.onClose});
 
-  final Brightness brightness;
-  final String mode;
+  final ThemePresetId preset;
   final VoidCallback onClose;
 
   @override
@@ -369,7 +407,7 @@ class _Header extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 Text(
-                  '自定义配色',
+                  '编辑「${preset.label}」',
                   style: TextStyle(
                     fontSize: AppText.display,
                     fontWeight: FontWeight.w600,
@@ -379,7 +417,7 @@ class _Header extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '当前生效：${brightness == Brightness.dark ? '深色' : '浅色'}（$mode）',
+                  '改动只影响这一套预设；重置可回到它的出厂配色。',
                   style: TextStyle(
                     fontSize: AppText.caption,
                     color: p.textTertiary,
@@ -399,26 +437,36 @@ class _Header extends StatelessWidget {
   }
 }
 
-class _AdvancedRow extends StatelessWidget {
-  const _AdvancedRow({required this.value, required this.onChanged});
+class _TierRow extends StatelessWidget {
+  const _TierRow({required this.value, required this.onChanged});
 
-  final bool value;
-  final ValueChanged<bool> onChanged;
+  final ThemeEditorTier value;
+  final ValueChanged<ThemeEditorTier> onChanged;
 
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     return Padding(
       padding: const EdgeInsets.only(top: AppSpace.md),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Expanded(
-            child: Text(
-              '高级 · 显示全部 25 个令牌',
-              style: TextStyle(fontSize: AppText.ui, color: p.textSecondary),
+          SegmentedToggle<ThemeEditorTier>(
+            value: value,
+            onChanged: onChanged,
+            items: <({ThemeEditorTier value, IconData icon, String label})>[
+              for (final ThemeEditorTier tier in ThemeEditorTier.values)
+                (value: tier, icon: tier.icon, label: tier.label),
+            ],
+          ),
+          const SizedBox(height: AppSpace.xs + 2),
+          Text(
+            value.hint,
+            style: TextStyle(
+              fontSize: AppText.caption,
+              color: p.textTertiary,
             ),
           ),
-          Switch(value: value, onChanged: onChanged),
         ],
       ),
     );
@@ -712,7 +760,7 @@ class _LivePanel extends StatelessWidget {
                   height: 16,
                   child: Row(
                     children: <Widget>[
-                      for (final AppPaletteToken t in AppPaletteToken.featured)
+                      for (final AppPaletteToken t in AppPaletteToken.normal)
                         Expanded(child: ColoredBox(color: face.colorOf(t))),
                     ],
                   ),

@@ -1301,8 +1301,8 @@ Setext 标题
 
   group('Text above a line', () {
     // The pane puts a line at a given height on screen — "jump to heading",
-    // typewriter centring — from this number. Counting headings as body rows
-    // used to land every jump short by the headings it had passed.
+    // scrolling the caret line into view — from this number. Counting headings
+    // as body rows used to land every jump short by the headings it had passed.
     const TextStyle base = TextStyle(fontSize: 15.5, height: 1.78);
     const AppPalette palette = AppPalette.light;
     const int target = 6;

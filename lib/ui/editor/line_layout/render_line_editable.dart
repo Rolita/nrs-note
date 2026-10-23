@@ -1,4 +1,4 @@
-/// 按行渲染的可编辑文本。
+﻿/// 按行渲染的可编辑文本。
 ///
 /// `RenderEditable` 整篇只有一个 `TextPainter`，段落里的软换行永远回到段落
 /// 左边缘——列表的续行因此会钻到序号下面。这里不替换 `RenderEditable` 的
@@ -23,6 +23,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import 'line_layout_engine.dart';
+import 'line_layout_pool.dart';
 import 'line_marker_style.dart';
 
 /// 一条可折叠列表项在屏幕上的落点，坐标已换算成全局坐标。
@@ -116,6 +117,9 @@ class RenderLineEditable extends RenderEditable {
     RenderEditablePainter? painter,
     RenderEditablePainter? foregroundPainter,
     List<RenderBox>? children,
+    Object? lineLayoutKey,
+    LineLayoutPool? layoutPool,
+    String? layoutCacheDocument,
     LineStyleResolver? lineStyleFor,
     LineHeightResolver? lineHeightFor,
     LineSpanResolver? lineSpanFor,
@@ -131,6 +135,12 @@ class RenderLineEditable extends RenderEditable {
        _explicitCursorHeight = cursorHeight,
        // ignore: prefer_initializing_formals
        _foldedLines = foldedLines ?? const <int>{},
+       // ignore: prefer_initializing_formals
+       _lineLayoutKey = lineLayoutKey,
+       // ignore: prefer_initializing_formals
+       _layoutPool = layoutPool,
+       // ignore: prefer_initializing_formals
+       _layoutCacheDocument = layoutCacheDocument,
        // ignore: prefer_initializing_formals
        _lineStyleFor = lineStyleFor,
        // ignore: prefer_initializing_formals
@@ -197,10 +207,59 @@ class RenderLineEditable extends RenderEditable {
   LineDocumentLayout? _lineLayout;
 
   /// 跨轮布局复用的 painter 池；样式、宽度或文字变化时由键自然失效。
-  final LineLayoutCache _lineCache = LineLayoutCache();
+  ///
+  /// 采用挂起布局时会随之换成那份布局的池：它的 `fromCache` 行归旧池所有。
+  LineLayoutCache _lineCache = LineLayoutCache();
   String? _layoutText;
   TextStyle? _layoutStyle;
   double? _layoutWidth;
+
+  /// 当前 [_lineLayout] 是按哪个语义键排出来的（见 [lineLayoutKey]）。
+  Object? _layoutKey;
+
+  /// 跨文档挂起布局的池（P5a）；为 null 时只在本渲染对象内复用。
+  LineLayoutPool? _layoutPool;
+
+  /// 当前文档的身份（笔记 id 加外部版本）；为 null 时不参与跨文档缓存。
+  String? _layoutCacheDocument;
+
+  /// 当前 [_lineLayout] 是按哪个跨文档键排出来的。
+  ///
+  /// 在每次产出布局时连同键一起记下，销毁时原样挂回去——它必须描述**当时**
+  /// 的宽度、样式、折叠与揭示行，而不是销毁那一刻的配置。
+  LineLayoutPoolKey? _layoutPoolKey;
+
+  /// 跨文档缓存的命中次数，供测试确认切回来没有重新排版。
+  @visibleForTesting
+  int debugLayoutPoolHits = 0;
+
+  /// 挂起出去（而不是释放）的布局份数。
+  @visibleForTesting
+  int debugLayoutParks = 0;
+
+  LineLayoutPool? get layoutPool => _layoutPool;
+  set layoutPool(LineLayoutPool? value) {
+    if (value == _layoutPool) return;
+    _layoutPool = value;
+  }
+
+  String? get layoutCacheDocument => _layoutCacheDocument;
+  set layoutCacheDocument(String? value) {
+    if (value == _layoutCacheDocument) return;
+    // 键里带文档身份，换文档后旧布局不该再被采用；但也不在这里丢弃：
+    // 正常路径是宿主换掉整个输入框，由 [dispose] 原地挂起。
+    _layoutCacheDocument = value;
+  }
+
+  /// 当前 [_lineLayout] 是按哪一份揭示选区排出来的。
+  ///
+  /// 选区变化时用它和新值算脏行集合；局部重排成功后同步成新值。
+  TextSelection? _layoutReveal;
+
+  /// 下一次布局要走局部重排的脏行；`null` 表示没有待办。
+  ///
+  /// 只由 `revealSelection` setter 写入，任何全量路径都会清掉它。
+  Set<int>? _pendingRevealDirty;
 
   /// 宿主显式给的光标高度；`null` 表示逐行跟随（见 [_caretHeightOf]）。
   double? _explicitCursorHeight;
@@ -217,7 +276,7 @@ class RenderLineEditable extends RenderEditable {
   set lineStyleFor(LineStyleResolver? value) {
     if (value == _lineStyleFor) return;
     _lineStyleFor = value;
-    _dropLineLayout();
+    _resolverReplaced();
   }
 
   /// 按行取固定行高；`null` 表示按测量结果（折叠的围栏行是唯一的使用者）。
@@ -226,7 +285,7 @@ class RenderLineEditable extends RenderEditable {
   set lineHeightFor(LineHeightResolver? value) {
     if (value == _lineHeightFor) return;
     _lineHeightFor = value;
-    _dropLineLayout();
+    _resolverReplaced();
   }
 
   /// 按行取 span 树；`null` 时用 [lineStyleFor] 的样式排纯文本。
@@ -235,7 +294,7 @@ class RenderLineEditable extends RenderEditable {
   set lineSpanFor(LineSpanResolver? value) {
     if (value == _lineSpanFor) return;
     _lineSpanFor = value;
-    _dropLineLayout();
+    _resolverReplaced();
   }
 
   /// 按行取自绘内容（实时表格行）；`null` 表示所有行都排文字。
@@ -244,7 +303,7 @@ class RenderLineEditable extends RenderEditable {
   set lineBlockFor(LineBlockResolver? value) {
     if (value == _lineBlockFor) return;
     _lineBlockFor = value;
-    _dropLineLayout();
+    _resolverReplaced();
   }
 
   /// 按行取圆角底片（行内代码）；`null` 表示不铺底片。
@@ -253,7 +312,7 @@ class RenderLineEditable extends RenderEditable {
   set lineFillFor(LineFillResolver? value) {
     if (value == _lineFillFor) return;
     _lineFillFor = value;
-    _dropLineLayout();
+    _resolverReplaced();
   }
 
   /// 按行取左右内边距（代码块卡片）；`null` 表示贴住正文列边缘。
@@ -262,21 +321,70 @@ class RenderLineEditable extends RenderEditable {
   set lineInsetFor(LineInsetResolver? value) {
     if (value == _lineInsetFor) return;
     _lineInsetFor = value;
-    _dropLineLayout();
+    _resolverReplaced();
+  }
+
+  /// 行解析器的语义键（`LiveLineStyle.styleKey`）。
+  ///
+  /// 宿主每次重建都会给出新的闭包实例，身份必然变化；键只含影响排版的配置、
+  /// 不含源码，键不变时未编辑的行仍可原样复用。键变了才整篇重排。
+  Object? get lineLayoutKey => _lineLayoutKey;
+  Object? _lineLayoutKey;
+  set lineLayoutKey(Object? value) {
+    if (value == _lineLayoutKey) return;
+    _lineLayoutKey = value;
+    markNeedsLayout();
+  }
+
+  /// 解析器换了实例：没有语义键时只能按身份判定，有键则等布局时再比。
+  void _resolverReplaced() {
+    if (_lineLayoutKey == null) {
+      _dropLineLayout();
+      return;
+    }
+    markNeedsLayout();
   }
 
   /// 揭示用的选区。
   ///
   /// 按行样式（`LiveLineStyle`）自己会读当前选区决定哪些标记显形，但排版结果
   /// 缓存着 span 树：选区一变，`# `、`**`、围栏的显隐就变了，行宽可能跟着变，
-  /// 所以这里不自用、只当重排的信号。拖动期间宿主会把它冻结在按下时的选区上，
+  /// 所以选区变化仍然是重排的信号。拖动期间宿主会把它冻结在按下时的选区上，
   /// 因此它不一定跟着 [selection] 走。
+  ///
+  /// 但选区只影响**少数行**：这里不再丢整篇布局，而是算出逐行签名变化的行，
+  /// 交给下一次布局做局部重排（见 [_ensureLineLayout]）。签名不变时连布局都
+  /// 不动，只重画（分隔线、引用竖线要看新选区决定显隐）。
   TextSelection? get revealSelection => _revealSelection;
   TextSelection? _revealSelection;
   set revealSelection(TextSelection? value) {
     if (value == _revealSelection) return;
     _revealSelection = value;
-    _dropLineLayout();
+    final LineDocumentLayout? layout = _lineLayout;
+    if (layout == null) {
+      // 还没有可对照的布局：下一次布局本来就会全量，不需要脏行。
+      _pendingRevealDirty = null;
+      markNeedsLayout();
+      return;
+    }
+    if (_layoutText != (text?.toPlainText() ?? '')) {
+      // 文本已经变了、布局还是上一份：脏行下标在新文本上不成立，这个选区
+      // 也不能提前写进 `_layoutReveal`。留给编辑增量路径逐行比较签名——
+      // 否则「粘贴到别处、原选区行要取消揭示」会被整个漏掉。
+      _pendingRevealDirty = null;
+      markNeedsLayout();
+      return;
+    }
+    final Set<int> dirty = layout.revealDirtyLines(_layoutReveal, value);
+    if (dirty.isEmpty) {
+      // 版面一个像素都不变，但洗色与 `_sourceShown` 跟着选区走，需要重画。
+      _pendingRevealDirty = null;
+      _layoutReveal = value;
+      markNeedsPaint();
+      return;
+    }
+    _pendingRevealDirty = dirty;
+    markNeedsLayout();
   }
 
   /// 用户点开了哪一行的列表标记（行首偏移）。
@@ -310,6 +418,10 @@ class RenderLineEditable extends RenderEditable {
     _layoutText = null;
     _layoutStyle = null;
     _layoutWidth = null;
+    _layoutReveal = null;
+    _layoutKey = null;
+    _layoutPoolKey = null;
+    _pendingRevealDirty = null;
     markNeedsLayout();
   }
 
@@ -330,6 +442,14 @@ class RenderLineEditable extends RenderEditable {
   /// `TextPainter`，列表续行会算回行首。
   LineDocumentLayout? get lineLayout => _lineLayout;
 
+  /// 编辑增量成功的次数，供测试确认普通输入没有退回全量。
+  @visibleForTesting
+  int debugEditRelayouts = 0;
+
+  /// 全量重建布局的次数（首次布局也计入）。
+  @visibleForTesting
+  int debugFullLayouts = 0;
+
   /// `super.text` 的样式；没有任何样式时退化成默认 [TextStyle]。
   TextStyle get _baseStyle => text?.style ?? const TextStyle();
 
@@ -341,14 +461,15 @@ class RenderLineEditable extends RenderEditable {
   /// 选区 `[selection.start, selection.end)` 的高亮矩形。
   ///
   /// 每个视觉行一块；空行也给一条零宽矩形（起点在正文列），调用方要不要把它
-  /// 画成细带由自己决定。
-  List<Rect> selectionBands(TextSelection selection) {
+  /// 画成细带由自己决定。[visible]（文档坐标）给定时只返回与它相交的行。
+  List<Rect> selectionBands(TextSelection selection, {Rect? visible}) {
     final LineDocumentLayout layout = _ensureLineLayout();
     final Offset paintOffset = _linePaintOffset;
     return <Rect>[
       for (final Rect rect in layout.selectionRects(
         selection.start,
         selection.end,
+        visible: visible,
       ))
         rect.shift(paintOffset),
     ];
@@ -380,10 +501,28 @@ class RenderLineEditable extends RenderEditable {
 
   @override
   set text(InlineSpan? value) {
-    if (value?.toPlainText() != text?.toPlainText() ||
-        value?.style != text?.style) {
-      _lineLayout?.dispose();
-      _lineLayout = null;
+    final LineDocumentLayout? layout = _lineLayout;
+    if (layout != null) {
+      final bool styleChanged =
+          (value?.style ?? const TextStyle()) != _layoutStyle;
+      if (styleChanged) {
+        // 正文样式换了：逐行样式、行高、缓存键全部作废，只能全量。
+        _dropLineLayout();
+      } else if (value?.toPlainText() != _layoutText) {
+        // 只是文字变了：**留着布局**。下一次布局用公共前后缀求出这次编辑，
+        // 走 `relayoutOnEdit` 的行级增量；一次性全部丢掉正是 P4 要解决的
+        // 全量重排。旧布局在增量成功后由调用方接管并释放。
+        _pendingRevealDirty = null;
+        markNeedsLayout();
+      }
+    } else if (_layoutText != null) {
+      // 没有布局却还留着旧文本记录（被上面的样式分支丢弃过）：清干净，
+      // 免得下一次被误判成「可以增量」。
+      _layoutText = null;
+      _layoutStyle = null;
+      _layoutWidth = null;
+      _layoutReveal = null;
+      _layoutKey = null;
     }
     super.text = value;
   }
@@ -452,27 +591,190 @@ class RenderLineEditable extends RenderEditable {
     return min.isFinite && min > 0 ? min : 1.0;
   }
 
-  /// 当前缓存是否仍然对应这份文本、样式与宽度。
+  /// 这次布局对应的跨文档键；不参与跨文档缓存时为 null。
+  LineLayoutPoolKey? _poolKeyOf(double width, String plain) {
+    final String? document = _layoutCacheDocument;
+    if (_layoutPool == null || document == null) return null;
+    final List<int> folds = _foldedLines.toList()..sort();
+    return (
+      document: document,
+      body: plain,
+      width: width,
+      textScaler: textScaler,
+      style: _baseStyle,
+      folds: folds.join(','),
+      markerRevealLine: _markerRevealLine,
+    );
+  }
+
+  /// 采用挂起的布局：命中后只按新的揭示选区重排少数行。
+  ///
+  /// 表格行块由宿主缓存、切文档时可能已被释放，所以命中后表格行一律重建；
+  /// 其余行沿用挂起时的几何，`top` 不变。
+  LineDocumentLayout? _adoptPooledLayout(
+    double width,
+    String plain,
+    TextStyle style,
+  ) {
+    final LineLayoutPool? pool = _layoutPool;
+    if (pool == null || _layoutText != null) return null;
+    final LineLayoutPoolKey? key = _poolKeyOf(width, plain);
+    if (key == null) return null;
+    final ParkedLineLayout? parked = pool.take(key);
+    if (parked == null) return null;
+
+    final Set<int> dirty = <int>{
+      ...parked.layout.revealDirtyLines(parked.reveal, _revealSelection),
+    };
+    for (int i = 0; i < parked.layout.lines.length; i++) {
+      final LineBlockKind kind = parked.layout.lines[i].kind;
+      if (kind == LineBlockKind.table ||
+          kind == LineBlockKind.tableHeader ||
+          kind == LineBlockKind.tableDivider) {
+        dirty.add(i);
+      }
+    }
+
+    // 挂起布局的 painter 池一起接手：`fromCache` 行归它所有。
+    _lineCache.dispose();
+    _lineCache = parked.cache;
+    _layoutText = plain;
+    _layoutStyle = style;
+    _layoutWidth = width;
+    _layoutKey = _lineLayoutKey;
+    _layoutPoolKey = key;
+    _layoutReveal = _revealSelection;
+    _pendingRevealDirty = null;
+    _lineLayout = dirty.isEmpty
+        ? parked.layout
+        : relayoutLines(
+            previous: parked.layout,
+            dirtyLines: dirty,
+            text: plain,
+            baseStyle: style,
+            contentWidth: width,
+            textScaler: textScaler,
+            textDirection: textDirection,
+            styleFor: _lineStyleFor,
+            heightFor: _lineHeightFor,
+            spanFor: _lineSpanFor,
+            fillFor: _lineFillFor,
+            insetFor: _lineInsetFor,
+            blockFor: _lineBlockFor,
+            markerRevealLine: _markerRevealLine,
+            foldedLines: _foldedLines,
+            metrics: parked.layout.metrics,
+          );
+    debugLayoutPoolHits++;
+    return _lineLayout;
+  }
+
+  /// 当前缓存是否仍然对应这份文本、样式、宽度与解析器语义。
   LineDocumentLayout? _cachedLineLayout(double width) {
     final LineDocumentLayout? cached = _lineLayout;
     if (cached != null &&
         _layoutText == (text?.toPlainText() ?? '') &&
         _layoutStyle == _baseStyle &&
-        _layoutWidth == width) {
+        _layoutWidth == width &&
+        _layoutKey == _lineLayoutKey) {
       return cached;
     }
     return null;
   }
 
-  /// 取当前文本的行布局，文本/样式/宽度变化时重建。
+  /// 取当前文本的行布局。
+  ///
+  /// 三条路径，成本从低到高：
+  /// 1. 输入完全没变 → 原样返回；
+  /// 2. 只是文字变了（样式、宽度、解析器语义都没变）→ [relayoutOnEdit]
+  ///    只重建被编辑波及的行，其余行换壳复用；
+  /// 3. 揭示选区变了 → [relayoutLines] 只重排签名变化的那几行；
+  /// 4. 其余任何变化 → 全量 [layoutLines]。
   LineDocumentLayout _ensureLineLayout() {
     final double width = _contentWidthFor(constraints);
     final String plain = text?.toPlainText() ?? '';
     final TextStyle style = _baseStyle;
-    final LineDocumentLayout? cached = _cachedLineLayout(width);
-    if (cached != null) return cached;
 
-    // 缓存已过期：先释放旧实例，再按当前文本重建。
+    // 刚挂上来的输入框（切回一篇刚才挂起的笔记）：直接采用那份布局，只按
+    // 新的揭示选区重排少数行，不重排整篇。
+    final LineDocumentLayout? pooled = _adoptPooledLayout(width, plain, style);
+    if (pooled != null) return pooled;
+
+    final LineDocumentLayout? cached = _cachedLineLayout(width);
+    if (cached != null) {
+      final Set<int>? dirty = _pendingRevealDirty;
+      if (dirty == null || dirty.isEmpty) return cached;
+      _pendingRevealDirty = null;
+      final LineDocumentLayout next = relayoutLines(
+        previous: cached,
+        dirtyLines: dirty,
+        text: plain,
+        baseStyle: style,
+        contentWidth: width,
+        textScaler: textScaler,
+        textDirection: textDirection,
+        styleFor: _lineStyleFor,
+        heightFor: _lineHeightFor,
+        spanFor: _lineSpanFor,
+        fillFor: _lineFillFor,
+        insetFor: _lineInsetFor,
+        blockFor: _lineBlockFor,
+        markerRevealLine: _markerRevealLine,
+        foldedLines: _foldedLines,
+      );
+      _lineLayout = next;
+      _layoutReveal = _revealSelection;
+      _layoutPoolKey = _poolKeyOf(width, plain);
+      return next;
+    }
+
+    // 缓存过期：若只是文字变了（样式/宽度/语义键全都没变），先试编辑增量。
+    final LineDocumentLayout? previous = _lineLayout;
+    if (previous != null &&
+        _layoutText != null &&
+        _layoutStyle == style &&
+        _layoutWidth == width &&
+        _layoutKey == _lineLayoutKey) {
+      final ({int start, int removed, int inserted})? edit = _editBetween(
+        _layoutText!,
+        plain,
+      );
+      if (edit != null) {
+        _pendingRevealDirty = null;
+        final LineDocumentLayout? next = relayoutOnEdit(
+          previous: previous,
+          text: plain,
+          editStart: edit.start,
+          removedLength: edit.removed,
+          insertedLength: edit.inserted,
+          baseStyle: style,
+          contentWidth: width,
+          textScaler: textScaler,
+          textDirection: textDirection,
+          styleFor: _lineStyleFor,
+          heightFor: _lineHeightFor,
+          spanFor: _lineSpanFor,
+          fillFor: _lineFillFor,
+          insetFor: _lineInsetFor,
+          blockFor: _lineBlockFor,
+          markerRevealLine: _markerRevealLine,
+          foldedLines: _foldedLines,
+          revealBefore: _layoutReveal,
+          revealAfter: _revealSelection,
+        );
+        if (next != null) {
+          _lineLayout = next;
+          _layoutText = plain;
+          _layoutReveal = _revealSelection;
+          _layoutPoolKey = _poolKeyOf(width, plain);
+          debugEditRelayouts++;
+          return next;
+        }
+      }
+    }
+
+    // 缓存已过期且不能安全增量：先释放旧实例，再按当前文本全量重建。
+    _pendingRevealDirty = null;
     _lineLayout?.dispose();
     final LineDocumentLayout next = layoutLines(
       text: plain,
@@ -494,7 +796,62 @@ class RenderLineEditable extends RenderEditable {
     _layoutText = plain;
     _layoutStyle = style;
     _layoutWidth = width;
+    _layoutReveal = _revealSelection;
+    _layoutKey = _lineLayoutKey;
+    _layoutPoolKey = _poolKeyOf(width, plain);
+    debugFullLayouts++;
     return next;
+  }
+
+  /// 销毁前把当前布局挂进跨文档池（P5a）。
+  ///
+  /// 换笔记时宿主用新的 `ValueKey` 整块重建输入框，走的是 `dispose` 而不是
+  /// 「同一份渲染对象换文本」。这里把布局连同它的 painter 池一起交给池，
+  /// 切回来时 [LineLayoutPool.take] 原样交还；拿不到池或布局已作废时照旧释放。
+  void _parkLayout() {
+    final LineDocumentLayout? layout = _lineLayout;
+    final LineLayoutPool? pool = _layoutPool;
+    final LineLayoutPoolKey? key = _layoutPoolKey;
+    if (layout == null || pool == null || key == null) return;
+    if (layout.disposed) return;
+    // 池化的 painter 归 `_lineCache` 所有，必须跟着布局一起搬；这里先换出
+    // 一个新池，稍后 `dispose` 释放的是这个空池。
+    final LineLayoutCache cache = _lineCache;
+    _lineCache = LineLayoutCache();
+    pool.park(key, layout, cache, _layoutReveal);
+    _lineLayout = null;
+    _layoutPoolKey = null;
+    debugLayoutParks++;
+  }
+
+  /// 两份文本之间唯一的替换区间：`before` 的 `[start, start + removed)`
+  /// 被 `after` 的 `[start, start + inserted)` 取代。
+  ///
+  /// 公共前缀与公共后缀是最小的单一差分——所有真实编辑（打字、删除、粘贴、
+  /// IME 提交）都落在这个形状里。分散改动（比如有序列表整体重编号）会得到
+  /// 一个覆盖全部改动的较宽区间：多重建几行只是性能代价，几何不会失真。
+  ({int start, int removed, int inserted})? _editBetween(
+    String before,
+    String after,
+  ) {
+    if (before == after) return null;
+    final int max = math.min(before.length, after.length);
+    int prefix = 0;
+    while (prefix < max && before.codeUnitAt(prefix) == after.codeUnitAt(prefix)) {
+      prefix++;
+    }
+    int suffix = 0;
+    final int limit = max - prefix;
+    while (suffix < limit &&
+        before.codeUnitAt(before.length - 1 - suffix) ==
+            after.codeUnitAt(after.length - 1 - suffix)) {
+      suffix++;
+    }
+    return (
+      start: prefix,
+      removed: before.length - prefix - suffix,
+      inserted: after.length - prefix - suffix,
+    );
   }
 
   @override
@@ -567,6 +924,68 @@ class RenderLineEditable extends RenderEditable {
   Offset get _linePaintOffset =>
       maxLines == 1 ? Offset(-offset.pixels, 0.0) : Offset(0.0, -offset.pixels);
 
+  /// 视口在**文档坐标**里的可见纵向区间。
+  ///
+  /// 正文框自己通常不滚动：编辑器把整篇交给外层滚动视图，`offset.pixels`
+  /// 因此恒为 0、`size.height` 是整篇高度。真正被看到的那一段是「最近的
+  /// 滚动视口框」与正文框自身内部滚动可见段（单行排版时是横向）的交集。
+  /// 绘制层、分层画笔都读这一份：滚动一帧只画看得见的行，而不是整篇。
+  ({double top, double bottom}) get visibleDocumentBounds {
+    final LineDocumentLayout? layout = _lineLayout;
+    final double height = layout?.height ?? double.infinity;
+    if (maxLines == 1) return (top: 0, bottom: height);
+    final Offset paintOffset = _linePaintOffset;
+    double top = offset.pixels;
+    double bottom = offset.pixels + size.height;
+    final RenderObject? node = _ancestorViewport();
+    if (node is RenderBox && node.hasSize) {
+      final double originY = MatrixUtils.transformPoint(
+        getTransformTo(node),
+        Offset.zero,
+      ).dy;
+      top = math.max(top, -originY - paintOffset.dy);
+      bottom = math.min(bottom, node.size.height - originY - paintOffset.dy);
+    }
+    if (height.isFinite) {
+      top = top.clamp(0.0, height);
+      bottom = bottom.clamp(top, height);
+    }
+    return (top: top, bottom: bottom);
+  }
+
+  /// 最近的滚动视口（外层 `SingleChildScrollView` 等）；没有则 `null`。
+  RenderObject? _ancestorViewport() {
+    RenderObject? node = parent;
+    while (node != null && node is! RenderAbstractViewport) {
+      node = node.parent;
+    }
+    return node;
+  }
+
+  /// 视口在**文档坐标**里的上沿（不含滚动量）。
+  double get visibleDocumentTop => visibleDocumentBounds.top;
+
+  /// 视口在文档坐标里的下沿。
+  double get visibleDocumentBottom => visibleDocumentBounds.bottom;
+
+  /// 视口矩形（文档坐标）。分层画笔（代码块卡片、选区洗色）用它裁剪。
+  Rect get visibleDocumentRect => Rect.fromLTRB(
+    0,
+    visibleDocumentTop,
+    math.max(0, size.width),
+    math.max(visibleDocumentTop, visibleDocumentBottom),
+  );
+
+  /// 视口上下各多画一点，快速滚动时行边缘不会闪空。
+  double get _viewportPadding {
+    final double line = preferredLineHeight;
+    return line.isFinite && line > 0 ? line * 2 : 32;
+  }
+
+  /// 最近一次 [paint] 真正画出的正文行数，供测试确认视口裁剪生效。
+  @visibleForTesting
+  int debugPaintedLines = 0;
+
   @override
   void paint(PaintingContext context, Offset offset) {
     final LineDocumentLayout? layout = _lineLayout;
@@ -583,12 +1002,24 @@ class RenderLineEditable extends RenderEditable {
     }
     canvas.translate(offset.dx + paintOffset.dx, offset.dy + paintOffset.dy);
 
-    _paintSelection(canvas, layout);
-    _paintBlocks(canvas, layout);
-    _paintMarkers(canvas, layout);
-    _paintFills(canvas, layout);
-    _paintText(canvas, layout);
-    _paintComposing(canvas, layout);
+    // 逐行绘制只看与视口相交的那一段：文档再长，一帧也只画看得见的行。
+    final ({double top, double bottom}) span = visibleDocumentBounds;
+    final double pad = _viewportPadding;
+    final ({int from, int to}) range = layout.lineRangeBetween(
+      span.top - pad,
+      span.bottom + pad,
+    );
+    final Rect? visible = maxLines == 1
+        ? null
+        : Rect.fromLTRB(0, span.top, layout.width, span.bottom);
+
+    debugPaintedLines = 0;
+    _paintSelection(canvas, layout, visible);
+    _paintBlocks(canvas, layout, range);
+    _paintMarkers(canvas, layout, range);
+    _paintFills(canvas, layout, range);
+    _paintText(canvas, layout, range);
+    _paintComposing(canvas, layout, visible);
     _paintCaret(canvas, layout);
 
     canvas.restore();
@@ -608,8 +1039,13 @@ class RenderLineEditable extends RenderEditable {
   ///
   /// 排在选区洗色之后、正文之前——表格的洗色是它自己按格子画的，而它画出来
   /// 的纸面底片必须盖住编辑器底层那条通用洗色。
-  void _paintBlocks(Canvas canvas, LineDocumentLayout layout) {
-    for (final LaidOutLine line in layout.laidOut) {
+  void _paintBlocks(
+    Canvas canvas,
+    LineDocumentLayout layout,
+    ({int from, int to}) range,
+  ) {
+    for (int i = range.from; i < range.to; i++) {
+      final LaidOutLine line = layout.laidOut[i];
       final LineBlockView? block = line.block;
       if (block == null || line.height <= 0) continue;
       final Offset local = _lineOrigin(line);
@@ -621,34 +1057,65 @@ class RenderLineEditable extends RenderEditable {
   ///
   /// 宿主（`markdown_editor`）拿它做抓手 / `+` 按钮的命中与单元格定位。自绘行
   /// 只在行内坐标里排版，所以每次查询前先把行原点写进去。
+  ///
+  /// 行集合只在布局换新时重建；滚动只改原点，逐行平移即可——指针移动不该
+  /// 每帧把全篇行扫一遍。
   List<TableRowChrome> tableRows() {
     final LineDocumentLayout? layout = _lineLayout;
     if (layout == null) return const <TableRowChrome>[];
-    final List<TableRowChrome> rows = <TableRowChrome>[];
-    for (final LaidOutLine line in layout.laidOut) {
-      final LineBlockView? block = line.block;
-      if (block is! TableRowChrome) continue;
-      final TableRowChrome chrome = block as TableRowChrome;
-      chrome.chromeOrigin = _globalOriginOf(_lineOrigin(line));
-      rows.add(chrome);
+    List<TableRowChrome>? rows = _tableRows;
+    List<LaidOutLine>? lines = _tableRowLines;
+    if (rows == null || lines == null || !identical(_tableRowsLayout, layout)) {
+      rows = <TableRowChrome>[];
+      lines = <LaidOutLine>[];
+      for (final LaidOutLine line in layout.laidOut) {
+        final LineBlockView? block = line.block;
+        if (block is! TableRowChrome) continue;
+        rows.add(block as TableRowChrome);
+        lines.add(line);
+      }
+      _tableRows = rows;
+      _tableRowLines = lines;
+      _tableRowsLayout = layout;
+    }
+    final Offset origin = localToGlobal(_linePaintOffset);
+    for (int i = 0; i < rows.length; i++) {
+      rows[i].chromeOrigin = _lineOrigin(lines[i]) + origin;
     }
     return rows;
   }
 
-  void _paintSelection(Canvas canvas, LineDocumentLayout layout) {
+  List<TableRowChrome>? _tableRows;
+  List<LaidOutLine>? _tableRowLines;
+  LineDocumentLayout? _tableRowsLayout;
+
+  void _paintSelection(
+    Canvas canvas,
+    LineDocumentLayout layout,
+    Rect? visible,
+  ) {
     final TextSelection? value = selection;
     final Color? color = selectionColor;
     if (value == null || !value.isValid || value.isCollapsed || color == null) {
       return;
     }
     final Paint paint = Paint()..color = color;
-    for (final Rect rect in layout.selectionRects(value.start, value.end)) {
+    for (final Rect rect in layout.selectionRects(
+      value.start,
+      value.end,
+      visible: visible,
+    )) {
       canvas.drawRect(rect, paint);
     }
   }
 
-  void _paintText(Canvas canvas, LineDocumentLayout layout) {
-    for (final LaidOutLine line in layout.laidOut) {
+  void _paintText(
+    Canvas canvas,
+    LineDocumentLayout layout,
+    ({int from, int to}) range,
+  ) {
+    for (int i = range.from; i < range.to; i++) {
+      final LaidOutLine line = layout.laidOut[i];
       if (line.height <= 0) continue;
       // 自绘行（表格）的 `TextPainter` 是空的，画在它上面的东西由 block 负责。
       if (line.block != null) continue;
@@ -656,6 +1123,7 @@ class RenderLineEditable extends RenderEditable {
         canvas,
         Offset(line.gutter, line.top - lineTextRise(line)),
       );
+      debugPaintedLines++;
     }
   }
 
@@ -664,9 +1132,14 @@ class RenderLineEditable extends RenderEditable {
   /// `TextStyle.backgroundColor` 只能是紧贴字形的直角矩形，而旧实现靠两个
   /// widget 端帽撑出内边距和圆角；一行一个 `TextPainter` 没有 widget，所以
   /// 这里按 [LaidOutLine.fills] 自己铺一块圆角矩形，再把字画在上面。
-  void _paintFills(Canvas canvas, LineDocumentLayout layout) {
+  void _paintFills(
+    Canvas canvas,
+    LineDocumentLayout layout,
+    ({int from, int to}) range,
+  ) {
     final Paint paint = Paint();
-    for (final LaidOutLine line in layout.laidOut) {
+    for (int i = range.from; i < range.to; i++) {
+      final LaidOutLine line = layout.laidOut[i];
       if (line.fills.isEmpty || line.height <= 0) continue;
       final TextPainter tp = line.painter;
       final Offset origin = Offset(line.gutter, line.top - lineTextRise(line));
@@ -675,26 +1148,42 @@ class RenderLineEditable extends RenderEditable {
           TextSelection(baseOffset: run.from, extentOffset: run.to),
         );
         if (boxes.isEmpty) continue;
-        final TextPainter metrics = TextPainter(
-          text: TextSpan(
-            text: run.probe.isEmpty ? ' ' : run.probe,
-            style: run.style,
-          ),
-          textDirection: textDirection,
-          textScaler: textScaler,
-        )..layout();
-        final double height = metrics.height + run.padY * 2;
-        metrics.dispose();
+        // 底片高度与基线第一次绘制时量一次，之后直接读缓存：
+        // 每帧为每个行内代码片段新建 `TextPainter` 是滚动路径上的固定开销。
+        double? height = run.measuredHeight;
+        double? drop = run.measuredDrop;
+        if (height == null || drop == null) {
+          final TextPainter metrics = TextPainter(
+            text: TextSpan(
+              text: run.probe.isEmpty ? ' ' : run.probe,
+              style: run.style,
+            ),
+            textDirection: textDirection,
+            textScaler: textScaler,
+          )..layout();
+          height = metrics.height + run.padY * 2;
+          drop = metrics.computeDistanceToActualBaseline(
+            TextBaseline.alphabetic,
+          );
+          metrics.dispose();
+          run.measuredHeight = height;
+          run.measuredDrop = drop;
+        }
         paint.color = run.fill;
 
-        // 一条代码可以折行：每个视觉行各铺一块，圆角只出现在两端的组上由
-        // 半径本身表达——组内不切开，组间也不连成一条梯形。
-        double left = boxes.first.left;
-        double right = boxes.first.right;
-        double top = boxes.first.top;
-        double bottom = boxes.first.bottom;
-        void flush() {
-          final double center = (top + bottom) / 2;
+        // 一条代码可以折行：每个视觉行各铺一块。分组的依据必须是视觉行，
+        // 而不是盒子的 `top`——被压成零号字的反引号和代码正文字号不同，
+        // 即使在同一行，两者的盒子上下沿也差好几个像素。
+        final List<double> baselines =
+            line.visualBaselines ??= <double>[
+              for (final LineMetrics metrics in tp.computeLineMetrics())
+                metrics.baseline,
+            ];
+        final List<({int line, double left, double right})> groups =
+            groupFillBoxesByLine(boxes, baselines);
+        for (final ({int line, double left, double right}) group in groups) {
+          final double baseline = baselines[group.line];
+          final double top = baseline - drop - run.padY;
           // 标签的内边距没有字符位可占，只能把底片向两侧多铺几个像素；
           // 夹取要在**画布坐标**里做（先加 origin）：行首让出的内边距正是靠
           // 这一步生效的，若先在画笔局部坐标夹再平移，让出的位置会被平移
@@ -702,31 +1191,16 @@ class RenderLineEditable extends RenderEditable {
           canvas.drawRRect(
             RRect.fromRectAndRadius(
               Rect.fromLTRB(
-                math.max(0, origin.dx + left - run.padX),
-                origin.dy + center - height / 2,
-                math.min(layout.width, origin.dx + right + run.padX),
-                origin.dy + center + height / 2,
+                math.max(0, origin.dx + group.left - run.padX),
+                origin.dy + top,
+                math.min(layout.width, origin.dx + group.right + run.padX),
+                origin.dy + top + height,
               ),
               Radius.circular(run.radius),
             ),
             paint,
           );
         }
-
-        for (final TextBox box in boxes.skip(1)) {
-          if ((box.top - top).abs() > 0.5) {
-            flush();
-            left = box.left;
-            right = box.right;
-            top = box.top;
-            bottom = box.bottom;
-            continue;
-          }
-          left = math.min(left, box.left);
-          right = math.max(right, box.right);
-          bottom = math.max(bottom, box.bottom);
-        }
-        flush();
       }
     }
   }
@@ -749,11 +1223,16 @@ class RenderLineEditable extends RenderEditable {
   /// 复选框圆角，取值同 `AppRadius.xs`。
   static const double _kCheckboxRadius = 3;
 
-  void _paintMarkers(Canvas canvas, LineDocumentLayout layout) {
+  void _paintMarkers(
+    Canvas canvas,
+    LineDocumentLayout layout,
+    ({int from, int to}) range,
+  ) {
     final LineMarkerStyle? style = _markerStyle;
     if (style == null) return;
     final Paint railPaint = Paint()..color = style.rail;
-    for (final LaidOutLine line in layout.laidOut) {
+    for (int index = range.from; index < range.to; index++) {
+      final LaidOutLine line = layout.laidOut[index];
       if (line.height <= 0) continue;
       _paintRails(canvas, line, railPaint);
       // 标记源码这时已经摊进正文、由字排出来，槽位里再画一遍就成了两份。
@@ -778,11 +1257,14 @@ class RenderLineEditable extends RenderEditable {
         // 引用的 `>` 未揭示时是透明的，左侧那条强调色竖线得有人画；光标落进
         // 这一行时 `>` 自己显形，竖线让位，不然同一个标记会出现两遍。
         if (_sourceShown(line) || line.visuals.isEmpty) continue;
-        // 与旧实现同一个构造：2px 宽、离正文列左边 2px、正好一行高。连续
-        // 引用行首尾相接，读起来是一根连续的线。
+        // 与旧实现同一个构造：2px 宽、离正文列左边 2px。高度不能只取第一条
+        // 视觉行——一段话软换行后，第二、第三行也是同一句引用的组成部分，
+        // 竖线要一直铺到最后一条视觉行的底边。连续引用行首尾相接，读起来
+        // 是一根连续的线。
         final VisualLine first = line.visuals.first;
+        final VisualLine last = line.visuals.last;
         canvas.drawRect(
-          Rect.fromLTWH(2, line.top + first.top, 2, first.height),
+          Rect.fromLTWH(2, line.top + first.top, 2, last.bottom - first.top),
           Paint()..color = style.accent,
         );
         continue;
@@ -1072,6 +1554,10 @@ class RenderLineEditable extends RenderEditable {
               (double w, TextBox b) => math.max(w, b.right),
             );
       }
+      // 缩进槽里没有字形：点在它上面等于点在正文左侧的空白，必须让给正文
+      // 定位。否则隐藏态会把落点夹回 `markerStart` 并摊开标记，光标停在
+      // `3. ` 前面，接着输入就把文字插进标记里（`qie'huan3. [ ]`）。
+      if (local.dx < line.slot.indent) continue;
       if (local.dx >= (revealed ? markerWidth : line.gutter)) continue;
       return (
         start: line.source.start,
@@ -1124,6 +1610,14 @@ class RenderLineEditable extends RenderEditable {
     final LineDocumentLayout? layout = _lineLayout;
     if (layout == null || !hasSize) return const <ListFoldHandle>[];
     final Offset origin = localToGlobal(_linePaintOffset);
+    // 布局没换、滚动没动时，箭头几何逐像素相同。指针移动会高频问这一份，
+    // 全篇重建是白费工；返回同一个列表实例也让上层可以按引用判断稳定性。
+    final List<ListFoldHandle>? cached = _foldHandles;
+    if (cached != null &&
+        identical(_foldHandlesLayout, layout) &&
+        _foldHandlesOrigin == origin) {
+      return cached;
+    }
     final List<ListFoldHandle> handles = <ListFoldHandle>[];
     for (final LaidOutLine line in layout.laidOut) {
       final ListFold? fold = line.fold;
@@ -1169,8 +1663,15 @@ class RenderLineEditable extends RenderEditable {
         ),
       );
     }
+    _foldHandles = handles;
+    _foldHandlesLayout = layout;
+    _foldHandlesOrigin = origin;
     return handles;
   }
+
+  List<ListFoldHandle>? _foldHandles;
+  LineDocumentLayout? _foldHandlesLayout;
+  Offset? _foldHandlesOrigin;
 
   /// [globalPosition] 落在哪个折叠箭头上；没有则为 `null`。
   ListFoldHandle? foldHandleAt(Offset globalPosition) {
@@ -1195,17 +1696,35 @@ class RenderLineEditable extends RenderEditable {
     final LineDocumentLayout? layout = _lineLayout;
     if (layout == null) return const <Rect>[];
     final Offset origin = localToGlobal(_linePaintOffset);
-    return <Rect>[
+    final List<Rect>? cached = _checkboxRects;
+    if (cached != null &&
+        identical(_checkboxRectsLayout, layout) &&
+        _checkboxRectsOrigin == origin) {
+      return cached;
+    }
+    final List<Rect> rects = <Rect>[
       for (final LaidOutLine line in layout.laidOut)
         if (line.source.kind == LineBlockKind.task &&
             line.height > 0 &&
             !line.slot.revealedMarkers)
           checkboxRectOf(line, layout.metrics).shift(origin),
     ];
+    _checkboxRects = rects;
+    _checkboxRectsLayout = layout;
+    _checkboxRectsOrigin = origin;
+    return rects;
   }
 
+  List<Rect>? _checkboxRects;
+  LineDocumentLayout? _checkboxRectsLayout;
+  Offset? _checkboxRectsOrigin;
+
   /// IME 组合区间用一条下划线标出。
-  void _paintComposing(Canvas canvas, LineDocumentLayout layout) {
+  void _paintComposing(
+    Canvas canvas,
+    LineDocumentLayout layout,
+    Rect? visible,
+  ) {
     final TextRange composing =
         textSelectionDelegate.textEditingValue.composing;
     if (!composing.isValid || composing.isCollapsed) return;
@@ -1217,6 +1736,7 @@ class RenderLineEditable extends RenderEditable {
     for (final Rect rect in layout.selectionRects(
       composing.start,
       composing.end,
+      visible: visible,
     )) {
       final double y = rect.bottom - 0.75;
       canvas.drawLine(Offset(rect.left, y), Offset(rect.right, y), paint);
@@ -1410,12 +1930,58 @@ class RenderLineEditable extends RenderEditable {
   void dispose() {
     _blink?.removeListener(_onBlink);
     _blink = null;
+    // 换笔记时这个渲染对象整块销毁：布局先挂进跨文档池，切回时才不用整篇
+    // 重排。布局已经作废（样式/折叠变化丢掉过）时这里什么也不做。
+    _parkLayout();
     _lineLayout?.dispose();
     _lineLayout = null;
     _lineCache.dispose();
     _layoutText = null;
     _layoutStyle = null;
     _layoutWidth = null;
+    _layoutReveal = null;
+    _layoutPoolKey = null;
+    _pendingRevealDirty = null;
     super.dispose();
   }
+}
+
+/// 把一段底片的框按视觉行合并。
+///
+/// 不能按 `top` 分组：零号字的反引号端帽和代码正文在同一视觉行，盒子上沿
+/// 却差着几个像素，按 `top` 会拆成三块、把内边距画成独立的竖条。这里改用
+/// 离盒子中心最近的基线认行；同一行的左右端点取并集，折行的代码才会在
+/// 每行各留一块。
+@visibleForTesting
+List<({int line, double left, double right})> groupFillBoxesByLine(
+  List<TextBox> boxes,
+  List<double> baselines,
+) {
+  if (boxes.isEmpty || baselines.isEmpty) {
+    return const <({int line, double left, double right})>[];
+  }
+  final List<double?> left = List<double?>.filled(baselines.length, null);
+  final List<double?> right = List<double?>.filled(baselines.length, null);
+  for (final TextBox box in boxes) {
+    final double center = (box.top + box.bottom) / 2;
+    int line = 0;
+    double nearest = (baselines[0] - center).abs();
+    for (int i = 1; i < baselines.length; i++) {
+      final double distance = (baselines[i] - center).abs();
+      if (distance < nearest) {
+        nearest = distance;
+        line = i;
+      }
+    }
+    left[line] = left[line] == null
+        ? box.left
+        : math.min(left[line]!, box.left);
+    right[line] = right[line] == null
+        ? box.right
+        : math.max(right[line]!, box.right);
+  }
+  return <({int line, double left, double right})>[
+    for (int i = 0; i < baselines.length; i++)
+      if (left[i] != null) (line: i, left: left[i]!, right: right[i]!),
+  ];
 }

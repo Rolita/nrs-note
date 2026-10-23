@@ -100,6 +100,15 @@ class NotesController extends ChangeNotifier {
 
   final NoteStore _store;
 
+  /// Called after [createNote] has put a brand-new blank note in place.
+  ///
+  /// The shell uses it for folder templates; the controller itself knows nothing
+  /// about templates. The hook runs asynchronously, so the note is already on
+  /// screen and the user can start typing while a template prompt is open. It
+  /// must therefore re-check the note before writing anything — [applyBodyIfEmpty]
+  /// is the safe way to do that.
+  Future<void> Function(Note note)? onBlankNoteCreated;
+
   /// Every edit is written to disk on its own; this only collapses a *burst* of
   /// keystrokes into one write.
   ///
@@ -274,7 +283,9 @@ class NotesController extends ChangeNotifier {
       // because they are labels, not code.
       for (final String tag in parsed.tags) {
         final String needle = tag.toLowerCase();
-        if (!n.tags.any((String t) => t.toLowerCase() == needle)) return false;
+        if (!n.tags.any((String t) => t.toLowerCase() == needle)) {
+          return false;
+        }
       }
       if (q.isEmpty) return true;
       final String title = fold ? n.foldedTitle : n.title;
@@ -615,6 +626,36 @@ class NotesController extends ChangeNotifier {
     return path;
   }
 
+  /// Creates [folderPath] (parents included) wherever it lives in the vault.
+  ///
+  /// Unlike [createFolder], which names a new child of the active folder, this
+  /// takes a full vault-relative path — the templates folder comes from
+  /// settings, so it must not be reinterpreted relative to the current tree
+  /// selection.
+  Future<bool> ensureFolder(String folderPath) async {
+    final String path = Note.normalizeFolderPath(folderPath);
+    if (path.isEmpty) return false;
+    if (_folderPaths().any(
+      (String f) => f.toLowerCase() == path.toLowerCase(),
+    )) {
+      return true;
+    }
+    try {
+      await _store.createFolder(path);
+      _folders = await _store.listFolders();
+      if (!_folders.any((String f) => f.toLowerCase() == path.toLowerCase())) {
+        _folders = <String>[..._folders, path];
+      }
+    } catch (e) {
+      _error = '创建文件夹失败:$e';
+      notifyListeners();
+      return false;
+    }
+    _bumpStructure();
+    notifyListeners();
+    return true;
+  }
+
   String _freeFolderName(String parent, String base) {
     final Set<String> taken = <String>{
       for (final String path in childFoldersOf(parent))
@@ -813,7 +854,16 @@ class NotesController extends ChangeNotifier {
 
   // ------------------------------------------------------------------- CRUD
 
-  Note createNote({String title = '', String? folderPath}) {
+  /// Creates a blank note and opens it.
+  ///
+  /// [runCreationHook] is false for flows that already have their own content
+  /// for the new note — creating from a template must not also apply the
+  /// folder's automatic template on top.
+  Note createNote({
+    String title = '',
+    String? folderPath,
+    bool runCreationHook = true,
+  }) {
     _autosave.flush(() => _persistDraft());
     // A note always has a name, because the file always has one: an untitled
     // note is `未命名.md`, the next one in the same folder is `未命名 2.md`, and
@@ -843,7 +893,21 @@ class NotesController extends ChangeNotifier {
     _saveState = SaveState.dirty;
     notifyListeners();
     unawaited(_persistDraft());
+    if (runCreationHook) _runCreationHook(note);
     return note;
+  }
+
+  void _runCreationHook(Note note) {
+    final Future<void> Function(Note note)? hook = onBlankNoteCreated;
+    if (hook == null) return;
+    unawaited(() async {
+      try {
+        await hook(note);
+      } catch (e) {
+        _error = '模板套用失败:$e';
+        notifyListeners();
+      }
+    }());
   }
 
   /// Opens the note titled [title], writing a new one when the vault has none.
@@ -1387,6 +1451,48 @@ class NotesController extends ChangeNotifier {
         updatedAt: DateTime.now(),
       ),
     );
+  }
+
+  /// Writes [body] into a note that is still empty, then saves at once.
+  ///
+  /// This is the write half of folder templates. Rendering happens elsewhere and
+  /// can open prompts, so by the time the result arrives the user may have typed
+  /// into the note, switched away or deleted it. Every one of those must win:
+  /// the template is applied only when the note still exists and its body is
+  /// untouched. An already-written body is never replaced.
+  ///
+  /// Returns whether the body was applied. A failed disk write still applies it
+  /// in memory and reports through [error]; the user keeps an editor they can
+  /// copy from rather than losing the rendered text too.
+  Future<bool> applyBodyIfEmpty(String noteId, String body) async {
+    final Note? current = _noteById(noteId);
+    if (current == null || current.body.isNotEmpty) return false;
+
+    if (_draft?.id == noteId) {
+      if (_draftHasConflict || _draft!.body.isNotEmpty) return false;
+      updateBody(body);
+      await saveNow();
+      return _noteById(noteId)?.body == body;
+    }
+
+    // Not on screen. A write of this note may already be queued (it is brand
+    // new), and that earlier snapshot must land before this fuller one.
+    await _writing;
+    final Note? latest = _noteById(noteId);
+    if (latest == null || latest.body.isNotEmpty) return false;
+    final Note updated = latest.copyWith(body: body, updatedAt: DateTime.now());
+    _replace(updated);
+    notifyListeners();
+    try {
+      await _store.save(updated, previousPath: updated.relativePath);
+      _baselines[updated.id] = updated;
+      await _refreshStamp(updated.relativePath);
+      return true;
+    } catch (e) {
+      _error = '保存失败:$e';
+      notifyListeners();
+      return false;
+    }
   }
 
   /// [candidate] unless another note in the same folder already owns that file

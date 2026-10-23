@@ -94,6 +94,10 @@ class NoteListPanelState extends State<NoteListPanel> {
     _treeKey.currentState?.revealFolder(path);
   }
 
+  /// Brings [folderPath] into view; used by the template picker's empty state.
+  void revealFolder(String folderPath) =>
+      _treeKey.currentState?.revealFolder(folderPath);
+
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;

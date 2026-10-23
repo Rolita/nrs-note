@@ -7,37 +7,36 @@ import '../../core/theme/theme_presets.dart';
 
 /// The 「配色方案」 picker: one cell per scheme, each previewing its own board.
 ///
-/// Deliberately **not** a [SegmentedToggle]: four labelled segments would burst
-/// the 620px settings dialog, and that control has no way to show a colour. The
-/// cells reuse the same visual language instead — a sunken track, a raised fill
-/// on hover, an `accentSoft` fill plus an `accent` ring when selected.
+/// Deliberately **not** a [SegmentedToggle]: labelled segments would burst the
+/// settings dialog, and that control has no way to show a colour. The cells
+/// reuse the same visual language instead — a sunken track, a raised fill on
+/// hover, an `accentSoft` fill plus an `accent` ring when selected.
 class ThemePresetPicker extends StatelessWidget {
   const ThemePresetPicker({
     super.key,
     required this.value,
     required this.onChanged,
     required this.brightness,
-    this.custom,
-    this.onEditCustom,
+    required this.overrides,
+    required this.onEdit,
   });
 
   /// The scheme currently in force.
   final ThemePresetId value;
 
-  /// Fired for every cell, including 自定义 — which simply puts the custom
-  /// board in force. Editing it is a separate affordance on the cell's corner.
+  /// Fired for every cell — tapping a cell only switches to that scheme.
   final ValueChanged<ThemePresetId> onChanged;
 
   /// Which face of each board to preview: the light one in light mode, the dark
   /// one in dark mode. The cell then shows what the user would actually get.
   final Brightness brightness;
 
-  /// The user's own board, so the 自定义 cell previews *their* colours rather
-  /// than a placeholder.
-  final CustomPalette? custom;
+  /// The user's edits to a given scheme, so the cell previews *their* colours
+  /// rather than the factory ones once they have changed something.
+  final PaletteOverride? Function(ThemePresetId preset) overrides;
 
-  /// Opens the editor. Wired to the 自定义 cell's corner badge.
-  final VoidCallback? onEditCustom;
+  /// Opens the editor for a scheme. Wired to that cell's corner badge.
+  final ValueChanged<ThemePresetId> onEdit;
 
   @override
   Widget build(BuildContext context) {
@@ -59,12 +58,11 @@ class ThemePresetPicker extends StatelessWidget {
                 key: Key('preset-${id.name}'),
                 label: id.label,
                 selected: id == value,
-                badge: id == ThemePresetId.custom
-                    ? LucideIcons.squarePen
-                    : null,
+                badge: LucideIcons.squarePen,
                 onTap: () => onChanged(id),
-                onBadgeTap: onEditCustom,
-                preview: MiniShell(palette: _boardFor(id, brightness, custom)),
+                onBadgeTap: () => onEdit(id),
+                editTooltip: '编辑「${id.label}」',
+                preview: MiniShell(palette: _boardFor(id, brightness)),
               ),
             ),
           ],
@@ -73,22 +71,12 @@ class ThemePresetPicker extends StatelessWidget {
     );
   }
 
-  /// Which board a cell draws.
-  ///
-  /// 自定义 falls back to 石墨素白 until the user has made one — which is also
-  /// what the editor seeds from, so the cell never promises a board the user
-  /// does not have.
-  static AppPalette _boardFor(
-    ThemePresetId id,
-    Brightness brightness,
-    CustomPalette? custom,
-  ) {
-    if (id == ThemePresetId.custom && custom != null) {
-      return custom.paletteFor(brightness);
-    }
-    return ThemePresets.of(
-      id == ThemePresetId.custom ? ThemePresetId.fallback : id,
-    ).paletteFor(brightness);
+  /// Which board a cell draws: the user's overlay when this scheme has one,
+  /// the factory board otherwise.
+  AppPalette _boardFor(ThemePresetId id, Brightness brightness) {
+    final PaletteOverride? layer = overrides(id);
+    if (layer != null) return layer.paletteFor(brightness);
+    return ThemePresets.of(id).paletteFor(brightness);
   }
 }
 
@@ -164,17 +152,19 @@ class _PresetCell extends StatefulWidget {
     required this.label,
     required this.selected,
     required this.onTap,
+    required this.onBadgeTap,
+    required this.editTooltip,
+    required this.badge,
     required this.preview,
-    this.badge,
-    this.onBadgeTap,
   });
 
   final String label;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback onBadgeTap;
+  final String editTooltip;
+  final IconData badge;
   final Widget preview;
-  final IconData? badge;
-  final VoidCallback? onBadgeTap;
 
   @override
   State<_PresetCell> createState() => _PresetCellState();
@@ -187,8 +177,8 @@ class _PresetCellState extends State<_PresetCell> {
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     // The ring speaks **the scheme in force**, not the one being previewed:
-    // 石墨素白's accent is near-black, so a ring in the previewed colour would
-    // vanish exactly on the cell that is selected.
+    // a ring drawn in the previewed colour vanishes exactly on the cell that is
+    // selected.
     final Color ring = p.accent;
     return MouseRegion(
       cursor: SystemMouseCursors.click,
@@ -231,39 +221,37 @@ class _PresetCellState extends State<_PresetCell> {
                     ),
                   ],
                 ),
-                // 自定义's way in: a pencil on the cell's own top-right corner.
-                // Tapping the cell itself only switches the scheme now, so this
-                // is the single door to the editor.
-                if (widget.badge != null && widget.onBadgeTap != null)
-                  Positioned(
-                    top: 0,
-                    right: 0,
-                    child: Tooltip(
-                      message: '编辑自定义配色',
-                      child: MouseRegion(
-                        cursor: SystemMouseCursors.click,
-                        child: GestureDetector(
-                          onTap: widget.onBadgeTap,
-                          behavior: HitTestBehavior.opaque,
-                          child: Container(
-                            width: 20,
-                            height: 20,
-                            decoration: BoxDecoration(
-                              color: p.surfaceRaised,
-                              shape: BoxShape.circle,
-                              border: Border.all(color: p.outline),
-                            ),
-                            alignment: Alignment.center,
-                            child: Icon(
-                              widget.badge,
-                              size: 11,
-                              color: p.textSecondary,
-                            ),
+                // Each cell's way into the editor: a pencil on its own top-right
+                // corner. Tapping the cell itself only switches the scheme.
+                Positioned(
+                  top: 0,
+                  right: 0,
+                  child: Tooltip(
+                    message: widget.editTooltip,
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: GestureDetector(
+                        onTap: widget.onBadgeTap,
+                        behavior: HitTestBehavior.opaque,
+                        child: Container(
+                          width: 20,
+                          height: 20,
+                          decoration: BoxDecoration(
+                            color: p.surfaceRaised,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: p.outline),
+                          ),
+                          alignment: Alignment.center,
+                          child: Icon(
+                            widget.badge,
+                            size: 11,
+                            color: p.textSecondary,
                           ),
                         ),
                       ),
                     ),
                   ),
+                ),
               ],
             ),
           ),
