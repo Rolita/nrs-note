@@ -71,10 +71,33 @@ class TableRange {
   /// keeps Shift+click and keyboard selection extensions pointing the same way.
   final bool forward;
 
-  int get firstRow => math.min(anchorRow, focusRow);
-  int get lastRow => math.max(anchorRow, focusRow);
-  int get firstColumn => math.min(anchorColumn, focusColumn);
-  int get lastColumn => math.max(anchorColumn, focusColumn);
+  /// The four bounds, grown so a cell rectangle never clips a merged block.
+  ///
+  /// A merge is one cell on screen, so touching any part of it selects all of
+  /// it: clearing or coloring half would act on text that is partly invisible.
+  /// Row and column ranges stay exactly what the grip asked for — growing a
+  /// one-row selection down through a rowspan would delete a row the user
+  /// never picked.
+  late final ({int fromRow, int toRow, int fromColumn, int toColumn}) _bounds =
+      kind == TableRangeKind.cells
+      ? expandOverMerges(
+          tableMergesOf(block),
+          fromRow: math.min(anchorRow, focusRow),
+          toRow: math.max(anchorRow, focusRow),
+          fromColumn: math.min(anchorColumn, focusColumn),
+          toColumn: math.max(anchorColumn, focusColumn),
+        )
+      : (
+          fromRow: math.min(anchorRow, focusRow),
+          toRow: math.max(anchorRow, focusRow),
+          fromColumn: math.min(anchorColumn, focusColumn),
+          toColumn: math.max(anchorColumn, focusColumn),
+        );
+
+  int get firstRow => _bounds.fromRow;
+  int get lastRow => _bounds.toRow;
+  int get firstColumn => _bounds.fromColumn;
+  int get lastColumn => _bounds.toColumn;
 
   int get rowCount => lastRow - firstRow + 1;
   int get columnCount => lastColumn - firstColumn + 1;
@@ -117,8 +140,8 @@ class TableRange {
   /// alignments travel with it.
   String get markdown {
     final List<TableAlign> aligns = block.aligns;
-    return TableGrid(
-      rows: values,
+    return TableGrid.fromStrings(
+      values,
       aligns: <TableAlign>[
         for (int c = firstColumn; c <= lastColumn; c++)
           c < aligns.length ? aligns[c] : TableAlign.none,
@@ -190,10 +213,15 @@ class TableRange {
       case TableRangeKind.columns:
         final TableCell? a = cellAt(firstRow, firstColumn);
         final TableCell? b = cellAt(lastRow, lastColumn);
+        // A formatted empty cell has no visible characters, but its hidden
+        // directive still occupies source slots: the wash and the selection
+        // both have to start after it, or the first keystroke eats the format.
         start = a == null
             ? first.start
-            : (a.isEmpty ? a.start : a.contentStart);
-        end = b == null ? last.end : (b.isEmpty ? b.end : b.contentEnd);
+            : (a.isEmpty && !a.hasDirective ? a.start : a.contentStart);
+        end = b == null
+            ? last.end
+            : (b.isEmpty && !b.hasDirective ? b.end : b.contentEnd);
     }
     return forward
         ? TextSelection(baseOffset: start, extentOffset: end)

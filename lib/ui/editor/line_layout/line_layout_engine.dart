@@ -70,6 +70,7 @@ class LineFillRun {
     required this.style,
     this.padX = 0,
     this.padY = 0,
+    this.rowBox = false,
   });
 
   /// 片段在这一行**排出来的文字**里的起止偏移（`paintStart` 起算，含两侧
@@ -100,6 +101,12 @@ class LineFillRun {
 
   /// 片段字体；只用来量底片的高度与基线位置。
   final TextStyle style;
+
+  /// 纵向铺满整条视觉行，而不是按字形盒量高。
+  ///
+  /// `==高亮` 要和选区底色同高同位置，所以不走探针量高，直接读
+  /// [LaidOutLine.visuals] 给出的视觉行盒。
+  final bool rowBox;
 
   /// 底片高度（含上下内边距）与基线相对片段顶部的下沉量。
   ///

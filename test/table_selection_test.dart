@@ -103,6 +103,71 @@ void main() {
       );
     });
 
+    group('merged blocks', () {
+      const String merged =
+          '| <!--nrs c=2 r=2 bg=amber-->合并 |  | x | w |\n'
+          '| --- | --- | --- | --- |\n'
+          '|  |  | y | z |\n'
+          '| a | b | c | d |';
+      final TableBlock block = TableBlock.parse(merged, 0)!;
+      final body = block.bodyRows;
+
+      test('a rectangle that clips a merge grows to the whole block', () {
+        // Header cells 0…2 touch the 2×2 block anchored at (0, 0); the
+        // rectangle has to take in the block's second row as well.
+        final TableRange range = TableRange.fromSelection(
+          merged,
+          TextSelection(
+            baseOffset: merged.indexOf('合并'),
+            extentOffset: merged.indexOf('x') + 1,
+          ),
+        )!;
+
+        expect(range.kind, TableRangeKind.cells);
+        expect((range.firstRow, range.lastRow), (0, 1));
+        expect((range.firstColumn, range.lastColumn), (0, 2));
+        expect(range.values.first.sublist(0, 3), <String>['合并', '', 'x']);
+        expect(range.values[1].sublist(0, 3), <String>['', '', 'y']);
+      });
+
+      test('selecting only covered cells still reads as the anchor block', () {
+        final covered = body[1];
+        final TableRange range = TableRange.fromSelection(
+          merged,
+          TextSelection(
+            baseOffset: covered.cells[0].start,
+            extentOffset: covered.cells[1].end,
+          ),
+        )!;
+
+        expect((range.firstRow, range.lastRow), (0, 1));
+        expect((range.firstColumn, range.lastColumn), (0, 1));
+        expect(range.values, <List<String>>[
+          <String>['合并', ''],
+          <String>['', ''],
+        ]);
+      });
+
+      test('a row selection is not grown through a rowspan', () {
+        // Deleting one row of a merge must not delete the row above it that
+        // the user never selected; only cell rectangles snap.
+        final TableRange range = TableRange.rowsOf(block, 1, 1);
+
+        expect((range.firstRow, range.lastRow), (1, 1));
+        expect(range.kind, TableRangeKind.rows);
+
+        final TableRange swept = TableRange.fromSelection(
+          merged,
+          TextSelection(
+            baseOffset: body[1].cells.first.start,
+            extentOffset: body[1].cells.last.end,
+          ),
+        )!;
+        expect(swept.kind, TableRangeKind.rows);
+        expect((swept.firstRow, swept.lastRow), (1, 1));
+      });
+    });
+
     test('statistics count filled cells and numbers separately', () {
       const String numbers =
           '| 名称 | 数量 |\n| --- | --- |\n| A | 10 |\n| B | 2.5 |\n| C |  |';

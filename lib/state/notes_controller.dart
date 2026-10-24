@@ -54,6 +54,7 @@ class SearchSnippet {
     required this.text,
     required this.matchStart,
     required this.matchEnd,
+    required this.matchOffset,
   });
 
   final String text;
@@ -61,6 +62,11 @@ class SearchSnippet {
   /// Range to highlight inside [text]. `-1` when there is nothing to mark.
   final int matchStart;
   final int matchEnd;
+
+  /// Where the match sits in the note's body, in source offsets. Clicking the
+  /// snippet opens the note and parks the caret here, so `…`-trimmed snippets
+  /// still land on the right line.
+  final int matchOffset;
 
   bool get hasHighlight => matchStart >= 0 && matchEnd > matchStart;
 }
@@ -372,11 +378,13 @@ class NotesController extends ChangeNotifier {
           .split('\n')
           .firstWhere((String line) => line.trim().isNotEmpty, orElse: () => '');
       if (firstLine.trim().isNotEmpty) {
+        final int at = note.body.indexOf(firstLine);
         snippets.add(
           SearchSnippet(
             text: firstLine.trim(),
             matchStart: -1,
             matchEnd: -1,
+            matchOffset: at < 0 ? 0 : at,
           ),
         );
       }
@@ -423,6 +431,7 @@ class NotesController extends ChangeNotifier {
       text: text,
       matchStart: start.clamp(0, text.length),
       matchEnd: end.clamp(0, text.length),
+      matchOffset: at,
     );
   }
 
@@ -2058,6 +2067,33 @@ class NotesController extends ChangeNotifier {
     _autosave.cancel();
     _selectNeighbor(index);
     notifyListeners();
+  }
+
+  // ------------------------------------------------------------------- assets
+
+  /// Writes a pasted PNG beside the open note and returns the reference to put
+  /// in Markdown (`assets/image_….png`). Null where images cannot be stored.
+  Future<String?> saveAsset(Uint8List pngBytes) async {
+    final Note? note = _draft ?? selectedNote;
+    if (note == null) return null;
+    return _store.saveAsset(
+      note.folderPath,
+      _imageAssetName(DateTime.now()),
+      pngBytes,
+    );
+  }
+
+  /// Absolute path of an image referenced by the open note, for rendering.
+  String? assetPathFor(String source) {
+    final Note? note = _draft ?? selectedNote;
+    if (note == null) return null;
+    return _store.assetPath(note.folderPath, source);
+  }
+
+  static String _imageAssetName(DateTime now) {
+    String two(int value) => value.toString().padLeft(2, '0');
+    return 'image_${now.year}${two(now.month)}${two(now.day)}_'
+        '${two(now.hour)}${two(now.minute)}${two(now.second)}.png';
   }
 
   // ------------------------------------------------------------------ export

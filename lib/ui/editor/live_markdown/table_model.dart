@@ -21,7 +21,8 @@ class TableCellGeometry {
   /// Left edge of the cell's box (padding included).
   final double x;
 
-  /// Full width of the cell's box, padding included.
+  /// Full width of the cell's box, padding included. Zero for a cell covered
+  /// by a merge — it owns no pixels of its own.
   final double width;
 }
 
@@ -59,13 +60,16 @@ class TableGeometry {
   final int first;
   final int last;
   final double width;
+
+  /// The base line height. Rows with wrapped cells, and rows sharing a
+  /// rowspan, are taller; [rows] and the block heights carry those values.
   final double rowHeight;
   final List<TableRowGeometry> rows;
 }
 
 /// A row's raw source cells, before widths are handed out.
 class _ParsedCell {
-  _ParsedCell(this.text, this.offset);
+  _ParsedCell(this.text, this.offset, this.format);
 
   final String text;
 
@@ -75,6 +79,9 @@ class _ParsedCell {
   /// inserted or removed above it. Rebinding only shifts the offsets; the
   /// painted text and every `TextPainter` stay untouched.
   int offset;
+
+  /// The cell's hidden formatting directive, parsed once with the text.
+  final TableCellStyle format;
 }
 
 class _RowData {
@@ -135,6 +142,7 @@ class _CellCode {
     this.padX = 0,
     this.padY = 0,
     this.isCode = true,
+    this.rowBox = false,
   });
 
   final int start;
@@ -154,6 +162,23 @@ class _CellCode {
 
   /// 只有行内代码的底片跟随表格选区换色；标签保留自己的颜色。
   final bool isCode;
+
+  /// 行渲染层里纵向铺满整条视觉行（`==高亮`）；表格行按基线量高，不用它。
+  final bool rowBox;
+}
+
+/// One source column's box, after the whole table was fitted.
+///
+/// Kept per **source** column even when a merge covers it: the column grips,
+/// the drag preview and a future split all act on source columns, and the
+/// anchor's wide box is the sum of these.
+class _ColumnBox {
+  const _ColumnBox(this.x, this.width);
+
+  final double x;
+  final double width;
+
+  double get right => x + width;
 }
 
 /// A cell with its measured and allocated geometry.
@@ -169,6 +194,7 @@ class _CellData {
   });
 
   final _ParsedCell cell;
+
   final TextStyle style;
 
   /// The cell's memoized tree and natural width, or null for the cell being
@@ -183,11 +209,13 @@ class _CellData {
   /// character sits.
   final List<InlineSpan> spans;
 
-  /// Width the column's *text area* got after the whole table was fitted. A
-  /// cell wider than this wraps inside it.
+  /// Width the cell's *text area* got after the whole table was fitted. For a
+  /// column-span anchor this is the sum of the columns it covers, minus its
+  /// own outer padding; a covered cell gets zero.
   final double width;
 
-  /// Column alignment, from the divider row.
+  /// Text alignment. A merge's anchor is centred — that is what 「合并居中」
+  /// means — and every other cell follows the divider row.
   final TextAlign align;
 
   /// The cell box's left edge and full width (padding included), in the
@@ -202,6 +230,36 @@ class _CellData {
   /// `advance` (which only describes the unwrapped text) would leave wrapped
   /// cells flush left no matter what the divider asked for.
   double get textX => x + _kCellPad;
+
+  /// Resolved background, or null for an unfilled cell.
+  Color? fill;
+
+  /// The painter that draws this cell, or null when the cell is covered.
+  TextPainter? painter;
+
+  /// Inline-code bands measured from [painter].
+  List<_PaintedChip> chips = const <_PaintedChip>[];
+
+  /// The cached painter entry this cell shares, when it has one. Reused
+  /// tables mark it as used before the store sweeps.
+  _PaintedCell? painted;
+
+  /// True when a merge anchored elsewhere covers this cell.
+  bool covered = false;
+
+  /// The merge this cell takes part in, anchor or covered.
+  TableMerge? block;
+
+  /// The merged block's rect in table coordinates. For an ordinary cell this
+  /// is just the row's own box.
+  double mergeTop = 0;
+  double mergeHeight = 0;
+
+  /// Top of the painter in table coordinates: merged text is centred in the
+  /// whole block, not in the anchor's row.
+  double textTop = 0;
+
+  double get mergeBottom => mergeTop + mergeHeight;
 }
 
 class _Table {
@@ -212,10 +270,29 @@ class _Table {
     required this.dyShift,
     required this.lineOfRow,
     required this.geometry,
-  });
+    required this.columns,
+    required this.columnRoom,
+    required this.widthScale,
+    required this.rowHeights,
+    required this.rowTops,
+    required this.merges,
+    required List<TextPainter> ownedPainters,
+  }) : _owned = ownedPainters;
 
   final List<_RowData> rows;
   final double width;
+
+  /// Text width the whole table has to live in: the text column minus every
+  /// cell's padding. The resize drag spends this room before it starts taking
+  /// width away from a neighbouring column.
+  final double columnRoom;
+
+  /// Rendering pixels per design pixel stored in `w=…` — the current font size
+  /// and accessibility scale relative to the 15.5pt the values were authored
+  /// at. A drag converts the pixels it ends on back through this.
+  final double widthScale;
+
+  /// The base line height — the height a row would have with no wrapped cell.
   final double rowHeight;
 
   /// How far the painted rows sit **above** their paragraph line, and therefore
@@ -231,6 +308,95 @@ class _Table {
   /// Source line → index into [rows] (the divider line maps to nothing).
   final Map<int, int> lineOfRow;
   final TableGeometry geometry;
+
+  /// One box per **source** column, left to right.
+  final List<_ColumnBox> columns;
+
+  /// Every row's height: the base line, a wrapped cell's painter, or its share
+  /// of a rowspan.
+  final List<double> rowHeights;
+
+  /// Each row's top in table coordinates.
+  final List<double> rowTops;
+
+  /// The validated merges, anchors only, row-major.
+  final List<TableMerge> merges;
+
+  /// Painters this table built and therefore has to dispose (the edited cell,
+  /// which is never memoized). Shared painters belong to [_CellMemoStore].
+  final List<TextPainter> _owned;
+
+  /// The source column at table-x [x], or null outside the table.
+  int? columnAt(double x) {
+    for (int c = 0; c < columns.length; c++) {
+      final _ColumnBox box = columns[c];
+      if (x >= box.x && x < box.right) return c;
+    }
+    return null;
+  }
+
+  /// The merge covering `(row, column)`, anchor included.
+  TableMerge? mergeAt(int row, int column) {
+    for (final TableMerge m in merges) {
+      if (m.covers(row, column)) return m;
+    }
+    return null;
+  }
+
+  /// Whether [row] and [column] are a merge's own top-left cell.
+  bool isAnchor(int row, int column, TableMerge m) =>
+      m.row == row && m.column == column;
+
+  /// The merge the anchor of row [row] starts at [column], if any.
+  TableMerge? anchorAt(int row, int column) {
+    for (final TableMerge m in merges) {
+      if (m.row == row && m.column == column) return m;
+    }
+    return null;
+  }
+
+  /// The anchor cell for `(row, column)` — the covered cell itself when there
+  /// is no merge.
+  _CellData anchorCell(int row, int column) {
+    final TableMerge? m = mergeAt(row, column);
+    if (m == null) return rows[row].data[column];
+    return rows[m.row].data[m.column];
+  }
+
+  /// Whether the column boundary before [boundary] is interior to a merge on
+  /// [row] and must not be drawn.
+  bool mergeAcross(int row, int boundary) {
+    for (final TableMerge m in merges) {
+      if (row < m.row || row > m.lastRow) continue;
+      if (m.column < boundary && boundary <= m.lastColumn) return true;
+    }
+    return false;
+  }
+
+  /// Horizontal extent of [m] in table coordinates.
+  (double, double) mergeSpan(TableMerge m) {
+    final _ColumnBox first = columns[m.column];
+    final _ColumnBox last = columns[m.lastColumn];
+    return (first.x, last.right);
+  }
+
+  /// Marks every memo entry this table still uses, so a reused table survives
+  /// the store's sweep even though it was not re-measured.
+  void touch(int generation) {
+    for (final _RowData row in rows) {
+      for (final _CellData cell in row.data) {
+        cell.memo?.usedIn = generation;
+        cell.painted?.usedIn = generation;
+      }
+    }
+  }
+
+  void dispose() {
+    for (final TextPainter painter in _owned) {
+      painter.dispose();
+    }
+    _owned.clear();
+  }
 }
 
 const double _kCellPad = 8;
@@ -238,9 +404,15 @@ const double _kCellPad = 8;
 /// The chrome a live table hangs around itself: a grip per row and per column,
 /// and a `+` on the right and bottom edges.
 ///
-/// The grip is a square: it holds six dots, which read the same whether the row
-/// moves up and down or the column moves left and right.
-const double _kGrip = 16;
+/// The grip is a rounded button holding six dots: the row grip is two columns
+/// by three rows (it moves up and down), the column grip three columns by two
+/// rows (it moves left and right). The dot grid's orientation is the drag
+/// direction.
+const double _kGrip = 20;
+
+/// The dot grid inside the button. Painted at this size, centered in [_kGrip]:
+/// the button carries the affordance, the dots only name the direction.
+const double _kGripDots = 16;
 
 /// The gap between the table's border and the chrome that hangs off it.
 const double _kChromeGap = 5;
@@ -251,12 +423,6 @@ const double _kAdd = 12;
 /// a table is a rectangle, and the rounding should read as a softened corner,
 /// not as a pill.
 const double _kSelectRadius = 2;
-
-/// The narrowest a column may be squeezed to before the table starts sharing
-/// space strictly by content. Without it an empty table — the one the
-/// 「插入 ▸ 表格」 snippet writes — has a natural width of zero and collapses to
-/// a 32px speck.
-const double _kMinCell = 64;
 
 /// The narrowest a column is allowed to get once the table is too wide to fit
 /// on one line, in logical pixels at [_kReadableColAt] font size.
@@ -279,7 +445,11 @@ const double _kReadableColAt = 15.5;
 /// than shown (`\|` is a pipe, `<br>` is a break mark).
 List<_ParsedCell> _parseCells(String line, int absStart) => <_ParsedCell>[
   for (final (int a, int b) in tableCellsOf(line))
-    _ParsedCell(tableCellDisplay(line.substring(a, b)), absStart + a),
+    _ParsedCell(
+      tableCellDisplay(line.substring(a, b)),
+      absStart + a,
+      tableCellStyleOf(line.substring(a, b)),
+    ),
 ];
 
 /// A character that takes no room, used to keep an escape's source slots alive
@@ -300,9 +470,19 @@ const String _kZeroWidth = '\u200b';
 /// slot off, then two.
 @visibleForTesting
 String tableCellDisplay(String raw) {
-  if (!raw.contains(r'\|') && !raw.contains('<br>')) return raw;
+  final (int, int)? directive = tableDirectiveRange(raw);
+  if (directive == null && !raw.contains(r'\|') && !raw.contains('<br>')) {
+    return raw;
+  }
   final StringBuffer out = StringBuffer();
   for (int i = 0; i < raw.length; i++) {
+    if (directive != null && i == directive.$1) {
+      for (int k = directive.$1; k < directive.$2; k++) {
+        out.write(_kZeroWidth);
+      }
+      i = directive.$2 - 1;
+      continue;
+    }
     if (raw.startsWith(r'\|', i)) {
       out.write(_kZeroWidth);
       continue;

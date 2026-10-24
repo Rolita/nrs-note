@@ -1,12 +1,36 @@
 @Tags(<String>['perf'])
 library;
 
+import 'dart:ui' as ui;
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/ui/editor/line_layout/line_layout_engine.dart';
 import 'package:nrs/ui/editor/line_layout/live_line_style.dart';
 import 'package:nrs/ui/editor/live_markdown.dart';
+
+/// 一次性交付的假图片源：模拟命中引擎 `ImageCache` 的第二次解码——同一张图
+/// 再挂监听器时 `ImageInfo` 同步到货。生产里打字落在图片上方会触发全量布局
+/// （行首偏移平移、每张图重建块、重新解析引用），这就是那条路径的成本。
+class _CachedTestImageProvider extends ImageProvider<_CachedTestImageProvider> {
+  _CachedTestImageProvider(this.image);
+
+  final ui.Image image;
+
+  @override
+  Future<_CachedTestImageProvider> obtainKey(ImageConfiguration configuration) =>
+      SynchronousFuture<_CachedTestImageProvider>(this);
+
+  @override
+  ImageStreamCompleter loadImage(
+    _CachedTestImageProvider key,
+    ImageDecoderCallback decode,
+  ) => OneFrameImageStreamCompleter(
+    SynchronousFuture<ImageInfo>(ImageInfo(image: image.clone())),
+  );
+}
 
 /// Benchmarks for the live renderer. Tagged so CI can leave them out: a shared
 /// runner's timings are noise, while a local run gives the number to compare
@@ -200,6 +224,87 @@ void main() {
     // ignore: avoid_print
     print(
       'perf(production): edit outside 2000-line code block = '
+      '${ms.toStringAsFixed(2)} ms/build',
+    );
+    expect(ms, lessThan(1000));
+  });
+
+  test('production: one-character edits in a 1000-line document with 20 images',
+      () async {
+    final TestWidgetsFlutterBinding binding =
+        TestWidgetsFlutterBinding.ensureInitialized();
+    final ui.Image image = (await binding.runAsync(
+      () => createTestImage(width: 320, height: 240),
+    ))!;
+    addTearDown(image.dispose);
+
+    // 每 50 行一张图，共 20 张；打字落在文档中部，其后的图片行行首偏移
+    // 全部平移，每轮都要重新解析引用、重建图片块——这是最贵的打字路径。
+    final List<String> lines = <String>[
+      for (int i = 0; i < 1000; i++)
+        i % 50 == 25
+            ? '![截图 ${i ~/ 50}](assets/fig_${i ~/ 50}.png)'
+            : '正文第 $i 行：**粗体** *斜体* `代码` [[双链]] #标签',
+    ];
+    final String baseText = lines.join('\n');
+    final int middle = baseText.length ~/ 2;
+    final List<String> documents = <String>[
+      for (int i = 0; i < 6; i++) baseText.replaceRange(middle, middle, 'x' * i),
+    ];
+
+    const TextSelection selection = TextSelection.collapsed(offset: -1);
+    final LiveImageBlocks images = LiveImageBlocks(
+      palette: palette,
+      text: () => '',
+      selection: () => selection,
+      imageProviderFor: (_) => _CachedTestImageProvider(image),
+      onLineInvalidated: (_) {},
+    );
+    addTearDown(images.dispose);
+    final LineLayoutCache cache = LineLayoutCache();
+    addTearDown(cache.dispose);
+
+    // 生产路径同一份解析器贯穿多次编辑（图片块按行首偏移缓存）。
+    LineDocumentLayout layoutWithImages(String text) {
+      final LiveLineStyle style = LiveLineStyle(
+        base: base,
+        palette: palette,
+        reveal: () => selection,
+        source: text,
+      );
+      return layoutLines(
+        text: text,
+        baseStyle: base,
+        contentWidth: 680,
+        styleFor: style.styleFor,
+        heightFor: style.heightFor,
+        spanFor: style.spanFor,
+        fillFor: style.fillsFor,
+        insetFor: style.insetFor,
+        blockFor: images.blockFor,
+        cache: cache,
+      );
+    }
+
+    // 第一次全量建立；后面五轮每轮只多一个字符。
+    final LineDocumentLayout first = layoutWithImages(documents.first);
+    expect(first.laidOut, hasLength(1000));
+    expect(
+      first.laidOut.where((LaidOutLine l) => l.block != null).length,
+      20,
+      reason: '20 个图片行都该解析成图片块',
+    );
+    first.dispose();
+    final Stopwatch watch = Stopwatch()..start();
+    for (int i = 1; i < documents.length; i++) {
+      layoutWithImages(documents[i]).dispose();
+    }
+    watch.stop();
+    final double ms =
+        watch.elapsedMicroseconds / (documents.length - 1) / 1000;
+    // ignore: avoid_print
+    print(
+      'perf(production): one-character edit in 1000 lines + 20 images = '
       '${ms.toStringAsFixed(2)} ms/build',
     );
     expect(ms, lessThan(1000));

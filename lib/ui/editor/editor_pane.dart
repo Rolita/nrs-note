@@ -9,7 +9,9 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
+import '../../core/utils/external_link.dart';
 import '../../core/utils/markdown_actions.dart';
+import '../../core/utils/note_image.dart';
 import '../../data/models/note.dart';
 import '../../state/notes_controller.dart';
 import '../../state/settings_controller.dart';
@@ -25,6 +27,7 @@ class EditorPane extends StatefulWidget {
     required this.onDelete,
     this.onCursorLineChanged,
     this.onOpenSearch,
+    this.showSearchHighlights = false,
     this.bodyValue,
   });
 
@@ -34,6 +37,10 @@ class EditorPane extends StatefulWidget {
   /// Called when a `#tag` in the text is clicked: the shell switches the
   /// sidebar to search so the results are actually on screen.
   final VoidCallback? onOpenSearch;
+
+  /// 侧栏停在搜索视图时为 true：正文里所有命中搜索词的文字都铺色带，
+  /// 让用户不必逐行找。离开搜索视图即关掉。
+  final bool showSearchHighlights;
 
   /// The live value of the body field, published for panels outside the pane
   /// (the table tools read the table at the caret). Written here instead of
@@ -771,6 +778,11 @@ class EditorPaneState extends State<EditorPane> {
     );
     _contentWidth = contentWidth;
 
+    // 查询里的 `tag:` 是筛选条件，不是要找的字；色带只跟自由文本走。
+    final String needle = widget.showSearchHighlights
+        ? NotesController.parseQuery(notes.query).text
+        : '';
+
     return MarkdownEditor(
       controller: _body,
       focusNode: _bodyFocus,
@@ -788,6 +800,10 @@ class EditorPaneState extends State<EditorPane> {
       // 带上 [_bodyEpoch]：id 相同但正文被外部整段替换时，输入框也要
       // 重建，撤销栈才不会把替换前的正文恢复回来。
       documentId: '${(notes.draft ?? notes.selectedNote)?.id}#$_bodyEpoch',
+      // 剪贴板里的截图落在笔记同目录的 `assets/`；渲染时再按同一规则解析回来。
+      savePastedImage: notes.saveAsset,
+      imageProviderFor: (String source) =>
+          imageProviderFor(notes.assetPathFor(source), source),
       onChanged: notes.updateBody,
       onTopLineChanged: _onTopLine,
       onLineTopProbe: (double? Function(int line)? probe) =>
@@ -799,6 +815,12 @@ class EditorPaneState extends State<EditorPane> {
       },
       // `[[还不存在的标题]]` 不是坏链接：打开即创建，这是双链的写法。
       onWikilinkTap: notes.openOrCreateByTitle,
+      // `[标签](https://…)` 交给系统默认浏览器；相对路径不认，留给双链。
+      onLinkTap: openExternal,
+      searchHighlight: needle.isEmpty
+          ? null
+          : (needle: needle, caseSensitive: notes.caseSensitive),
+      searchHighlightColor: p.accentSoft,
     );
   }
 

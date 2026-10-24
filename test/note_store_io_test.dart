@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/data/models/note.dart';
@@ -362,5 +363,104 @@ void main() {
     await store.init();
 
     expect(stale.existsSync(), isFalse, reason: '过期的半截文件不能永远留在库里');
+  });
+
+  group('贴图资产', () {
+    test('saves bytes under the note folder assets directory', () async {
+      final IoNoteStore store = IoNoteStore(overrideRoot: root);
+      await store.init();
+      final Uint8List bytes = Uint8List.fromList(<int>[
+        0x89,
+        0x50,
+        0x4E,
+        0x47,
+        1,
+        2,
+        3,
+      ]);
+
+      final String? reference = await store.saveAsset(
+        '项目/计划',
+        'image_20261024_153012.png',
+        bytes,
+      );
+
+      expect(reference, 'assets/image_20261024_153012.png');
+      final File written = File(
+        <String>[
+          vault,
+          '项目',
+          '计划',
+          'assets',
+          'image_20261024_153012.png',
+        ].join(Platform.pathSeparator),
+      );
+      expect(written.existsSync(), isTrue);
+      expect(written.readAsBytesSync(), bytes);
+      expect(
+        written.parent.listSync().where(
+          (FileSystemEntity e) => e.path.endsWith('.tmp'),
+        ),
+        isEmpty,
+        reason: '原子写留下的临时文件必须被 rename 掉',
+      );
+    });
+
+    test('a taken name becomes _2 then _3 instead of overwriting', () async {
+      final IoNoteStore store = IoNoteStore(overrideRoot: root);
+      await store.init();
+      final List<String?> references = <String?>[
+        for (int i = 0; i < 3; i++)
+          await store.saveAsset('', 'same.png', Uint8List.fromList(<int>[i])),
+      ];
+
+      expect(references, <String>[
+        'assets/same.png',
+        'assets/same_2.png',
+        'assets/same_3.png',
+      ]);
+      final File first = File(
+        <String>[vault, 'assets', 'same.png'].join(Platform.pathSeparator),
+      );
+      expect(first.readAsBytesSync(), <int>[0]);
+    });
+
+    test('cleans the file name and cannot escape the assets folder', () async {
+      final IoNoteStore store = IoNoteStore(overrideRoot: root);
+      await store.init();
+
+      final String? reference = await store.saveAsset(
+        '',
+        r'../坏/名字?.png',
+        Uint8List.fromList(<int>[7]),
+      );
+
+      expect(reference, 'assets/名字_.png');
+      final File written = File(
+        <String>[vault, 'assets', '名字_.png'].join(Platform.pathSeparator),
+      );
+      expect(written.existsSync(), isTrue);
+      expect(reference!.contains('..'), isFalse);
+      expect(reference.contains('/坏/'), isFalse);
+    });
+
+    test('forces a png suffix', () async {
+      final IoNoteStore store = IoNoteStore(overrideRoot: root);
+      await store.init();
+
+      expect(await store.saveAsset('', '截图', Uint8List(1)), 'assets/截图.png');
+    });
+
+    test('the assets folder stays out of the note tree', () async {
+      final IoNoteStore store = IoNoteStore(overrideRoot: root);
+      await store.init();
+      await store.createFolder('项目');
+      await store.saveAsset('项目', 'x.png', Uint8List.fromList(<int>[1]));
+
+      final List<String> folders = await store.listFolders();
+
+      expect(folders, contains('项目'));
+      expect(folders.any((String p) => p.contains('assets')), isFalse);
+    });
   });
 }

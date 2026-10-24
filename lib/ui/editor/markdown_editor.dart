@@ -13,9 +13,14 @@ import 'package:flutter/material.dart' hide TableCell, TableRow;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 
+import '../../core/platform/drop_support.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
+import '../../core/utils/clipboard_image.dart';
+import '../../core/utils/dropped_link.dart';
+import '../../core/utils/image_markup.dart';
 import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/markdown_outline.dart';
 import '../../core/utils/table_model.dart';
@@ -736,6 +741,20 @@ class _PasteIntent extends Intent {
 /// （连续插入或连续删除）。把光标挪开、点选文字、组合输入都会断开这一块。
 /// 组合输入（拼音未上屏）期间不记录，整段上屏算一步；只改选区不改正文的
 /// 变化只更新基线，不产生历史。
+/// 一段源码行先问表格、再问图片。
+///
+/// 两者是互斥的：表格行不是段落，图片只认整行单图，所以先后顺序只影响
+/// 一次空解析，不影响语义。
+class _LineBlockResolver {
+  _LineBlockResolver(this.tables, this.images);
+
+  final LiveTableBlocks tables;
+  final LiveImageBlocks images;
+
+  LineBlockView? blockFor(SourceLine line, LineBlockContext ctx) =>
+      tables.blockFor(line, ctx) ?? images.blockFor(line, ctx);
+}
+
 class _EditHistory {
   _EditHistory(this._last);
 
@@ -830,6 +849,12 @@ class _EditHistory {
 
   void beginApply() => _applying = true;
 
+  /// Ends the current block, so the next change always starts a fresh undo step.
+  ///
+  /// A pasted image arrives right after whatever was typed; without this the
+  /// insertion can be folded into that typing block and one Ctrl+Z erases both.
+  void breakMerge() => _merge = false;
+
   /// 结束写回，并把基线对齐到控制器真正落下的值。
   ///
   /// 撤销/重做之后的第一次输入要另起一块，不能并进刚还原的那一步里。
@@ -891,6 +916,20 @@ const EdgeInsets kEditorChromePadding = EdgeInsets.symmetric(
   horizontal: AppSpace.md,
 );
 
+/// 正在被拖动的那条列分隔线，按下时记下的一切。
+///
+/// [boundary] 是线**左边**那一列的下标；拖最右外沿时它就是最后一列，没有
+/// 右邻列（见 [_resizeTo]）。所有宽度都是渲染像素。
+typedef _Resize = ({
+  int tableId,
+  int boundary,
+  double startX,
+  double boundaryX,
+  double room,
+  double scale,
+  List<double> widths,
+});
+
 /// The Markdown editing surface.
 class MarkdownEditor extends StatefulWidget {
   const MarkdownEditor({
@@ -910,7 +949,12 @@ class MarkdownEditor extends StatefulWidget {
     this.onJumpSettled,
     this.onTagTap,
     this.onWikilinkTap,
+    this.onLinkTap,
     this.documentId,
+    this.searchHighlight,
+    this.searchHighlightColor,
+    this.savePastedImage,
+    this.imageProviderFor,
     this.readOnly = false,
   });
 
@@ -968,6 +1012,11 @@ class MarkdownEditor extends StatefulWidget {
   /// 渲染层自己的字形矩形判定。
   final ValueChanged<String>? onWikilinkTap;
 
+  /// 点击 `[标签](地址)` 时回调，参数是可直接交给浏览器的地址。
+  ///
+  /// 只认 http/https 外链；相对路径不在这里处理。
+  final ValueChanged<String>? onLinkTap;
+
   /// 当前正文的身份：笔记 id，外加宿主自己的版本号。
   ///
   /// 撤销栈跟着 [controller] 走，切笔记时控制器被整段改写；不在这里清栈，
@@ -975,6 +1024,23 @@ class MarkdownEditor extends StatefulWidget {
   /// 现在这份文件——等于用旧内容覆盖文件。换文档必须从空历史开始；同一个
   /// 笔记的正文被外部版本整段替换时，宿主也会换一个值，效果相同。
   final String? documentId;
+
+  /// 搜索框里的词，命中处由渲染层铺色带。
+  ///
+  /// 只影响绘制：不碰排版，所以在搜索框里敲字不会让整篇正文重排。
+  final ({String needle, bool caseSensitive})? searchHighlight;
+
+  /// 搜索色带的颜色。
+  final Color? searchHighlightColor;
+
+  /// 把剪贴板里的一张图片存成 `assets/` 下的文件，返回可直接写进正文的相对
+  /// 路径；存储不支持时返回 null。
+  ///
+  /// 为 null（例如 Web 构建）时，Ctrl+V 只在剪贴板有文本时生效，和过去一样。
+  final Future<String?> Function(Uint8List pngBytes)? savePastedImage;
+
+  /// 把正文里的图片引用解析成可绘制的图片；null 表示这一行画不出来。
+  final ImageProvider? Function(String source)? imageProviderFor;
 
   final bool readOnly;
 
@@ -1075,6 +1141,30 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// 指针当前悬停的双链；按下命中的兜底，理由同 [_hoverTag]。
   ({int start, int end, String target})? _hoverWikilink;
 
+  /// 按下时命中的外链，等指针抬起再决定是不是一次点击；命中理由同双链。
+  ({int start, int end, String url})? _linkBeforeTap;
+
+  /// 按下链接前的光标位置，抬起后归还：跳转不是一次落点。
+  TextSelection? _caretBeforeLinkTap;
+
+  /// 打开外链的修饰键：Ctrl（Windows/Linux）或 ⌘（macOS）。
+  ///
+  /// 单击链接是落光标、进编辑，跳转必须另加这个键——和 Obsidian、VS Code
+  /// 的习惯一致，也让「点链接改字」不再每次弹一次浏览器。
+  bool get _jumpModifier =>
+      HardwareKeyboard.instance.isControlPressed ||
+      HardwareKeyboard.instance.isMetaPressed;
+
+  /// 按下那一刻摊开的是哪一行（行首偏移）。
+  ///
+  /// 折叠态的行里，`[标签](地址)` 只画出标签：点在标签右缘时平台算出的偏移会
+  /// 落在链接源码的末尾——行是这一下才摊开的，那个偏移没有意义。抬起时靠它
+  /// 分辨「这一行本来就是摊开的（用户点的是源码）」和「这一下才摊开」。
+  int? _openLineAtDown;
+
+  /// 指针当前悬停的外链，按下命中的兜底。
+  ({int start, int end, String url})? _hoverLink;
+
   LiveLineStyle _resolveLineStyle(TextStyle style, AppPalette palette) {
     final LiveLineStyle? cached = _lineStyle;
     final String source = _currentText();
@@ -1105,6 +1195,50 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// 跨笔记挂起行布局的池（P5a）：切走一篇笔记时输入框把布局挂进来，切回来
   /// 直接采用，只重排少数行。容量只留最近两篇，避免整篇 `TextPainter` 堆积。
   late final LineLayoutPool _layoutPool = LineLayoutPool();
+
+  /// 实时图片行的自绘内容。
+  ///
+  /// 只在配色变化（或换文档，见 [didUpdateWidget]）时重建：图片块手里握着
+  /// 解码后的 `ui.Image` 与监听器，重建一份等价的实例等于把每张图重新挂一遍。
+  LiveImageBlocks? _imageBlocks;
+  AppPalette? _imageBlocksPalette;
+
+  LiveImageBlocks _resolveImageBlocks(AppPalette palette) {
+    final LiveImageBlocks? cached = _imageBlocks;
+    if (cached != null && _imageBlocksPalette == palette) return cached;
+    cached?.dispose();
+    _imageBlocksPalette = palette;
+    return _imageBlocks = LiveImageBlocks(
+      palette: palette,
+      text: _currentText,
+      selection: _revealSelection,
+      imageProviderFor: widget.imageProviderFor,
+      onLineInvalidated: _invalidateImageLine,
+    );
+  }
+
+  /// 把图片行解码完成后的重排请求转给渲染对象。
+  void _invalidateImageLine(int lineStart) =>
+      _editable()?.invalidateImageLine(lineStart);
+
+  /// 表格与图片的组合解析器。
+  ///
+  /// 必须是稳定对象：每次 build 新建一个闭包，`lineLayoutKey` 就会变，每个
+  /// 按键都会把整篇重排。这里按两份块实例的身份缓存。
+  _LineBlockResolver? _lineBlocks;
+
+  _LineBlockResolver _resolveLineBlocks(
+    LiveTableBlocks tables,
+    LiveImageBlocks images,
+  ) {
+    final _LineBlockResolver? cached = _lineBlocks;
+    if (cached != null &&
+        identical(cached.tables, tables) &&
+        identical(cached.images, images)) {
+      return cached;
+    }
+    return _lineBlocks = _LineBlockResolver(tables, images);
+  }
 
   LiveTableBlocks _resolveTableBlocks(TextStyle style, AppPalette palette) {
     final LiveTableBlocks? cached = _tableBlocks;
@@ -1211,6 +1345,12 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     if (oldWidget.controller != widget.controller ||
         oldWidget.documentId != widget.documentId) {
       _bindFoldSession();
+      // 图片块按源码偏移缓存；换一份正文后旧偏移没有意义，图片流也要跟着
+      // 断开，等新正文里真正出现的图片重新解析。
+      _imageBlocks?.dispose();
+      _imageBlocks = null;
+      _imageBlocksPalette = null;
+      _lineBlocks = null;
     }
     if (oldWidget.scrollController != widget.scrollController) {
       oldWidget.scrollController.removeListener(_scheduleOverlayRefresh);
@@ -1313,6 +1453,40 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     if (target == null || !target.text.contains('[[')) return null;
 
     for (final ({int start, int end, String target}) link in style.wikilinksFor(
+      target,
+    )) {
+      for (final Rect local in field.selectionBands(
+        TextSelection(baseOffset: link.start, extentOffset: link.end),
+      )) {
+        if (local
+            .shift(field.localToGlobal(Offset.zero))
+            .contains(globalPosition)) {
+          return link;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// 指针下压着的外链，没有则为 `null`；判据与 [_wikilinkAt] 同源。
+  ({int start, int end, String url})? _linkAt(Offset globalPosition) {
+    final RenderLineEditable? field = _editable();
+    final LiveLineStyle? style = _lineStyle;
+    if (field == null || style == null) return null;
+
+    final int offset = field.positionAt(globalPosition).offset;
+    final LineDocumentLayout? layout = field.lineLayout;
+    if (layout == null) return null;
+    SourceLine? target;
+    for (final SourceLine line in layout.lines) {
+      if (offset >= line.start && offset <= line.end) {
+        target = line;
+        break;
+      }
+    }
+    if (target == null || !target.text.contains('](')) return null;
+
+    for (final ({int start, int end, String url}) link in style.linksFor(
       target,
     )) {
       for (final Rect local in field.selectionBands(
@@ -1530,6 +1704,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
           state: state,
           resolve: _resolveRange,
           onEditCell: _openCellEditor,
+          onPasteImage: _pasteImageFromClipboard,
         ),
       ),
     );
@@ -1563,8 +1738,8 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
         position.maxScrollExtent <= position.minScrollExtent) {
       return false;
     }
-    final RenderObject? render =
-        position.context.storageContext.findRenderObject();
+    final RenderObject? render = position.context.storageContext
+        .findRenderObject();
     if (render is! RenderBox || !render.hasSize) return false;
     final Rect viewport = render.localToGlobal(Offset.zero) & render.size;
     final ScrollbarThemeData theme = ScrollbarTheme.of(context);
@@ -1630,6 +1805,11 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       widget.controller.value = cell;
       widget.onChanged?.call(cell.text);
       widget.focusNode.requestFocus();
+      return KeyEventResult.handled;
+    }
+    // 拖拽改宽中途按 Esc：预览丢掉，源码不动。
+    if (key == LogicalKeyboardKey.escape && _imageResize != null) {
+      _cancelImageResize();
       return KeyEventResult.handled;
     }
     if (!v.selection.isValid ||
@@ -1738,6 +1918,45 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   void _setMarkerReveal(({int start, int paintStart})? value) {
     if (_markerReveal == value) return;
     setState(() => _markerReveal = value);
+  }
+
+  /// 折叠态里点在链接上（或它的留白上）时，光标落进链接源码，送去行末。
+  ///
+  /// 折叠态的 `[标签](地址)` 只画出标签：点击点换算回源码会落在标签末尾
+  /// （`[标签|](地址)`），或者落在整段源码的末尾——两种都是「链接文字右边」，
+  /// 而这一行是这一下才摊开的，那个偏移在摊开之后没有任何意义。用户点链接
+  /// 是想接着写这一行，所以光标去行末。
+  ///
+  /// [openLine] 是按下那一刻摊开的行首：同一行本来就是摊开的，用户点的就是
+  /// 源码，光标该留在原地，不能纠正。
+  void _parkCaretOutOfLink(int? openLine) {
+    if (widget.onLinkTap == null) return;
+    final TextEditingController c = widget.controller;
+    if (!c.text.contains('](')) return;
+    final LiveLineStyle? style = _lineStyle;
+    final List<SourceLine>? lines = _editable()?.lineLayout?.lines;
+    if (style == null || lines == null) return;
+    scheduleMicrotask(() {
+      if (!mounted) return;
+      final TextSelection sel = c.selection;
+      if (!sel.isValid || !sel.isCollapsed) return;
+      final String text = c.text;
+      final int at = sel.start;
+      for (final SourceLine line in lines) {
+        if (at < line.start || at > line.end) continue;
+        if (openLine != null && line.start == openLine) return;
+        for (final ({int start, int end, String url}) link in style.linksFor(
+          line,
+        )) {
+          if (at <= link.start || at > link.end) continue;
+          c.selection = TextSelection.collapsed(
+            offset: lineEndOf(text, link.start).clamp(0, text.length),
+          );
+          return;
+        }
+        return;
+      }
+    });
   }
 
   /// 把点标记时定下的光标还给输入框。
@@ -1913,20 +2132,46 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   List<TableRowChrome> _tableRows() =>
       _editable()?.tableRows() ?? const <TableRowChrome>[];
 
-  /// The grip or plus button under [globalPosition], with the row that painted
-  /// it.
+  /// The grip, plus button or column divider under [globalPosition], with the
+  /// row that painted it.
   ///
   /// The slop is the same one the paint uses, on purpose: a control is only
   /// *drawn* once the pointer is that close, so hit testing must not be any
-  /// stricter — otherwise an icon you can see would refuse the click.
+  /// stricter — otherwise an icon you can see would refuse the click. A column
+  /// divider is narrower than a grip: its band has to stay inside the cell's
+  /// padding instead of swallowing clicks aimed at the text.
   (TableRowChrome, TableChromeTarget)? _chromeAt(
     Offset globalPosition, {
     double slop = kTableChromeSlop,
   }) {
     for (final TableRowChrome row in _tableRows()) {
       for (final TableChromeTarget t in row.chromeTargets()) {
-        if (t.rect.inflate(slop).contains(globalPosition)) return (row, t);
+        final double reach = t.kind == TableChromeKind.resizeColumn
+            ? kTableResizeHitSlop
+            : slop;
+        if (t.rect.inflate(reach).contains(globalPosition)) return (row, t);
       }
+    }
+    return null;
+  }
+
+  /// The image resize handle under [globalPosition], with the line it belongs to.
+  ///
+  /// 图片块由渲染层自绘，手柄只是块上的一个命中区；原点每帧由 `imageBlocks()`
+  /// 写成全局坐标，所以这里和指针事件在同一个坐标系里。
+  ({int lineStart, double startWidth, double startDx, double maxWidth})?
+  _imageHandleAt(Offset globalPosition) {
+    final RenderLineEditable? field = _editable();
+    if (field == null) return null;
+    for (final ImageBlockChrome block in field.imageBlocks()) {
+      final ImageResizeHandle? handle = block.chromeResizeHandle();
+      if (handle == null || !handle.rect.contains(globalPosition)) continue;
+      return (
+        lineStart: block.imageSourceStart,
+        startWidth: block.chromeImageBounds().width,
+        startDx: globalPosition.dx,
+        maxWidth: field.lineLayout?.width ?? block.chromeImageBounds().width,
+      );
     }
     return null;
   }
@@ -1956,12 +2201,12 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
         }
         final List<TableCell> model = block.bodyRows[row.chromeRowIndex].cells;
         if (i >= model.length) continue;
-        return (
-          block: block,
-          row: row.chromeRowIndex,
-          column: i,
-          cell: model[i],
+        final ({int row, int column, TableCell cell}) at = _mergeAnchorOf(
+          block,
+          row.chromeRowIndex,
+          i,
         );
+        return (block: block, row: at.row, column: at.column, cell: at.cell);
       }
     }
 
@@ -1986,7 +2231,31 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     final List<TableCell> rows = block.bodyRows[row].cells;
     final int column = block.columnAt(row, offset);
     if (column < 0 || column >= rows.length) return null;
-    return (block: block, row: row, column: column, cell: rows[column]);
+    final ({int row, int column, TableCell cell}) at = _mergeAnchorOf(
+      block,
+      row,
+      column,
+    );
+    return (block: block, row: at.row, column: at.column, cell: at.cell);
+  }
+
+  /// A merge is one cell to the pointer: clicking any part of it — including a
+  /// covered cell in a lower row — edits the anchor.
+  ({int row, int column, TableCell cell}) _mergeAnchorOf(
+    TableBlock block,
+    int row,
+    int column,
+  ) {
+    final List<TableRow> body = block.bodyRows;
+    for (final TableMerge m in tableMergesOf(block)) {
+      if (!m.covers(row, column)) continue;
+      final List<TableCell> cells = body[m.row].cells;
+      if (m.column < cells.length) {
+        return (row: m.row, column: m.column, cell: cells[m.column]);
+      }
+      break;
+    }
+    return (row: row, column: column, cell: body[row].cells[column]);
   }
 
   /// A caret read off the invisible skeleton, constrained to the cell the
@@ -2026,6 +2295,8 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     if (column) {
       final List<Rect> cells = grabbed.chromeCells();
       for (int i = 0; i < cells.length; i++) {
+        // A covered cell has no width; the pointer can never be "inside" it.
+        if (cells[i].width <= 0) continue;
         if (globalPosition.dx < cells[i].right) return i;
       }
       return cells.isEmpty ? 0 : cells.length - 1;
@@ -2050,9 +2321,32 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// click handling rewrites the selection before the button comes up.
   TableRange? _rangeBeforeChromeTap;
 
+  /// The column divider being dragged, with everything captured on press —
+  /// every column's visible text width, the table's room and the scale between
+  /// rendering and design pixels. All widths are rendering pixels.
+  _Resize? _resize;
+
+  /// 正在被拖动的图片右下角手柄。拖动期间只改显示宽度，松手才写一次源码。
+  ({int lineStart, double startWidth, double startDx, double maxWidth})?
+  _imageResize;
+
+  /// The resize divider under the pointer, as `<table>:<row>:<column>`.
+  ///
+  /// Only hover feedback needs it: crossing a row boundary keeps the cursor on
+  /// `resizeColumn`, so nothing else would repaint the line into the new row.
+  String? _hoverResizeKey;
+
+  /// The grip strip (or grip button) under the pointer, as a repaint key.
+  ///
+  /// The strip makes every grip of one side visible and lights the button under
+  /// the pointer; neither changes the mouse cursor once it is a hand, so moving
+  /// along the strip would otherwise wait for an unrelated frame to repaint.
+  String? _chromeHoverKey;
+
   /// What the pointer looks like over the editor: the I-beam wherever prose can
   /// be typed — the field stops at its last line, but the space below it is part
-  /// of the writing surface too — the plain arrow on a grip, `click` on a `+`.
+  /// of the writing surface too — the open hand on a grip (it is a button you
+  /// drag), `click` on a `+`.
   ///
   /// A plain `MouseCursor`, not a `MouseRegion.cursor` computed inline: the
   /// region has to be rebuilt for the cursor to change, and rebuilding the
@@ -2064,8 +2358,13 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     Offset? position, {
     TextRange? tag,
     bool onWikilink = false,
+    bool onLink = false,
   }) {
     if (position == null) return SystemMouseCursors.text;
+    // 图片手柄是拖拽改宽，不是落光标：按下也不会移动光标。
+    if (_imageHandleAt(position) != null) {
+      return SystemMouseCursors.resizeUpLeftDownRight;
+    }
     // 折叠箭头是一次点击，不是落光标：悬停时先于页边/缩进的箭头光标判定。
     if (_foldButtonAt(position, visibleOnly: true) != null) {
       return SystemMouseCursors.click;
@@ -2074,16 +2373,19 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     if (hit != null) {
       return switch (hit.$2.kind) {
         TableChromeKind.rowHandle ||
-        TableChromeKind.columnHandle => SystemMouseCursors.basic,
+        TableChromeKind.columnHandle => SystemMouseCursors.grab,
         TableChromeKind.addRow ||
         TableChromeKind.addColumn => SystemMouseCursors.click,
+        TableChromeKind.resizeColumn => SystemMouseCursors.resizeColumn,
       };
     }
     // 复选框是一次勾选而不是一段文字：悬停时给普通箭头，别让人以为能打字。
     if (_checkboxAt(position) != null) return SystemMouseCursors.basic;
-    // 标签胶囊和双链都是一次跳转而不是一段文字：手指光标是它们唯一的静态提示。
+    // 标签胶囊、双链和外链都是一次跳转而不是一段文字：手指光标是它们唯一的
+    // 静态提示。
     if ((tag != null && widget.onTagTap != null) ||
-        (onWikilink && widget.onWikilinkTap != null)) {
+        (onWikilink && widget.onWikilinkTap != null) ||
+        (onLink && widget.onLinkTap != null)) {
       return SystemMouseCursors.click;
     }
     // 正文列两侧的页边和列表标记前的缩进都不是可编辑的字形：那里给箭头，
@@ -2113,36 +2415,105 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       // The title field owns the pointer there; leaving the body's hover state
       // behind would keep a fold arrow or a tag lit over the title.
       tablePointerPosition.value = null;
+      _clearResizeHover();
+      _clearChromeHover();
       _hoverWikilink = null;
       _setHoverTag(null);
       _setFoldHover();
       return;
     }
     tablePointerPosition.value = event.position;
-    if (_grabbedRow != null) return; // a drag owns the cursor until release
+    _refreshResizeHover(event.position);
+    _refreshChromeHover(event.position);
+    // A drag owns the cursor (and the preview) until release.
+    if (_grabbedRow != null || _resize != null || _imageResize != null) return;
     // 一次命中同时决定三件事：光标形状、标签的悬停配色、双链的按下兜底。
     final TextRange? tag = _tagAt(event.position);
     final ({int start, int end, String target})? wikilink = tag == null
         ? _wikilinkAt(event.position)
         : null;
     _hoverWikilink = wikilink;
+    final ({int start, int end, String url})? link =
+        tag == null && wikilink == null ? _linkAt(event.position) : null;
+    _hoverLink = link;
     // 折叠箭头：按在按钮上才算按钮，落在这条列表项的行里则让箭头显形。
     final ListFoldHandle? foldButton = _foldButtonAt(event.position);
     final ListFoldHandle? foldRow = foldButton ?? _foldRowAt(event.position);
     _setFoldHover(row: foldRow?.lineStart, button: foldButton?.lineStart);
     _setCursor(
-      _cursorAt(event.position, tag: tag, onWikilink: wikilink != null),
+      _cursorAt(
+        event.position,
+        tag: tag,
+        onWikilink: wikilink != null,
+        onLink: link != null,
+      ),
     );
     _setHoverTag(tag);
   }
 
   void _onPointerExit(PointerExitEvent event) {
-    if (_grabbedRow != null) return;
+    if (_grabbedRow != null || _resize != null || _imageResize != null) return;
     tablePointerPosition.value = null;
+    _clearResizeHover();
+    _clearChromeHover();
     _hoverWikilink = null;
+    _hoverLink = null;
     _setCursor(SystemMouseCursors.text);
     _setHoverTag(null);
     _setFoldHover();
+  }
+
+  /// Repaints when the divider under the pointer moves to another row — the
+  /// hover line is per row, but the cursor stays `resizeColumn`.
+  void _refreshResizeHover(Offset position) {
+    final (TableRowChrome, TableChromeTarget)? hit = _chromeAt(position);
+    final String? key =
+        hit != null && hit.$2.kind == TableChromeKind.resizeColumn
+        ? '${hit.$1.chromeTableId}:${hit.$1.chromeRowIndex}:${hit.$2.index}'
+        : null;
+    if (key == _hoverResizeKey) return;
+    _hoverResizeKey = key;
+    _editable()?.markNeedsPaint();
+  }
+
+  void _clearResizeHover() {
+    if (_hoverResizeKey == null) return;
+    _hoverResizeKey = null;
+    _editable()?.markNeedsPaint();
+  }
+
+  /// Repaints when the pointer enters / leaves a grip strip, moves from one
+  /// grip button to the next, or slides along the strip to another row /
+  /// column — the visible grip follows the pointer, one at a time. Keyed so a
+  /// hover inside the same button is free.
+  void _refreshChromeHover(Offset position) {
+    String? key;
+    for (final TableRowChrome row in _tableRows()) {
+      for (final TableChromeTarget target in row.chromeTargets()) {
+        if (target.rect.inflate(2).contains(position)) {
+          key = '${row.chromeTableId}:${target.kind.name}:${target.index}';
+          break;
+        }
+      }
+      if (key != null) break;
+      for (final TableChromeStrip strip in TableChromeStrip.values) {
+        final int? index = row.chromeStripIndexAt(position, strip);
+        if (index != null) {
+          key = '${row.chromeTableId}:${strip.name}:$index';
+          break;
+        }
+      }
+      if (key != null) break;
+    }
+    if (key == _chromeHoverKey) return;
+    _chromeHoverKey = key;
+    _editable()?.markNeedsPaint();
+  }
+
+  void _clearChromeHover() {
+    if (_chromeHoverKey == null) return;
+    _chromeHoverKey = null;
+    _editable()?.markNeedsPaint();
   }
 
   /// Runs whatever the chrome control meant. Returns whether an edit landed.
@@ -2167,6 +2538,9 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
         moved
             ? moveTableColumn(v, row.chromeSourceStart, target.index, _dropAt)
             : null,
+      // Committed by [_finishResize] instead: it needs the widths captured on
+      // press, not the generic chrome path.
+      TableChromeKind.resizeColumn => null,
     };
     if (next == null) return false;
     widget.controller.value = next;
@@ -2497,6 +2871,27 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       return;
     }
     final bool secondary = event.buttons & kSecondaryMouseButton != 0;
+    // 图片手柄在选区拖动之前判定：按下只开始改宽，不移动光标、不进入选字。
+    // 命中的是 `_ChromeShield`，所以焦点得自己补。
+    if (!secondary) {
+      final ({int lineStart, double startWidth, double startDx, double maxWidth})?
+      handle = _imageHandleAt(event.position);
+      if (handle != null) {
+        _imageResize = handle;
+        _rangeBeforeChromeTap = null;
+        _downPosition = event.position;
+        _gestureMoved = false;
+        widget.focusNode.requestFocus();
+        _setCursor(SystemMouseCursors.resizeUpLeftDownRight);
+        if (widget.focusNode.hasFocus) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || widget.focusNode.hasFocus) return;
+            widget.focusNode.requestFocus();
+          });
+        }
+        return;
+      }
+    }
     // 标签胶囊只在按下这一刻还铺着底片：输入框马上会把光标落进标签、退回
     // 源码，等到抬起再命中就找不到它了。悬停命中的区间是同一块胶囊的兜底，
     // 防止按下时输入框已经把光标挪进去。
@@ -2508,8 +2903,27 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
         ? null
         : (_wikilinkAt(event.position) ?? _hoverWikilink);
     final TextSelection caret = widget.controller.selection;
+    // 按下这一刻摊开的就是光标所在行（见 [_openLineAtDown]）。
+    _openLineAtDown = caret.isValid
+        ? lineStartOf(widget.controller.text, caret.start)
+        : null;
+    final ({int start, int end, String url})? hitLink =
+        (secondary ||
+            widget.onLinkTap == null ||
+            !_jumpModifier ||
+            _tagBeforeTap != null ||
+            _wikilinkBeforeTap != null)
+        ? null
+        : (_linkAt(event.position) ?? _hoverLink);
+    // 单击只落光标：链接是正文的一部分，点它十次有九次是想改字。跳转留给
+    // Ctrl/⌘ + 单击（[_jumpModifier]），否则每点一下弹一次浏览器，链接就
+    // 没法编辑了。
+    _linkBeforeTap = hitLink;
     _caretBeforeTagTap = _tagBeforeTap != null && caret.isValid ? caret : null;
     _caretBeforeWikilinkTap = _wikilinkBeforeTap != null && caret.isValid
+        ? caret
+        : null;
+    _caretBeforeLinkTap = _linkBeforeTap != null && caret.isValid
         ? caret
         : null;
     if (!secondary) {
@@ -2533,6 +2947,34 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
         // ours to do — otherwise a grip or `+` clicked from an unfocused
         // editor would act without giving the keyboard anywhere to go.
         widget.focusNode.requestFocus();
+        if (hit.$2.kind == TableChromeKind.resizeColumn) {
+          // 列宽拖动不动选区：按下只记下拖动前的几何，松手才写文档。
+          final TableRowChrome row = hit.$1;
+          final Rect bounds = row.chromeBounds();
+          _resize = (
+            tableId: row.chromeTableId,
+            boundary: hit.$2.index,
+            startX: event.position.dx,
+            boundaryX: hit.$2.rect.left - bounds.left,
+            room: row.chromeColumnRoom(),
+            scale: row.chromeWidthScale(),
+            widths: row.chromeColumnWidths(),
+          );
+          _rangeBeforeChromeTap = null;
+          _downPosition = event.position;
+          _gestureMoved = false;
+          _setCursor(_cursorAt(event.position));
+          // The press lands on the shield, not the field's tap region, so the
+          // field's tap-outside handler may unfocus it. Ctrl+Z right after a
+          // resize has to reach the editor's own history.
+          if (widget.focusNode.hasFocus) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted || widget.focusNode.hasFocus) return;
+              widget.focusNode.requestFocus();
+            });
+          }
+          return;
+        }
         _grabbedRow = hit.$1;
         _grabbed = hit.$2;
         _dropAt = hit.$2.index < 0 ? 0 : hit.$2.index;
@@ -2727,6 +3169,14 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   }
 
   void _onPointerMove(PointerMoveEvent event) {
+    if (_resize != null) {
+      _dragResize(event.position);
+      return;
+    }
+    if (_imageResize != null) {
+      _dragImageResize(event.position);
+      return;
+    }
     final TableRowChrome? grabbed = _grabbedRow;
     final TableChromeTarget? target = _grabbed;
     if (grabbed != null && target != null) {
@@ -2741,6 +3191,9 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       if (!_gestureMoved) return;
       _dropAt = _dropIndex(grabbed, column, event.position);
       tableDragPreview.value = _previewFor(grabbed, target);
+      // The preview is a paint-only state; a pointer move never rebuilds the
+      // editor, so without this it would only appear on the next stray frame.
+      _editable()?.markNeedsPaint();
       return;
     }
     final int? outside = _outsideAnchor;
@@ -2783,6 +3236,176 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     );
   }
 
+  /// One frame of a divider drag: compute the pair, move the ghost line, and
+  /// repaint. No document write and no layout while the button is down — the
+  /// visible widths are captured on press and the edit happens once on release.
+  void _dragResize(Offset position) {
+    final _Resize resize = _resize!;
+    final double dx = position.dx - resize.startX;
+    if (!_gestureMoved) {
+      if (dx.abs() < kTableResizeStartSlop) return;
+      _gestureMoved = true;
+    }
+    final double left = _resizeTo(resize, dx).left;
+    tableResizePreview.value = TableResizePreview(
+      tableId: resize.tableId,
+      localX: resize.boundaryX + left - resize.widths[resize.boundary],
+    );
+    _editable()?.markNeedsPaint();
+  }
+
+  /// 一次拖动在水平位移 [dx] 之后的新列宽（渲染像素）。
+  ///
+  /// [left] 是线左边那一列的宽度；[right] 是右边那一列的宽度，拖**最右外沿**
+  /// 时为 `null`——那条线右边没有列可以让位，只能长到整张表铺满正文为止。
+  ({double left, double? right}) _resizeTo(_Resize resize, double dx) {
+    final int b = resize.boundary;
+    final double left = resize.widths[b];
+    final double sum = resize.widths.fold<double>(
+      0,
+      (double a, double w) => a + w,
+    );
+    if (b + 1 >= resize.widths.length) {
+      return (
+        left: resizeEdgeColumn(
+          left: left,
+          // 其它列都不动时，这一列还能长到多少。
+          ceiling: resize.room - (sum - left),
+          dx: dx,
+        ),
+        right: null,
+      );
+    }
+    final (double nextLeft, double nextRight) = resizeColumnPair(
+      left: left,
+      right: resize.widths[b + 1],
+      dx: dx,
+      room: resize.room,
+      others: sum - left - resize.widths[b + 1],
+    );
+    return (left: nextLeft, right: nextRight);
+  }
+
+  /// Ends a divider drag: one document edit, or none when the divider never
+  /// actually moved.
+  void _finishResize(Offset position) {
+    final _Resize resize = _resize!;
+    final bool moved = _gestureMoved;
+    _resize = null;
+    tableResizePreview.value = null;
+    tablePointerPosition.value = position;
+    _setCursor(_cursorAt(position));
+    _downPosition = null;
+    _gestureMoved = false;
+    _rangeBeforeChromeTap = null;
+    // The ghost line is gone even when no edit lands, and the cursor does not
+    // change (the pointer is still on the divider), so nothing else would
+    // repaint it away.
+    _editable()?.markNeedsPaint();
+    if (!moved) return;
+
+    final ({double left, double? right}) next = _resizeTo(
+      resize,
+      position.dx - resize.startX,
+    );
+    if ((next.left - resize.widths[resize.boundary]).abs() < 0.5) return;
+    final List<double> widths = List<double>.of(resize.widths);
+    widths[resize.boundary] = next.left;
+    final double? right = next.right;
+    if (right != null) widths[resize.boundary + 1] = right;
+    final TextEditingValue? edited = resizeTableColumns(
+      widget.controller.value,
+      tableId: resize.tableId,
+      widths: <int>[
+        for (final double w in widths) math.max(1, (w / resize.scale).round()),
+      ],
+    );
+    if (edited == null) return;
+    widget.controller.value = edited;
+    widget.onChanged?.call(edited.text);
+  }
+
+  /// One frame of an image resize: the preview width changes, the document does
+  /// not. Writing the controller on every move would stack up dozens of undo
+  /// steps and make the caret jump inside a line whose length keeps changing.
+  void _dragImageResize(Offset position) {
+    final resize = _imageResize!;
+    final double ceiling = math.max(96.0, resize.maxWidth);
+    final double width = (resize.startWidth + position.dx - resize.startDx)
+        .clamp(96.0, ceiling);
+    if ((width - resize.startWidth).abs() >= 0.5) _gestureMoved = true;
+    _imageBlocks?.setPreviewWidth(resize.lineStart, width);
+    _editable()?.invalidateImageLine(resize.lineStart);
+  }
+
+  /// Ends an image resize: drop the preview, then write the width once.
+  ///
+  /// The line is regenerated from its own markup (`![…]` stays Markdown when it
+  /// had no width, an `<img … width>` replaces it when it did), so the drag
+  /// commits to the same syntax the line already uses.
+  void _finishImageResize(Offset position) {
+    final resize = _imageResize!;
+    final double startWidth = resize.startWidth;
+    final double? preview = _imageBlocks?.previewWidthOf(resize.lineStart);
+    _imageResize = null;
+    _downPosition = null;
+    _gestureMoved = false;
+    _imageBlocks?.setPreviewWidth(resize.lineStart, null);
+    _editable()?.invalidateImageLine(resize.lineStart);
+    _setCursor(_cursorAt(position));
+    if (preview == null || (preview - startWidth).abs() < 0.5) return;
+
+    _history.breakMerge();
+    _applyEdit((TextEditingValue current) {
+      final String text = current.text;
+      if (resize.lineStart < 0 || resize.lineStart > text.length) return current;
+      final int end = lineEndOf(text, resize.lineStart);
+      final String oldLine = text.substring(resize.lineStart, end);
+      final ImageMarkup? markup = ImageMarkup.parseLine(oldLine);
+      if (markup == null) return current;
+      final String line = markup.toMarkdown(width: preview.roundToDouble());
+      if (line == oldLine) return current;
+
+      final int delta = line.length - oldLine.length;
+      int shift(int offset) => offset >= end ? offset + delta : offset;
+      final String next = text.replaceRange(resize.lineStart, end, line);
+      final TextSelection sel = current.selection;
+      final TextSelection selection;
+      if (!sel.isValid) {
+        selection = sel;
+      } else if (sel.isCollapsed) {
+        selection = TextSelection.collapsed(
+          offset: shift(sel.baseOffset).clamp(0, next.length),
+          affinity: sel.affinity,
+        );
+      } else {
+        selection = TextSelection(
+          baseOffset: shift(sel.baseOffset).clamp(0, next.length),
+          extentOffset: shift(sel.extentOffset).clamp(0, next.length),
+          affinity: sel.affinity,
+          isDirectional: sel.isDirectional,
+        );
+      }
+      return TextEditingValue(
+        text: next,
+        selection: selection,
+        composing: TextRange.empty,
+      );
+    });
+  }
+
+  /// Esc or a cancelled gesture: throw the preview away, write nothing.
+  void _cancelImageResize() {
+    final ({int lineStart, double startWidth, double startDx, double maxWidth})?
+    resize = _imageResize;
+    if (resize == null) return;
+    _imageResize = null;
+    _downPosition = null;
+    _gestureMoved = false;
+    _imageBlocks?.setPreviewWidth(resize.lineStart, null);
+    _editable()?.invalidateImageLine(resize.lineStart);
+  }
+
   void _onPointerUp(PointerUpEvent event) {
     _dragAnchor = null;
     // The gesture was the scrollbar's from the first pixel; the caret and the
@@ -2810,6 +3433,12 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     final TextSelection? tappedWikilinkCaret = _caretBeforeWikilinkTap;
     _wikilinkBeforeTap = null;
     _caretBeforeWikilinkTap = null;
+    final ({int start, int end, String url})? tappedLink = _linkBeforeTap;
+    final TextSelection? tappedLinkCaret = _caretBeforeLinkTap;
+    _linkBeforeTap = null;
+    _caretBeforeLinkTap = null;
+    final int? openLine = _openLineAtDown;
+    _openLineAtDown = null;
     // 按下时命中的列表标记：只有“按下和抬手都在原地”的那一次点击才摊开它。
     final ({
       int start,
@@ -2820,6 +3449,14 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     })?
     pendingMarker = _pendingMarker;
     _pendingMarker = null;
+    if (_resize != null) {
+      _finishResize(event.position);
+      return;
+    }
+    if (_imageResize != null) {
+      _finishImageResize(event.position);
+      return;
+    }
     final TableRowChrome? grabbed = _grabbedRow;
     final TableChromeTarget? target = _grabbed;
     if (grabbed != null && target != null) {
@@ -2912,6 +3549,18 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       widget.onWikilinkTap?.call(tappedWikilink.target);
       return;
     }
+    // 外链：Ctrl/⌘ + 单击才跳转。光标先归还一拍——跳转不是一次落点，不该
+    // 顺手把光标挪到链接里。
+    if (tappedLink != null && !_gestureMoved) {
+      _downPosition = null;
+      if (tappedLinkCaret != null) {
+        scheduleMicrotask(() {
+          if (mounted) widget.controller.selection = tappedLinkCaret;
+        });
+      }
+      widget.onLinkTap?.call(tappedLink.url);
+      return;
+    }
     final int? at = _checkboxAt(event.position);
     if (at == null) {
       // 抬手还在标记上：这才是“点了标记”，现在把源码摊进正文。
@@ -2924,6 +3573,9 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       // Whatever a fast click-talk let the platform select on the way *up*.
       final TextEditingController c = widget.controller;
       if (c is MarkdownSourceController) _clickCaret(c, event.position);
+      // 点在链接胶囊的留白上时命中不到链接，光标会停在「文字右边」——落进
+      // 链接源码里的一律改去行末（理由见 [_parkCaretOutOfLink]）。
+      _parkCaretOutOfLink(openLine);
       _restoreMarkerCaret(c);
       _downPosition = null;
       return;
@@ -2969,7 +3621,19 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     _caretBeforeTagTap = null;
     _wikilinkBeforeTap = null;
     _caretBeforeWikilinkTap = null;
-    tableDragPreview.value = null;
+    _linkBeforeTap = null;
+    _caretBeforeLinkTap = null;
+    _openLineAtDown = null;
+    if (_resize != null) {
+      _resize = null;
+      tableResizePreview.value = null;
+      _editable()?.markNeedsPaint();
+    }
+    _cancelImageResize();
+    if (tableDragPreview.value != null) {
+      tableDragPreview.value = null;
+      _editable()?.markNeedsPaint();
+    }
     _setCursor(_cursorAt(event.position));
     _endGesture();
     _downPosition = null;
@@ -3184,10 +3848,17 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
   /// Ctrl+V: read the clipboard and insert it through [pasteValue], so the
   /// table padding rule reaches the keyboard exactly as it reaches the menu.
+  ///
+  /// Text comes first: a clipboard holding both text and a bitmap still pastes
+  /// the text. Only an empty text clipboard falls through to the image, which
+  /// is how pasting a screenshot works at all.
   Future<void> _pasteFromClipboard() async {
     final ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
     final String? text = data?.text;
-    if (text == null || text.isEmpty) return;
+    if (text == null || text.isEmpty) {
+      await _pasteImageFromClipboard();
+      return;
+    }
     final String? refusal = pasteGridRefusal(text);
     if (refusal != null) {
       if (mounted) {
@@ -3204,6 +3875,215 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     widget.onChanged?.call(next.text);
   }
 
+  /// Whether an image cannot be inserted at [value]'s caret.
+  ///
+  /// A table row and a fenced code block are both source structures where a
+  /// bare image line would not merely look wrong — it would break the block
+  /// apart. The caret decides, exactly as it does for every marker reveal.
+  bool _imagePasteRefused(TextEditingValue value) {
+    final TextSelection selection = value.selection;
+    final int caret = (selection.isValid ? selection.start : value.text.length)
+        .clamp(0, value.text.length);
+    if (isInsideFence(value.text, caret)) return true;
+    final String line = value.text.substring(
+      lineStartOf(value.text, caret),
+      lineEndOf(value.text, caret),
+    );
+    return isTableLine(line);
+  }
+
+  /// 拖进来的东西：一条网页链接写成 `[标题](地址)`，其它文字按纯文本落到落点。
+  ///
+  /// 链接优先（判定在 [parseDroppedLink] 里），认不出链接才落到文字——拖一段
+  /// 网页上选中的文字过来，里面顺手带了个网址，那也是这段文字的一部分。
+  /// 文字走 [pasteValue]，和 Ctrl+V 是同一条路：表格里粘表格的规矩、单元格里
+  /// 换行变 `<br>`，拖进来也一模一样。
+  Future<void> _onDrop(PerformDropEvent event) async {
+    if (widget.readOnly) return;
+    final ({DroppedLink? link, String? text})? dropped = await _readDropped(
+      event,
+    );
+    if (dropped == null || !mounted) return;
+    final RenderLineEditable? field = _editable();
+    final TextEditingValue current = widget.controller.value;
+    final int raw = field == null
+        ? widget.controller.selection.start
+        : field.positionAt(event.position.global).offset;
+    final int at = (raw < 0 ? current.text.length : raw).clamp(
+      0,
+      current.text.length,
+    );
+    // 拖放自成一步：不能让 Ctrl+Z 把刚才打的字一起撤掉。
+    _history.breakMerge();
+
+    final DroppedLink? link = dropped.link;
+    if (link != null) {
+      final String markdown = markdownLinkFor(link);
+      _applyEdit((TextEditingValue v) => insertDroppedLink(v, at, markdown));
+      return;
+    }
+
+    final String text = dropped.text!;
+    final String? refusal = pasteGridRefusal(text);
+    if (refusal != null) {
+      if (mounted) showSplitNotice(context, refusal, kind: NoticeKind.error);
+      return;
+    }
+    // 落点是拖放的位置，不是当前光标；先把它当成一次「在这里粘贴」。
+    _applyEdit(
+      (TextEditingValue v) => pasteValue(
+        v.copyWith(
+          selection: TextSelection.collapsed(
+            offset: at.clamp(0, v.text.length),
+          ),
+        ),
+        text,
+      ),
+    );
+  }
+
+  /// 读一次拖放的载荷，决定它是链接还是文字；两样都读不出时返回 `null`。
+  ///
+  /// 三种载荷都要试：系统 URL（浏览器最准的那份）、浏览器附带的
+  /// `<a href=…>标题</a>`（标题从这里来）、纯文本。某个格式不支持时读出来
+  /// 就是 `null`，缺一项不影响其余两项。文件拖放（`file://`）不当作文字。
+  Future<({DroppedLink? link, String? text})?> _readDropped(
+    PerformDropEvent event,
+  ) async {
+    for (final DropItem item in event.session.items) {
+      // `DataReader` 只在 super_clipboard 里导出，这里按推断拿，不为了一个
+      // 类型名多引一整个包。
+      final reader = item.dataReader;
+      if (reader == null) continue;
+
+      // 拖放期间不能 await 平台通道，所以读取是回调式的（`getValue`）；
+      // 包一层 Completer，调用处才好按顺序读三种格式。
+      Future<T?> read<T extends Object>(ValueFormat<T> format) {
+        if (!reader.canProvide(format)) return Future<T?>.value();
+        final Completer<T?> done = Completer<T?>();
+        reader.getValue<T>(
+          format,
+          (T? value) {
+            if (!done.isCompleted) done.complete(value);
+          },
+          onError: (Object error) {
+            if (!done.isCompleted) done.complete(null);
+          },
+        );
+        return done.future;
+      }
+
+      final bool file = reader.canProvide(Formats.fileUri);
+      final NamedUri? uri = await read<NamedUri>(Formats.uri);
+      final String? html = await read<String>(Formats.htmlText);
+      final String? text = await read<String>(Formats.plainText);
+      // 拖进来认错标题时，这里能直接看到浏览器到底给了什么（仅 debug 构建）。
+      // HTML 先还原成能读的样子再打：原始载荷是「UTF-8 被当 UTF-16 解」的
+      // 满屏乱码，打出来只会吓人，正文其实是对的。
+      assert(() {
+        debugPrint(
+          'NRS drop: file=$file uri=$uri\n'
+          'NRS drop: html=${describeDroppedHtml(html ?? '')}\n'
+          'NRS drop: text=${clipForLog(text ?? '')}',
+        );
+        return true;
+      }());
+      final DroppedLink? link = parseDroppedLink(
+        uri: uri?.uri.toString(),
+        name: uri?.name,
+        html: html,
+        plainText: text,
+      );
+      if (link != null) return (link: link, text: null);
+      final String? plain = parseDroppedText(
+        html: html,
+        plainText: text,
+        file: file,
+      );
+      if (plain != null) return (link: null, text: plain);
+    }
+    return null;
+  }
+
+  /// Saves the clipboard's bitmap into the note's `assets/` and inserts its
+  /// reference as a paragraph of its own. Returns whether anything was written.
+  ///
+  /// Runs after the text paste has found nothing. Silence is deliberate for the
+  /// common "plain text clipboard, nothing to paste" case: the image channel is
+  /// tried on every such Ctrl+V, and a notice there would fire constantly.
+  Future<bool> _pasteImageFromClipboard() async {
+    final Future<String?> Function(Uint8List)? save = widget.savePastedImage;
+    if (widget.readOnly || save == null) return false;
+
+    if (_imagePasteRefused(widget.controller.value)) {
+      if (mounted) {
+        showSplitNotice(
+          context,
+          '表格或代码块里不能粘贴图片',
+          kind: NoticeKind.error,
+        );
+      }
+      return false;
+    }
+
+    // Switching notes while the clipboard and the disk are being read would
+    // otherwise drop the image into the note that happens to be open next.
+    final String documentId = widget.documentId ?? '';
+    final Uint8List? png = await ClipboardImage.readPng();
+    if (png == null || !mounted || widget.documentId != documentId) {
+      return false;
+    }
+
+    // The caret may have moved into a table or a fence while we waited.
+    if (_imagePasteRefused(widget.controller.value)) {
+      showSplitNotice(
+        context,
+        '表格或代码块里不能粘贴图片',
+        kind: NoticeKind.error,
+      );
+      return false;
+    }
+
+    String? relative;
+    try {
+      relative = await save(png);
+    } catch (_) {
+      if (mounted) {
+        showSplitNotice(context, '图片保存失败', kind: NoticeKind.error);
+      }
+      return false;
+    }
+    if (!mounted || widget.documentId != documentId) return false;
+    if (relative == null) {
+      showSplitNotice(context, '当前存储不支持保存图片', kind: NoticeKind.error);
+      return false;
+    }
+
+    final String imageLine = ImageMarkup(source: relative, alt: '图片')
+        .toMarkdown();
+    // A paste is a step of its own: the image must not be folded into the
+    // typing block that happened to precede it, or one Ctrl+Z erases both.
+    _history.breakMerge();
+    _applyEdit((TextEditingValue current) {
+      final TextSelection selection = current.selection;
+      final int at = (selection.isValid ? selection.start : current.text.length)
+          .clamp(0, current.text.length);
+      final int end = (selection.isValid ? selection.end : current.text.length)
+          .clamp(at, current.text.length);
+      final ({String text, int caret}) inserted = insertImageBlock(
+        text: current.text,
+        at: at,
+        end: end,
+        imageLine: imageLine,
+      );
+      return TextEditingValue(
+        text: inserted.text,
+        selection: TextSelection.collapsed(offset: inserted.caret),
+      );
+    });
+    return true;
+  }
+
   @override
   void dispose() {
     widget.controller.removeListener(_scheduleOverlayRefresh);
@@ -3215,12 +4095,15 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     _cellText?.dispose();
     _cellFocus?.dispose();
     _layoutPool.dispose();
+    _imageBlocks?.dispose();
+    _imageBlocks = null;
     // The click guard deliberately outlives the pointer — the platform's word
     // selection lands a moment *after* the button comes up — but it must not
     // outlive the editor.
     final TextEditingController c = widget.controller;
     if (c is MarkdownSourceController) c.disarmClickGuard();
     if (tablePointerPosition.value != null) tablePointerPosition.value = null;
+    tableResizePreview.value = null;
     widget.controller.removeListener(_recordHistory);
     super.dispose();
   }
@@ -3235,13 +4118,20 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     // 跟着逐帧的配色走等于在 180ms 里把整篇正文重排十几遍——切换主题的卡顿
     // 就来自这里。正文取设置里已经落定的目标配色，只换一次布局；外壳的补间
     // 不受影响。没有设置控制器时（组件测试直接挂编辑器）照旧用主题里的配色。
-    final SettingsController? settings =
-        Provider.of<SettingsController?>(context, listen: false);
+    final SettingsController? settings = Provider.of<SettingsController?>(
+      context,
+      listen: false,
+    );
     final AppPalette p = settings?.paletteFor(themed.brightness) ?? themed;
     final TextStyle style = editorProseStyle(p, widget.fontSize);
     // 按行排版：每行按源码种类取样式与行高，列表标记由渲染层画。
     final LiveLineStyle lineStyle = _resolveLineStyle(style, p);
     final LiveTableBlocks tableBlocks = _resolveTableBlocks(style, p);
+    final LiveImageBlocks imageBlocks = _resolveImageBlocks(p);
+    final _LineBlockResolver lineBlocks = _resolveLineBlocks(
+      tableBlocks,
+      imageBlocks,
+    );
     // The field's own region is deeper than the editor's, so its cursor wins
     // wherever it covers the chrome — which is why a column grip used to show
     // the I-beam. Hand it the editor's cursor explicitly.
@@ -3447,7 +4337,8 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
           blocks: (Offset position) =>
               !_overHeader(position) &&
               (_chromeAt(position) != null ||
-                  _foldButtonAt(position, visibleOnly: true) != null),
+                  _foldButtonAt(position, visibleOnly: true) != null ||
+                  _imageHandleAt(position) != null),
           child: SingleChildScrollView(
             controller: widget.scrollController,
             padding: widget.padding,
@@ -3552,9 +4443,9 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                                   // 代码块卡片的内边距：卡片铺满正文列，代码行由引擎
                                   // 左右各退 16px，不必再把卡片画到列外。
                                   lineInsetFor: lineStyle.insetFor,
-                                  // 表格整行不是一行文字：行高、网格、抓手都由
-                                  // `LiveTableBlocks` 自己画，引擎只负责 y 定位。
-                                  lineBlockFor: tableBlocks.blockFor,
+                                  // 表格与整行图片不是一行文字：行高、绘制、命中
+                                  // 都由对应的块自己回答，引擎只负责 y 定位。
+                                  lineBlockFor: lineBlocks.blockFor,
                                   // 选区变了要重排（`# `、`**` 的显隐会改行宽）；拖动期间
                                   // 冻结在按下时的那一份。
                                   revealSelection: _revealSelection,
@@ -3567,6 +4458,9 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                                   // 列表标记（圆点 / 序号 / 复选框 / 导轨）由渲染层
                                   // 画在正文左侧的槽位里，源码里的 `- ` 不再上屏。
                                   markerStyle: lineStyle.markers,
+                                  searchHighlight: widget.searchHighlight,
+                                  searchHighlightColor:
+                                      widget.searchHighlightColor,
                                   // 交给继承来的单段排版（`super.performLayout` 与
                                   // `getWordBoundary` 都读它）的仍是纯源码：装饰树里的
                                   // U+FFFC 会让那些按整段算的方法错位。行内样式只走
@@ -3649,7 +4543,27 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
             ),
           ),
         ),
-        Positioned.fill(child: editor),
+        // 拖一条网页链接进来 → 在落点写成 `[标题](地址)`。只收链接的三种
+        // 载荷（系统 URL、浏览器附带的 HTML 片段、纯文本），文件与图片不
+        // 在这里认领——它们有自己的粘贴/落图路径。
+        //
+        // 测试进程里没有原生拖放层（区域一建起来就抛 `MissingPluginException`，
+        // 且是异步抛出的），所以那边挂的就是普通编辑器。
+        Positioned.fill(
+          child: systemDragAndDropAvailable
+              ? DropRegion(
+                  formats: const <DataFormat>[
+                    Formats.uri,
+                    Formats.htmlText,
+                    Formats.plainText,
+                  ],
+                  hitTestBehavior: HitTestBehavior.translucent,
+                  onDropOver: (DropOverEvent event) => DropOperation.copy,
+                  onPerformDrop: _onDrop,
+                  child: editor,
+                )
+              : editor,
+        ),
         // 折叠箭头在字段的裁剪之外（顶级列表项的按钮落在页边距里），所以
         // 由编辑器这层画。几何按当前排版现取，滚动时跟着走。
         Positioned.fill(

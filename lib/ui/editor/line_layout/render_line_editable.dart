@@ -22,6 +22,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
+import '../../../core/utils/image_markup.dart';
 import 'line_layout_engine.dart';
 import 'line_layout_pool.dart';
 import 'line_marker_style.dart';
@@ -130,6 +131,8 @@ class RenderLineEditable extends RenderEditable {
     Set<int>? foldedLines,
     LineMarkerStyle? markerStyle,
     LineBlockResolver? lineBlockFor,
+    ({String needle, bool caseSensitive})? searchHighlight,
+    Color? searchHighlightColor,
   }) : // 私有字段不能做命名参数，只能在这里赋值。
        // ignore: prefer_initializing_formals
        _explicitCursorHeight = cursorHeight,
@@ -159,6 +162,10 @@ class RenderLineEditable extends RenderEditable {
        _markerStyle = markerStyle,
        // ignore: prefer_initializing_formals
        _lineBlockFor = lineBlockFor,
+       // ignore: prefer_initializing_formals
+       _searchHighlight = searchHighlight,
+       // ignore: prefer_initializing_formals
+       _searchHighlightColor = searchHighlightColor,
        super(
          text: text,
          textDirection: textDirection,
@@ -383,7 +390,9 @@ class RenderLineEditable extends RenderEditable {
       markNeedsPaint();
       return;
     }
-    _pendingRevealDirty = dirty;
+    // 图片加载完成也会往这里塞行号；两边同一帧到达时取并集，谁都不能
+    // 把对方刚标脏的行丢掉。
+    _pendingRevealDirty = <int>{...?_pendingRevealDirty, ...dirty};
     markNeedsLayout();
   }
 
@@ -627,10 +636,15 @@ class RenderLineEditable extends RenderEditable {
       ...parked.layout.revealDirtyLines(parked.reveal, _revealSelection),
     };
     for (int i = 0; i < parked.layout.lines.length; i++) {
-      final LineBlockKind kind = parked.layout.lines[i].kind;
+      final SourceLine line = parked.layout.lines[i];
+      final LineBlockKind kind = line.kind;
       if (kind == LineBlockKind.table ||
           kind == LineBlockKind.tableHeader ||
-          kind == LineBlockKind.tableDivider) {
+          kind == LineBlockKind.tableDivider ||
+          // 图片块由宿主缓存，切文档时可能已被释放；命中的旧布局里剩下
+          // 的只是悬空引用，必须重建。
+          (kind == LineBlockKind.paragraph &&
+              ImageMarkup.parseLine(line.text) != null)) {
         dirty.add(i);
       }
     }
@@ -1016,7 +1030,17 @@ class RenderLineEditable extends RenderEditable {
     final Canvas canvas = context.canvas;
     canvas.save();
     if (clipBehavior != Clip.none) {
-      canvas.clipRect(offset & size);
+      // 表格 chrome（行/列抓手）挂在内容区外的左上侧：裁剪向左上各放宽
+      // [kTableChromeBleed]，让它们画进滚动视图的 padding 里。右侧、下侧
+      // 不放大——正文只在正坐标里画，只有 chrome 会伸出去。
+      canvas.clipRect(
+        Rect.fromLTRB(
+          offset.dx - kTableChromeBleed,
+          offset.dy - kTableChromeBleed,
+          offset.dx + size.width,
+          offset.dy + size.height,
+        ),
+      );
     }
     canvas.translate(offset.dx + paintOffset.dx, offset.dy + paintOffset.dy);
 
@@ -1032,10 +1056,13 @@ class RenderLineEditable extends RenderEditable {
         : Rect.fromLTRB(0, span.top, layout.width, span.bottom);
 
     debugPaintedLines = 0;
+    debugSearchHighlightRects = 0;
     _paintSelection(canvas, layout, visible);
     _paintBlocks(canvas, layout, range);
     _paintMarkers(canvas, layout, range);
     _paintFills(canvas, layout, range);
+    // 色带铺在正文底下：行内代码底片之上、字形之下。
+    _paintSearchHighlights(canvas, layout, range, visible);
     _paintText(canvas, layout, range);
     _paintComposing(canvas, layout, visible);
     _paintCaret(canvas, layout);
@@ -1067,6 +1094,14 @@ class RenderLineEditable extends RenderEditable {
       final LineBlockView? block = line.block;
       if (block == null || line.height <= 0) continue;
       final Offset local = _lineOrigin(line);
+      // 行可能被整对象复用，而块里的源码偏移是建块时记的：每帧按当前行
+      // 回写一次，指针落点与揭示判定不会落在位移前的旧偏移上。
+      if (block is ImageBlockChrome) {
+        (block as ImageBlockChrome).chromeSourceRange(
+          line.source.start,
+          line.source.end,
+        );
+      }
       block.paint(canvas, local, _globalOriginOf(local));
     }
   }
@@ -1106,6 +1141,158 @@ class RenderLineEditable extends RenderEditable {
   List<TableRowChrome>? _tableRows;
   List<LaidOutLine>? _tableRowLines;
   LineDocumentLayout? _tableRowsLayout;
+
+  /// 只把某一行标脏，下一次布局走 [relayoutLines] 的增量分支。
+  ///
+  /// 图片解码完成、或拖拽预览改了宽度时用：整篇重排会在加载一张图时卡一下，
+  /// 而行高变化只需要这一行重新量。
+  void invalidateImageLine(int sourceStart) {
+    final LineDocumentLayout? layout = _lineLayout;
+    if (layout == null || _layoutText != (text?.toPlainText() ?? '')) {
+      // 还没有可对照的布局，或文本已经先走一步：下次布局本来就会全量。
+      _pendingRevealDirty = null;
+      markNeedsLayout();
+      return;
+    }
+    int index = -1;
+    for (int i = 0; i < layout.lines.length; i++) {
+      if (layout.lines[i].start == sourceStart) {
+        index = i;
+        break;
+      }
+    }
+    if (index < 0) {
+      // 块记下的行首已经因为上方编辑平移了：脏行下标不可信，整篇重来。
+      _dropLineLayout();
+      return;
+    }
+    (_pendingRevealDirty ??= <int>{}).add(index);
+    markNeedsLayout();
+  }
+
+  /// 视口内的图片块，几何已换算成**全局坐标**。
+  ///
+  /// 与 [tableRows] 一样按布局实例缓存列表；滚动只平移原点。每行查询前把
+  /// 当前源码范围写回去，命中测试和光标映射才不会用着位移前的旧偏移。
+  List<ImageBlockChrome> imageBlocks() {
+    final LineDocumentLayout? layout = _lineLayout;
+    if (layout == null) return const <ImageBlockChrome>[];
+    List<ImageBlockChrome>? blocks = _imageBlockChrome;
+    List<LaidOutLine>? lines = _imageBlockChromeLines;
+    if (blocks == null ||
+        lines == null ||
+        !identical(_imageBlockChromeLayout, layout)) {
+      blocks = <ImageBlockChrome>[];
+      lines = <LaidOutLine>[];
+      for (final LaidOutLine line in layout.laidOut) {
+        final LineBlockView? block = line.block;
+        if (block is! ImageBlockChrome) continue;
+        blocks.add(block as ImageBlockChrome);
+        lines.add(line);
+      }
+      _imageBlockChrome = blocks;
+      _imageBlockChromeLines = lines;
+      _imageBlockChromeLayout = layout;
+    }
+    final Offset origin = localToGlobal(_linePaintOffset);
+    final ({double top, double bottom}) visible = visibleDocumentBounds;
+    final List<ImageBlockChrome> result = <ImageBlockChrome>[];
+    for (int i = 0; i < blocks.length; i++) {
+      final LaidOutLine line = lines[i];
+      if (line.top + line.height < visible.top ||
+          line.top > visible.bottom) {
+        continue;
+      }
+      final Offset local = _lineOrigin(line);
+      blocks[i]
+        ..chromeSourceRange(line.source.start, line.source.end)
+        ..chromeOrigin = local + origin;
+      result.add(blocks[i]);
+    }
+    return result;
+  }
+
+  List<ImageBlockChrome>? _imageBlockChrome;
+  List<LaidOutLine>? _imageBlockChromeLines;
+  LineDocumentLayout? _imageBlockChromeLayout;
+
+  /// 搜索框里的词在正文中的所有出现位置都用这条色带标出来。
+  ///
+  /// 只改绘制、不改排版：色带挂在 `selectionRects` 同一套几何上，滚动时只算
+  /// 视口里的行，和正文输入的字宽、换行毫无关系。
+  ({String needle, bool caseSensitive})? get searchHighlight =>
+      _searchHighlight;
+  ({String needle, bool caseSensitive})? _searchHighlight;
+  set searchHighlight(({String needle, bool caseSensitive})? value) {
+    if (value == _searchHighlight) return;
+    _searchHighlight = value;
+    markNeedsPaint();
+  }
+
+  /// 搜索色带的颜色；`null` 时不画。
+  Color? get searchHighlightColor => _searchHighlightColor;
+  Color? _searchHighlightColor;
+  set searchHighlightColor(Color? value) {
+    if (value == _searchHighlightColor) return;
+    _searchHighlightColor = value;
+    markNeedsPaint();
+  }
+
+  /// 最近一次 [paint] 画出的搜索色带块数，供测试确认色带真的落到了正文上。
+  @visibleForTesting
+  int debugSearchHighlightRects = 0;
+
+  void _paintSearchHighlights(
+    Canvas canvas,
+    LineDocumentLayout layout,
+    ({int from, int to}) range,
+    Rect? visible,
+  ) {
+    final ({String needle, bool caseSensitive})? hit = _searchHighlight;
+    final Color? color = _searchHighlightColor;
+    if (hit == null || color == null || hit.needle.isEmpty) return;
+    if (range.to <= range.from) return;
+
+    // 只扫视口附近这几行：长笔记每帧的匹配成本与屏幕上的字数成正比，而不是
+    // 与整篇正文成正比。
+    final int windowStart = layout.laidOut[range.from].source.start;
+    final int windowEnd = layout.laidOut[range.to - 1].source.end;
+    if (windowEnd <= windowStart) return;
+    final String window = layout.text.substring(windowStart, windowEnd);
+    final RegExp pattern = RegExp(
+      RegExp.escape(hit.needle),
+      caseSensitive: hit.caseSensitive,
+    );
+    if (!pattern.hasMatch(window)) return;
+
+    // 表格行是自己的一块纸面：色带若盖在它画完的格子上会把字糊掉，跳过。
+    final List<({int start, int end})> blocks = <({int start, int end})>[];
+    for (int i = range.from; i < range.to; i++) {
+      final LaidOutLine line = layout.laidOut[i];
+      if (line.block != null) {
+        blocks.add((start: line.source.start, end: line.source.end));
+      }
+    }
+
+    final Paint paint = Paint()..color = color;
+    for (final RegExpMatch match in pattern.allMatches(window)) {
+      final int start = windowStart + match.start;
+      final int end = windowStart + match.end;
+      if (blocks.any(
+        (({int start, int end}) r) => start <= r.end && end > r.start,
+      )) {
+        continue;
+      }
+      for (final Rect rect in layout.selectionRects(
+        start,
+        end,
+        visible: visible,
+      )) {
+        canvas.drawRect(rect, paint);
+      }
+      debugSearchHighlightRects++;
+    }
+  }
 
   void _paintSelection(
     Canvas canvas,
@@ -1150,6 +1337,11 @@ class RenderLineEditable extends RenderEditable {
   /// `TextStyle.backgroundColor` 只能是紧贴字形的直角矩形，而旧实现靠两个
   /// widget 端帽撑出内边距和圆角；一行一个 `TextPainter` 没有 widget，所以
   /// 这里按 [LaidOutLine.fills] 自己铺一块圆角矩形，再把字画在上面。
+  ///
+  /// `==高亮==` 的色块（[LineFillRun.rowBox]）也走这里：上下各内缩
+  /// [_kHighlightBandInsetY]，与参考项目 EPUB Reader V7 一致。
+  static const double _kHighlightBandInsetY = 0.16;
+
   void _paintFills(
     Canvas canvas,
     LineDocumentLayout layout,
@@ -1168,9 +1360,10 @@ class RenderLineEditable extends RenderEditable {
         if (boxes.isEmpty) continue;
         // 底片高度与基线第一次绘制时量一次，之后直接读缓存：
         // 每帧为每个行内代码片段新建 `TextPainter` 是滚动路径上的固定开销。
+        // `rowBox`（`==高亮`）不用量：它直接铺满视觉行盒，和选区同高。
         double? height = run.measuredHeight;
         double? drop = run.measuredDrop;
-        if (height == null || drop == null) {
+        if (!run.rowBox && (height == null || drop == null)) {
           final TextPainter metrics = TextPainter(
             text: TextSpan(
               text: run.probe.isEmpty ? ' ' : run.probe,
@@ -1200,8 +1393,22 @@ class RenderLineEditable extends RenderEditable {
         final List<({int line, double left, double right})> groups =
             groupFillBoxesByLine(boxes, baselines);
         for (final ({int line, double left, double right}) group in groups) {
-          final double baseline = baselines[group.line];
-          final double top = baseline - drop - run.padY;
+          final double top;
+          final double bottom;
+          if (run.rowBox) {
+            // `==高亮==` 的色块：视觉行盒来自引擎算好的 `visuals`（不受
+            // `lineTextRise` 上提影响），再上下各内缩 [_kHighlightBandInsetY]。
+            // 参考项目 EPUB Reader V7 的内缩比例是 0.16：色带 ≈ 1.2em，
+            // 罩得住字形、又给相邻行留出呼吸位。
+            final VisualLine visual = line.visuals[group.line];
+            final double insetY = visual.height * _kHighlightBandInsetY;
+            top = line.top + visual.top + insetY;
+            bottom = line.top + visual.top + visual.height - insetY;
+          } else {
+            final double baseline = baselines[group.line];
+            top = origin.dy + baseline - drop! - run.padY;
+            bottom = top + height!;
+          }
           // 标签的内边距没有字符位可占，只能把底片向两侧多铺几个像素；
           // 夹取要在**画布坐标**里做（先加 origin）：行首让出的内边距正是靠
           // 这一步生效的，若先在画笔局部坐标夹再平移，让出的位置会被平移
@@ -1210,9 +1417,9 @@ class RenderLineEditable extends RenderEditable {
             RRect.fromRectAndRadius(
               Rect.fromLTRB(
                 math.max(0, origin.dx + group.left - run.padX),
-                origin.dy + top,
+                top,
                 math.min(layout.width, origin.dx + group.right + run.padX),
-                origin.dy + top + height,
+                bottom,
               ),
               Radius.circular(run.radius),
             ),

@@ -556,6 +556,8 @@ class LineEditableText extends StatefulWidget {
     this.markerRevealLine,
     this.foldedLines = const <int>{},
     this.markerStyle,
+    this.searchHighlight,
+    this.searchHighlightColor,
   }) : assert(obscuringCharacter.length == 1),
        autocorrect =
            autocorrect ?? _inferAutocorrect(autofillHints: autofillHints),
@@ -786,6 +788,12 @@ class LineEditableText extends StatefulWidget {
   /// 实时表格的整行不是一行文字：行高、网格、控件都由返回的
   /// [LineBlockView] 自己负责。为 null 时表格会退回源码文本。
   final LineBlockResolver? lineBlockFor;
+
+  /// 搜索框里的词与大小写规则；命中处的色带由渲染层按视口自己找、自己画。
+  final ({String needle, bool caseSensitive})? searchHighlight;
+
+  /// 搜索色带的颜色；为 null 时不画。
+  final Color? searchHighlightColor;
 
   /// 揭示用的选区：落在它覆盖范围内的行，Markdown 标记（`# `、`**`）展开。
   ///
@@ -3184,6 +3192,22 @@ class LineEditableTextState extends State<LineEditableText>
     );
     _appLifecycleListener = AppLifecycleListener(onResume: _onResume);
     _initProcessTextActions();
+    // 这个输入框可能是「焦点节点已经有焦点」的情况下新建出来的：正文按
+    // `documentId` 整块重建（切标签页、外部覆盖正文）时就是这样——焦点节点
+    // 是外面传进来的，一直有焦点，`_handleFocusChanged` 不会再来一次，输入
+    // 连接也就永远不开，键盘打什么都进不来（用户报告：「Ctrl+Tab 换 tab 后
+    // 无法输入任何文字，只能鼠标重新点一下这个 tab」）。
+    //
+    // 所以新建之后自己补一次。必须等这一帧布局完成：`_openInputConnection`
+    // 要把输入框的尺寸与变换报给平台（见它的注释）。
+    if (widget.focusNode.hasFocus) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_hasFocus || _hasInputConnection) return;
+        _openInputConnection();
+        // 光标闪烁也是跟着焦点事件开的，这里一并补上。
+        _startOrStopCursorTimerIfNeeded();
+      });
+    }
   }
 
   void _onResume() {
@@ -6082,6 +6106,9 @@ class LineEditableTextState extends State<LineEditableText>
                                     markerRevealLine: widget.markerRevealLine,
                                     foldedLines: widget.foldedLines,
                                     markerStyle: widget.markerStyle,
+                                    searchHighlight: widget.searchHighlight,
+                                    searchHighlightColor:
+                                        widget.searchHighlightColor,
                                   ),
                                 ),
                               ),
@@ -6248,6 +6275,8 @@ class _Editable extends MultiChildRenderObjectWidget {
     this.markerRevealLine,
     this.foldedLines = const <int>{},
     this.markerStyle,
+    this.searchHighlight,
+    this.searchHighlightColor,
   }) : selectionHeightStyle =
            selectionHeightStyle ?? LineEditableText.defaultSelectionHeightStyle,
        selectionWidthStyle =
@@ -6304,6 +6333,8 @@ class _Editable extends MultiChildRenderObjectWidget {
   final LineInsetResolver? lineInsetFor;
   final LineBlockResolver? lineBlockFor;
   final LineMarkerStyle? markerStyle;
+  final ({String needle, bool caseSensitive})? searchHighlight;
+  final Color? searchHighlightColor;
 
   /// 揭示用的选区；见 [LineEditableText.revealSelection]。
   final TextSelection? revealSelection;
@@ -6368,6 +6399,8 @@ class _Editable extends MultiChildRenderObjectWidget {
       markerRevealLine: markerRevealLine,
       foldedLines: foldedLines,
       markerStyle: markerStyle,
+      searchHighlight: searchHighlight,
+      searchHighlightColor: searchHighlightColor,
     );
   }
 
@@ -6427,6 +6460,8 @@ class _Editable extends MultiChildRenderObjectWidget {
       ..markerRevealLine = markerRevealLine
       ..foldedLines = foldedLines
       ..markerStyle = markerStyle
+      ..searchHighlight = searchHighlight
+      ..searchHighlightColor = searchHighlightColor
       ..setPromptRectRange(promptRectRange);
   }
 }

@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>深色模式 · 六种填充的三档荧光</title>
+<style>
+  :root {
+    --sans: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    --radius: 12px;
+    --hi: #D6B14A;
+    --hi-ink: #221A05;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { background: #0B0B0C; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    min-height: 100vh;
+    background: var(--canvas);
+    color: var(--t1);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "tnum";
+  }
+
+  /* ------------------------------------------------------------- presets */
+
+  body[data-preset="graphite"] {
+    --canvas: #171717;
+    --surface: #1C1C1E;
+    --raised: #262628;
+    --sunken: #141414;
+    --outline: #363638;
+    --outline-soft: #2A2A2C;
+    --rule: #3E3E40;
+    --t1: #E8E8E8;
+    --t2: #A1A1A1;
+    --t3: #737373;
+    --accent: #EDEDED;
+    --accent-ink: #141414;
+    --hover: rgba(255,255,255,.055);
+  }
+
+  body[data-preset="midnight"] {
+    --canvas: #0E0F13;
+    --surface: #17181E;
+    --raised: #1F2027;
+    --sunken: #0A0B0E;
+    --outline: #2A2C36;
+    --outline-soft: #1E2028;
+    --rule: #32343F;
+    --t1: #E6E8EF;
+    --t2: #9AA0B0;
+    --t3: #6A7080;
+    --accent: #8B94F2;
+    --accent-ink: #10122A;
+    --hover: rgba(255,255,255,.05);
+  }
+
+  body[data-preset="vivid"] {
+    --canvas: #09090B;
+    --surface: #121215;
+    --raised: #1A1A1E;
+    --sunken: #050506;
+    --outline: #26262B;
+    --outline-soft: #1B1B1F;
+    --rule: #2E2E34;
+    --t1: #FAFAFA;
+    --t2: #A1A1AA;
+    --t3: #63636B;
+    --accent: #2DD4BF;
+    --accent-ink: #04211D;
+    --hover: rgba(255,255,255,.05);
+  }
+
+  /* ------------------------------------------------------------ variants */
+
+  /* D1 · 整格荧光：亮底 + 深色字 */
+  .card[data-scheme="D1"] {
+    --on-fill: #17181B;
+    --f-gray: #B9BCC4;   --i-gray: #33363D;
+    --f-amber: #DDB84F;  --i-amber: #4F3A06;
+    --f-green: #7ADFA5;  --i-green: #0E4B2C;
+    --f-blue: #7CC6F2;   --i-blue: #0E3F63;
+    --f-purple: #C0A3EE; --i-purple: #3A1F66;
+    --f-red: #F2948D;    --i-red: #681C18;
+  }
+
+  /* D2 · 荧光纸：中亮底 + 深色字 */
+  .card[data-scheme="D2"] {
+    --on-fill: #141518;
+    --f-gray: #8F949E;   --i-gray: #26282E;
+    --f-amber: #BA912B;  --i-amber: #2A1E02;
+    --f-green: #4FA97A;  --i-green: #062B19;
+    --f-blue: #4C97C8;   --i-blue: #05263A;
+    --f-purple: #A083D2; --i-purple: #2D1555;
+    --f-red: #CE7A72;    --i-red: #43100B;
+  }
+
+  /* D3 · 深底提纯：暗底 + 亮色字 */
+  .card[data-scheme="D3"] {
+    --on-fill: var(--t1);
+    --f-gray: #36383F;   --i-gray: #C2C5CC;
+    --f-amber: #634A12;  --i-amber: #F2C35C;
+    --f-green: #235C3F;  --i-green: #6CDEA0;
+    --f-blue: #1D4A73;   --i-blue: #7FC4F0;
+    --f-purple: #402C6B; --i-purple: #C3A6ED;
+    --f-red: #632727;    --i-red: #F09288;
+  }
+
+  /* --------------------------------------------------------------- shell */
+
+  .wrap { width: min(1480px, calc(100% - 48px)); margin: 0 auto; }
+
+  .masthead {
+    background: var(--canvas);
+    border-bottom: 1px solid var(--outline-soft);
+    padding: 34px 0 20px;
+  }
+
+  .kicker {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; letter-spacing: .12em; font-weight: 600;
+    color: var(--t3); text-transform: uppercase;
+  }
+  .kicker i {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--hi); display: inline-block;
+  }
+
+  .title-row {
+    display: flex; align-items: baseline; gap: 12px;
+    margin-top: 9px; flex-wrap: wrap;
+  }
+  .title-row h1 {
+    margin: 0; font-size: 29px; line-height: 1.25;
+    font-weight: 700; letter-spacing: -.4px;
+  }
+  .count {
+    font-size: 11px; font-weight: 500; color: var(--t2);
+    border: 1px solid var(--outline); border-radius: 999px;
+    padding: 2px 9px; transform: translateY(-3px);
+  }
+
+  .lede {
+    max-width: 940px; margin: 11px 0 0;
+    font-size: 13.5px; line-height: 1.9; color: var(--t2);
+  }
+  .lede b { color: var(--t1); font-weight: 600; }
+
+  .toolbar {
+    display: flex; align-items: center; gap: 16px;
+    margin-top: 18px; flex-wrap: wrap;
+  }
+  .field { display: flex; align-items: center; gap: 10px; }
+  .field-label { font-size: 11.5px; color: var(--t3); }
+
+  .seg {
+    display: inline-flex; gap: 2px; padding: 3px;
+    background: var(--raised);
+    border: 1px solid var(--outline-soft);
+    border-radius: 8px;
+  }
+  .seg button {
+    appearance: none; border: 0; background: transparent;
+    color: var(--t2); font: inherit; font-size: 12px;
+    height: 26px; padding: 0 12px; border-radius: 5px;
+    cursor: pointer; transition: background .12s ease, color .12s ease;
+  }
+  .seg button:hover { background: var(--hover); color: var(--t1); }
+  .seg button.on {
+    background: var(--accent); color: var(--accent-ink);
+    font-weight: 600;
+  }
+  .seg button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  .toolbar-hint { font-size: 11.5px; color: var(--t3); }
+
+  .fixedhl {
+    display: flex; align-items: center; gap: 12px;
+    margin-top: 15px; padding: 10px 13px;
+    background: var(--surface);
+    border: 1px solid var(--outline-soft);
+    border-radius: 9px;
+    flex-wrap: wrap;
+  }
+  .fixedhl .label {
+    font-size: 10.5px; font-weight: 600; letter-spacing: .1em;
+    color: var(--t3);
+  }
+  .fixedhl mark {
+    background: var(--hi); color: var(--hi-ink);
+    padding: 2px 8px; border-radius: 3px;
+    font-size: 12.5px; font-weight: 600;
+  }
+  .fixedhl code {
+    font-family: var(--mono); font-size: 9.5px; color: var(--t3);
+  }
+  .fixedhl .note {
+    margin-left: auto; font-size: 10.5px; color: var(--t3);
+  }
+
+  .main { padding: 22px 0 52px; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 20px;
+    align-items: stretch;
+  }
+
+  /* ---------------------------------------------------------------- card */
+
+  .card {
+    display: flex; flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--outline);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .card-head {
+    display: flex; gap: 14px;
+    padding: 17px 19px 11px;
+  }
+  .sigil {
+    width: 44px; height: 44px; flex: none;
+    display: grid; place-items: center;
+    border-radius: 9px;
+    background: var(--f-amber);
+    color: var(--on-fill);
+    font-size: 15px; font-weight: 700; letter-spacing: .02em;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.10) inset;
+  }
+  .head-copy { min-width: 0; }
+  .name-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .name-row h2 {
+    margin: 0; font-size: 19px; line-height: 1.3;
+    font-weight: 650; letter-spacing: -.2px;
+  }
+  .badge {
+    font-size: 10px; font-weight: 600; letter-spacing: .03em;
+    color: var(--t2);
+    border: 1px solid var(--outline);
+    border-radius: 999px; padding: 1px 7px;
+  }
+  .badge.rec { color: var(--accent); border-color: var(--accent); }
+  .desc {
+    margin: 5px 0 0; font-size: 12.5px; line-height: 1.7;
+    color: var(--t2);
+  }
+
+  .paper { padding: 2px 19px 15px; }
+
+  .doc-title {
+    font-size: 20px; font-weight: 700; letter-spacing: -.2px;
+    margin: 2px 0 2px;
+  }
+  .doc-meta { font-size: 10.5px; color: var(--t3); margin-bottom: 11px; }
+
+  .para {
+    margin: 0; font-size: 13.5px; line-height: 1.85;
+    color: var(--t1);
+  }
+  .para mark.hl {
+    background: var(--hi);
+    color: var(--hi-ink);
+    padding: 4px 0;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+  }
+  .para code {
+    font-family: var(--mono);
+    font-size: .84em;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--sunken);
+    color: var(--t1);
+  }
+
+  .tbl {
+    width: 100%; border-collapse: collapse; table-layout: fixed;
+    margin-top: 13px;
+    font-size: 12.5px; line-height: 1.45;
+  }
+  .tbl th, .tbl td {
+    border: 1px solid var(--rule);
+    padding: 6px 9px; height: 31px;
+    text-align: left; font-weight: 400;
+    color: var(--t1);
+    background: var(--surface);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .tbl th { font-weight: 600; }
+  .tbl .f-gray   { background: var(--f-gray);   color: var(--on-fill); }
+  .tbl .f-amber  { background: var(--f-amber);  color: var(--on-fill); }
+  .tbl .f-green  { background: var(--f-green);  color: var(--on-fill); }
+  .tbl .f-blue   { background: var(--f-blue);   color: var(--on-fill); }
+  .tbl .f-purple { background: var(--f-purple); color: var(--on-fill); }
+  .tbl .f-red    { background: var(--f-red);    color: var(--on-fill); }
+  .tbl .ink-blue { color: var(--i-blue); }
+  .tbl .ink-red  { color: var(--i-red); }
+
+  .tbl-note { margin-top: 6px; font-size: 10px; color: var(--t3); }
+
+  /* ------------------------------------------------------------ swatches */
+
+  .swatches {
+    margin-top: auto;
+    padding: 13px 19px 15px;
+    border-top: 1px solid var(--outline-soft);
+  }
+  .sw-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; margin-bottom: 9px;
+    font-size: 10px; color: var(--t3); letter-spacing: .04em;
+  }
+  .sw-head span:last-child { letter-spacing: 0; }
+
+  .sw-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 11px 12px;
+  }
+
+  .sw-bar {
+    height: 38px;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 6px; padding: 0 9px;
+    border-radius: 6px;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.08) inset;
+    overflow: hidden;
+  }
+  .sw-bar.none {
+    background: transparent;
+    box-shadow: 0 0 0 1px var(--outline) inset;
+  }
+  .sw-bar .aa {
+    font-size: 13px; font-weight: 600; letter-spacing: .02em;
+    white-space: nowrap;
+  }
+  .sw-bar .hl-word { font-size: 11px; font-weight: 600; }
+
+  .sw-line {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 6px; margin-top: 5px;
+  }
+  .sw-name { font-size: 10.5px; color: var(--t2); white-space: nowrap; }
+  .sw-code {
+    font-family: var(--mono); font-size: 9px; color: var(--t3);
+    letter-spacing: -.02em; white-space: nowrap;
+  }
+  .sw-ratios {
+    margin-top: 2px;
+    font-size: 9px; color: var(--t3);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .sw-ratios b { font-weight: 600; color: var(--t2); }
+
+  .card-foot {
+    border-top: 1px solid var(--outline-soft);
+    padding: 10px 19px 13px;
+    font-size: 11.5px; line-height: 1.8; color: var(--t3);
+  }
+  .card-foot p { margin: 0; }
+  .card-foot p + p { margin-top: 2px; }
+  .card-foot b { color: var(--t2); font-weight: 600; margin-right: 6px; }
+
+  /* --------------------------------------------------------------- outro */
+
+  .outro {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+    gap: 28px;
+    margin-top: 22px;
+    padding: 20px 22px;
+    background: var(--surface);
+    border: 1px solid var(--outline-soft);
+    border-radius: var(--radius);
+  }
+  .outro h3 {
+    margin: 0 0 8px; font-size: 13px; font-weight: 650;
+    color: var(--t1);
+  }
+  .outro ul {
+    margin: 0; padding: 0; list-style: none;
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 24px;
+  }
+  .outro li {
+    position: relative; padding-left: 14px;
+    font-size: 11.5px; line-height: 1.8; color: var(--t3);
+  }
+  .outro li::before {
+    content: ""; position: absolute; left: 0; top: 8px;
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--hi);
+  }
+  .outro li b { color: var(--t2); font-weight: 600; }
+
+  .outro-side {
+    border-left: 1px solid var(--outline-soft);
+    padding-left: 24px;
+    align-self: center;
+  }
+  .pick {
+    display: inline-block;
+    font-size: 13px; font-weight: 650; color: var(--t1);
+    padding: 2px 0 3px;
+    border-bottom: 2px solid var(--hi);
+  }
+  .outro-side p {
+    margin: 9px 0 0;
+    font-size: 11.5px; line-height: 1.8; color: var(--t3);
+  }
+
+  .pagefoot {
+    padding: 0 0 32px;
+    font-size: 10.5px; color: var(--t3);
+    text-align: center;
+  }
+
+  @media (max-width: 1320px) {
+    .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+
+  @media (max-width: 900px) {
+    .wrap { width: min(720px, calc(100% - 36px)); }
+    .grid { grid-template-columns: minmax(0, 1fr); }
+    .outro { grid-template-columns: 1fr; gap: 18px; }
+    .outro-side {
+      border-left: 0; padding-left: 0;
+      border-top: 1px solid var(--outline-soft);
+      padding-top: 14px;
+    }
+    .fixedhl .note { margin-left: 0; }
+  }
+
+  @media (max-width: 620px) {
+    .wrap { width: calc(100% - 26px); }
+    .masthead { padding-top: 24px; }
+    .title-row h1 { font-size: 24px; }
+    .card-head, .paper, .swatches, .card-foot { padding-left: 15px; padding-right: 15px; }
+    .outro ul { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body data-preset="graphite">
+
+<header class="masthead">
+  <div class="wrap">
+    <div class="kicker"><i></i>NRS · 深色模式配色 · D 荧光笔</div>
+    <div class="title-row">
+      <h1>六种填充的三档荧光</h1>
+      <span class="count">三档</span>
+    </div>
+    <p class="lede">
+      高亮锁定 <b>D 荧光笔</b>：亮金 <b>#D6B14A</b> 配深色字。六种填充都改成荧光色，只分三档亮度：<b>D1 整格铺满</b>、<b>D2 收一半光</b>、<b>D3 不铺亮底、只把深色提纯</b>。D1 / D2 里，填了色的格子会自动改用深色字。
+    </p>
+
+    <div class="toolbar">
+      <div class="field">
+        <span class="field-label">底板</span>
+        <div class="seg" id="surfaceSeg" role="group" aria-label="深色底板">
+          <button type="button" data-surface="graphite" class="on" aria-pressed="true">石墨素白</button>
+          <button type="button" data-surface="midnight" aria-pressed="false">午夜靛</button>
+          <button type="button" data-surface="vivid" aria-pressed="false">高对比</button>
+        </div>
+      </div>
+      <span class="toolbar-hint">切换底板，预览与对比度实时更新</span>
+    </div>
+
+    <div class="fixedhl">
+      <span class="label">高亮已定</span>
+      <mark>表格底色重做</mark>
+      <code>#D6B14A · 字 #221A05 · 8.4:1</code>
+      <span class="note">三套填充共用这枚高亮</span>
+    </div>
+  </div>
+</header>
+
+<main class="main">
+  <div class="wrap">
+    <div class="grid">
+
+      <!-- D1 -->
+      <section class="card" data-scheme="D1">
+        <div class="card-head">
+          <div class="sigil" aria-hidden="true">D1</div>
+          <div class="head-copy">
+            <div class="name-row">
+              <h2>整格荧光</h2>
+              <span class="badge">最像荧光笔</span>
+            </div>
+            <p class="desc">六格都铺满荧光色，格子里的字转深色；最接近真的马克笔划过一整行。</p>
+          </div>
+        </div>
+
+        <div class="paper">
+          <div class="doc-title">九月复盘</div>
+          <div class="doc-meta">2026-09-30 · 已归档 · 3 人协作</div>
+          <p class="para">本周先把<mark class="hl">表格底色重做</mark>：没有填色的格子保持正文色，<code>行内代码</code> 仍走凹陷层，不和填充抢注意力。</p>
+
+          <table class="tbl">
+            <colgroup>
+              <col style="width:21%"><col style="width:23%"><col style="width:22%"><col style="width:34%">
+            </colgroup>
+            <thead>
+              <tr>
+                <th colspan="2" class="f-gray">区域</th>
+                <th class="f-gray">达成</th>
+                <th class="f-gray">备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="f-amber">华东</td>
+                <td>92%</td>
+                <td class="f-blue ink-blue">领先</td>
+                <td>续费</td>
+              </tr>
+              <tr>
+                <td class="f-green">华南</td>
+                <td>87%</td>
+                <td class="f-red ink-red">待复核</td>
+                <td>新客</td>
+              </tr>
+              <tr>
+                <td class="f-purple">西南</td>
+                <td>83%</td>
+                <td class="f-blue">正常</td>
+                <td>—</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="tbl-note">填色格自动转深色字 · 「领先 / 待复核」是同色系的深彩字</div>
+        </div>
+
+        <div class="swatches">
+          <div class="sw-head"><span>色值</span><span>左 Aa 填充字 · 右 Aa 彩色字</span></div>
+          <div class="sw-grid" data-sw-grid></div>
+        </div>
+
+        <div class="card-foot">
+          <p><b>取舍</b>最贴近荧光笔，也最容易让表格变成一页色块；密集表格会花。</p>
+          <p><b>适合</b>表格少、只想让状态一眼跳出来。</p>
+        </div>
+      </section>
+
+      <!-- D2 -->
+      <section class="card" data-scheme="D2">
+        <div class="card-head">
+          <div class="sigil" aria-hidden="true">D2</div>
+          <div class="head-copy">
+            <div class="name-row">
+              <h2>荧光纸</h2>
+              <span class="badge rec">推荐</span>
+            </div>
+            <p class="desc">荧光色压到中亮度，仍然整格有色；没有 D1 刺眼，颜色照样一眼能分。</p>
+          </div>
+        </div>
+
+        <div class="paper">
+          <div class="doc-title">九月复盘</div>
+          <div class="doc-meta">2026-09-30 · 已归档 · 3 人协作</div>
+          <p class="para">本周先把<mark class="hl">表格底色重做</mark>：没有填色的格子保持正文色，<code>行内代码</code> 仍走凹陷层，不和填充抢注意力。</p>
+
+          <table class="tbl">
+            <colgroup>
+              <col style="width:21%"><col style="width:23%"><col style="width:22%"><col style="width:34%">
+            </colgroup>
+            <thead>
+              <tr>
+                <th colspan="2" class="f-gray">区域</th>
+                <th class="f-gray">达成</th>
+                <th class="f-gray">备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="f-amber">华东</td>
+                <td>92%</td>
+                <td class="f-blue ink-blue">领先</td>
+                <td>续费</td>
+              </tr>
+              <tr>
+                <td class="f-green">华南</td>
+                <td>87%</td>
+                <td class="f-red ink-red">待复核</td>
+                <td>新客</td>
+              </tr>
+              <tr>
+                <td class="f-purple">西南</td>
+                <td>83%</td>
+                <td class="f-blue">正常</td>
+                <td>—</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="tbl-note">填色格自动转深色字 · 「领先 / 待复核」是同色系的深彩字</div>
+        </div>
+
+        <div class="swatches">
+          <div class="sw-head"><span>色值</span><span>左 Aa 填充字 · 右 Aa 彩色字</span></div>
+          <div class="sw-grid" data-sw-grid></div>
+        </div>
+
+        <div class="card-foot">
+          <p><b>取舍</b>亮度收一半，整格仍有明确颜色；长时间看比 D1 稳。</p>
+          <p><b>适合</b>日常笔记的大多数表格。</p>
+        </div>
+      </section>
+
+      <!-- D3 -->
+      <section class="card" data-scheme="D3">
+        <div class="card-head">
+          <div class="sigil" aria-hidden="true">D3</div>
+          <div class="head-copy">
+            <div class="name-row">
+              <h2>深底提纯</h2>
+              <span class="badge">最克制</span>
+            </div>
+            <p class="desc">不铺亮底，只在深色底上把颜色提纯、把彩字提亮；最贴近原来的表格气质。</p>
+          </div>
+        </div>
+
+        <div class="paper">
+          <div class="doc-title">九月复盘</div>
+          <div class="doc-meta">2026-09-30 · 已归档 · 3 人协作</div>
+          <p class="para">本周先把<mark class="hl">表格底色重做</mark>：没有填色的格子保持正文色，<code>行内代码</code> 仍走凹陷层，不和填充抢注意力。</p>
+
+          <table class="tbl">
+            <colgroup>
+              <col style="width:21%"><col style="width:23%"><col style="width:22%"><col style="width:34%">
+            </colgroup>
+            <thead>
+              <tr>
+                <th colspan="2" class="f-gray">区域</th>
+                <th class="f-gray">达成</th>
+                <th class="f-gray">备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="f-amber">华东</td>
+                <td>92%</td>
+                <td class="f-blue ink-blue">领先</td>
+                <td>续费</td>
+              </tr>
+              <tr>
+                <td class="f-green">华南</td>
+                <td>87%</td>
+                <td class="f-red ink-red">待复核</td>
+                <td>新客</td>
+              </tr>
+              <tr>
+                <td class="f-purple">西南</td>
+                <td>83%</td>
+                <td class="f-blue">正常</td>
+                <td>—</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="tbl-note">填色格保留亮色字 · 「领先 / 待复核」是同色系的亮彩字</div>
+        </div>
+
+        <div class="swatches">
+          <div class="sw-head"><span>色值</span><span>左 Aa 填充字 · 右 Aa 彩色字</span></div>
+          <div class="sw-grid" data-sw-grid></div>
+        </div>
+
+        <div class="card-foot">
+          <p><b>取舍</b>不铺亮底，靠更浓的暗色和更亮的彩字提神；没有亮纸感。</p>
+          <p><b>适合</b>不想让表格压过正文的人。</p>
+        </div>
+      </section>
+
+    </div>
+
+    <section class="outro">
+      <div class="outro-main">
+        <h3>三档的共同点</h3>
+        <ul>
+          <li><b>高亮固定</b>亮金 #D6B14A + 深字，对比度 8.4:1。</li>
+          <li><b>全部可读</b>填充字最低 5.7:1，彩字最低 4.7:1。</li>
+          <li><b>D1 / D2 的代价</b>填了色的格子要自动转深色字，未填色仍是亮字。</li>
+          <li><b>D3 不改字色</b>沿用现在的亮色字，只替换填充和彩字。</li>
+        </ul>
+      </div>
+      <div class="outro-side">
+        <span class="pick">回我 D1 / D2 / D3</span>
+        <p>我的建议：日常选 D2，想一打开就被颜色抓住选 D1。也可以只微调某一档，比如「D1 的黄色再淡一点」。</p>
+      </div>
+    </section>
+  </div>
+
+  <div class="pagefoot">对比度按当前底板实时计算，保留一位小数</div>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const PRESETS = {
+    graphite: { surface: "#1C1C1E", text: "#E8E8E8" },
+    midnight: { surface: "#17181E", text: "#E6E8EF" },
+    vivid: { surface: "#121215", text: "#FAFAFA" },
+  };
+
+  const ON_FILL = { D1: "#17181B", D2: "#141518", D3: null };
+
+  const FILLS = [
+    ["gray", "灰"], ["amber", "琥珀"], ["green", "绿"],
+    ["blue", "蓝"], ["purple", "紫"], ["red", "红"],
+  ];
+
+  const parse = (css) => {
+    const value = String(css).trim();
+    if (value.startsWith("rgba") || value.startsWith("rgb")) {
+      const body = value.slice(value.indexOf("(") + 1, value.lastIndexOf(")"));
+      const parts = body.split(",").map((part) => Number.parseFloat(part.trim()));
+      return {
+        r: parts[0], g: parts[1], b: parts[2],
+        a: parts.length > 3 ? parts[3] : 1,
+      };
+    }
+    let h = value.replace("#", "");
+    if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+    if (h.length === 8) h = h.slice(2);
+    if (h.length !== 6) throw new Error("无法解析颜色：" + value);
+    return {
+      r: Number.parseInt(h.slice(0, 2), 16),
+      g: Number.parseInt(h.slice(2, 4), 16),
+      b: Number.parseInt(h.slice(4, 6), 16),
+      a: 1,
+    };
+  };
+
+  const hex = (c) =>
+    "#" +
+    [c.r, c.g, c.b]
+      .map((v) => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, "0"))
+      .join("")
+      .toUpperCase();
+
+  const luminance = (c) => {
+    const channel = (v) => {
+      const s = v / 255;
+      return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b);
+  };
+
+  const ratio = (a, b) => {
+    const la = luminance(a);
+    const lb = luminance(b);
+    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+  };
+
+  const fmt = (n) => n.toFixed(1);
+
+  const readVar = (card, name) =>
+    getComputedStyle(card).getPropertyValue(name).trim();
+
+  function buildSwatches(card) {
+    const preset = PRESETS[document.body.dataset.preset];
+    const paper = parse(preset.surface);
+    const text = parse(preset.text);
+    const scheme = card.dataset.scheme;
+    const onFill = ON_FILL[scheme] ? parse(ON_FILL[scheme]) : text;
+
+    const hiFill = parse("#D6B14A");
+    const hiInk = parse("#221A05");
+
+    const parts = [];
+
+    parts.push(`
+      <div class="sw">
+        <div class="sw-bar" style="background: var(--hi)">
+          <span class="aa hl-word" style="color: var(--hi-ink)">本周重点</span>
+        </div>
+        <div class="sw-line">
+          <span class="sw-name">高亮</span>
+          <span class="sw-code">#D6B14A</span>
+        </div>
+        <div class="sw-ratios">文字 <b>${fmt(ratio(hiInk, hiFill))}</b></div>
+      </div>
+    `);
+
+    for (const [key, name] of FILLS) {
+      const fill = parse(readVar(card, "--f-" + key));
+      const ink = parse(readVar(card, "--i-" + key));
+      parts.push(`
+        <div class="sw">
+          <div class="sw-bar" style="background: var(--f-${key})">
+            <span class="aa" style="color: var(--on-fill)">Aa</span>
+            <span class="aa" style="color: var(--i-${key})">Aa</span>
+          </div>
+          <div class="sw-line">
+            <span class="sw-name">${name}</span>
+            <span class="sw-code">${hex(fill)}</span>
+          </div>
+          <div class="sw-ratios">填充字 <b>${fmt(ratio(onFill, fill))}</b> · 彩字 <b>${fmt(ratio(ink, fill))}</b></div>
+        </div>
+      `);
+    }
+
+    parts.push(`
+      <div class="sw">
+        <div class="sw-bar none">
+          <span class="aa" style="color: var(--t1)">Aa</span>
+          <span class="aa" style="color: var(--t3)">—</span>
+        </div>
+        <div class="sw-line">
+          <span class="sw-name">无填充</span>
+          <span class="sw-code">${hex(paper)}</span>
+        </div>
+        <div class="sw-ratios">正文 <b>${fmt(ratio(text, paper))}</b></div>
+      </div>
+    `);
+
+    card.querySelector("[data-sw-grid]").innerHTML = parts.join("");
+  }
+
+  function render() {
+    document.querySelectorAll(".card").forEach(buildSwatches);
+  }
+
+  function selectSurface(key) {
+    if (!PRESETS[key] || document.body.dataset.preset === key) return;
+    document.body.dataset.preset = key;
+    document.querySelectorAll("#surfaceSeg button").forEach((button) => {
+      const on = button.dataset.surface === key;
+      button.classList.toggle("on", on);
+      button.setAttribute("aria-pressed", String(on));
+    });
+    render();
+  }
+
+  document.querySelectorAll("#surfaceSeg button").forEach((button) => {
+    button.addEventListener("click", () => selectSurface(button.dataset.surface));
+  });
+
+  const fromUrl = new URLSearchParams(location.search).get("preset");
+  if (fromUrl && PRESETS[fromUrl]) {
+    document.body.dataset.preset = fromUrl;
+    document.querySelectorAll("#surfaceSeg button").forEach((button) => {
+      const on = button.dataset.surface === fromUrl;
+      button.classList.toggle("on", on);
+      button.setAttribute("aria-pressed", String(on));
+    });
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>

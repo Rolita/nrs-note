@@ -662,6 +662,16 @@ class _AppShellState extends State<AppShell> {
                                     onDeleteNotes: _confirmDeleteMany,
                                     onDeleteFolder: _confirmDeleteFolder,
                                     onSwitchView: _selectView,
+                                    // 搜索结果先开笔记，正文要等这一帧绑定
+                                    // 完才可用，所以跳转挂到帧末。
+                                    onRevealOffset: (int offset) {
+                                      WidgetsBinding.instance
+                                          .addPostFrameCallback((_) {
+                                            if (!mounted) return;
+                                            _editorKey.currentState
+                                                ?.goToOffset(offset);
+                                          });
+                                    },
                                   ),
                                 ),
                                 ResizeHandle(
@@ -674,6 +684,8 @@ class _AppShellState extends State<AppShell> {
                                 child: EditorPane(
                                   key: _editorKey,
                                   bodyValue: _bodyValue,
+                                  showSearchHighlights:
+                                      _view == SidebarView.search,
                                   onDelete: _confirmDelete,
                                   onOpenSearch: () =>
                                       _selectView(SidebarView.search),

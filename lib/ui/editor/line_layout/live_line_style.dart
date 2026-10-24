@@ -69,7 +69,7 @@ class LiveLineStyle implements LineStyleKeyed {
   /// 键是「语言 + 块正文」：块外文字变化时块正文没变，分词结果可以原样
   /// 复用。只保留最近 8 块，长文档里不会把每个历史代码块都留在内存。
   static final LinkedHashMap<(String?, String), List<List<CodeToken>>>
-      _blockTokens = LinkedHashMap<(String?, String), List<List<CodeToken>>>();
+  _blockTokens = LinkedHashMap<(String?, String), List<List<CodeToken>>>();
   static const int _blockCacheLimit = 8;
 
   /// [line] 里被悬停的标签摘要成这一行内部的偏移；没有则为 `null`。
@@ -329,6 +329,35 @@ class LiveLineStyle implements LineStyleKeyed {
         body,
       ))
         (start: at + run.start, end: at + run.end, target: run.target),
+    ];
+  }
+
+  /// 这一行里的外链（文档偏移区间 + 地址），供编辑器做点击命中。
+  ///
+  /// 判定与 [wikilinksFor] 完全同源，只是链接目标换成 `[标签](地址)` 的
+  /// 地址；代码、围栏与表格行同样不认。
+  List<({int start, int end, String url})> linksFor(SourceLine line) {
+    switch (line.kind) {
+      case LineBlockKind.code:
+      case LineBlockKind.fence:
+      case LineBlockKind.setext:
+      case LineBlockKind.table:
+      case LineBlockKind.tableHeader:
+      case LineBlockKind.tableDivider:
+      case LineBlockKind.rule:
+        return const <({int start, int end, String url})>[];
+      default:
+        break;
+    }
+    if (!line.text.contains('](')) {
+      return const <({int start, int end, String url})>[];
+    }
+    final bool inline = markersInline(line);
+    final int at = inline ? line.markerStart : line.paintStart;
+    final String body = line.text.substring(at - line.start);
+    return <({int start, int end, String url})>[
+      for (final ({int start, int end, String url}) run in linkRuns(body))
+        (start: at + run.start, end: at + run.end, url: run.url),
     ];
   }
 

@@ -99,6 +99,127 @@ TableAlign alignOf(String spec) {
   return TableAlign.none;
 }
 
+/// The six named colors a cell may point at.
+///
+/// A token is not a literal color: the renderer resolves it against the current
+/// theme, so a note filled with `amber` stays readable when the app switches to
+/// dark mode. A custom `#RRGGBB` does the opposite and stays literal.
+enum CellColorToken { gray, amber, green, blue, purple, red }
+
+/// A cell color: a theme token, or a literal ARGB value.
+class CellColor {
+  const CellColor.token(CellColorToken this.token) : custom = null;
+
+  const CellColor.custom(int this.custom) : token = null;
+
+  final CellColorToken? token;
+  final int? custom;
+
+  /// Reads the value written after `bg=` / `fg=`. Unknown names and malformed
+  /// hex are ignored — a hand-edited directive loses the color, not the cell.
+  static CellColor? parse(String source) {
+    final String s = source.trim();
+    for (final CellColorToken token in CellColorToken.values) {
+      if (token.name == s) return CellColor.token(token);
+    }
+    if (!s.startsWith('#') || (s.length != 7 && s.length != 9)) return null;
+    final int? value = int.tryParse(s.substring(1), radix: 16);
+    if (value == null) return null;
+    return CellColor.custom(s.length == 7 ? 0xFF000000 | value : value);
+  }
+
+  /// The canonical spelling inside a directive.
+  String get source {
+    final CellColorToken? t = token;
+    if (t != null) return t.name;
+    final int argb = custom!;
+    final String rgb = (argb & 0xFFFFFF)
+        .toRadixString(16)
+        .padLeft(6, '0')
+        .toUpperCase();
+    if ((argb >> 24) & 0xFF == 0xFF) return '#$rgb';
+    return '#${argb.toRadixString(16).padLeft(8, '0').toUpperCase()}';
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is CellColor && other.token == token && other.custom == custom;
+
+  @override
+  int get hashCode => Object.hash(token, custom);
+}
+
+/// What a cell carries besides its text: spans and the two colors.
+///
+/// The grid keeps this next to every cell instead of in a side table, because
+/// a structural edit moves cells and their formatting has to move with them.
+class TableCellStyle {
+  const TableCellStyle({
+    this.columnSpan = 1,
+    this.rowSpan = 1,
+    this.fill,
+    this.text,
+  });
+
+  final int columnSpan;
+  final int rowSpan;
+  final CellColor? fill;
+  final CellColor? text;
+
+  bool get spans => columnSpan > 1 || rowSpan > 1;
+
+  bool get isEmpty => !spans && fill == null && text == null;
+
+  TableCellStyle copyWith({
+    int? columnSpan,
+    int? rowSpan,
+    CellColor? fill,
+    CellColor? text,
+  }) => TableCellStyle(
+    columnSpan: columnSpan ?? this.columnSpan,
+    rowSpan: rowSpan ?? this.rowSpan,
+    fill: fill ?? this.fill,
+    text: text ?? this.text,
+  );
+
+  /// The directive this style writes at the start of a cell, or `''`.
+  ///
+  /// Fixed key order — `c r bg fg` — so two spellings of the same style cannot
+  /// make a source diff look like an edit.
+  String get directive => directiveFor();
+
+  /// [directive], with the table's column widths appended as `w`.
+  ///
+  /// Widths are a **table** property, not a cell's: passing them here keeps the
+  /// one place that spells a directive exhaustive, while [TableCellStyle] still
+  /// stores none of them — a span or a color that moves between cells must not
+  /// carry a whole table's widths along.
+  String directiveFor({List<int>? widths}) {
+    final List<String> parts = <String>[
+      if (columnSpan > 1) 'c=$columnSpan',
+      if (rowSpan > 1) 'r=$rowSpan',
+      if (fill != null) 'bg=${fill!.source}',
+      if (text != null) 'fg=${text!.source}',
+      if (widths != null && widths.isNotEmpty) 'w=${widths.join(',')}',
+    ];
+    return parts.isEmpty ? '' : '<!--nrs ${parts.join(' ')}-->';
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is TableCellStyle &&
+      other.columnSpan == columnSpan &&
+      other.rowSpan == rowSpan &&
+      other.fill == fill &&
+      other.text == text;
+
+  @override
+  int get hashCode => Object.hash(columnSpan, rowSpan, fill, text);
+}
+
+/// Which of a cell's two colors a command writes.
+enum TableCellColorChannel { fill, text }
+
 /// A `\|` inside a cell is text, not a separator. Every scanner in the app —
 /// this one and the renderer's — has to agree, or a cell would be cut in two.
 int _nextPipe(String line, int from) {
@@ -147,6 +268,140 @@ String escapeCell(String text) =>
 String unescapeCell(String text) =>
     text.replaceAll(r'\|', '|').replaceAll('<br>', '\n');
 
+const String _kDirectiveOpen = '<!--nrs';
+const String _kDirectiveClose = '-->';
+
+final RegExp _directiveKeyRe = RegExp(r'([A-Za-z]+)\s*=\s*([^\s]+)');
+
+/// The `[start, end)` of the formatting directive that opens [raw], if it has
+/// one.
+///
+/// The comment only counts at the beginning of the cell, after optional
+/// padding. A malformed comment (no closing `-->`) stays ordinary text: it is
+/// better to show the user their broken source than to hide a cell behind a
+/// directive that cannot be parsed. The `nrs` namespace is reserved.
+(int, int)? tableDirectiveRange(String raw) {
+  int i = 0;
+  while (i < raw.length && (raw[i] == ' ' || raw[i] == '\t')) {
+    i++;
+  }
+  if (!raw.startsWith(_kDirectiveOpen, i)) return null;
+  final int after = i + _kDirectiveOpen.length;
+  if (after < raw.length &&
+      raw[after] != ' ' &&
+      raw[after] != '\t' &&
+      !raw.startsWith(_kDirectiveClose, after)) {
+    return null;
+  }
+  final int close = raw.indexOf(_kDirectiveClose, after);
+  if (close < 0) return null;
+  return (i, close + _kDirectiveClose.length);
+}
+
+class _CellDirective {
+  const _CellDirective(this.start, this.end, this.style);
+
+  final int start;
+  final int end;
+  final TableCellStyle style;
+}
+
+_CellDirective? _cellDirective(String raw) {
+  final (int, int)? range = tableDirectiveRange(raw);
+  if (range == null) return null;
+  final String body = raw.substring(
+    range.$1 + _kDirectiveOpen.length,
+    range.$2 - _kDirectiveClose.length,
+  );
+  int columnSpan = 1;
+  int rowSpan = 1;
+  CellColor? fill;
+  CellColor? text;
+  for (final Match m in _directiveKeyRe.allMatches(body)) {
+    final String value = m[2]!;
+    switch (m[1]) {
+      case 'c':
+        columnSpan = _spanValue(value);
+      case 'r':
+        rowSpan = _spanValue(value);
+      case 'bg':
+        fill = CellColor.parse(value);
+      case 'fg':
+        text = CellColor.parse(value);
+    }
+  }
+  return _CellDirective(
+    range.$1,
+    range.$2,
+    TableCellStyle(
+      columnSpan: columnSpan,
+      rowSpan: rowSpan,
+      fill: fill,
+      text: text,
+    ),
+  );
+}
+
+int _spanValue(String value) {
+  final int? n = int.tryParse(value);
+  return n != null && n >= 2 ? n : 1;
+}
+
+/// The `key=value` pairs inside [raw]'s `nrs` directive, in source order.
+///
+/// Used by writers that rebuild a directive but must not swallow keys they do
+/// not understand — a hand-added `foo=1` survives a column resize.
+List<(String, String)> tableDirectivePairs(String raw) {
+  final (int, int)? range = tableDirectiveRange(raw);
+  if (range == null) return const <(String, String)>[];
+  final String body = raw.substring(
+    range.$1 + _kDirectiveOpen.length,
+    range.$2 - _kDirectiveClose.length,
+  );
+  return <(String, String)>[
+    for (final Match m in _directiveKeyRe.allMatches(body)) (m[1]!, m[2]!),
+  ];
+}
+
+/// The manual column widths stored in [line]'s first cell, or `null`.
+///
+/// The widths live in the first visual row's first `nrs` directive as
+/// `w=180,240`. They are **design pixels at 15.5pt**; the renderer converts
+/// them to its own pixels. A list that is malformed, not positive, or not
+/// exactly [columns] long is ignored whole — half a width list is not a hint,
+/// it is a table whose geometry would depend on which column happened to parse.
+List<int>? tableColumnWidthsOfLine(String line, int columns) {
+  if (columns < 1) return null;
+  final List<(int, int)> cells = cellsOfLine(line);
+  if (cells.isEmpty) return null;
+  final (int a, int b) = cells.first;
+  final String raw = line.substring(a, b);
+  final (int, int)? range = tableDirectiveRange(raw);
+  if (range == null) return null;
+  final String body = raw.substring(
+    range.$1 + _kDirectiveOpen.length,
+    range.$2 - _kDirectiveClose.length,
+  );
+  String? value;
+  for (final Match m in _directiveKeyRe.allMatches(body)) {
+    // The first `w` wins, the same rule every other duplicated key follows.
+    if (m[1] == 'w') {
+      value = m[2];
+      break;
+    }
+  }
+  if (value == null) return null;
+  final List<String> parts = value.split(',');
+  if (parts.length != columns) return null;
+  final List<int> widths = <int>[];
+  for (final String part in parts) {
+    final int? n = int.tryParse(part);
+    if (n == null || n <= 0) return null;
+    widths.add(n);
+  }
+  return widths;
+}
+
 /// One cell of a parsed row: the **raw** range (padding included) and the text.
 class TableCell {
   const TableCell({required this.start, required this.end, required this.raw});
@@ -155,15 +410,45 @@ class TableCell {
   final int end;
   final String raw;
 
-  /// The cell's markdown, padding and escapes removed.
-  String get text => unescapeCell(raw.trim());
+  TableCellStyle get style =>
+      _cellDirective(raw)?.style ?? const TableCellStyle();
 
-  /// Where the cell's own text begins — past the padding the source uses to
-  /// line the columns up. An empty cell starts and ends at the same place.
+  bool get hasDirective => tableDirectiveRange(raw) != null;
+
+  /// Where the directive's `<!--` and its trailing `-->` sit, in source
+  /// offsets, padding included.
+  int? get directiveStart {
+    final (int, int)? range = tableDirectiveRange(raw);
+    return range == null ? null : start + range.$1;
+  }
+
+  int? get directiveEnd {
+    final (int, int)? range = tableDirectiveRange(raw);
+    return range == null ? null : start + range.$2;
+  }
+
+  /// The cell's **visible** markdown: the directive, padding and escapes gone.
+  String get text {
+    final (int, int)? range = tableDirectiveRange(raw);
+    final String visible = range == null
+        ? raw
+        : raw.replaceRange(range.$1, range.$2, '');
+    return unescapeCell(visible.trim());
+  }
+
+  /// Where the cell's own text begins — past the padding and the hidden
+  /// directive. An empty cell starts and ends at the same place.
   int get contentStart {
     int i = 0;
     while (i < raw.length && (raw[i] == ' ' || raw[i] == '\t')) {
       i++;
+    }
+    final (int, int)? range = tableDirectiveRange(raw);
+    if (range != null) {
+      i = range.$2;
+      while (i < raw.length && (raw[i] == ' ' || raw[i] == '\t')) {
+        i++;
+      }
     }
     return start + i;
   }
@@ -231,6 +516,21 @@ class TableBlock {
   /// The widest row wins: a short row is padded by the model, never by hand.
   int get columns =>
       rows.fold<int>(0, (int m, TableRow r) => math.max(m, r.cells.length));
+
+  /// The table's manual column widths, or `null` for automatic widths.
+  ///
+  /// Read from the first visual row's first cell — the header when there is
+  /// one, otherwise the first body row. Kept off [TableCellStyle] on purpose:
+  /// a span or a color travels with its cell, but widths belong to all of them.
+  List<int>? get columnWidths {
+    final List<TableRow> body = bodyRows;
+    if (body.isEmpty || body.first.cells.isEmpty) return null;
+    final TableRow first = body.first;
+    return tableColumnWidthsOfLine(
+      text.substring(first.start, first.end),
+      columns,
+    );
+  }
 
   /// Column alignments, read off the divider row.
   List<TableAlign> get aligns {
@@ -374,33 +674,175 @@ bool _insideFence(String text, int offset) {
   return fences.isOdd;
 }
 
-/// The editable form of a block: plain strings, no offsets.
+/// One cell of the editable grid: its visible text and its formatting.
+///
+/// The text is plain and unescaped, the way [TableCell.text] reads it. Formatting
+/// lives beside it so an edit that only moves cells carries both along.
+class GridCell {
+  GridCell(this.text, [this.style = const TableCellStyle()]);
+
+  String text;
+  TableCellStyle style;
+
+  GridCell copy() => GridCell(text, style);
+
+  bool get isEmpty => text.trim().isEmpty;
+}
+
+/// One valid merged block: the anchor plus the rectangle it covers.
+class TableMerge {
+  const TableMerge({
+    required this.row,
+    required this.column,
+    required this.rowSpan,
+    required this.columnSpan,
+  });
+
+  final int row;
+  final int column;
+  final int rowSpan;
+  final int columnSpan;
+
+  int get lastRow => row + rowSpan - 1;
+  int get lastColumn => column + columnSpan - 1;
+
+  bool covers(int r, int c) =>
+      r >= row && r <= lastRow && c >= column && c <= lastColumn;
+
+  bool intersects(int fromRow, int toRow, int fromColumn, int toColumn) =>
+      row <= toRow &&
+      lastRow >= fromRow &&
+      column <= toColumn &&
+      lastColumn >= fromColumn;
+}
+
+/// The formatting directive that opens a raw cell, or an empty style.
+///
+/// The renderer parses a line into raw cells once and then asks this for each
+/// one; [TableCell.style] would re-scan the directive for every read.
+TableCellStyle tableCellStyleOf(String raw) =>
+    _cellDirective(raw)?.style ?? const TableCellStyle();
+
+/// Every valid merge in [block], anchors only, row-major.
+///
+/// The read-only counterpart of [TableGrid.merges]: the sidebar and the
+/// selection model ask about spans without copying the table into a grid first.
+List<TableMerge> tableMergesOf(TableBlock block) {
+  final List<TableRow> body = block.bodyRows;
+  return tableMergesFromStyles(
+    rowCount: body.length,
+    columns: block.columns,
+    styleAt: (int row, int column) => column < body[row].cells.length
+        ? body[row].cells[column].style
+        : const TableCellStyle(),
+  );
+}
+
+/// [TableGrid.merges] without building a grid — for callers that already hold
+/// per-cell styles (the renderer parses a table line by line).
+List<TableMerge> tableMergesFromStyles({
+  required int rowCount,
+  required int columns,
+  required TableCellStyle Function(int row, int column) styleAt,
+}) => _validMerges(rowCount: rowCount, columns: columns, styleAt: styleAt);
+
+/// The merges a grid actually has, ignoring spans of one, out-of-bounds spans
+/// and overlaps. Both [TableBlock] and [TableGrid] share this validation so a
+/// hand-edited file reads the same to the renderer and to the commands.
+List<TableMerge> _validMerges({
+  required int rowCount,
+  required int columns,
+  required TableCellStyle Function(int row, int column) styleAt,
+}) {
+  final List<TableMerge> out = <TableMerge>[];
+  for (int r = 0; r < rowCount; r++) {
+    for (int c = 0; c < columns; c++) {
+      final TableCellStyle style = styleAt(r, c);
+      if (!style.spans) continue;
+      if (c + style.columnSpan > columns || r + style.rowSpan > rowCount) {
+        continue;
+      }
+      final TableMerge merge = TableMerge(
+        row: r,
+        column: c,
+        rowSpan: style.rowSpan,
+        columnSpan: style.columnSpan,
+      );
+      if (out.any(
+        (TableMerge m) => m.intersects(
+          merge.row,
+          merge.lastRow,
+          merge.column,
+          merge.lastColumn,
+        ),
+      )) {
+        continue;
+      }
+      out.add(merge);
+    }
+  }
+  return out;
+}
+
+/// The editable form of a block: cells and alignments, no offsets.
 ///
 /// Structural edits change this and nothing else; [render] turns it back into
 /// Markdown. That is what makes "every row the same width" a property of the
 /// model instead of something each command has to remember.
 class TableGrid {
-  TableGrid({required this.rows, required this.aligns, required this.header});
+  TableGrid({
+    required this.rows,
+    required this.aligns,
+    required this.header,
+    this.widths,
+  });
 
   factory TableGrid.fromBlock(TableBlock block) {
     final int cols = block.columns;
+    final List<int>? widths = block.columnWidths;
     return TableGrid(
-      rows: <List<String>>[
+      rows: <List<GridCell>>[
         for (final TableRow r in block.bodyRows)
-          <String>[
+          <GridCell>[
             for (int c = 0; c < cols; c++)
-              c < r.cells.length ? r.cells[c].text : '',
+              c < r.cells.length
+                  ? GridCell(r.cells[c].text, r.cells[c].style)
+                  : GridCell(''),
           ],
       ],
       // A copy, and growable: on a table without a divider `block.aligns` is a
       // fixed-length filler, and the column commands insert/remove entries.
       aligns: List<TableAlign>.of(block.aligns),
       header: block.hasHeader,
+      widths: widths == null ? null : List<int>.of(widths),
+    );
+  }
+
+  /// A rectangular grid of unformatted text — what TSV and a new table are.
+  factory TableGrid.fromStrings(
+    List<List<String>> rows, {
+    required List<TableAlign> aligns,
+    required bool header,
+  }) {
+    final int cols = rows.fold<int>(
+      0,
+      (int m, List<String> r) => math.max(m, r.length),
+    );
+    return TableGrid(
+      rows: <List<GridCell>>[
+        for (final List<String> row in rows)
+          <GridCell>[
+            for (int c = 0; c < cols; c++)
+              GridCell(c < row.length ? row[c] : ''),
+          ],
+      ],
+      aligns: List<TableAlign>.of(aligns),
+      header: header,
     );
   }
 
   /// Content rows, header first. A row is always [columns] wide.
-  final List<List<String>> rows;
+  final List<List<GridCell>> rows;
 
   /// One alignment per column.
   final List<TableAlign> aligns;
@@ -412,20 +854,86 @@ class TableGrid {
   /// [render] — otherwise the row looks applied but the Markdown never changes.
   bool header;
 
+  /// Manual column widths in design pixels, or `null` for automatic widths.
+  ///
+  /// Mutable because column insert/delete/move rearrange it with the columns;
+  /// [render] writes it into the new first row's first cell. A list whose length
+  /// no longer matches [columns] is ignored on the way out, never written half.
+  List<int>? widths;
+
   int get columns => rows.isEmpty ? aligns.length : rows.first.length;
 
   /// One empty row of the right width.
-  List<String> emptyRow() => List<String>.filled(columns, '');
+  List<GridCell> emptyRow() =>
+      List<GridCell>.generate(columns, (_) => GridCell(''));
+
+  String textAt(int row, int column) =>
+      row >= 0 && row < rows.length && column >= 0 && column < rows[row].length
+      ? rows[row][column].text
+      : '';
+
+  /// Every merge the grid actually has, row-major, anchors only.
+  ///
+  /// Validation is deliberately defensive: out-of-bounds spans, spans of one,
+  /// and overlapping directives are ignored rather than clamped. A hand-edited
+  /// file must never be able to draw the table into itself; the directive is
+  /// still hidden, the cell simply renders unmerged.
+  List<TableMerge> get merges => _validMerges(
+    rowCount: rows.length,
+    columns: columns,
+    styleAt: (int row, int column) => column < rows[row].length
+        ? rows[row][column].style
+        : const TableCellStyle(),
+  );
+
+  /// The merge covering `(row, column)`, anchor or not.
+  TableMerge? mergeCovering(int row, int column) {
+    for (final TableMerge m in merges) {
+      if (m.covers(row, column)) return m;
+    }
+    return null;
+  }
+
+  TableMerge? mergeAnchoredAt(int row, int column) {
+    for (final TableMerge m in merges) {
+      if (m.row == row && m.column == column) return m;
+    }
+    return null;
+  }
+
+  /// Splits every merge, keeping the colors. For edits that move cells around:
+  /// a span is a claim about rows and columns, and after a transpose or a sort
+  /// that claim points at different data than the one the user made.
+  void dropMerges() {
+    for (final List<GridCell> row in rows) {
+      for (final GridCell cell in row) {
+        if (!cell.style.spans) continue;
+        cell.style = TableCellStyle(
+          fill: cell.style.fill,
+          text: cell.style.text,
+        );
+      }
+    }
+  }
 
   /// The canonical Markdown for this grid.
   String render() {
     if (rows.isEmpty) return '';
     final int cols = columns;
+    final List<int>? columnWidths =
+        widths != null &&
+            widths!.length == cols &&
+            widths!.every((int w) => w > 0)
+        ? widths
+        : null;
     final List<String> lines = <String>[];
     for (int i = 0; i < rows.length; i++) {
       final List<String> cells = <String>[
         for (int c = 0; c < cols; c++)
-          escapeCell(c < rows[i].length ? rows[i][c] : ''),
+          if (c < rows[i].length)
+            '${rows[i][c].style.directiveFor(widths: i == 0 && c == 0 ? columnWidths : null)}${escapeCell(rows[i][c].text)}'
+          else
+            '',
       ];
       lines.add('| ${cells.join(' | ')} |');
       if (i == 0 && header) {
@@ -438,6 +946,201 @@ class TableGrid {
     }
     return lines.join('\n');
   }
+}
+
+/// Inserts [count] empty rows at [index].
+///
+/// An insertion strictly inside a span grows that span: the merged block still
+/// covers the same visible area plus the new row. At either boundary the span
+/// keeps its size and the whole block merely moves.
+void _insertGridRows(TableGrid grid, int index, int count) {
+  final List<(int, int, int, int)> expansions = <(int, int, int, int)>[];
+  for (final TableMerge m in grid.merges) {
+    if (index > m.row && index <= m.lastRow) {
+      expansions.add((m.row, m.column, m.rowSpan + count, m.columnSpan));
+    }
+  }
+  for (int i = 0; i < count; i++) {
+    grid.rows.insert(index, grid.emptyRow());
+  }
+  for (final (int r, int c, int rowSpan, int columnSpan) in expansions) {
+    final TableCellStyle style = grid.rows[r][c].style;
+    grid.rows[r][c].style = TableCellStyle(
+      columnSpan: columnSpan,
+      rowSpan: rowSpan,
+      fill: style.fill,
+      text: style.text,
+    );
+  }
+}
+
+/// Inserts [count] empty columns at [index], alignments included.
+void _insertGridColumns(TableGrid grid, int index, int count) {
+  final List<(int, int, int, int)> expansions = <(int, int, int, int)>[];
+  for (final TableMerge m in grid.merges) {
+    if (index > m.column && index <= m.lastColumn) {
+      expansions.add((m.row, m.column, m.rowSpan, m.columnSpan + count));
+    }
+  }
+  final List<int>? widths = grid.widths;
+  if (widths != null && widths.length == grid.columns) {
+    final int at = index.clamp(0, widths.length);
+    // The new column copies the width it will sit next to, so an insertion
+    // does not reflow a table the user has already sized by hand.
+    final int source = at > 0
+        ? widths[at - 1]
+        : (at < widths.length ? widths[at] : 120);
+    for (int i = 0; i < count; i++) {
+      widths.insert(at, source);
+    }
+  }
+  for (int i = 0; i < count; i++) {
+    for (final List<GridCell> row in grid.rows) {
+      row.insert(index.clamp(0, row.length), GridCell(''));
+    }
+    grid.aligns.insert(index.clamp(0, grid.aligns.length), TableAlign.none);
+  }
+  for (final (int r, int c, int rowSpan, int columnSpan) in expansions) {
+    final TableCellStyle style = grid.rows[r][c].style;
+    grid.rows[r][c].style = TableCellStyle(
+      columnSpan: columnSpan,
+      rowSpan: rowSpan,
+      fill: style.fill,
+      text: style.text,
+    );
+  }
+}
+
+/// Removes rows [from]…[to].
+///
+/// Deleting the anchor removes the merge — the cells it covered are gone or
+/// have become ordinary cells. Deleting covered rows shrinks the span; deleting
+/// rows above or below it does nothing to it.
+void _deleteGridRows(TableGrid grid, int from, int to) {
+  final List<(int, int, int, int)> shrinks = <(int, int, int, int)>[];
+  for (final TableMerge m in grid.merges) {
+    if (m.row >= from && m.row <= to) continue;
+    if (from > m.row && from <= m.lastRow) {
+      final int overlap = math.min(to, m.lastRow) - from + 1;
+      shrinks.add((
+        m.row,
+        m.column,
+        math.max(1, m.rowSpan - overlap),
+        m.columnSpan,
+      ));
+    }
+  }
+  grid.rows.removeRange(from, to + 1);
+  for (final (int r, int c, int rowSpan, int columnSpan) in shrinks) {
+    final TableCellStyle style = grid.rows[r][c].style;
+    grid.rows[r][c].style = TableCellStyle(
+      columnSpan: columnSpan,
+      rowSpan: rowSpan,
+      fill: style.fill,
+      text: style.text,
+    );
+  }
+}
+
+/// Removes columns [from]…[to]. The column-wise mirror of [_deleteGridRows].
+void _deleteGridColumns(TableGrid grid, int from, int to) {
+  final List<(int, int, int, int)> shrinks = <(int, int, int, int)>[];
+  for (final TableMerge m in grid.merges) {
+    if (m.column >= from && m.column <= to) continue;
+    if (from > m.column && from <= m.lastColumn) {
+      final int overlap = math.min(to, m.lastColumn) - from + 1;
+      shrinks.add((
+        m.row,
+        m.column,
+        m.rowSpan,
+        math.max(1, m.columnSpan - overlap),
+      ));
+    }
+  }
+  final List<int>? widths = grid.widths;
+  if (widths != null && widths.length == grid.columns) {
+    widths.removeRange(from, math.min(to + 1, widths.length));
+  }
+  for (final List<GridCell> row in grid.rows) {
+    row.removeRange(from, math.min(to + 1, row.length));
+  }
+  grid.aligns.removeRange(from, math.min(to + 1, grid.aligns.length));
+  for (final (int r, int c, int rowSpan, int columnSpan) in shrinks) {
+    final TableCellStyle style = grid.rows[r][c].style;
+    grid.rows[r][c].style = TableCellStyle(
+      columnSpan: columnSpan,
+      rowSpan: rowSpan,
+      fill: style.fill,
+      text: style.text,
+    );
+  }
+}
+
+/// Grows a rectangle until every merge it touches is contained whole.
+///
+/// A merged block is one cell to the person looking at the table, so touching
+/// any part of it acts on all of it: clearing half a block would leave text
+/// alive that the user can no longer see. The loop matters because growing to
+/// contain one merge can reach into the next.
+({int fromRow, int toRow, int fromColumn, int toColumn}) expandOverMerges(
+  Iterable<TableMerge> merges, {
+  required int fromRow,
+  required int toRow,
+  required int fromColumn,
+  required int toColumn,
+}) {
+  int r0 = fromRow;
+  int r1 = toRow;
+  int c0 = fromColumn;
+  int c1 = toColumn;
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (final TableMerge m in merges) {
+      if (!m.intersects(r0, r1, c0, c1)) continue;
+      if (m.row < r0) {
+        r0 = m.row;
+        changed = true;
+      }
+      if (m.lastRow > r1) {
+        r1 = m.lastRow;
+        changed = true;
+      }
+      if (m.column < c0) {
+        c0 = m.column;
+        changed = true;
+      }
+      if (m.lastColumn > c1) {
+        c1 = m.lastColumn;
+        changed = true;
+      }
+    }
+  }
+  return (fromRow: r0, toRow: r1, fromColumn: c0, toColumn: c1);
+}
+
+/// [expandOverMerges] for a grid a command is already holding.
+({int fromRow, int toRow, int fromColumn, int toColumn}) _expandToMerges(
+  TableGrid grid,
+  int fromRow,
+  int toRow,
+  int fromColumn,
+  int toColumn,
+) => expandOverMerges(
+  grid.merges,
+  fromRow: fromRow,
+  toRow: toRow,
+  fromColumn: fromColumn,
+  toColumn: toColumn,
+);
+
+/// Splits one merge, keeping the anchor's colors and text.
+void _clearMergeSpan(TableGrid grid, TableMerge merge) {
+  final TableCellStyle style = grid.rows[merge.row][merge.column].style;
+  grid.rows[merge.row][merge.column].style = TableCellStyle(
+    fill: style.fill,
+    text: style.text,
+  );
 }
 
 /// What a table command hands back: the new document and where the caret goes.
@@ -485,12 +1188,20 @@ class TableCommands {
       return TableEditResult(next, TextSelection.collapsed(offset: r.start));
     }
     final TableCell cell = r.cells[(column ?? 0).clamp(0, r.cells.length - 1)];
+    // A formatted empty cell has no visible text to select; the selection
+    // starts after its hidden directive, or the first keystroke would eat it.
+    final TextSelection whole = cell.hasDirective
+        ? TextSelection(
+            baseOffset: cell.contentStart,
+            extentOffset: cell.contentEnd,
+          )
+        : TextSelection(baseOffset: cell.start, extentOffset: cell.end);
     return TableEditResult(
       next,
       // An empty cell is selected whole: the first keystroke replaces the
       // placeholder instead of landing beside it, exactly like Tab and Enter.
       selectCell || cell.isEmpty
-          ? TextSelection(baseOffset: cell.start, extentOffset: cell.end)
+          ? whole
           // `caretAtEnd` is for writes: after typing over a selection the caret
           // belongs after the text that was just written, not before it.
           : TextSelection.collapsed(
@@ -509,7 +1220,7 @@ class TableCommands {
   }) {
     final TableGrid grid = TableGrid.fromBlock(block);
     final int at = (above ? row : row + 1).clamp(0, grid.rows.length);
-    grid.rows.insert(at, grid.emptyRow());
+    _insertGridRows(grid, at, 1);
     return _commit(block, grid, row: at, column: column);
   }
 
@@ -519,7 +1230,7 @@ class TableCommands {
     final TableGrid grid = TableGrid.fromBlock(block);
     if (grid.rows.length <= 1) return deleteTable(block);
     final int at = row.clamp(0, grid.rows.length - 1);
-    grid.rows.removeAt(at);
+    _deleteGridRows(grid, at, at);
     return _commit(
       block,
       grid,
@@ -534,7 +1245,7 @@ class TableCommands {
     final int a = from.clamp(0, grid.rows.length - 1);
     final int b = to.clamp(a, grid.rows.length - 1);
     if (a == 0 && b == grid.rows.length - 1) return deleteTable(block);
-    grid.rows.removeRange(a, b + 1);
+    _deleteGridRows(grid, a, b);
     return _commit(
       block,
       grid,
@@ -553,9 +1264,7 @@ class TableCommands {
   }) {
     final TableGrid grid = TableGrid.fromBlock(block);
     final int index = at.clamp(0, grid.rows.length);
-    for (int i = 0; i < math.max(1, count); i++) {
-      grid.rows.insert(index, grid.emptyRow());
-    }
+    _insertGridRows(grid, index, math.max(1, count));
     return _commit(block, grid, row: index, column: column);
   }
 
@@ -568,12 +1277,7 @@ class TableCommands {
   }) {
     final TableGrid grid = TableGrid.fromBlock(block);
     final int index = at.clamp(0, grid.columns);
-    for (int i = 0; i < math.max(1, count); i++) {
-      for (final List<String> r in grid.rows) {
-        r.insert(index.clamp(0, r.length), '');
-      }
-      grid.aligns.insert(index.clamp(0, grid.aligns.length), TableAlign.none);
-    }
+    _insertGridColumns(grid, index, math.max(1, count));
     return _commit(block, grid, row: row, column: index);
   }
 
@@ -588,14 +1292,24 @@ class TableCommands {
     required int toColumn,
   }) {
     final TableGrid grid = TableGrid.fromBlock(block);
+    if (grid.rows.isEmpty) {
+      return TableEditResult(
+        block.text,
+        TextSelection.collapsed(offset: block.start),
+      );
+    }
     final int r0 = fromRow.clamp(0, grid.rows.length - 1);
     final int r1 = toRow.clamp(r0, grid.rows.length - 1);
-    for (int r = r0; r <= r1; r++) {
-      for (int c = fromColumn; c <= toColumn; c++) {
-        if (c >= 0 && c < grid.rows[r].length) grid.rows[r][c] = '';
+    final int c0 = fromColumn.clamp(0, grid.columns - 1);
+    final int c1 = toColumn.clamp(c0, grid.columns - 1);
+    final ({int fromRow, int toRow, int fromColumn, int toColumn}) whole =
+        _expandToMerges(grid, r0, r1, c0, c1);
+    for (int r = whole.fromRow; r <= whole.toRow; r++) {
+      for (int c = whole.fromColumn; c <= whole.toColumn; c++) {
+        if (c >= 0 && c < grid.rows[r].length) grid.rows[r][c].text = '';
       }
     }
-    return _commit(block, grid, row: r0, column: fromColumn);
+    return _commit(block, grid, row: r0, column: c0);
   }
 
   /// Writes [values] at the active cell and clears the rest of the selection.
@@ -635,18 +1349,64 @@ class TableCommands {
     while (grid.aligns.length < columnsNeeded) {
       grid.aligns.add(TableAlign.none);
     }
-    for (final List<String> r in grid.rows) {
+    for (final List<GridCell> r in grid.rows) {
       while (r.length < columnsNeeded) {
-        r.add('');
+        r.add(GridCell(''));
       }
     }
     while (grid.rows.length < rowsNeeded) {
       grid.rows.add(grid.emptyRow());
     }
+    // A paste that grows the table creates columns nobody has sized. Writing a
+    // shorter width list would give the new columns a width of their own by
+    // accident, so the table goes back to automatic widths instead.
+    if (grid.widths != null && grid.widths!.length != columnsNeeded) {
+      grid.widths = null;
+    }
+
+    final bool single = values.length <= 1 && valueWidth <= 1;
+    final int atR = atRow.clamp(0, grid.rows.length - 1);
+    final int atC = atColumn.clamp(0, columnsNeeded - 1);
+    if (single) {
+      // Typing in a merged anchor is a one-cell write: the merge survives.
+      // Typing in a *covered* cell has nowhere to show the text until the
+      // block is split, so that merge goes.
+      final TableMerge? covered = grid.mergeCovering(atR, atC);
+      if (covered != null && !(covered.row == atR && covered.column == atC)) {
+        _clearMergeSpan(grid, covered);
+      }
+    } else {
+      // A rectangle of new cells cannot live inside a merge: every merge the
+      // write touches is split first, colors kept.
+      final int wantedLastRow =
+          atRow + (values.isEmpty ? 1 : values.length) - 1;
+      final int wantedLastColumn =
+          atColumn + (valueWidth < 1 ? 1 : valueWidth) - 1;
+      final int lastWriteRow = wantedLastRow < 0
+          ? 0
+          : (wantedLastRow > grid.rows.length - 1
+                ? grid.rows.length - 1
+                : wantedLastRow);
+      final int lastWriteColumn = wantedLastColumn < 0
+          ? 0
+          : (wantedLastColumn > columnsNeeded - 1
+                ? columnsNeeded - 1
+                : wantedLastColumn);
+      final int uFromRow = math.min(fromRow, atRow);
+      final int uToRow = math.max(toRow, lastWriteRow);
+      final int uFromColumn = math.min(fromColumn, atColumn);
+      final int uToColumn = math.max(toColumn, lastWriteColumn);
+      for (final TableMerge m in grid.merges) {
+        if (m.intersects(uFromRow, uToRow, uFromColumn, uToColumn)) {
+          _clearMergeSpan(grid, m);
+        }
+      }
+    }
 
     // Clear the whole selection first, then write: a value landing inside the
     // rectangle overwrites a cell that was about to be cleared, and the order
-    // is what keeps that from being ambiguous.
+    // is what keeps that from being ambiguous. Only text is cleared — a cell's
+    // formatting belongs to the cell, the way Excel's Clear Contents works.
     for (
       int r = fromRow.clamp(0, grid.rows.length - 1);
       r <= toRow.clamp(0, grid.rows.length - 1);
@@ -657,17 +1417,17 @@ class TableCommands {
         c <= toColumn.clamp(0, columnsNeeded - 1);
         c++
       ) {
-        grid.rows[r][c] = '';
+        grid.rows[r][c].text = '';
       }
     }
 
-    int lastRow = atRow.clamp(0, grid.rows.length - 1);
-    int lastColumn = atColumn.clamp(0, columnsNeeded - 1);
+    int lastRow = atR;
+    int lastColumn = atC;
     for (int r = 0; r < values.length; r++) {
       final int at = (atRow + r).clamp(0, grid.rows.length - 1);
       for (int c = 0; c < values[r].length; c++) {
         final int column = (atColumn + c).clamp(0, grid.rows[at].length - 1);
-        grid.rows[at][column] = values[r][c];
+        grid.rows[at][column].text = values[r][c];
         lastRow = at;
         lastColumn = column;
       }
@@ -690,10 +1450,7 @@ class TableCommands {
   }) {
     final TableGrid grid = TableGrid.fromBlock(block);
     final int at = (right ? column + 1 : column).clamp(0, grid.columns);
-    for (final List<String> r in grid.rows) {
-      r.insert(at.clamp(0, r.length), '');
-    }
-    grid.aligns.insert(at.clamp(0, grid.aligns.length), TableAlign.none);
+    _insertGridColumns(grid, at, 1);
     // The caret stays in the column it was in, which may have moved right.
     return _commit(
       block,
@@ -719,10 +1476,7 @@ class TableCommands {
     final int a = from.clamp(0, columns - 1);
     final int b = to.clamp(a, columns - 1);
     if (b - a + 1 >= columns) return deleteTable(block);
-    for (final List<String> r in grid.rows) {
-      r.removeRange(a, math.min(b + 1, r.length));
-    }
-    grid.aligns.removeRange(a, math.min(b + 1, grid.aligns.length));
+    _deleteGridColumns(grid, a, b);
     return _commit(block, grid, row: row, column: a.clamp(0, grid.columns - 1));
   }
 
@@ -735,10 +1489,7 @@ class TableCommands {
     final TableGrid grid = TableGrid.fromBlock(block);
     if (grid.columns <= 1) return null;
     final int at = column.clamp(0, grid.columns - 1);
-    for (final List<String> r in grid.rows) {
-      if (at < r.length) r.removeAt(at);
-    }
-    if (at < grid.aligns.length) grid.aligns.removeAt(at);
+    _deleteGridColumns(grid, at, at);
     return _commit(
       block,
       grid,
@@ -763,7 +1514,8 @@ class TableCommands {
       return null;
     }
     if (from == to) return null;
-    final List<String> row = grid.rows.removeAt(from);
+    grid.dropMerges();
+    final List<GridCell> row = grid.rows.removeAt(from);
     grid.rows.insert(to, row);
     return _commit(block, grid, row: to, column: column);
   }
@@ -781,11 +1533,19 @@ class TableCommands {
       return null;
     }
     if (from == to) return null;
-    for (final List<String> r in grid.rows) {
+    grid.dropMerges();
+    for (final List<GridCell> r in grid.rows) {
       if (from < r.length && to < r.length) r.insert(to, r.removeAt(from));
     }
     if (from < grid.aligns.length && to < grid.aligns.length) {
       grid.aligns.insert(to, grid.aligns.removeAt(from));
+    }
+    final List<int>? widths = grid.widths;
+    if (widths != null &&
+        widths.length == grid.columns &&
+        from < widths.length &&
+        to < widths.length) {
+      widths.insert(to, widths.removeAt(from));
     }
     return _commit(block, grid, row: row, column: to);
   }
@@ -809,7 +1569,8 @@ class TableCommands {
     final int b = to.clamp(a, grid.rows.length - 1);
     if (delta < 0 && a == 0) return null;
     if (delta > 0 && b == grid.rows.length - 1) return null;
-    final List<List<String>> chunk = <List<String>>[
+    grid.dropMerges();
+    final List<List<GridCell>> chunk = <List<GridCell>>[
       for (int i = a; i <= b; i++) grid.rows[i],
     ];
     grid.rows.removeRange(a, b + 1);
@@ -839,9 +1600,10 @@ class TableCommands {
     final int b = to.clamp(a, columns - 1);
     if (delta < 0 && a == 0) return null;
     if (delta > 0 && b == columns - 1) return null;
+    grid.dropMerges();
     final int at = delta < 0 ? a - 1 : a + 1;
-    for (final List<String> r in grid.rows) {
-      final List<String> chunk = <String>[
+    for (final List<GridCell> r in grid.rows) {
+      final List<GridCell> chunk = <GridCell>[
         for (int c = a; c <= b && c < r.length; c++) r[c],
       ];
       r.removeRange(a, math.min(b + 1, r.length));
@@ -852,6 +1614,14 @@ class TableCommands {
     ];
     grid.aligns.removeRange(a, math.min(b + 1, grid.aligns.length));
     grid.aligns.insertAll(at.clamp(0, grid.aligns.length), chunk);
+    final List<int>? widths = grid.widths;
+    if (widths != null && widths.length == columns) {
+      final List<int> widthChunk = <int>[
+        for (int c = a; c <= b && c < widths.length; c++) widths[c],
+      ];
+      widths.removeRange(a, math.min(b + 1, widths.length));
+      widths.insertAll(at.clamp(0, widths.length), widthChunk);
+    }
     return _commit(
       block,
       grid,
@@ -973,8 +1743,8 @@ class TableCommands {
     final TableGrid grid = TableGrid.fromBlock(block);
     final int cols = grid.columns;
     for (final List<String> r in rows) {
-      grid.rows.add(<String>[
-        for (int c = 0; c < cols; c++) c < r.length ? r[c] : '',
+      grid.rows.add(<GridCell>[
+        for (int c = 0; c < cols; c++) GridCell(c < r.length ? r[c] : ''),
       ]);
     }
     return _commit(block, grid, row: grid.rows.length - 1, column: 0);
@@ -997,13 +1767,13 @@ class TableCommands {
     final int first = grid.header ? 1 : 0;
     if (grid.rows.length - first < 2) return null;
 
-    final List<List<String>> body = <List<String>>[
+    final List<List<GridCell>> body = <List<GridCell>>[
       for (int i = first; i < grid.rows.length; i++) grid.rows[i],
     ];
     final List<int> order = <int>[for (int i = 0; i < body.length; i++) i];
     order.sort((int i, int j) {
-      final String a = at < body[i].length ? body[i][at] : '';
-      final String b = at < body[j].length ? body[j][at] : '';
+      final String a = at < body[i].length ? body[i][at].text : '';
+      final String b = at < body[j].length ? body[j][at].text : '';
       final bool aEmpty = a.trim().isEmpty;
       final bool bEmpty = b.trim().isEmpty;
       if (aEmpty || bEmpty) {
@@ -1014,6 +1784,10 @@ class TableCommands {
       if (!ascending) by = -by;
       return by != 0 ? by : i.compareTo(j);
     });
+    if (!Iterable<int>.generate(order.length).any((int i) => order[i] != i)) {
+      return null;
+    }
+    grid.dropMerges();
     for (int k = 0; k < order.length; k++) {
       grid.rows[first + k] = body[order[k]];
     }
@@ -1037,10 +1811,10 @@ class TableCommands {
     if (grid.rows.length - first < 2) return null;
 
     final Set<String> seen = <String>{};
-    final List<List<String>> kept = <List<String>>[];
+    final List<List<GridCell>> kept = <List<GridCell>>[];
     for (int i = first; i < grid.rows.length; i++) {
-      final List<String> cells = grid.rows[i];
-      final String key = (at < cells.length ? cells[at] : '')
+      final List<GridCell> cells = grid.rows[i];
+      final String key = (at < cells.length ? cells[at].text : '')
           .trim()
           .toLowerCase();
       if (key.isNotEmpty && !seen.add(key)) continue;
@@ -1058,6 +1832,7 @@ class TableCommands {
         ),
       );
     }
+    grid.dropMerges();
     grid.rows.removeRange(first, grid.rows.length);
     grid.rows.addAll(kept);
     return _commit(
@@ -1083,7 +1858,10 @@ class TableCommands {
     }
     final int from = row.clamp(0, grid.rows.length - 1);
     final int at = from + 1;
-    grid.rows.insert(at, List<String>.of(grid.rows[from]));
+    grid.dropMerges();
+    grid.rows.insert(at, <GridCell>[
+      for (final GridCell c in grid.rows[from]) c.copy(),
+    ]);
     return _commit(block, grid, row: at, column: column);
   }
 
@@ -1094,16 +1872,25 @@ class TableCommands {
     required int column,
   }) {
     final TableGrid grid = TableGrid.fromBlock(block);
-    if (grid.columns == 0) return null;
-    final int at = column.clamp(0, grid.columns - 1);
+    final int columns = grid.columns;
+    if (columns == 0) return null;
+    final int at = column.clamp(0, columns - 1);
     final int to = at + 1;
-    for (final List<String> r in grid.rows) {
-      r.insert(to.clamp(0, r.length), at < r.length ? r[at] : '');
+    grid.dropMerges();
+    for (final List<GridCell> r in grid.rows) {
+      r.insert(
+        to.clamp(0, r.length),
+        at < r.length ? r[at].copy() : GridCell(''),
+      );
     }
     grid.aligns.insert(
       to.clamp(0, grid.aligns.length),
       at < grid.aligns.length ? grid.aligns[at] : TableAlign.none,
     );
+    final List<int>? widths = grid.widths;
+    if (widths != null && widths.length == columns && at < widths.length) {
+      widths.insert(to.clamp(0, widths.length), widths[at]);
+    }
     return _commit(block, grid, row: row, column: to);
   }
 
@@ -1118,8 +1905,10 @@ class TableCommands {
     if (grid.rows.isEmpty) return null;
     final int a = from.clamp(0, grid.rows.length - 1);
     final int b = to.clamp(a, grid.rows.length - 1);
-    final List<List<String>> copies = <List<String>>[
-      for (int i = a; i <= b; i++) List<String>.of(grid.rows[i]),
+    grid.dropMerges();
+    final List<List<GridCell>> copies = <List<GridCell>>[
+      for (int i = a; i <= b; i++)
+        <GridCell>[for (final GridCell c in grid.rows[i]) c.copy()],
     ];
     grid.rows.insertAll(b + 1, copies);
     return _commit(block, grid, row: b + 1, column: column);
@@ -1139,9 +1928,10 @@ class TableCommands {
     final int a = from.clamp(0, columns - 1);
     final int b = to.clamp(a, columns - 1);
     final int at = b + 1;
-    for (final List<String> r in grid.rows) {
-      final List<String> copies = <String>[
-        for (int c = a; c <= b && c < r.length; c++) r[c],
+    grid.dropMerges();
+    for (final List<GridCell> r in grid.rows) {
+      final List<GridCell> copies = <GridCell>[
+        for (int c = a; c <= b && c < r.length; c++) r[c].copy(),
       ];
       r.insertAll(at.clamp(0, r.length), copies);
     }
@@ -1149,6 +1939,13 @@ class TableCommands {
       for (int c = a; c <= b && c < grid.aligns.length; c++) grid.aligns[c],
     ];
     grid.aligns.insertAll(at.clamp(0, grid.aligns.length), aligns);
+    final List<int>? widths = grid.widths;
+    if (widths != null && widths.length == columns) {
+      final List<int> widthCopies = <int>[
+        for (int c = a; c <= b && c < widths.length; c++) widths[c],
+      ];
+      widths.insertAll(at.clamp(0, widths.length), widthCopies);
+    }
     return _commit(block, grid, row: row, column: at);
   }
 
@@ -1170,10 +1967,12 @@ class TableCommands {
       );
     }
     final int cols = grid.columns;
-    final List<List<String>> rows = <List<String>>[
+    grid.dropMerges();
+    final List<List<GridCell>> rows = <List<GridCell>>[
       for (int c = 0; c < cols; c++)
-        <String>[
-          for (final List<String> r in grid.rows) c < r.length ? r[c] : '',
+        <GridCell>[
+          for (final List<GridCell> r in grid.rows)
+            c < r.length ? r[c].copy() : GridCell(''),
         ],
     ];
     final TableGrid out = TableGrid(
@@ -1205,7 +2004,7 @@ class TableCommands {
       int numbers = 0;
       for (int r = first; r < grid.rows.length; r++) {
         final String text = c < grid.rows[r].length
-            ? grid.rows[r][c].trim()
+            ? grid.rows[r][c].text.trim()
             : '';
         if (text.isEmpty) continue;
         filled++;
@@ -1238,7 +2037,7 @@ class TableCommands {
     final int first = grid.header ? 1 : 0;
     final List<String> cells = <String>[
       for (int r = first; r < grid.rows.length; r++)
-        at < grid.rows[r].length ? grid.rows[r][at] : '',
+        at < grid.rows[r].length ? grid.rows[r][at].text : '',
     ];
     final List<double> numbers = <double>[
       for (final String c in cells)
@@ -1268,10 +2067,13 @@ class TableCommands {
     };
     if (value.isEmpty && aggregate != TableAggregate.count) return null;
 
-    final List<String> summary = List<String>.filled(grid.columns, '');
-    summary[at] = value;
+    final List<GridCell> summary = List<GridCell>.generate(
+      grid.columns,
+      (_) => GridCell(''),
+    );
+    summary[at].text = value;
     if (grid.columns > 1) {
-      summary[at == 0 ? 1 : 0] = aggregate.label;
+      summary[at == 0 ? 1 : 0].text = aggregate.label;
     }
     grid.rows.add(summary);
     // The right alignment lives in the divider; grow one so the side effect
@@ -1285,6 +2087,146 @@ class TableCommands {
       column: at,
       selectCell: true,
     );
+  }
+
+  /// Merges a rectangle into its top-left cell.
+  ///
+  /// The merge **moves** content instead of deleting it: every non-empty
+  /// visible cell in the rectangle is appended to the anchor in reading order,
+  /// joined by newlines (rendered as `<br>`). The covered cells are emptied
+  /// and stripped of formatting; the anchor keeps its own colors and gains the
+  /// spans.
+  ///
+  /// `null` when the rectangle is smaller than two cells, out of bounds, or
+  /// touches any existing merge. A merge never overlaps another merge: the
+  /// user has to split first, which keeps "what is this block made of" a
+  /// question with one answer.
+  static TableEditResult? mergeCells(
+    TableBlock block, {
+    required int fromRow,
+    required int toRow,
+    required int fromColumn,
+    required int toColumn,
+  }) {
+    final TableGrid grid = TableGrid.fromBlock(block);
+    if (grid.rows.isEmpty || grid.columns == 0) return null;
+    final int r0 = math.min(fromRow, toRow);
+    final int r1 = math.max(fromRow, toRow);
+    final int c0 = math.min(fromColumn, toColumn);
+    final int c1 = math.max(fromColumn, toColumn);
+    if (r0 < 0 || c0 < 0) return null;
+    if (r1 >= grid.rows.length || c1 >= grid.columns) return null;
+    if ((r1 - r0 + 1) * (c1 - c0 + 1) < 2) return null;
+    for (final TableMerge m in grid.merges) {
+      if (m.intersects(r0, r1, c0, c1)) return null;
+    }
+
+    final List<String> parts = <String>[];
+    for (int r = r0; r <= r1; r++) {
+      for (int c = c0; c <= c1; c++) {
+        final String text = grid.rows[r][c].text;
+        if (text.trim().isNotEmpty) parts.add(text);
+      }
+    }
+    for (int r = r0; r <= r1; r++) {
+      for (int c = c0; c <= c1; c++) {
+        if (r == r0 && c == c0) continue;
+        grid.rows[r][c].text = '';
+        grid.rows[r][c].style = const TableCellStyle();
+      }
+    }
+    final GridCell anchor = grid.rows[r0][c0];
+    anchor.text = parts.join('\n');
+    anchor.style = anchor.style.copyWith(
+      columnSpan: c1 - c0 + 1,
+      rowSpan: r1 - r0 + 1,
+    );
+    return _commit(block, grid, row: r0, column: c0);
+  }
+
+  /// Removes the spans of the merge covering `(row, column)`, keeping its text
+  /// and colors in the anchor. `null` when the cell is not merged.
+  static TableEditResult? splitCell(
+    TableBlock block, {
+    required int row,
+    required int column,
+  }) {
+    final TableGrid grid = TableGrid.fromBlock(block);
+    final TableMerge? m = grid.mergeCovering(row, column);
+    if (m == null) return null;
+    final TableCellStyle style = grid.rows[m.row][m.column].style;
+    grid.rows[m.row][m.column].style = TableCellStyle(
+      fill: style.fill,
+      text: style.text,
+    );
+    return _commit(block, grid, row: m.row, column: m.column);
+  }
+
+  /// Sets or clears one color channel over a rectangle.
+  ///
+  /// The rectangle grows until every merged block it touches is contained
+  /// whole; the color lands on the anchor of each merged block and on every
+  /// ordinary cell. Covered cells are never painted — the anchor owns the
+  /// block's background, so splitting leaves the color where the user saw it.
+  static TableEditResult setCellColor(
+    TableBlock block, {
+    required int fromRow,
+    required int toRow,
+    required int fromColumn,
+    required int toColumn,
+    required TableCellColorChannel channel,
+    required CellColor? color,
+  }) {
+    final TableGrid grid = TableGrid.fromBlock(block);
+    if (grid.rows.isEmpty || grid.columns == 0) {
+      return TableEditResult(
+        block.text,
+        TextSelection.collapsed(offset: block.start),
+      );
+    }
+    final int r0 = fromRow.clamp(0, grid.rows.length - 1);
+    final int r1 = toRow.clamp(r0, grid.rows.length - 1);
+    final int c0 = fromColumn.clamp(0, grid.columns - 1);
+    final int c1 = toColumn.clamp(c0, grid.columns - 1);
+    final ({int fromRow, int toRow, int fromColumn, int toColumn}) whole =
+        _expandToMerges(grid, r0, r1, c0, c1);
+    for (int r = whole.fromRow; r <= whole.toRow; r++) {
+      for (int c = whole.fromColumn; c <= whole.toColumn; c++) {
+        final TableMerge? m = grid.mergeCovering(r, c);
+        if (m != null && !(m.row == r && m.column == c)) continue;
+        final TableCellStyle style = grid.rows[r][c].style;
+        grid.rows[r][c].style = TableCellStyle(
+          columnSpan: style.columnSpan,
+          rowSpan: style.rowSpan,
+          fill: channel == TableCellColorChannel.fill ? color : style.fill,
+          text: channel == TableCellColorChannel.text ? color : style.text,
+        );
+      }
+    }
+    final TableMerge? active = grid.mergeCovering(r0, c0);
+    return _commit(
+      block,
+      grid,
+      row: active?.row ?? r0,
+      column: active?.column ?? c0,
+    );
+  }
+
+  /// The color of one channel on the cell — the anchor's color when the cell is
+  /// covered. Used by the sidebar's swatch and by the tests.
+  static CellColor? cellColor(
+    TableBlock block, {
+    required int row,
+    required int column,
+    required TableCellColorChannel channel,
+  }) {
+    final TableGrid grid = TableGrid.fromBlock(block);
+    if (grid.rows.isEmpty || grid.columns == 0) return null;
+    final int r = row.clamp(0, grid.rows.length - 1);
+    final int c = column.clamp(0, grid.columns - 1);
+    final TableMerge? m = grid.mergeCovering(r, c);
+    final TableCellStyle style = grid.rows[m?.row ?? r][m?.column ?? c].style;
+    return channel == TableCellColorChannel.fill ? style.fill : style.text;
   }
 }
 

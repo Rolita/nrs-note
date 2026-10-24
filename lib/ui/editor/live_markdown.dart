@@ -39,8 +39,20 @@ import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/theme/app_palette.dart';
+import '../../core/theme/highlight_colors.dart';
+import '../../core/theme/table_colors.dart';
+import '../../core/utils/image_markup.dart';
 import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/markdown_outline.dart';
+import '../../core/utils/table_model.dart'
+    show
+        TableCellStyle,
+        TableMerge,
+        expandOverMerges,
+        tableCellStyleOf,
+        tableColumnWidthsOfLine,
+        tableDirectiveRange,
+        tableMergesFromStyles;
 import '../../core/theme/app_tokens.dart';
 import '../preview/code_palette.dart';
 import '../preview/syntax_highlighter.dart';
@@ -63,4 +75,5 @@ part 'live_markdown/table_model.dart';
 part 'live_markdown/table_measure.dart';
 part 'live_markdown/table_api.dart';
 part 'live_markdown/table_block.dart';
+part 'live_markdown/image_block.dart';
 part 'live_markdown/widgets.dart';

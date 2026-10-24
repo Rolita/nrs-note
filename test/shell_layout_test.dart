@@ -465,6 +465,84 @@ void main() {
     );
   });
 
+  testWidgets('a search result opens its note and jumps to the matched line', (
+    WidgetTester tester,
+  ) async {
+    final StringBuffer body = StringBuffer('# 长文\n\n');
+    for (int i = 0; i < 80; i++) {
+      body.write('第 $i 行 填充内容\n');
+    }
+    body.write('这一行有独一无二的定位词\n');
+    for (int i = 0; i < 20; i++) {
+      body.write('尾部第 $i 行\n');
+    }
+    final List<String> lines = body.toString().split('\n');
+    final int target = lines.indexWhere((String l) => l.contains('定位词'));
+    expect(target, greaterThan(40), reason: '目标行必须远在首屏之外');
+
+    final ({SettingsController settings, NotesController notes}) app =
+        await pumpShell(
+          tester,
+          vault: <Note>[
+            Note(
+              id: 'a',
+              title: '甲文',
+              body: body.toString(),
+              createdAt: DateTime(2026, 1, 1),
+              updatedAt: DateTime(2026, 1, 2),
+            ),
+            Note(
+              id: 'b',
+              title: '乙文',
+              body: '# 乙文\n\n和搜索无关\n',
+              createdAt: DateTime(2026, 1, 1),
+              updatedAt: DateTime(2026, 1, 3),
+            ),
+          ],
+        );
+    // 先打开另一篇，点击结果才真的需要切换过去。
+    app.notes.select('b');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('搜索'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.descendant(
+        of: find.byType(NoteListPanel),
+        matching: find.byType(TextField),
+      ),
+      '定位',
+    );
+    await tester.pumpAndSettle();
+
+    final Finder snippet = find.descendant(
+      of: find.byType(NoteListPanel),
+      matching: find.textContaining('独一无二的定位词'),
+    );
+    expect(snippet, findsOneWidget);
+
+    await tester.tap(snippet);
+    await tester.pumpAndSettle();
+
+    expect(app.notes.selectedId, 'a', reason: '点击结果要先切到命中的那篇笔记');
+
+    final RenderLineEditable field = tester.allRenderObjects
+        .whereType<RenderLineEditable>()
+        .first;
+    final ({double top, double bottom}) band = field.visibleDocumentBounds;
+    final double lineTop = field.lineTopFor(target);
+    expect(
+      lineTop <= band.bottom && lineTop >= band.top - 1,
+      isTrue,
+      reason: '命中的那一行要落进可见区间（band=$band lineTop=$lineTop）',
+    );
+    expect(
+      field.debugSearchHighlightRects,
+      greaterThan(0),
+      reason: '跳过去之后，命中词在正文里要有色带，不必再逐行找',
+    );
+  });
+
   testWidgets('a tag query lists its notes with the line the tag sits on', (
     WidgetTester tester,
   ) async {
@@ -513,9 +591,7 @@ void main() {
     expect(find.descendant(of: panel, matching: find.text('闲话')), findsNothing);
   });
 
-  testWidgets(
-    'a note with three matches is one group, and hover lights it up',
-    (WidgetTester tester) async {
+  testWidgets('a note with three matches is one group, always tinted', (WidgetTester tester) async {
       final ({SettingsController settings, NotesController notes}) app =
           await pumpShell(
             tester,
@@ -556,7 +632,7 @@ void main() {
         findsOneWidget,
       );
 
-      // The highlight is quiet until the pointer is on the card.
+      // 命中词一出现就着色，不再等指针移上来。
       Color? highlightBackground() {
         final Text text = tester.widget<Text>(firstCard);
         final TextSpan span = text.textSpan! as TextSpan;
@@ -568,7 +644,7 @@ void main() {
       }
 
       final Color? idle = highlightBackground();
-      expect(idle, isNotNull, reason: '命中的标签要有底色');
+      expect(idle, isNotNull, reason: '命中的词要有底色');
 
       final TestGesture pointer = await tester.createGesture(
         kind: PointerDeviceKind.mouse,
@@ -577,7 +653,7 @@ void main() {
       addTearDown(pointer.removePointer);
       await pointer.moveTo(tester.getCenter(firstCard));
       await tester.pumpAndSettle();
-      expect(highlightBackground(), isNot(idle), reason: '悬浮时才变黄');
+      expect(highlightBackground(), idle, reason: '悬浮不再换色');
 
       // The header folds its cards away.
       await tester.tap(
@@ -1604,6 +1680,76 @@ void main() {
     );
     expect(created.body, contains('用快捷键插入'));
 
+    await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('Ctrl+Tab 换标签之后，正文仍然收得到键盘输入', (
+    WidgetTester tester,
+  ) async {
+    // 用户报告：Ctrl+Tab 切到另一个标签后打不进任何字，得用鼠标再点一下
+    // 那个标签才行。根因是正文输入框按 `documentId` 整块重建，而焦点节点
+    // 是外面传进来的、一直有焦点——新输入框的 State 从来没收到过「获得焦点」
+    // 的回调，也就不会开输入连接，键盘事件无处可去。
+    final Note first = Note(
+      id: 'a',
+      title: '甲',
+      body: '甲的正文\n',
+      createdAt: DateTime(2026, 1, 1),
+      updatedAt: DateTime(2026, 1, 2),
+    );
+    final Note second = Note(
+      id: 'b',
+      title: '乙',
+      body: '乙的正文\n',
+      createdAt: DateTime(2026, 1, 1),
+      updatedAt: DateTime(2026, 1, 3),
+    );
+    final ({SettingsController settings, NotesController notes}) app =
+        await pumpShell(tester, vault: <Note>[first, second]);
+
+    // 两个标签都开着，当前停在乙。
+    app.notes.select('a');
+    await tester.pumpAndSettle();
+    app.notes.select('b');
+    await tester.pumpAndSettle();
+    expect(app.notes.selectedId, 'b');
+
+    // 点一下正文：焦点落在输入框上，输入连接随之打开。
+    await tester.tap(find.byKey(const Key('nrs-editor-field')));
+    await tester.pumpAndSettle();
+    expect(tester.testTextInput.hasAnyClients, isTrue, reason: '点正文应该连上输入');
+
+    // Ctrl+Tab 回到甲。
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+    expect(app.notes.selectedId, 'a');
+
+    // 焦点还在正文上，键盘输入就该直接落进这一份正文。
+    final LineEditableText field = tester.widget<LineEditableText>(
+      find.byKey(const Key('nrs-editor-field')),
+    );
+    expect(field.focusNode.hasFocus, isTrue, reason: '换标签不该把焦点扔掉');
+    expect(
+      tester.testTextInput.hasAnyClients,
+      isTrue,
+      reason: '换标签后输入框重建了，输入连接却没重开，键盘打字会全部丢失',
+    );
+
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '甲的正文新字\n',
+        selection: TextSelection.collapsed(offset: 7),
+      ),
+    );
+    await tester.pump();
+    expect(app.notes.draft?.body, contains('新字'));
+
+    // 光标闪烁的计时器得收掉，否则测试结束时会报 timersPending。
+    field.focusNode.unfocus();
+    // 这一笔写入的自动保存还在防抖里（300ms 落笔，之后还有 2s 的收尾计时），
+    // 等它走完再结束。
     await tester.pump(const Duration(seconds: 3));
   });
 }

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:web/web.dart' as web;
 
@@ -228,6 +229,17 @@ class WebNoteStore with NoteStoreSupport implements NoteStore {
     _flushFolders();
     return true;
   }
+
+  /// 浏览器版不支持保存图片；图片能力只属于桌面版的真实文件系统。
+  @override
+  Future<String?> saveAsset(
+    String folderPath,
+    String fileName,
+    Uint8List bytes,
+  ) async => null;
+
+  @override
+  String? assetPath(String folderPath, String source) => null;
 
   /// Browser storage cannot be changed by another program, so there is no
   /// change detection to offer.

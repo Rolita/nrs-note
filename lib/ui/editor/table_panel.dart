@@ -1,21 +1,33 @@
+import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart' hide TableCell, TableRow;
+import 'package:flutter/services.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
+import '../../core/theme/table_colors.dart';
 import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/markdown_outline.dart';
 import '../../core/utils/table_model.dart';
 import '../../core/utils/table_selection.dart';
+import '../common/app_widgets.dart';
+import '../theme/app_color_picker.dart';
 
 /// The table tools column.
 ///
 /// Every command is a value→value function from `markdown_actions`, so this
-/// panel can never disagree with the editor's right-click menu: it is the same
-/// commands, with icons instead of words. The groups are the menu's groups, cut
-/// into rows of four so a command is found by *where* it lives as much as by
-/// its glyph — select next to select, align next to align.
+/// panel can never disagree with the editor's right-click menu for the groups
+/// they share: select, rows, columns, alignment, data, summary and the table
+/// itself run the same commands, with icons instead of words. The groups are
+/// cut into rows of four so a command is found by *where* it lives as much as
+/// by its glyph — select next to select, align next to align.
+///
+/// 「外观」 is the exception: merge, split and the two cell colors live only
+/// here. Colors need a palette and a picker, which a context menu cannot show
+/// without a second, worse implementation — so they stay one entry point.
 ///
 /// With the caret outside every table there is nothing to act on, so the panel
 /// lists the file's tables instead. Picking one only moves the caret there —
@@ -149,6 +161,25 @@ class _Body extends StatelessWidget {
     final TableAlign align = column < aligns.length
         ? aligns[column]
         : TableAlign.none;
+    final List<TableMerge> merges = tableMergesOf(table);
+    final TableRange? range = tableRangeOf(value);
+    final TableMerge? merge = _mergeAt(merges, row, column);
+    final CellColor? fill = _rangeColor(
+      table,
+      merges,
+      range,
+      row,
+      column,
+      TableCellColorChannel.fill,
+    );
+    final CellColor? ink = _rangeColor(
+      table,
+      merges,
+      range,
+      row,
+      column,
+      TableCellColorChannel.text,
+    );
 
     _Cmd cmd(
       IconData icon,
@@ -268,6 +299,55 @@ class _Body extends StatelessWidget {
       cmd(LucideIcons.ruler, '自动对齐（数字贴右）', autoAlignTable),
     ];
 
+    final List<_Cmd> appearance = <_Cmd>[
+      cmd(
+        LucideIcons.merge,
+        _mergeNeedsSplit(range, merges) ? '先拆分已合并的单元格' : '合并居中',
+        mergeTableCells,
+        enabled: _canMerge(range, merges),
+        active: merge != null,
+      ),
+      cmd(LucideIcons.split, '拆分单元格', splitTableCell, enabled: merge != null),
+      _Cmd(
+        icon: LucideIcons.paintBucket,
+        tooltip: '填充颜色',
+        swatch: fill == null ? null : tableFillColor(p, fill),
+        color: _ColorMenu(
+          channel: TableCellColorChannel.fill,
+          current: fill,
+          initial: _pickerSeed(p, fill, TableCellColorChannel.fill),
+          onPick: (CellColor? color) => onApply(
+            (TextEditingValue v) =>
+                setTableCellColor(
+                  v,
+                  channel: TableCellColorChannel.fill,
+                  color: color,
+                ) ??
+                v,
+          ),
+        ),
+      ),
+      _Cmd(
+        icon: LucideIcons.baseline,
+        tooltip: '文字颜色',
+        swatch: ink == null ? null : tableInkColor(p, ink),
+        color: _ColorMenu(
+          channel: TableCellColorChannel.text,
+          current: ink,
+          initial: _pickerSeed(p, ink, TableCellColorChannel.text),
+          onPick: (CellColor? color) => onApply(
+            (TextEditingValue v) =>
+                setTableCellColor(
+                  v,
+                  channel: TableCellColorChannel.text,
+                  color: color,
+                ) ??
+                v,
+          ),
+        ),
+      ),
+    ];
+
     final List<_Cmd> data = <_Cmd>[
       cmd(
         LucideIcons.arrowUpNarrowWide,
@@ -362,6 +442,7 @@ class _Body extends StatelessWidget {
           _Group(label: '行', commands: rows),
           _Group(label: '列', commands: columnsList),
           _Group(label: '对齐', commands: alignment),
+          _Group(label: '外观', commands: appearance),
           _Group(label: '数据', commands: data),
           _Group(label: '汇总', commands: summary),
           _Group(label: '表格', commands: tableTools),
@@ -614,7 +695,9 @@ class _MiniGrid extends StatelessWidget {
                       decoration: BoxDecoration(
                         // The header row reads as a header, not as data.
                         color: r == 0 && header
-                            ? (hovered ? p.surface : p.surface.withValues(alpha: 0.55))
+                            ? (hovered
+                                  ? p.surface
+                                  : p.surface.withValues(alpha: 0.55))
                             : null,
                         border: Border(
                           right: c == columns - 1
@@ -634,7 +717,9 @@ class _MiniGrid extends StatelessWidget {
                           height: 1.2,
                           fontFamily: AppFonts.mono,
                           fontFamilyFallback: AppFonts.monoFallback,
-                          color: r == 0 && header ? p.textPrimary : p.textSecondary,
+                          color: r == 0 && header
+                              ? p.textPrimary
+                              : p.textSecondary,
                         ),
                       ),
                     ),
@@ -753,7 +838,12 @@ class _Group extends StatelessWidget {
 }
 
 /// One 4-across button: a 17px glyph, a tooltip, and a lit state for the
-/// commands that describe the current table (alignment, header).
+/// commands that describe the current table (alignment, header, merge).
+///
+/// The two color commands also carry a 2px line under the glyph and open a
+/// palette. The palette is an [OverlayEntry], not a child of the panel: the
+/// tools column scrolls, and a 220px card inside a 252px scroller would be
+/// clipped at the first scroll.
 class _CommandButton extends StatefulWidget {
   const _CommandButton({required this.command});
 
@@ -765,12 +855,124 @@ class _CommandButton extends StatefulWidget {
 
 class _CommandButtonState extends State<_CommandButton> {
   bool _hovered = false;
+  OverlayEntry? _popover;
+
+  @override
+  void dispose() {
+    _removePopover();
+    super.dispose();
+  }
+
+  _Cmd get _command => widget.command;
+
+  void _removePopover() {
+    _popover?.remove();
+    _popover = null;
+  }
+
+  void _togglePopover() {
+    if (_popover != null) {
+      _removePopover();
+    } else {
+      _openPopover();
+    }
+  }
+
+  void _openPopover() {
+    final _ColorMenu? menu = _command.color;
+    if (menu == null) return;
+    final RenderObject? box = context.findRenderObject();
+    final OverlayState? overlay = Overlay.maybeOf(context);
+    if (box is! RenderBox || !box.hasSize || overlay == null) return;
+    final RenderObject? frame = overlay.context.findRenderObject();
+    if (frame is! RenderBox) return;
+
+    final Rect button = MatrixUtils.transformRect(
+      box.getTransformTo(frame),
+      Offset.zero & box.size,
+    );
+    const double width = 220;
+    const double margin = 10;
+    const double gap = 8;
+    // The card is ~125px tall; the estimate only decides whether it opens
+    // below the button or above it.
+    const double estimated = 130;
+    double left = button.center.dx - width / 2;
+    left = left.clamp(
+      margin,
+      math.max(margin, frame.size.width - width - margin),
+    );
+    double top = button.bottom + gap;
+    if (top + estimated > frame.size.height - margin) {
+      top = math.max(margin, button.top - estimated - gap);
+    }
+    final double arrow = (button.center.dx - left).clamp(18.0, width - 18.0);
+
+    _popover = OverlayEntry(
+      builder: (BuildContext context) {
+        return Stack(
+          children: <Widget>[
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _removePopover,
+              ),
+            ),
+            Positioned(
+              left: left,
+              top: top,
+              width: width,
+              // The overlay sits above the Navigator's Material. Without one
+              // here, every label inherits MaterialApp's fallback text style —
+              // the yellow double underline meant for text outside a Material.
+              child: Material(
+                type: MaterialType.transparency,
+                child: _ColorPopover(
+                  channel: menu.channel,
+                  current: menu.current,
+                  arrow: arrow,
+                  onPick: (CellColor? color) {
+                    _removePopover();
+                    menu.onPick(color);
+                  },
+                  onCustom: () => unawaited(_pickCustom()),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    overlay.insert(_popover!);
+  }
+
+  Future<void> _pickCustom() async {
+    final _ColorMenu? menu = _command.color;
+    if (menu == null) return;
+    _removePopover();
+    final Color? picked = await showDialog<Color>(
+      context: context,
+      barrierColor: context.palette.overlay,
+      builder: (BuildContext context) =>
+          _TableColorDialog(channel: menu.channel, initial: menu.initial),
+    );
+    if (!mounted || picked == null) return;
+    final int argb = picked.toARGB32();
+    menu.onPick(
+      CellColor.custom(
+        menu.channel == TableCellColorChannel.text
+            ? 0xFF000000 | (argb & 0xFFFFFF)
+            : argb,
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     final _Cmd c = widget.command;
-    final bool enabled = c.onTap != null;
+    final bool palette = c.color != null;
+    final bool enabled = c.onTap != null || palette;
     final Color foreground;
     if (!enabled) {
       foreground = p.textTertiary.withValues(alpha: 0.45);
@@ -791,6 +993,21 @@ class _CommandButtonState extends State<_CommandButton> {
         ? Colors.transparent
         : (c.active ? p.accent.withValues(alpha: 0.28) : p.outlineSoft);
 
+    final Widget glyph = palette
+        ? SizedBox.expand(
+            child: Stack(
+              alignment: Alignment.center,
+              children: <Widget>[
+                Icon(c.icon, size: 17, color: foreground),
+                Positioned(
+                  bottom: 4,
+                  child: _SwatchLine(color: c.swatch, tooltip: c.tooltip),
+                ),
+              ],
+            ),
+          )
+        : Icon(c.icon, size: 17, color: foreground);
+
     return Tooltip(
       message: c.tooltip,
       waitDuration: const Duration(milliseconds: 500),
@@ -800,7 +1017,11 @@ class _CommandButtonState extends State<_CommandButton> {
         onExit: (_) => setState(() => _hovered = false),
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTap: c.onTap,
+          onTap: !enabled
+              ? null
+              : palette
+              ? _togglePopover
+              : c.onTap,
           child: AnimatedContainer(
             duration: AppMotion.fast,
             height: 32,
@@ -810,7 +1031,7 @@ class _CommandButtonState extends State<_CommandButton> {
               borderRadius: AppRadius.smAll,
               border: Border.all(color: border),
             ),
-            child: Icon(c.icon, size: 17, color: foreground),
+            child: glyph,
           ),
         ),
       ),
@@ -818,13 +1039,66 @@ class _CommandButtonState extends State<_CommandButton> {
   }
 }
 
+/// The 2px current-color line under a palette command's glyph.
+///
+/// It is always present, transparent when the cell has no color, so the two
+/// buttons do not shift when a fill is added or cleared. The hairline border
+/// keeps a near-white token visible on the raised sidebar.
+class _SwatchLine extends StatelessWidget {
+  const _SwatchLine({required this.color, required this.tooltip});
+
+  final Color? color;
+  final String tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    final Color? swatch = color;
+    return Container(
+      key: ValueKey<String>('table-swatch-$tooltip'),
+      width: 18,
+      height: 2,
+      decoration: swatch == null
+          ? null
+          : BoxDecoration(
+              color: swatch,
+              borderRadius: BorderRadius.circular(1),
+              border: Border.all(
+                color: Colors.black.withValues(alpha: 0.14),
+                width: 0.5,
+              ),
+            ),
+    );
+  }
+}
+
+/// What a palette command needs to open its popover. Built on every panel
+/// rebuild so the swatch and the checkmark always describe the live cell.
+class _ColorMenu {
+  const _ColorMenu({
+    required this.channel,
+    required this.current,
+    required this.initial,
+    required this.onPick,
+  });
+
+  final TableCellColorChannel channel;
+  final CellColor? current;
+
+  /// The seed for the custom picker when [current] is a theme token.
+  final Color initial;
+
+  final ValueChanged<CellColor?> onPick;
+}
+
 class _Cmd {
   const _Cmd({
     required this.icon,
     required this.tooltip,
-    required this.onTap,
+    this.onTap,
     this.active = false,
     this.danger = false,
+    this.swatch,
+    this.color,
   });
 
   final IconData icon;
@@ -832,6 +1106,609 @@ class _Cmd {
   final VoidCallback? onTap;
   final bool active;
   final bool danger;
+
+  /// The underline color; `null` paints the line transparent.
+  final Color? swatch;
+
+  /// Present on the two palette commands.
+  final _ColorMenu? color;
+}
+
+/// The palette: six theme colors, clear, and the custom picker's door.
+class _ColorPopover extends StatelessWidget {
+  const _ColorPopover({
+    required this.channel,
+    required this.current,
+    required this.arrow,
+    required this.onPick,
+    required this.onCustom,
+  });
+
+  final TableCellColorChannel channel;
+  final CellColor? current;
+
+  /// The arrow's center, measured from the card's left edge.
+  final double arrow;
+
+  final ValueChanged<CellColor?> onPick;
+  final VoidCallback onCustom;
+
+  static const Map<CellColorToken, String> _full = <CellColorToken, String>{
+    CellColorToken.gray: '灰色',
+    CellColorToken.amber: '琥珀色',
+    CellColorToken.green: '绿色',
+    CellColorToken.blue: '蓝色',
+    CellColorToken.purple: '紫色',
+    CellColorToken.red: '红色',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    final bool fill = channel == TableCellColorChannel.fill;
+    final CellColor? custom = current?.custom == null
+        ? null
+        : CellColor.custom(current!.custom!);
+
+    return Stack(
+      clipBehavior: Clip.none,
+      children: <Widget>[
+        Container(
+          key: const ValueKey<String>('table-color-popover'),
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: p.surfaceRaised,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: p.outline),
+            boxShadow: <BoxShadow>[
+              BoxShadow(
+                color: p.shadow,
+                blurRadius: 40,
+                offset: const Offset(0, 18),
+              ),
+              BoxShadow(
+                color: p.shadow,
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              SizedBox(
+                height: 22,
+                child: Row(
+                  children: <Widget>[
+                    Padding(
+                      padding: const EdgeInsets.only(left: 2),
+                      child: Text(
+                        fill ? '填充颜色' : '文字颜色',
+                        style: TextStyle(
+                          fontSize: AppText.caption,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.2,
+                          color: p.textPrimary,
+                        ),
+                      ),
+                    ),
+                    const Spacer(),
+                    _PopoverClear(
+                      label: fill ? '无填充' : '无颜色',
+                      onTap: () => onPick(null),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: <Widget>[
+                  for (int i = 0; i < CellColorToken.values.length; i++) ...[
+                    if (i > 0) const SizedBox(width: 3),
+                    Expanded(
+                      child: _SwatchItem(
+                        color: _colorOf(p, CellColorToken.values[i]),
+                        name: _full[CellColorToken.values[i]]!,
+                        selected:
+                            current ==
+                            CellColor.token(CellColorToken.values[i]),
+                        onTap: () =>
+                            onPick(CellColor.token(CellColorToken.values[i])),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 9),
+              Container(height: 1, color: p.outlineSoft),
+              const SizedBox(height: 7),
+              _CustomColorRow(
+                hint: custom == null
+                    ? (fill ? '含透明度' : null)
+                    : hexText(Color(custom.custom!)),
+                onTap: onCustom,
+              ),
+            ],
+          ),
+        ),
+        Positioned(
+          left: arrow - 4.5,
+          top: -4.5,
+          child: _PopoverArrow(palette: p),
+        ),
+      ],
+    );
+  }
+
+  Color _colorOf(AppPalette p, CellColorToken token) {
+    final CellColor color = CellColor.token(token);
+    return channel == TableCellColorChannel.fill
+        ? tableFillColor(p, color)
+        : tableInkColor(p, color);
+  }
+}
+
+class _PopoverClear extends StatelessWidget {
+  const _PopoverClear({required this.label, required this.onTap});
+
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    return HoverBuilder(
+      cursor: SystemMouseCursors.click,
+      builder: (BuildContext context, bool hovered) {
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          child: AnimatedContainer(
+            duration: AppMotion.fast,
+            height: 22,
+            padding: const EdgeInsets.symmetric(horizontal: 5),
+            decoration: BoxDecoration(
+              color: hovered ? p.surfaceSunken : Colors.transparent,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Icon(
+                  LucideIcons.ban,
+                  size: 12,
+                  color: hovered ? p.textPrimary : p.textSecondary,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: hovered ? p.textPrimary : p.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// One preset: a 26px well that carries a check when it is the cell's current
+/// color. The ring is drawn with spread shadows so the well stays inside its
+/// sixth of the 220px card.
+class _SwatchItem extends StatelessWidget {
+  const _SwatchItem({
+    required this.color,
+    required this.name,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final Color color;
+  final String name;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    final Color check = AppPalette.readableOn(color);
+    return HoverBuilder(
+      cursor: SystemMouseCursors.click,
+      builder: (BuildContext context, bool hovered) {
+        return Tooltip(
+          message: name,
+          waitDuration: const Duration(milliseconds: 500),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onTap,
+            child: Center(
+              child: AnimatedContainer(
+                duration: AppMotion.fast,
+                width: 26,
+                height: 26,
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: Colors.black.withValues(alpha: 0.08),
+                  ),
+                  boxShadow: selected
+                      ? <BoxShadow>[
+                          BoxShadow(color: p.surface, spreadRadius: 1.5),
+                          BoxShadow(color: p.accent, spreadRadius: 3),
+                        ]
+                      : hovered
+                      ? <BoxShadow>[
+                          BoxShadow(color: p.surface, spreadRadius: 1.5),
+                          BoxShadow(color: p.outline, spreadRadius: 3),
+                        ]
+                      : null,
+                ),
+                child: selected
+                    ? Icon(LucideIcons.check, size: 12, color: check)
+                    : null,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _CustomColorRow extends StatelessWidget {
+  const _CustomColorRow({required this.hint, required this.onTap});
+
+  final String? hint;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    return HoverBuilder(
+      cursor: SystemMouseCursors.click,
+      builder: (BuildContext context, bool hovered) {
+        final String? hint = this.hint;
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          child: AnimatedContainer(
+            duration: AppMotion.fast,
+            height: 30,
+            padding: const EdgeInsets.symmetric(horizontal: 5),
+            decoration: BoxDecoration(
+              color: hovered ? p.surfaceSunken : Colors.transparent,
+              borderRadius: BorderRadius.circular(5),
+            ),
+            child: Row(
+              children: <Widget>[
+                Icon(
+                  LucideIcons.palette,
+                  size: 14,
+                  color: hovered ? p.textPrimary : p.textSecondary,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '自定义…',
+                  style: TextStyle(
+                    fontSize: AppText.caption,
+                    color: hovered ? p.textPrimary : p.textSecondary,
+                  ),
+                ),
+                if (hint != null) ...<Widget>[
+                  const Spacer(),
+                  Text(
+                    hint,
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontFamily: AppFonts.mono,
+                      fontFamilyFallback: AppFonts.monoFallback,
+                      color: p.textTertiary,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// The little rotated square that points back at the button.
+class _PopoverArrow extends StatelessWidget {
+  const _PopoverArrow({required this.palette});
+
+  final AppPalette palette;
+
+  @override
+  Widget build(BuildContext context) {
+    return Transform.rotate(
+      angle: math.pi / 4,
+      child: Container(
+        width: 9,
+        height: 9,
+        decoration: BoxDecoration(
+          color: palette.surfaceRaised,
+          border: Border(
+            top: BorderSide(color: palette.outline),
+            left: BorderSide(color: palette.outline),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The custom-color card: the existing picker, confirmed in one edit.
+///
+/// [AppColorPicker] reports every drag frame; the dialog only holds the live
+/// value and returns it on 「应用」, so the document sees one directive edit
+/// instead of one per frame.
+class _TableColorDialog extends StatefulWidget {
+  const _TableColorDialog({required this.channel, required this.initial});
+
+  final TableCellColorChannel channel;
+  final Color initial;
+
+  @override
+  State<_TableColorDialog> createState() => _TableColorDialogState();
+}
+
+class _TableColorDialogState extends State<_TableColorDialog> {
+  static const double _width = 296;
+
+  late Color _color = widget.initial;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    final bool fill = widget.channel == TableCellColorChannel.fill;
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.escape): () =>
+            Navigator.of(context).pop(),
+      },
+      child: Center(
+        child: Material(
+          type: MaterialType.transparency,
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpace.xl),
+            child: SizedBox(
+              width: _width,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: p.surfaceRaised,
+                  borderRadius: AppRadius.lgAll,
+                  border: Border.all(color: p.outline),
+                  boxShadow: <BoxShadow>[
+                    BoxShadow(
+                      color: p.shadow,
+                      blurRadius: 34,
+                      offset: const Offset(0, 12),
+                    ),
+                    BoxShadow(
+                      color: p.shadow,
+                      blurRadius: 3,
+                      offset: const Offset(0, 1),
+                    ),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: AppRadius.lgAll,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: <Widget>[
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 13, 16, 2),
+                        child: Row(
+                          children: <Widget>[
+                            Icon(
+                              fill
+                                  ? LucideIcons.paintBucket
+                                  : LucideIcons.baseline,
+                              size: 14,
+                              color: p.textSecondary,
+                            ),
+                            const SizedBox(width: 7),
+                            Text(
+                              fill ? '填充颜色' : '文字颜色',
+                              style: TextStyle(
+                                fontSize: AppText.ui,
+                                fontWeight: FontWeight.w600,
+                                color: p.textPrimary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                        child: Text(
+                          fill ? '支持透明度；自定义色写回 #AARRGGBB。' : '自定义色写回 #RRGGBB。',
+                          style: TextStyle(
+                            fontSize: AppText.caption,
+                            height: 1.5,
+                            color: p.textTertiary,
+                          ),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+                        child: AppColorPicker(
+                          color: _color,
+                          showAlpha: fill,
+                          width: 248,
+                          onChanged: (Color color) =>
+                              setState(() => _color = color),
+                          onChangeEnd: (Color color) {
+                            if (mounted) setState(() => _color = color);
+                          },
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.fromLTRB(16, 10, 14, 10),
+                        decoration: BoxDecoration(
+                          border: Border(top: BorderSide(color: p.outlineSoft)),
+                        ),
+                        child: Row(
+                          children: <Widget>[
+                            Text(
+                              'Esc 取消',
+                              style: TextStyle(
+                                fontSize: AppText.caption,
+                                color: p.textTertiary,
+                              ),
+                            ),
+                            const Spacer(),
+                            OutlinedButton(
+                              onPressed: () => Navigator.of(context).pop(),
+                              child: const Text('取消'),
+                            ),
+                            const SizedBox(width: AppSpace.sm),
+                            FilledButton(
+                              onPressed: () =>
+                                  Navigator.of(context).pop(_color),
+                              child: const Text('应用'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+TableMerge? _mergeAt(List<TableMerge> merges, int row, int column) {
+  for (final TableMerge merge in merges) {
+    if (merge.covers(row, column)) return merge;
+  }
+  return null;
+}
+
+/// Whether the selection cuts through an existing merge instead of containing
+/// it whole; the tooltip then says why the button is dark.
+bool _mergeNeedsSplit(TableRange? range, List<TableMerge> merges) {
+  if (range == null) return false;
+  for (final TableMerge merge in merges) {
+    if (!merge.intersects(
+      range.firstRow,
+      range.lastRow,
+      range.firstColumn,
+      range.lastColumn,
+    )) {
+      continue;
+    }
+    final bool contained =
+        range.firstRow <= merge.row &&
+        merge.lastRow <= range.lastRow &&
+        range.firstColumn <= merge.column &&
+        merge.lastColumn <= range.lastColumn;
+    if (!contained) return true;
+  }
+  return false;
+}
+
+/// Whether 「合并居中」 can run: a rectangle of at least two cells that does
+/// not touch a merge already on the table.
+bool _canMerge(TableRange? range, List<TableMerge> merges) {
+  if (range == null || range.cellCount < 2) return false;
+  for (final TableMerge merge in merges) {
+    if (merge.intersects(
+      range.firstRow,
+      range.lastRow,
+      range.firstColumn,
+      range.lastColumn,
+    )) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// The color both commands should show: the cell's own color, or the one
+/// color the selection shares. Mixed colors report `null`, which leaves the
+/// swatch line blank and no preset checked.
+CellColor? _rangeColor(
+  TableBlock table,
+  List<TableMerge> merges,
+  TableRange? range,
+  int row,
+  int column,
+  TableCellColorChannel channel,
+) {
+  if (range == null) return _colorAt(table, merges, row, column, channel);
+  CellColor? seen;
+  bool first = true;
+  for (int r = range.firstRow; r <= range.lastRow; r++) {
+    for (int c = range.firstColumn; c <= range.lastColumn; c++) {
+      final TableMerge? merge = _mergeAt(merges, r, c);
+      if (merge != null && !(merge.row == r && merge.column == c)) continue;
+      final CellColor? color = _colorAt(table, merges, r, c, channel);
+      if (first) {
+        seen = color;
+        first = false;
+      } else if (color != seen) {
+        return null;
+      }
+    }
+  }
+  return seen;
+}
+
+/// The color of one channel on the cell — the anchor's when the cell is
+/// covered, because that is the cell the user sees.
+CellColor? _colorAt(
+  TableBlock table,
+  List<TableMerge> merges,
+  int row,
+  int column,
+  TableCellColorChannel channel,
+) {
+  final TableMerge? merge = _mergeAt(merges, row, column);
+  final int r = merge?.row ?? row;
+  final int c = merge?.column ?? column;
+  final List<TableRow> body = table.bodyRows;
+  if (r < 0 || r >= body.length) return null;
+  final List<TableCell> cells = body[r].cells;
+  if (c < 0 || c >= cells.length) return null;
+  final TableCellStyle style = cells[c].style;
+  return channel == TableCellColorChannel.fill ? style.fill : style.text;
+}
+
+/// Where the custom picker starts: the cell's current color, or a sensible
+/// paper/ink default. Text colors are opaque — a transparent glyph color
+/// would make the cell's text vanish.
+Color _pickerSeed(
+  AppPalette p,
+  CellColor? color,
+  TableCellColorChannel channel,
+) {
+  if (color == null) {
+    return channel == TableCellColorChannel.fill
+        ? p.surfaceSunken
+        : p.textPrimary;
+  }
+  final Color resolved = channel == TableCellColorChannel.fill
+      ? tableFillColor(p, color)
+      : tableInkColor(p, color);
+  return channel == TableCellColorChannel.text
+      ? Color(0xFF000000 | (resolved.toARGB32() & 0xFFFFFF))
+      : resolved;
 }
 
 ({int row, int column}) _cellOf(TableBlock block, int offset) {

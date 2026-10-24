@@ -469,4 +469,252 @@ void main() {
       );
     });
   });
+
+  group('列宽语法', () {
+    const String sized =
+        '| <!--nrs w=180,240-->指标 | 本周 |\n'
+        '| --- | ---: |\n'
+        '| 新增 | 42 |';
+
+    test('reads a width list off the first row and hides the directive', () {
+      final TableBlock block = blockOf(sized);
+      expect(block.columnWidths, <int>[180, 240]);
+      expect(block.bodyRows.first.cells.first.text, '指标');
+      expect(block.bodyRows.first.cells.first.hasDirective, isTrue);
+    });
+
+    test('no directive means automatic widths', () {
+      expect(blockOf(numbers).columnWidths, isNull);
+    });
+
+    test('a list that is not one positive integer per column is ignored', () {
+      for (final String widths in <String>[
+        '180',
+        '180,240,120',
+        '180,0',
+        '180,-240',
+        '180,abc',
+        '180,2.5',
+      ]) {
+        final TableBlock block = blockOf(
+          '| <!--nrs w=$widths-->指标 | 本周 |\n'
+          '| --- | ---: |\n'
+          '| 新增 | 42 |',
+        );
+        expect(block.columnWidths, isNull, reason: widths);
+      }
+    });
+
+    test('the first duplicate w wins and unknown keys do not interfere', () {
+      final TableBlock block = blockOf(
+        '| <!--nrs foo=1 w=180,240 w=300,400-->指标 | 本周 |\n'
+        '| --- | ---: |\n'
+        '| 新增 | 42 |',
+      );
+      expect(block.columnWidths, <int>[180, 240]);
+    });
+
+    test('rendering a grid writes the widths into the first row', () {
+      final TableGrid grid = TableGrid.fromBlock(blockOf(sized));
+      expect(grid.widths, <int>[180, 240]);
+      expect(grid.render(), sized);
+    });
+
+    test('a new table has no manual widths', () {
+      final TextEditingValue out = insertTable()(
+        const TextEditingValue(selection: TextSelection.collapsed(offset: 0)),
+      );
+      expect(out.text, isNot(contains('w=')));
+    });
+  });
+
+  group('列宽与结构命令', () {
+    const String sized =
+        '| <!--nrs w=180,240-->指标 | 本周 |\n'
+        '| --- | ---: |\n'
+        '| 新增 | 42 |';
+    TableBlock sizedBlock() => blockOf(sized);
+
+    test('inserting a column copies its neighbour and keeps the count', () {
+      final TableEditResult right = TableCommands.insertColumn(
+        sizedBlock(),
+        row: 0,
+        column: 0,
+        right: true,
+      );
+      expect(right.text.split('\n').first, contains('w=180,180,240'));
+
+      final TableEditResult left = TableCommands.insertColumn(
+        sizedBlock(),
+        row: 0,
+        column: 0,
+        right: false,
+      );
+      expect(left.text.split('\n').first, contains('w=180,180,240'));
+    });
+
+    test('deleting and moving a column move their width with it', () {
+      final TableEditResult deleted = TableCommands.deleteColumn(
+        sizedBlock(),
+        row: 0,
+        column: 0,
+      )!;
+      expect(deleted.text.split('\n').first, contains('w=240'));
+
+      final TableEditResult moved = TableCommands.moveColumn(
+        sizedBlock(),
+        from: 0,
+        to: 1,
+        row: 0,
+      )!;
+      expect(moved.text.split('\n').first, contains('w=240,180'));
+    });
+
+    test('duplicating, clearing and inserting rows keep the widths', () {
+      final TableEditResult duplicated = TableCommands.duplicateColumn(
+        sizedBlock(),
+        row: 0,
+        column: 0,
+      )!;
+      expect(duplicated.text.split('\n').first, contains('w=180,180,240'));
+
+      final TableEditResult cleared = TableCommands.clearRect(
+        sizedBlock(),
+        fromRow: 1,
+        toRow: 1,
+        fromColumn: 0,
+        toColumn: 1,
+      );
+      expect(cleared.text.split('\n').first, contains('w=180,240'));
+
+      final TableEditResult rowAdded = TableCommands.insertRow(
+        sizedBlock(),
+        row: 0,
+        above: true,
+      );
+      expect(rowAdded.text.split('\n').first, contains('w=180,240'));
+    });
+
+    test('transposing drops the widths', () {
+      final TableEditResult out = TableCommands.transpose(
+        sizedBlock(),
+        row: 0,
+        column: 0,
+      );
+      expect(out.text, isNot(contains('w=')));
+    });
+  });
+
+  group('resizeTableColumns', () {
+    const String plain =
+        '| 指标 | 本周 |\n'
+        '| --- | ---: |\n'
+        '| 新增 | 42 |';
+
+    test('inserts a directive before the first cell and shifts the caret', () {
+      final int caret = plain.indexOf('42') + 2;
+      final TextEditingValue out = resizeTableColumns(
+        TextEditingValue(
+          text: plain,
+          selection: TextSelection.collapsed(offset: caret),
+        ),
+        tableId: 0,
+        widths: <int>[180, 240],
+      )!;
+      expect(
+        out.text,
+        '| <!--nrs w=180,240-->指标 | 本周 |\n'
+        '| --- | ---: |\n'
+        '| 新增 | 42 |',
+      );
+      expect(out.selection.start, caret + '<!--nrs w=180,240-->'.length);
+      expect(out.composing, TextRange.empty);
+    });
+
+    test('rebuilds the directive in c r bg fg w order, keeping extras', () {
+      const String formatted =
+          '| <!--nrs c=2 bg=amber foo=1 w=180,240-->标题 |  |\n'
+          '| --- | --- |\n'
+          '| 一 | 二 |';
+      final TextEditingValue out = resizeTableColumns(
+        const TextEditingValue(
+          text: formatted,
+          selection: TextSelection.collapsed(offset: 0),
+        ),
+        tableId: 0,
+        widths: <int>[200, 260],
+      )!;
+      expect(
+        out.text.split('\n').first,
+        '| <!--nrs c=2 bg=amber w=200,260 foo=1-->标题 |  |',
+      );
+      expect(out.selection.start, 0);
+    });
+
+    test('does nothing when the widths are already the stored ones', () {
+      const String sized =
+          '| <!--nrs w=180,240-->指标 | 本周 |\n'
+          '| --- | ---: |\n'
+          '| 新增 | 42 |';
+      expect(
+        resizeTableColumns(
+          const TextEditingValue(
+            text: sized,
+            selection: TextSelection.collapsed(offset: 0),
+          ),
+          tableId: 0,
+          widths: <int>[180, 240],
+        ),
+        isNull,
+      );
+    });
+
+    test('rejects the wrong count and non-positive widths', () {
+      const TextEditingValue raw = TextEditingValue(
+        text: plain,
+        selection: TextSelection.collapsed(offset: 0),
+      );
+      expect(
+        resizeTableColumns(raw, tableId: 0, widths: <int>[180]),
+        isNull,
+      );
+      expect(
+        resizeTableColumns(raw, tableId: 0, widths: <int>[180, 0]),
+        isNull,
+      );
+    });
+
+    test('maps selections on both sides of the new directive', () {
+      const String doc = '前文\n$plain\n后文';
+      final int table = doc.indexOf('| 指标');
+      final int after = doc.indexOf('后文');
+
+      final TextEditingValue before = resizeTableColumns(
+        TextEditingValue(
+          text: doc,
+          selection: const TextSelection.collapsed(offset: 1),
+        ),
+        tableId: table,
+        widths: <int>[180, 240],
+      )!;
+      expect(before.selection.start, 1);
+
+      final TextEditingValue afterEdit = resizeTableColumns(
+        TextEditingValue(
+          text: doc,
+          selection: TextSelection(
+            baseOffset: table,
+            extentOffset: after,
+          ),
+        ),
+        tableId: table,
+        widths: <int>[180, 240],
+      )!;
+      expect(afterEdit.selection.baseOffset, table);
+      expect(
+        afterEdit.selection.extentOffset,
+        after + '<!--nrs w=180,240-->'.length,
+      );
+    });
+  });
 }

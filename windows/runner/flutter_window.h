@@ -29,6 +29,10 @@ class FlutterWindow : public Win32Window {
   // state of the left button and Escape.
   void RegisterScreenChannel();
 
+  // The `nrs/clipboard` channel: returns a clipboard bitmap as PNG bytes, or
+  // as raw RGBA that Dart encodes itself when only a DIB is available.
+  void RegisterClipboardChannel();
+
   // Shrinks the window to a slim bar at the bottom of the work area while the
   // eyedropper is live, so the screen being sampled is actually visible.
   void CollapseForSampling();
@@ -46,6 +50,9 @@ class FlutterWindow : public Win32Window {
   // reference to the handler inside it.
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       screen_channel_;
+
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      clipboard_channel_;
 
   // The geometry to come back to after an eyedropper pick. Captured before the
   // collapse; SetWindowPlacement restores the normal rect and the maximised

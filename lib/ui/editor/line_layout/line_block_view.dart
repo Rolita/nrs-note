@@ -70,7 +70,32 @@ typedef LineBlockResolver =
 // 的这一个文件里，就不必让通用渲染层反过来依赖 live 层。
 
 /// 实时表格挂在表格边缘的小控件：拖整行、拖整列，以及在两个方向上加一行/列。
-enum TableChromeKind { rowHandle, columnHandle, addRow, addColumn }
+///
+/// [resizeColumn] 不是画出来的图标：它的命中区就是两根柱子之间的那条 1px
+/// 竖线，悬停时改画一条线，而不是抓手。
+enum TableChromeKind {
+  rowHandle,
+  columnHandle,
+  addRow,
+  addColumn,
+
+  /// 第 `index` 列与第 `index + 1` 列之间的分隔线。
+  resizeColumn,
+}
+
+/// 悬停时显形的两片抓手区：左侧的每一行、上方的每一列。
+///
+/// 一条边上只露**指针所在那一行/列**的一枚抓手：鼠标沿着边扫过去，抓手
+/// 跟着行/列走，而不是整排同时出现。
+enum TableChromeStrip { rows, columns }
+
+/// 表格 chrome 伸出内容区左上侧的最大距离（抓手 20px + 间距 5px + 悬停
+/// 容差 6px）。
+///
+/// 块行的 `insets` 是零，表格的左缘就顶在内容原点；行抓手因此落在文档
+/// 坐标的负 x 上。字段的绘制裁剪得向这两个方向放宽这么多，抓手才画得
+/// 出来（右侧、下侧不动：正文从不为负坐标，只有 chrome 会伸出去）。
+const double kTableChromeBleed = 31;
 
 /// 一个画出来的 chrome 控件，**全局坐标**。
 class TableChromeTarget {
@@ -107,9 +132,31 @@ abstract class TableRowChrome {
   /// 那一格仍是成品」只体现在这棵树上，所以命中调试与测试读这里。
   List<InlineSpan> chromeCellSpans();
 
+  /// 各列的文字宽（不含内边距），渲染像素，从左到右。
+  List<double> chromeColumnWidths();
+
+  /// 整张表可用的文字总宽，渲染像素。
+  double chromeColumnRoom();
+
+  /// 渲染像素 / 源码 `w=…` 里的设计像素。
+  double chromeWidthScale();
+
   /// 这一行**可能**画出的所有抓手与 `+`，全局坐标。命中测试用它：
   /// 指针只有悬停在上面时才够得到，而那也正是它可见的条件。
   List<TableChromeTarget> chromeTargets();
+
+  /// [globalPosition] 落在哪一片整条抓手区里，不在边上时为 `null`。
+  ///
+  /// 左侧是整张表高的窄条，上方是整张表宽的窄条。命中测试仍按单枚抓手
+  /// 算（见 [chromeTargets]）；这里只回答「指针有没有进这条边」。
+  TableChromeStrip? chromeStripAt(Offset globalPosition);
+
+  /// [globalPosition] 落在 [strip] 边上的哪一行/列（行下标或列下标），
+  /// 不在本行/列的范围里时为 `null`。
+  ///
+  /// 可见性按它算：一行只答自己那行（或第一行答每一列），指针扫过边的
+  /// 时候只有指针下的那一枚抓手显形。
+  int? chromeStripIndexAt(Offset globalPosition, TableChromeStrip strip);
 
   /// 此刻真的画出来的那一部分——只随悬停出现，拖动时是落点目标。
   List<TableChromeTarget> chromeVisible();
@@ -120,4 +167,36 @@ abstract class TableRowChrome {
   /// 对象每次查询前把这份原点写进来。自己就从渲染对象算出全局坐标的实现
   /// （旧的段落内表格行）把它当空操作。
   set chromeOrigin(Offset value);
+}
+
+// ------------------------------------------------------------- 图片的控件层
+//
+// 图片块同样由渲染对象持有。它的右下角手柄要在指针事件里命中，而图片行的
+// 源码偏移会随着上方编辑整体平移——行本身被复用、块却不重测——所以渲染
+// 对象每次绘制/查询时把当前行范围回写进来，命中与光标映射才不会落在旧偏移上。
+
+/// 图片块右下角缩放手柄的命中区，**全局坐标**。
+class ImageResizeHandle {
+  const ImageResizeHandle(this.rect);
+
+  /// 建议 14×14，中心在图片右下角。
+  final Rect rect;
+}
+
+/// 指针层需要一行实时图片回答的东西。
+abstract class ImageBlockChrome {
+  /// 图片行首字符的文档偏移。
+  int get imageSourceStart;
+
+  /// 把这一行当前的源码范围写回来（上方编辑会让整行平移）。
+  void chromeSourceRange(int start, int end);
+
+  /// 本行左上角的全局坐标；渲染对象每次查询前写入。
+  set chromeOrigin(Offset value);
+
+  /// 图片矩形，全局坐标。
+  Rect chromeImageBounds();
+
+  /// 不可缩放时 null。
+  ImageResizeHandle? chromeResizeHandle();
 }

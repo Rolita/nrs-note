@@ -456,12 +456,90 @@ MarkdownEditFn insertDivider() {
 /// The selection that puts a cell under the user's fingers: its text, or the
 /// whole cell (padding included) when it holds nothing — so the first keystroke
 /// replaces the placeholder instead of landing next to it.
-TextSelection _cellSelection(TableCell cell) => cell.isEmpty
-    ? TextSelection(baseOffset: cell.start, extentOffset: cell.end)
-    : TextSelection(
-        baseOffset: cell.contentStart,
-        extentOffset: cell.contentEnd,
-      );
+TextSelection _cellSelection(TableCell cell) {
+  if (cell.isEmpty && !cell.hasDirective) {
+    return TextSelection(baseOffset: cell.start, extentOffset: cell.end);
+  }
+  return TextSelection(
+    baseOffset: cell.contentStart,
+    extentOffset: cell.contentEnd,
+  );
+}
+
+/// The merge covering `(row, column)`, anchor included.
+TableMerge? _mergeCovering(List<TableMerge> merges, int row, int column) {
+  for (final TableMerge m in merges) {
+    if (m.covers(row, column)) return m;
+  }
+  return null;
+}
+
+/// Whether the cell at `(row, column)` is hidden under a merge anchored
+/// somewhere else. A covered cell is not a valid landing spot for Tab or an
+/// arrow key: the merge is one cell to the user.
+bool _coveredCell(List<TableMerge> merges, int row, int column) {
+  final TableMerge? m = _mergeCovering(merges, row, column);
+  return m != null && !(m.row == row && m.column == column);
+}
+
+/// The anchor of the merge covering `(row, column)`, or the cell itself.
+(int, int) _anchorOf(List<TableMerge> merges, int row, int column) {
+  final TableMerge? m = _mergeCovering(merges, row, column);
+  return m == null ? (row, column) : (m.row, m.column);
+}
+
+/// The cell a caret should act on: the merge's anchor — or, in the source
+/// escape hatch, the covered cell itself.
+///
+/// A caret only ever lands in a covered cell from outside the keyboard (a
+/// search hit, a paste). While it sits there the renderer paints that table
+/// unmerged, so the covered cell's own text is what the user sees and the
+/// caret has to move through it like an ordinary cell.
+(int, int) _caretCell(List<TableMerge> merges, int row, int column) =>
+    _coveredCell(merges, row, column)
+    ? (row, column)
+    : _anchorOf(merges, row, column);
+
+/// The first enterable cell at or after `(fromRow, fromColumn)`, row-major.
+///
+/// Covered cells are skipped, so a Tab out of a merge lands *after* the whole
+/// block, never inside a cell whose text the renderer does not draw. `null`
+/// means there is no such cell below — the caller appends a row.
+TableCell? _firstEnterableCell(
+  List<TableMerge> merges,
+  List<TableRow> body,
+  int fromRow,
+  int fromColumn,
+) {
+  for (int r = math.max(0, fromRow); r < body.length; r++) {
+    final List<TableCell> cells = body[r].cells;
+    for (int c = r == fromRow ? fromColumn : 0; c < cells.length; c++) {
+      if (_coveredCell(merges, r, c)) continue;
+      return cells[c];
+    }
+  }
+  return null;
+}
+
+/// The last enterable cell at or before `(fromRow, fromColumn)`, backwards.
+TableCell? _lastEnterableCell(
+  List<TableMerge> merges,
+  List<TableRow> body,
+  int fromRow,
+  int fromColumn,
+) {
+  for (int r = math.min(fromRow, body.length - 1); r >= 0; r--) {
+    final List<TableCell> cells = body[r].cells;
+    for (int c = r == fromRow ? fromColumn : cells.length - 1; c >= 0; c--) {
+      if (_coveredCell(merges, r, c)) continue;
+      return cells[c];
+    }
+  }
+  return null;
+}
+
+TextEditingValue _cellValue(String text, TableCell cell) =>
+    TextEditingValue(text: text, selection: _cellSelection(cell));
 
 TextEditingValue _valueOf(TableEditResult edit) =>
     TextEditingValue(text: edit.text, selection: edit.selection);
@@ -538,6 +616,98 @@ TextEditingValue? setTableCellText(
   return _valueOf(edited);
 }
 
+/// Writes manual column widths into the table's first cell.
+///
+/// A resize is not a structural edit: every other byte of the table — spacing,
+/// pipe style, the text itself — must stay exactly where the user left it. So
+/// this replaces (or inserts) **one directive**, not the whole rendered block,
+/// which also means the selection only has to be shifted by the directive's
+/// length delta.
+///
+/// Returns `null` when the table cannot be found, the widths are malformed, or
+/// nothing would change.
+TextEditingValue? resizeTableColumns(
+  TextEditingValue raw, {
+  required int tableId,
+  required List<int> widths,
+}) {
+  final TableBlock? block = TableBlock.parse(
+    raw.text,
+    tableId.clamp(0, raw.text.length),
+  );
+  if (block == null || block.start != tableId) return null;
+  if (widths.length != block.columns || widths.any((int w) => w <= 0)) {
+    return null;
+  }
+  final List<TableRow> body = block.bodyRows;
+  if (body.isEmpty || body.first.cells.isEmpty) return null;
+  final TableCell cell = body.first.cells.first;
+
+  final List<int>? current = block.columnWidths;
+  if (current != null &&
+      current.length == widths.length &&
+      Iterable<int>.generate(
+        widths.length,
+      ).every((int i) => current[i] == widths[i])) {
+    return null;
+  }
+
+  final (int, int)? range = tableDirectiveRange(cell.raw);
+  final String directive = cell.style.directiveFor(widths: widths);
+  final int from;
+  final int to;
+  final String replacement;
+  if (range == null) {
+    from = cell.contentStart;
+    to = from;
+    replacement = directive;
+  } else {
+    from = cell.start + range.$1;
+    to = cell.start + range.$2;
+    // Known keys are rebuilt in their canonical order; keys this app does not
+    // own follow, so a hand-edited directive keeps its extra data.
+    final Set<String> known = <String>{'c', 'r', 'bg', 'fg', 'w'};
+    final List<String> extras = <String>[
+      for (final (String key, String value) in tableDirectivePairs(cell.raw))
+        if (!known.contains(key)) '$key=$value',
+    ];
+    replacement = extras.isEmpty
+        ? directive
+        : '${directive.substring(0, directive.length - 3)} ${extras.join(' ')}-->';
+  }
+  if (from == to && replacement.isEmpty) return null;
+  final String next = raw.text.replaceRange(from, to, replacement);
+  if (next == raw.text) return null;
+
+  final int delta = replacement.length - (to - from);
+  int map(int offset) {
+    if (offset < 0) return offset;
+    // An insertion at the caret belongs *after* the caret: the directive is
+    // metadata, and leaving the caret in front of it would make the next
+    // keystroke land inside the hidden comment.
+    if (from == to) return offset >= from ? offset + delta : offset;
+    if (offset <= from) return offset;
+    if (offset >= to) return offset + delta;
+    // Normally unreachable: no user gesture puts a caret inside a directive.
+    return from;
+  }
+
+  final TextSelection selection = raw.selection;
+  final TextSelection mapped = selection.isValid
+      ? TextSelection(
+          baseOffset: map(selection.baseOffset).clamp(0, next.length),
+          extentOffset: map(selection.extentOffset).clamp(0, next.length),
+          affinity: selection.affinity,
+          isDirectional: selection.isDirectional,
+        )
+      : selection;
+  return TextEditingValue(
+    text: next,
+    selection: mapped,
+    composing: TextRange.empty,
+  );
+}
+
 /// Inserts an empty table and drops the caret into its first cell.
 ///
 /// Two columns by two rows is the smallest shape that shows a header, a divider
@@ -551,8 +721,8 @@ MarkdownEditFn insertTable() {
     final String lead = at > 0 && text.substring(at - 1, at) != '\n'
         ? '\n'
         : '';
-    final String table = TableGrid(
-      rows: <List<String>>[
+    final String table = TableGrid.fromStrings(
+      <List<String>>[
         <String>['', ''],
         <String>['', ''],
       ],
@@ -1062,8 +1232,8 @@ TableGrid? _pastedGrid(String pasted) {
   if (isMarkdownTable(pasted)) return gridFromMarkdown(pasted.trim());
   final List<List<String>>? tsv = gridFromTsv(pasted);
   if (tsv == null) return null;
-  return TableGrid(
-    rows: tsv,
+  return TableGrid.fromStrings(
+    tsv,
     aligns: List<TableAlign>.filled(tsv.first.length, TableAlign.none),
     header: true,
   );
@@ -1117,11 +1287,14 @@ TextEditingValue pasteValue(
         toColumn: range.lastColumn,
         atRow: range.anchorRow,
         atColumn: range.anchorColumn,
-        values:
-            grid?.rows ??
-            <List<String>>[
-              <String>[unescapeCell(pasted.replaceAll('\r\n', '\n'))],
-            ],
+        values: grid == null
+            ? <List<String>>[
+                <String>[unescapeCell(pasted.replaceAll('\r\n', '\n'))],
+              ]
+            : <List<String>>[
+                for (final List<GridCell> row in grid.rows)
+                  <String>[for (final GridCell cell in row) cell.text],
+              ],
       ),
     );
   }
@@ -1178,7 +1351,10 @@ TextEditingValue pasteValue(
             ) ??
             joinedHost;
       }
-      final List<List<String>> rows = <List<String>>[...grid.rows];
+      final List<List<String>> rows = <List<String>>[
+        for (final List<GridCell> row in grid.rows)
+          <String>[for (final GridCell cell in row) cell.text],
+      ];
       if (grid.header) rows.removeAt(0);
       final TableEditResult joined = TableCommands.appendRows(joinedHost, rows);
       final TableBlock? fresh = TableBlock.parse(
@@ -1247,6 +1423,7 @@ TextEditingValue? tableCellStep(TextEditingValue raw, {required bool forward}) {
   if (block == null) return null;
   final List<TableRow> body = block.bodyRows;
   if (body.isEmpty) return null;
+  final List<TableMerge> merges = tableMergesOf(block);
 
   // A caret parked on the hidden divider is still *in* the table: forward goes
   // to the first row below it, backward to the last row above it — never into
@@ -1260,65 +1437,50 @@ TextEditingValue? tableCellStep(TextEditingValue raw, {required bool forward}) {
       final int r = body.indexWhere(
         (TableRow x) => x.start > v.selection.start,
       );
-      final TableRow target = body[r < 0 ? body.length - 1 : r];
-      return TextEditingValue(
-        text: v.text,
-        selection: _cellSelection(target.cells.first),
-      );
+      final int ri = r < 0 ? body.length - 1 : r;
+      final TableCell target =
+          _firstEnterableCell(merges, body, ri, 0) ?? body[ri].cells.first;
+      return _cellValue(v.text, target);
     }
     final int r = body.lastIndexWhere(
       (TableRow x) => x.end < v.selection.start,
     );
-    final TableRow target = body[r < 0 ? 0 : r];
-    return TextEditingValue(
-      text: v.text,
-      selection: _cellSelection(target.cells.last),
-    );
+    final int ri = r < 0 ? 0 : r;
+    final TableCell target =
+        _lastEnterableCell(merges, body, ri, body[ri].cells.length - 1) ??
+        body[ri].cells.last;
+    return _cellValue(v.text, target);
   }
 
-  final (int row, int column) = _cellOf(block, v.selection.start);
+  final (int rawRow, int rawColumn) = _cellOf(block, v.selection.start);
+  // Step from the merge's anchor: a covered cell is never a Tab target, and a
+  // merge counts as one cell on the way through.
+  final (int row, int column) = _anchorOf(merges, rawRow, rawColumn);
 
   if (!forward) {
-    if (column > 0) {
-      return TextEditingValue(
-        text: v.text,
-        selection: _cellSelection(body[row].cells[column - 1]),
-      );
-    }
-    if (row > 0) {
-      final List<TableCell> cells = body[row - 1].cells;
-      return TextEditingValue(
-        text: v.text,
-        selection: _cellSelection(cells[cells.length - 1]),
-      );
-    }
-    return TextEditingValue(
-      text: v.text,
-      selection: _cellSelection(body.first.cells.first),
-    );
+    final TableCell? target = _lastEnterableCell(merges, body, row, column - 1);
+    if (target != null) return _cellValue(v.text, target);
+    // Already at the first cell: stay on it.
+    return _cellValue(v.text, body.first.cells.first);
   }
 
-  if (column + 1 < body[row].cells.length) {
-    return TextEditingValue(
-      text: v.text,
-      selection: _cellSelection(body[row].cells[column + 1]),
-    );
-  }
-  if (row + 1 < body.length) {
-    return TextEditingValue(
-      text: v.text,
-      selection: _cellSelection(body[row + 1].cells.first),
-    );
-  }
-  // Past the last cell: grow the table by one row and land in its first cell.
+  final TableCell? target = _firstEnterableCell(merges, body, row, column + 1);
+  if (target != null) return _cellValue(v.text, target);
+
+  // Past the last cell: grow the table by one row **below the whole merge**
+  // and land in the new row's first cell, the same place Enter would leave a
+  // fresh table.
+  final int below = _mergeCovering(merges, row, column)?.lastRow ?? row;
   final TableEditResult grown = TableCommands.insertRow(
     block,
-    row: row,
+    row: below,
     above: false,
+    column: column,
   );
   final TableBlock fresh =
       TableBlock.parse(grown.text, block.start + 1) ?? block;
-  final TableRow last = fresh.bodyRows.last;
+  final TableRow last =
+      fresh.bodyRows[(below + 1).clamp(0, fresh.bodyRows.length - 1)];
   return TextEditingValue(
     text: grown.text,
     selection: last.cells.isEmpty
@@ -1359,7 +1521,11 @@ TextEditingValue? tableCaretToCellEdge(
   final TableBlock? block = TableBlock.parse(v.text, caret);
   if (block == null || block.bodyRows.isEmpty) return null;
   if (_onDivider(block, caret)) return null;
-  final (int row, int column) = tableCellAt(block, caret, extent: false);
+  final (int rawRow, int rawColumn) = tableCellAt(block, caret, extent: false);
+  final List<TableMerge> merges = tableMergesOf(block);
+  // A merge is one cell, so Home/End belong to the anchor's text — except in
+  // the escape hatch, where the covered cell is what the user is editing.
+  final (int row, int column) = _caretCell(merges, rawRow, rawColumn);
   final TableRow line = block.bodyRows[row];
   if (line.cells.isEmpty) return null;
   final TableCell cell = line.cells[column.clamp(0, line.cells.length - 1)];
@@ -1391,7 +1557,10 @@ TextEditingValue? tableCaretStepCell(
   final TableBlock? block = TableBlock.parse(v.text, caret);
   if (block == null || block.bodyRows.isEmpty) return null;
   if (_onDivider(block, caret)) return null;
-  final (int row, int column) = tableCellAt(block, caret, extent: false);
+  final (int rawRow, int rawColumn) = tableCellAt(block, caret, extent: false);
+  final List<TableMerge> merges = tableMergesOf(block);
+  final bool covered = _coveredCell(merges, rawRow, rawColumn);
+  final (int row, int column) = _caretCell(merges, rawRow, rawColumn);
   final TableRow line = block.bodyRows[row];
   if (line.cells.isEmpty) return null;
   final int c = column.clamp(0, line.cells.length - 1);
@@ -1399,30 +1568,30 @@ TextEditingValue? tableCaretStepCell(
   final int from = cell.contentStart;
   final int to = cell.contentEnd;
 
+  // In the escape hatch the table is painted unmerged, so the neighbouring
+  // cell is the raw one on screen. Everywhere else a covered cell is skipped:
+  // the merge is a single stop on the way.
+  final List<TableMerge> skipCovered = covered ? const <TableMerge>[] : merges;
+
   int target;
   if (forward) {
     if (caret < to) return null;
-    if (c + 1 < line.cells.length) {
-      target = line.cells[c + 1].contentStart;
-    } else if (row + 1 < block.bodyRows.length) {
-      target = block.bodyRows[row + 1].cells.isEmpty
-          ? block.bodyRows[row + 1].start
-          : block.bodyRows[row + 1].cells.first.contentStart;
-    } else {
-      target = to;
-    }
+    final TableCell? next = _firstEnterableCell(
+      skipCovered,
+      block.bodyRows,
+      row,
+      c + 1,
+    );
+    target = next?.contentStart ?? to;
   } else {
     if (caret > from) return null;
-    if (c > 0) {
-      target = line.cells[c - 1].contentEnd;
-    } else if (row > 0) {
-      final List<TableCell> above = block.bodyRows[row - 1].cells;
-      target = above.isEmpty
-          ? block.bodyRows[row - 1].start
-          : above.last.contentEnd;
-    } else {
-      target = from;
-    }
+    final TableCell? previous = _lastEnterableCell(
+      skipCovered,
+      block.bodyRows,
+      row,
+      c - 1,
+    );
+    target = previous?.contentEnd ?? from;
   }
   return TextEditingValue(
     text: v.text,
@@ -1451,16 +1620,46 @@ TextEditingValue? tableCaretVertical(
   final TableBlock? block = TableBlock.parse(v.text, caret);
   if (block == null || block.bodyRows.isEmpty) return null;
   if (_onDivider(block, caret)) return null;
-  final (int row, int column) = tableCellAt(block, caret, extent: false);
-  final int targetRow = down ? row + 1 : row - 1;
-  if (targetRow < 0 || targetRow >= block.bodyRows.length) return null;
+  final (int rawRow, int rawColumn) = tableCellAt(block, caret, extent: false);
+  final List<TableMerge> merges = tableMergesOf(block);
+  final bool covered = _coveredCell(merges, rawRow, rawColumn);
+  final (int row, int column) = _caretCell(merges, rawRow, rawColumn);
   final TableRow line = block.bodyRows[row];
   if (line.cells.isEmpty) return null;
   final TableCell cell = line.cells[column.clamp(0, line.cells.length - 1)];
-  final TableRow targetLine = block.bodyRows[targetRow];
-  if (targetLine.cells.isEmpty) return null;
-  final TableCell targetCell =
-      targetLine.cells[column.clamp(0, targetLine.cells.length - 1)];
+
+  // A rowspan is one cell: leaving it down / up means leaving the whole block.
+  final TableMerge? merge = covered
+      ? null
+      : _mergeCovering(merges, row, column);
+  int targetRow = merge == null
+      ? (down ? row + 1 : row - 1)
+      : (down ? merge.lastRow + 1 : merge.row - 1);
+  if (targetRow < 0 || targetRow >= block.bodyRows.length) {
+    // A multi-row merge that reaches the table's edge has no row beyond it:
+    // the next *line* is still the merged cell, so falling through to native
+    // line movement would park the caret in a covered cell. Consume the key
+    // instead. A one-row merge (a column span) really does leave the table.
+    return merge != null && merge.rowSpan > 1
+        ? TextEditingValue(
+            text: v.text,
+            selection: _caretAt(raw.selection, caret, extend),
+          )
+        : null;
+  }
+  // Moving up into a rowspan lands on its covered bottom row, which holds no
+  // text: the caret belongs on the anchor's cell. Moving down always enters a
+  // block at its anchor row, so only an upward move can change the row.
+  final TableMerge? entered = covered
+      ? null
+      : _mergeCovering(merges, targetRow, column);
+  if (entered != null) targetRow = entered.row;
+  final TableRow landed = block.bodyRows[targetRow];
+  if (landed.cells.isEmpty) return null;
+  final int targetColumn = entered != null
+      ? entered.column
+      : column.clamp(0, landed.cells.length - 1);
+  final TableCell targetCell = landed.cells[targetColumn];
   // Keep the position *inside the text*, not the absolute source offset: the
   // column above may be wider, and the caret should stay near the same word.
   final int within = (caret - cell.contentStart).clamp(
@@ -1488,10 +1687,16 @@ TextEditingValue? tableRowBelow(TextEditingValue raw) {
   final TextEditingValue v = _normalised(raw);
   final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
   if (block == null) return null;
-  final (int row, int column) = _cellOf(block, v.selection.start);
+  final (int rawRow, int rawColumn) = _cellOf(block, v.selection.start);
+  // The new row goes below the whole merge, and the caret keeps the merge's
+  // anchor column — a row inserted *inside* a rowspan would silently stretch
+  // the merge instead.
+  final List<TableMerge> merges = tableMergesOf(block);
+  final (int row, int column) = _caretCell(merges, rawRow, rawColumn);
+  final int below = _mergeCovering(merges, row, column)?.lastRow ?? row;
   final TableEditResult grown = TableCommands.insertRow(
     block,
-    row: row,
+    row: below,
     above: false,
     column: column,
   );
@@ -1500,7 +1705,7 @@ TextEditingValue? tableRowBelow(TextEditingValue raw) {
   final TableBlock fresh =
       TableBlock.parse(grown.text, block.start + 1) ?? block;
   final List<TableRow> body = fresh.bodyRows;
-  final TableRow target = body[(row + 1).clamp(0, body.length - 1)];
+  final TableRow target = body[(below + 1).clamp(0, body.length - 1)];
   if (target.cells.isEmpty) {
     return TextEditingValue(
       text: grown.text,
@@ -1677,6 +1882,124 @@ TextEditingValue? setTableAlignRange(
       align: align,
     ),
   );
+}
+
+/// Merges the washed rectangle into its top-left cell — the panel's 「合并居中」.
+///
+/// Only a block of cells can be merged: a lone caret has no rectangle, and a
+/// rectangle that touches an existing merge is refused, because a merge never
+/// overlaps another one. Covered cells are emptied and their text moves into
+/// the anchor, which is what keeps 「合并」 a move rather than a delete.
+TextEditingValue? mergeTableCells(
+  TextEditingValue raw, {
+  TableRangeResolver? resolve,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  final TableRange? range = tableRangeOf(v, resolve: resolve);
+  if (range == null || range.cellCount < 2) return null;
+  final TableBlock block = range.block;
+  for (final TableMerge merge in tableMergesOf(block)) {
+    if (merge.intersects(
+      range.firstRow,
+      range.lastRow,
+      range.firstColumn,
+      range.lastColumn,
+    )) {
+      return null;
+    }
+  }
+  final TableEditResult? edited = TableCommands.mergeCells(
+    block,
+    fromRow: range.firstRow,
+    toRow: range.lastRow,
+    fromColumn: range.firstColumn,
+    toColumn: range.lastColumn,
+  );
+  return edited == null ? null : _valueOf(edited);
+}
+
+/// Splits the merge the caret's cell belongs to — the panel's 「拆分单元格」.
+///
+/// The anchor keeps its text and colors; only the spans go. `null` when the
+/// cell is not part of a merge.
+TextEditingValue? splitTableCell(
+  TextEditingValue raw, {
+  TableRangeResolver? resolve,
+}) {
+  final ({TableBlock block, int row, int column, TableCell cell})? active =
+      tableActiveCell(raw, resolve: resolve);
+  if (active == null) return null;
+  final TableEditResult? edited = TableCommands.splitCell(
+    active.block,
+    row: active.row,
+    column: active.column,
+  );
+  return edited == null ? null : _valueOf(edited);
+}
+
+/// Sets or clears one color channel over the selected cells — the panel's two
+/// color commands.
+///
+/// The rectangle stays selected: filling a block and then coloring its text is
+/// two trips to the palette, and neither should cost the user the selection
+/// they made. Without a rectangle the caret's own cell is colored.
+TextEditingValue? setTableCellColor(
+  TextEditingValue raw, {
+  required TableCellColorChannel channel,
+  required CellColor? color,
+  TableRangeResolver? resolve,
+}) {
+  final TextEditingValue v = _normalised(raw);
+  final ({TableBlock block, int row, int column, TableCell cell})? active =
+      tableActiveCell(v, resolve: resolve);
+  if (active == null) return null;
+  final TableRange? range = tableRangeOf(v, resolve: resolve);
+  final TableEditResult edited = TableCommands.setCellColor(
+    active.block,
+    fromRow: range?.firstRow ?? active.row,
+    toRow: range?.lastRow ?? active.row,
+    fromColumn: range?.firstColumn ?? active.column,
+    toColumn: range?.lastColumn ?? active.column,
+    channel: channel,
+    color: color,
+  );
+  return range == null ? _valueOf(edited) : _keepRange(range, edited);
+}
+
+/// Rebinds [range] to the table [edited] produced.
+///
+/// A directive changes the block's length, so the old selection's offsets no
+/// longer name the same cells. One re-parse plus the range's own cell bounds
+/// keeps the wash where the user left it, which is what makes a second color
+/// land on the same rectangle.
+TextEditingValue _keepRange(TableRange range, TableEditResult edited) {
+  final TableBlock? fresh = TableBlock.parse(
+    edited.text,
+    range.block.start.clamp(0, edited.text.length),
+  );
+  if (fresh == null) return _valueOf(edited);
+  final TableRange next = switch (range.kind) {
+    TableRangeKind.rows => TableRange.rowsOf(
+      fresh,
+      range.firstRow,
+      range.lastRow,
+    ),
+    TableRangeKind.columns => TableRange.columnsOf(
+      fresh,
+      range.firstColumn,
+      range.lastColumn,
+    ),
+    TableRangeKind.cells => TableRange.rect(
+      fresh,
+      fromRow: range.firstRow,
+      toRow: range.lastRow,
+      fromColumn: range.firstColumn,
+      toColumn: range.lastColumn,
+      activeRow: range.anchorRow,
+      activeColumn: range.anchorColumn,
+    ),
+  };
+  return TextEditingValue(text: edited.text, selection: next.toTextSelection());
 }
 
 /// Adds or removes the header row of the table the caret is in.

@@ -51,7 +51,9 @@ void main() {
   }
 
   List<TableRowChrome> rows(WidgetTester tester) =>
-      tester.allRenderObjects.whereType<RenderLineEditable>().first
+      tester.allRenderObjects
+          .whereType<RenderLineEditable>()
+          .first
           .tableRows()
           .toList()
         ..sort(
@@ -182,14 +184,15 @@ void main() {
     final MarkdownSourceController controller = await pump(tester, text);
 
     // Just inside the left edge of `b` — this pixel is cell 2's padding, and
-    // the skeleton's gap widget between the cells covers it.
-    await click(tester, controller, 0, 1, dx: 0.03);
+    // the skeleton's gap widget between the cells covers it. Stay clear of the
+    // 3px resize band around the divider: that band is the resize handle.
+    await click(tester, controller, 0, 1, dx: 0.06);
     type(tester, controller, 'L');
     await tester.pumpAndSettle();
     expect(grid(controller)[0], <String>['a', 'Lb']);
 
     // Just inside the right edge of `a` — the previous cell's padding.
-    await click(tester, controller, 0, 0, dx: 0.97);
+    await click(tester, controller, 0, 0, dx: 0.94);
     type(tester, controller, 'R');
     await tester.pumpAndSettle();
     expect(grid(controller)[0], <String>['aR', 'Lb']);
@@ -508,6 +511,34 @@ void main() {
     expect(controller.text.split('\n')[1], '| --- | --- |');
   });
 
+  testWidgets('Backspace at the cell text start never eats the directive', (
+    WidgetTester tester,
+  ) async {
+    const String text =
+        '| <!--nrs bg=amber-->ab | cd |\n| --- | --- |\n| ef | gh |';
+    final MarkdownSourceController controller = await pump(tester, text);
+
+    await click(tester, controller, 0, 0);
+    await tester.sendKeyEvent(LogicalKeyboardKey.home);
+    await tester.pumpAndSettle();
+    final int start = TableBlock.parse(
+      controller.text,
+      0,
+    )!.bodyRows.first.cells.first.contentStart;
+    expect(controller.selection.baseOffset, start);
+
+    for (int i = 0; i < 3; i++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+      await tester.pumpAndSettle();
+    }
+    expect(
+      controller.text.contains('<!--nrs bg=amber-->'),
+      isTrue,
+      reason: '退格吃掉了单元格的隐藏格式指令：\n${controller.text}',
+    );
+    expect(grid(controller)[0], <String>['ab', 'cd']);
+  });
+
   testWidgets('typing with the caret parked on a pipe stays in a cell', (
     WidgetTester tester,
   ) async {
@@ -608,9 +639,7 @@ void main() {
     expect(controller.text, text);
   });
 
-  testWidgets('点得中展开成源码的分隔行（未展开时它是零高）', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('点得中展开成源码的分隔行（未展开时它是零高）', (WidgetTester tester) async {
     const String text = '| ab | cd |\n| --- | --- |\n| ef | gh |';
     final MarkdownSourceController controller = await pump(tester, text);
     final TableBlock block = TableBlock.parse(text, 0)!;

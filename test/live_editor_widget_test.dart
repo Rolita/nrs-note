@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -9,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/app.dart';
 import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/core/theme/app_theme.dart';
+import 'package:nrs/core/theme/highlight_colors.dart';
 import 'package:nrs/core/theme/theme_presets.dart';
 import 'package:nrs/core/utils/table_model.dart';
 import 'package:nrs/core/utils/table_selection.dart';
@@ -17,7 +19,8 @@ import 'package:nrs/ui/editor/selection_wash.dart';
 import 'package:nrs/ui/editor/line_layout/line_editable_text.dart';
 import 'package:nrs/ui/editor/line_layout/line_layout_engine.dart';
 import 'package:nrs/ui/editor/line_layout/render_line_editable.dart';
-import 'package:nrs/ui/editor/live_markdown.dart' show kTagPadX;
+import 'package:nrs/ui/editor/live_markdown.dart'
+    show ImageBlockChrome, ImageLineBlock, kTagPadX;
 import 'package:nrs/ui/editor/markdown_editor.dart';
 
 /// These tests exist because the whole live editor leans on two assumptions that
@@ -38,6 +41,7 @@ void main() {
     FocusNode? focusNode,
     ValueChanged<String>? onWikilinkTap,
     EdgeInsets padding = EdgeInsets.zero,
+    ImageProvider? Function(String)? imageProviderFor,
   }) async {
     final MarkdownSourceController controller = MarkdownSourceController(
       text: text,
@@ -53,6 +57,7 @@ void main() {
             fontSize: 15.5,
             padding: padding,
             onWikilinkTap: onWikilinkTap,
+            imageProviderFor: imageProviderFor,
           ),
         ),
       ),
@@ -64,6 +69,42 @@ void main() {
   /// The render object the framework actually positions carets with.
   RenderEditable editable(WidgetTester tester) =>
       tester.allRenderObjects.whereType<RenderEditable>().first;
+
+  /// 造一张真实解码的图：尺寸规则与 `drawImageRect` 都只认 `ui.Image`。
+  Future<ui.Image> makeImage(
+    WidgetTester tester,
+    int width,
+    int height,
+  ) async {
+    final ui.Image result = (await tester.runAsync(
+      () => createTestImage(width: width, height: height),
+    ))!;
+    addTearDown(result.dispose);
+    return result;
+  }
+
+  /// 纯色图，供像素探针判断「这块颜色确实来自图片」。
+  Future<ui.Image> solidImage(
+    WidgetTester tester, {
+    required int width,
+    required int height,
+    required Color color,
+  }) async {
+    final ui.Image result = (await tester.runAsync(() async {
+      final ui.PictureRecorder recorder = ui.PictureRecorder();
+      final Canvas canvas = Canvas(recorder);
+      canvas.drawRect(
+        Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+        Paint()..color = color,
+      );
+      final ui.Picture picture = recorder.endRecording();
+      final ui.Image image = await picture.toImage(width, height);
+      picture.dispose();
+      return image;
+    }))!;
+    addTearDown(result.dispose);
+    return result;
+  }
 
   testWidgets('标题框保持主题选区色，透明只给正文', (WidgetTester tester) async {
     final TextEditingController title = TextEditingController(text: '快速入门');
@@ -211,6 +252,7 @@ void main() {
     TextSelection selection, {
     AppPalette palette = AppPalette.light,
     TextSelection? frozen,
+    ImageProvider? Function(String)? imageProviderFor,
   }) async {
     final MarkdownSourceController controller = MarkdownSourceController(
       text: text,
@@ -231,6 +273,7 @@ void main() {
                 focusNode: focus,
                 scrollController: ScrollController(),
                 fontSize: 15.5,
+                imageProviderFor: imageProviderFor,
               ),
             ),
           ),
@@ -1943,6 +1986,101 @@ void main() {
     );
   });
 
+  /// `==高亮==` 的色带与参考项目 EPUB Reader V7 同一套几何：圆角 4px、
+  /// 左右各外扩 1.5px，纵向按视觉行高上下各内缩 16%（色带高 ≈ 行高 68%）。
+  testWidgets('==高亮 的色带按参考项目内缩 16%', (WidgetTester tester) async {
+    const String text = '==先做功能 再做界面。==\n下一行';
+    final _Pixels px = await shoot(
+      tester,
+      text,
+      TextSelection.collapsed(offset: text.length),
+    );
+    final Color band = HighlightColors.band(px.palette);
+
+    int top = -1;
+    int bottom = -1;
+    for (int y = 0; y < px.height; y++) {
+      int n = 0;
+      for (int x = 0; x < px.width; x++) {
+        if (px.isColor(band, x, y)) n++;
+      }
+      if (n > 10) {
+        if (top < 0) top = y;
+        bottom = y;
+      }
+    }
+    expect(top, greaterThanOrEqualTo(0), reason: '没找到高亮色带');
+
+    final RenderLineEditable re = editable(tester) as RenderLineEditable;
+    final double row = re.lineLayout!.laidOut.first.visuals.first.height;
+    expect(
+      (bottom - top + 1).toDouble(),
+      closeTo(row * 0.68, 2),
+      reason: '色带高 ${bottom - top + 1}px，行盒 $row px —— 上下各应内缩 16%',
+    );
+  });
+
+  /// 暗色高亮是荧光金底配深色字；光标落进去时底片和深色字一起撤掉，源码
+  /// 重新用正文色，不能在深色纸上留下看不见的深字。
+  testWidgets('暗色高亮的底片与字色一起切换', (WidgetTester tester) async {
+    const String text = '==先做功能 再做界面。==\n下一行';
+    final _Pixels lit = await shoot(
+      tester,
+      text,
+      TextSelection.collapsed(offset: text.length),
+      palette: AppPalette.dark,
+    );
+
+    int band = 0;
+    int ink = 0;
+    for (int y = 0; y < lit.height; y++) {
+      for (int x = 0; x < lit.width; x++) {
+        if (lit.isColor(HighlightColors.darkFill, x, y)) band++;
+        if (lit.isColor(HighlightColors.darkInk, x, y)) ink++;
+      }
+    }
+    expect(band, greaterThan(100), reason: '暗色高亮的荧光金底片没有铺出来');
+    expect(ink, greaterThan(20), reason: '高亮里的字没有转成深色');
+
+    final _Pixels editing = await shoot(
+      tester,
+      text,
+      const TextSelection.collapsed(offset: 3),
+      palette: AppPalette.dark,
+    );
+    int litWhileEditing = 0;
+    int inkWhileEditing = 0;
+    for (int y = 0; y < editing.height; y++) {
+      for (int x = 0; x < editing.width; x++) {
+        if (editing.isColor(HighlightColors.darkFill, x, y)) litWhileEditing++;
+        if (editing.isColor(HighlightColors.darkInk, x, y)) inkWhileEditing++;
+      }
+    }
+    expect(litWhileEditing, lessThan(50), reason: '编辑态不该还留着荧光底片');
+    expect(inkWhileEditing, lessThan(10), reason: '编辑态的源码仍应是正文色');
+  });
+
+  /// 光标落进 `==高亮==` 时和高亮标签一样退回源码：只留 `==文字==`，
+  /// 底片撤掉。
+  testWidgets('编辑态的高亮退回源码，不铺底片', (WidgetTester tester) async {
+    const String text = '==先做功能 再做界面。==\n下一行';
+    for (final int at in <int>[0, 2, 5, 11, 12, 14]) {
+      final _Pixels px = await shoot(
+        tester,
+        text,
+        TextSelection.collapsed(offset: at),
+      );
+      final Color band = HighlightColors.band(px.palette);
+      int lit = 0;
+      for (int y = 0; y < px.height; y++) {
+        for (int x = 0; x < px.width; x++) {
+          if (px.isColor(band, x, y)) lit++;
+        }
+      }
+      expect(lit, lessThan(50), reason: '光标在 $at 时不该还有高亮底片');
+    }
+  });
+
   /// The caret belongs to the line its offset points at, not to a line anchor
   /// measured through the 1px strut.
   ///
@@ -2699,6 +2837,18 @@ void main() {
       closeTo(columnLeft, 1.5),
       reason: '表格左边缘要和正文左边缘对齐',
     );
+    // Two columns mean three rules: left edge, the divider, and the right
+    // edge. The row clip used to round the outermost rule past the table's
+    // fractional width, so the right border vanished.
+    final List<List<int>> clusters = <List<int>>[];
+    for (final int x in rules) {
+      if (clusters.isEmpty || x - clusters.last.last > 1) {
+        clusters.add(<int>[x]);
+      } else {
+        clusters.last.add(x);
+      }
+    }
+    expect(clusters, hasLength(3), reason: '竖线应有左/中/右三根，实际 x = $rules');
     // Fit-content: the widest rule is the table's right edge, and it stops well
     // short of the column.
     expect(
@@ -3400,6 +3550,175 @@ void main() {
       reason: '按住滚动条往下拉不该选中任何文字',
     );
   });
+
+  testWidgets('图片行渲染成块，下方文字被整块挤下去', (WidgetTester tester) async {
+    final ui.Image source = await makeImage(tester, 400, 200);
+    await pump(
+      tester,
+      '![图](assets/a.png)\n下一行',
+      imageProviderFor: (_) => _FixedTestImageProvider(source),
+    );
+    final RenderLineEditable field = tester.allRenderObjects
+        .whereType<RenderLineEditable>()
+        .first;
+    final LineDocumentLayout layout = field.lineLayout!;
+
+    expect(layout.laidOut, hasLength(2));
+    expect(layout.laidOut[0].block, isNotNull);
+    expect(layout.laidOut[0].height, 200, reason: '行高等于图片高度');
+    expect(layout.laidOut[1].top, 200, reason: '正文被推到图片下方');
+
+    final List<ImageBlockChrome> blocks = field.imageBlocks();
+    expect(blocks, hasLength(1));
+    expect(blocks.single.chromeImageBounds().size, const Size(400, 200));
+    expect(blocks.single.imageSourceStart, 0);
+    expect(blocks.single.chromeResizeHandle(), isNotNull);
+  });
+
+  testWidgets('光标回到图片行时退回源码，离开后图片再回来', (WidgetTester tester) async {
+    final ui.Image source = await makeImage(tester, 400, 200);
+    final MarkdownSourceController controller = await pump(
+      tester,
+      '![图](assets/a.png)\n下一行',
+      imageProviderFor: (_) => _FixedTestImageProvider(source),
+    );
+    final RenderLineEditable field = tester.allRenderObjects
+        .whereType<RenderLineEditable>()
+        .first;
+    expect(field.lineLayout!.laidOut[0].height, 200);
+
+    controller.selection = const TextSelection.collapsed(offset: 0);
+    await tester.pumpAndSettle();
+    expect(field.imageBlocks(), isEmpty);
+    expect(field.lineLayout!.laidOut[0].block, isNull);
+    expect(field.lineLayout!.laidOut[0].height, lessThan(200));
+
+    controller.selection = const TextSelection.collapsed(offset: 19);
+    await tester.pumpAndSettle();
+    expect(field.imageBlocks(), hasLength(1), reason: '光标移到下一行，图片应恢复');
+    expect(field.lineLayout!.laidOut[0].height, 200);
+  });
+
+  testWidgets('图片加载失败留下 120 高占位，不拦住后续正文', (WidgetTester tester) async {
+    await pump(tester, '![坏](missing.png)\n正文');
+    final RenderLineEditable field = tester.allRenderObjects
+        .whereType<RenderLineEditable>()
+        .first;
+    final LineDocumentLayout layout = field.lineLayout!;
+
+    expect(layout.laidOut[0].block, isNotNull);
+    expect(layout.laidOut[0].height, 120);
+    expect(layout.laidOut[1].top, 120);
+    final ImageLineBlock block = layout.laidOut[0].block! as ImageLineBlock;
+    expect(block.failed, isTrue);
+    expect(field.imageBlocks().single.chromeResizeHandle(), isNotNull);
+  });
+
+  testWidgets('图片解码完成只重排图片那一行', (WidgetTester tester) async {
+    final ui.Image source = await makeImage(tester, 400, 200);
+    final Completer<ImageInfo> pending = Completer<ImageInfo>();
+    await pump(
+      tester,
+      '上一行\n![图](assets/a.png)\n下一行',
+      imageProviderFor: (_) => _DeferredTestImageProvider(pending.future),
+    );
+    final RenderLineEditable field = tester.allRenderObjects
+        .whereType<RenderLineEditable>()
+        .first;
+    final LineDocumentLayout before = field.lineLayout!;
+    expect(before.laidOut[1].height, 120);
+    final LineBlockView? imageBlock = before.laidOut[1].block;
+    final TextPainter below = before.laidOut[2].painter;
+    final double belowTop = before.laidOut[2].top;
+
+    pending.complete(ImageInfo(image: source.clone()));
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    final LineDocumentLayout after = field.lineLayout!;
+    expect(after.laidOut[1].height, 200);
+    expect(
+      identical(after.laidOut[1].block, imageBlock),
+      isTrue,
+      reason: '图片流不该因为重排被重挂',
+    );
+    expect(
+      identical(after.laidOut[2].painter, below),
+      isTrue,
+      reason: '没改字的行应整行复用，不重新量',
+    );
+    expect(after.laidOut[2].top, closeTo(belowTop + 80, 0.01));
+  });
+
+  testWidgets('图片真的画进正文列（像素探针）', (WidgetTester tester) async {
+    const Color green = Color(0xFF12A34B);
+    final ui.Image source = await solidImage(
+      tester,
+      width: 200,
+      height: 100,
+      color: green,
+    );
+    final _Pixels px = await shoot(
+      tester,
+      '![图](assets/a.png)\n下一行',
+      const TextSelection.collapsed(offset: 19),
+      imageProviderFor: (_) => _FixedTestImageProvider(source),
+    );
+
+    int minX = px.width;
+    int maxX = -1;
+    int minY = px.height;
+    int maxY = -1;
+    for (int y = 0; y < px.height; y++) {
+      for (int x = 0; x < px.width; x++) {
+        if (!px.isColor(green, x, y)) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    expect(maxX, greaterThanOrEqualTo(minX), reason: '图片必须真的画出来');
+    expect(maxX - minX + 1, closeTo(200, 4));
+    expect(maxY - minY + 1, closeTo(100, 4));
+    expect(minX, greaterThanOrEqualTo(40), reason: '图片在正文列内，不越过左内边距');
+  });
+}
+
+class _FixedTestImageProvider extends ImageProvider<_FixedTestImageProvider> {
+  _FixedTestImageProvider(this.image);
+
+  final ui.Image image;
+
+  @override
+  Future<_FixedTestImageProvider> obtainKey(ImageConfiguration configuration) =>
+      SynchronousFuture<_FixedTestImageProvider>(this);
+
+  @override
+  ImageStreamCompleter loadImage(
+    _FixedTestImageProvider key,
+    ImageDecoderCallback decode,
+  ) => OneFrameImageStreamCompleter(
+    SynchronousFuture<ImageInfo>(ImageInfo(image: image.clone())),
+  );
+}
+
+class _DeferredTestImageProvider
+    extends ImageProvider<_DeferredTestImageProvider> {
+  _DeferredTestImageProvider(this.info);
+
+  final Future<ImageInfo> info;
+
+  @override
+  Future<_DeferredTestImageProvider> obtainKey(
+    ImageConfiguration configuration,
+  ) => SynchronousFuture<_DeferredTestImageProvider>(this);
+
+  @override
+  ImageStreamCompleter loadImage(
+    _DeferredTestImageProvider key,
+    ImageDecoderCallback decode,
+  ) => OneFrameImageStreamCompleter(info);
 }
 
 class _Pixels {

@@ -97,7 +97,6 @@ void main() {
     return null;
   }
 
-
   test('every line paints exactly its own source slice', () {
     final LineDocumentLayout layout = layoutOf(document);
     for (final LaidOutLine line in layout.laidOut) {
@@ -215,9 +214,7 @@ void main() {
           () => markerAt(
             TextEditingValue(
               text: welcome,
-              selection: TextSelection.collapsed(
-                offset: caret < 0 ? 0 : caret,
-              ),
+              selection: TextSelection.collapsed(offset: caret < 0 ? 0 : caret),
             ),
           ),
           returnsNormally,
@@ -319,7 +316,10 @@ void main() {
         palette: palette,
         source: '大标题\n===',
       );
-      expect(eqStyle.styleFor(equals[0]).fontSize!, greaterThan(base.fontSize!));
+      expect(
+        eqStyle.styleFor(equals[0]).fontSize!,
+        greaterThan(base.fontSize!),
+      );
     });
 
     test('任务复选框留在标记槽位里，正文从它后面起排', () {
@@ -351,10 +351,7 @@ void main() {
         expect(line.paintedFrom, line.source.markerEnd);
       }
       // 序号仍是可编辑的源码：点击复选框按偏移翻转这一行。
-      expect(
-        toggleTaskAt(text, text.indexOf('[')),
-        '1. [x] 一件事\n2. [x] 另一件\n',
-      );
+      expect(toggleTaskAt(text, text.indexOf('[')), '1. [x] 一件事\n2. [x] 另一件\n');
     });
 
     test('勾掉的任务整体划掉，未勾的保持原样', () {
@@ -440,15 +437,11 @@ void main() {
         base: base,
         palette: palette,
         source: text,
-        reveal: () =>
-            TextSelection.collapsed(offset: text.indexOf('#写作') + 1),
+        reveal: () => TextSelection.collapsed(offset: text.indexOf('#写作') + 1),
       );
       final List<LineFillRun> remaining = editing.fillsFor(line);
       expect(remaining, hasLength(1));
-      expect(
-        text.substring(remaining.single.from, remaining.single.to),
-        '#灵感',
-      );
+      expect(text.substring(remaining.single.from, remaining.single.to), '#灵感');
 
       // `issue#12` 与 `#1` 不是标签。
       const String issues = '修复 issue#12 与 #1 的问题\n';
@@ -510,6 +503,69 @@ void main() {
       expect(text.substring(links.single.start, links.single.end), '[[是]]');
     });
 
+    test('行内链接取到能交给浏览器的地址，代码与相对路径都不算', () {
+      const String text =
+          '看 [站点](https://example.com/a) 与 [短](www.example.org) '
+          '和 `[代码](https://code.dev)` 与 [本地](./note.md)\n';
+      final SourceLine line = scanSourceLines(text).first;
+      final LiveLineStyle style = LiveLineStyle(
+        base: base,
+        palette: palette,
+        source: text,
+      );
+
+      final List<({int start, int end, String url})> links = style.linksFor(
+        line,
+      );
+      expect(links.map((l) => l.url), <String>[
+        'https://example.com/a',
+        'https://www.example.org',
+      ]);
+      expect(
+        text.substring(links[0].start, links[0].end),
+        '[站点](https://example.com/a)',
+      );
+      expect(
+        text.substring(links[1].start, links[1].end),
+        '[短](www.example.org)',
+      );
+    });
+
+    test('编辑态的链接保持链接配色，只有括号退回标记色', () {
+      const String source = '[必应](https://bing.com)';
+      final InlineSpan tree = buildLiveInlineSpan(
+        source,
+        base: base,
+        p: palette,
+        caretA: 0,
+        caretB: 0,
+      );
+      final List<TextSpan> runs = <TextSpan>[];
+      tree.visitChildren((InlineSpan span) {
+        if (span is TextSpan && span.text != null) runs.add(span);
+        return true;
+      });
+      Color? colourOf(String text) =>
+          runs.firstWhere((TextSpan run) => run.text == text).style?.color;
+
+      expect(
+        runs.map((TextSpan run) => run.text).join(),
+        source,
+        reason: '拆成几段也好，拼起来必须逐字符等于源码',
+      );
+      expect(colourOf('必应'), palette.accent, reason: '标签保持链接色');
+      expect(
+        colourOf('https://bing.com'),
+        palette.accent,
+        reason: '地址也保持链接色，不能一进编辑就掉成源码灰',
+      );
+      expect(
+        colourOf(']('),
+        isNot(palette.accent),
+        reason: '方括号与圆括号是标记，退回标记色',
+      );
+    });
+
     test('引用的竖线恰好占住它藏起来的标记宽度', () {
       const String text = '> 引用\n';
       final SourceLine line = scanSourceLines(text).first;
@@ -548,8 +604,10 @@ void main() {
         reveal: () => const TextSelection.collapsed(offset: 2),
       );
       expect(revealed.insetFor(line), EdgeInsets.zero);
-      expect(spanWith(revealed.spanFor(line) as TextSpan, '> ')!.style!.color!.a,
-          greaterThan(0));
+      expect(
+        spanWith(revealed.spanFor(line) as TextSpan, '> ')!.style!.color!.a,
+        greaterThan(0),
+      );
     });
 
     test('行内代码是一颗带底片的胶囊，编辑时退回源码', () {

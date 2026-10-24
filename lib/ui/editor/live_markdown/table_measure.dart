@@ -37,6 +37,10 @@ class _RowBand {
 /// what this did) washes every cell the range passes over, so a drag down one
 /// column came back with the whole middle row lit:
 /// user: 「我只选了右边三个表格，为什么会把左边那两个一起选中？？？」
+///
+/// A merge is one cell to the user, so touching any part of it selects all of
+/// it: the rectangle grows over every merge it touches before the bands are
+/// built.
 List<_RowBand?> _bandsOfTable(_Table table, int a, int b) {
   final int rows = table.rows.length;
   final List<_RowBand?> none = List<_RowBand?>.filled(rows, null);
@@ -48,13 +52,19 @@ List<_RowBand?> _bandsOfTable(_Table table, int a, int b) {
   // a row boundary that character is the line break above, not the next row's
   // first cell.
   final (int, int) to = _cellAt(table, b - 1, extent: true);
-  final int r0 = math.min(from.$1, to.$1);
-  final int r1 = math.max(from.$1, to.$1);
-  final int c0 = math.min(from.$2, to.$2);
-  final int c1 = math.max(from.$2, to.$2);
+  final ({int fromRow, int toRow, int fromColumn, int toColumn}) whole =
+      expandOverMerges(
+        table.merges,
+        fromRow: math.min(from.$1, to.$1),
+        toRow: math.max(from.$1, to.$1),
+        fromColumn: math.min(from.$2, to.$2),
+        toColumn: math.max(from.$2, to.$2),
+      );
   return <_RowBand?>[
     for (int r = 0; r < rows; r++)
-      r < r0 || r > r1 ? null : _bandOfRow(table.rows[r], c0, c1),
+      r < whole.fromRow || r > whole.toRow
+          ? null
+          : _bandOfRow(table, r, whole.fromColumn, whole.toColumn),
   ];
 }
 
@@ -86,15 +96,23 @@ List<_RowBand?> _bandsOfTable(_Table table, int a, int b) {
   return (rows.length - 1, rows.last.data.length - 1);
 }
 
-/// Columns `[c0, c1]` of one row, as one span from the first cell's left edge to
-/// the last one's right edge. The cells tile the row edge to edge, so this is
-/// also where two neighbours merge into one band with no seam at the pipe.
-_RowBand? _bandOfRow(_RowData row, int c0, int c1) {
-  if (row.data.isEmpty) return null;
-  final _CellData first = row.data[c0.clamp(0, row.data.length - 1)];
-  final _CellData last = row.data[c1.clamp(0, row.data.length - 1)];
-  final double left = first.x;
-  final double right = last.x + last.boxWidth;
+/// Columns `[c0, c1]` of [rowIndex], as one span from the first cell's left
+/// edge to the last one's right edge. The cells tile the row edge to edge, so
+/// this is also where two neighbours merge into one band with no seam at the
+/// pipe.
+///
+/// The edges come from the **columns**, not from the row's cells: a covered
+/// cell has zero width, but its column still occupies space inside the merge,
+/// and an expanded band may end on it.
+_RowBand? _bandOfRow(_Table table, int rowIndex, int c0, int c1) {
+  final _RowData row = table.rows[rowIndex];
+  if (row.data.isEmpty || table.columns.isEmpty) return null;
+  final int last = math.min(row.data.length, table.columns.length) - 1;
+  if (last < 0) return null;
+  final int a = c0.clamp(0, last);
+  final int b = c1.clamp(0, last);
+  final double left = table.columns[a].x;
+  final double right = table.columns[b].right;
   if (right - left < 0.5) return null;
   return _RowBand(left, right);
 }
@@ -166,12 +184,14 @@ double _middleOverhang(
 /// One cell's expensive measurement, reused by every later measure.
 ///
 /// A rendered (not being edited) cell's tree depends on nothing but its display
-/// text and whether the row is a header: the table context disables the caret,
-/// selection and hover reveals, so no absolute offset leaks into the tree.
+/// text, whether the row is a header, and the resolved ink: the table context
+/// disables the caret, selection and hover reveals, so no absolute offset leaks
+/// into the tree.
 class _CellMemo {
   _CellMemo({
     required this.text,
     required this.header,
+    required this.ink,
     required this.rendered,
     required this.codes,
     required this.natural,
@@ -179,6 +199,10 @@ class _CellMemo {
 
   final String text;
   final bool header;
+
+  /// The cell's resolved text color — part of the key, because changing a
+  /// cell's `fg` has to rebuild its tree.
+  final Color? ink;
 
   /// The tree as rendered (exactly what the row paints).
   final List<InlineSpan> rendered;
@@ -203,14 +227,26 @@ class _PaintedCell {
   int usedIn = 0;
 }
 
+/// A rounded fill behind one inline code run, in the cell painter's coordinates.
+class _PaintedChip {
+  const _PaintedChip(this.rect, this.fill, {this.tint = false});
+
+  final Rect rect;
+  final Color fill;
+
+  /// 底片是否跟着表格选区换色。标签不跟：它在选中格里也保留自己的配色。
+  final bool tint;
+}
+
 /// Per-cell memoization for one `LiveTableBlocks` instance.
 ///
 /// The palette, base style, scale and direction are fixed for the instance, so
-/// a cell's tree only has to be rebuilt when its text changes. Entries unused
-/// by a measure are swept at the end of it, which keeps a long editing session
-/// from growing the store without bound.
+/// a cell's tree only has to be rebuilt when its text or its ink changes.
+/// Entries unused by a measure are swept at the end of it, which keeps a long
+/// editing session from growing the store without bound.
 class _CellMemoStore {
-  final Map<(String, bool), _CellMemo> _cells = <(String, bool), _CellMemo>{};
+  final Map<(String, bool, Color?), _CellMemo> _cells =
+      <(String, bool, Color?), _CellMemo>{};
   final Map<(Object, int, TextAlign), _PaintedCell> _painted =
       <(Object, int, TextAlign), _PaintedCell>{};
 
@@ -222,8 +258,8 @@ class _CellMemoStore {
   final Map<(TextStyle, double), double> _overhangs =
       <(TextStyle, double), double>{};
 
-  /// 抓手图标 painter。只有强调色与三级文字色两种，按颜色缓存。
-  final Map<Color, TextPainter> _grips = <Color, TextPainter>{};
+  /// 抓手图标 painter。只有强调色与三级文字色、横竖两个方向，按这四组缓存。
+  final Map<(Color, bool), TextPainter> _grips = <(Color, bool), TextPainter>{};
 
   int _generation = 0;
 
@@ -249,8 +285,8 @@ class _CellMemoStore {
 
   void beginMeasure() => _generation++;
 
-  _CellMemo? cell(String text, bool header) {
-    final _CellMemo? memo = _cells[(text, header)];
+  _CellMemo? cell(String text, bool header, Color? ink) {
+    final _CellMemo? memo = _cells[(text, header, ink)];
     if (memo != null) memo.usedIn = _generation;
     return memo;
   }
@@ -258,28 +294,25 @@ class _CellMemoStore {
   _CellMemo addCell({
     required String text,
     required bool header,
+    required Color? ink,
     required List<InlineSpan> rendered,
     required List<_CellCode> codes,
     required double natural,
   }) {
     spanBuilds++;
-    return _cells[(text, header)] = _CellMemo(
+    return _cells[(text, header, ink)] = _CellMemo(
       text: text,
       header: header,
+      ink: ink,
       rendered: rendered,
       codes: codes,
       natural: natural,
     )..usedIn = _generation;
   }
 
-  _PaintedCell? painted(
-    _CellMemo? memo,
-    double width,
-    TextAlign align,
-  ) {
+  _PaintedCell? painted(_CellMemo? memo, double width, TextAlign align) {
     if (memo == null) return null;
-    final _PaintedCell? cell =
-        _painted[(memo, _widthKey(width), align)];
+    final _PaintedCell? cell = _painted[(memo, _widthKey(width), align)];
     if (cell != null) cell.usedIn = _generation;
     return cell;
   }
@@ -328,16 +361,22 @@ class _CellMemoStore {
     return value;
   }
 
-  /// 抓手图标：固定字号、不做无障碍缩放，随颜色缓存。
-  TextPainter gripPainter(Color color) {
-    final TextPainter? hit = _grips[color];
+  /// 抓手图标：固定字号、不做无障碍缩放，随颜色与方向缓存。
+  ///
+  /// 行抓手用两列三行（`gripVertical`），列抓手用三列两行
+  /// （`gripHorizontal`）：点阵的朝向就是拖动方向。
+  TextPainter gripPainter(Color color, {required bool horizontal}) {
+    final (Color, bool) key = (color, horizontal);
+    final TextPainter? hit = _grips[key];
     if (hit != null) return hit;
-    final IconData icon = LucideIcons.gripVertical;
+    final IconData icon = horizontal
+        ? LucideIcons.gripHorizontal
+        : LucideIcons.gripVertical;
     final TextPainter tp = TextPainter(
       text: TextSpan(
         text: String.fromCharCode(icon.codePoint),
         style: TextStyle(
-          fontSize: _kGrip,
+          fontSize: _kGripDots,
           fontFamily: icon.fontFamily,
           package: icon.fontPackage,
           color: color,
@@ -347,7 +386,7 @@ class _CellMemoStore {
       // 抓手是界面，不是笔记：缩放时不该跟着变大。
       textScaler: TextScaler.noScaling,
     )..layout();
-    return _grips[color] = tp;
+    return _grips[key] = tp;
   }
 
   void notePainterBuild() => painterBuilds++;
@@ -389,6 +428,11 @@ class _CellMemoStore {
 /// * every cell is measured from its **painted** tree, so the columns, the
 ///   painted glyphs and the invisible skeleton all agree on where each character
 ///   is.
+///
+/// A merge is one cell with one box: its anchor's natural width is a demand on
+/// the **sum** of the columns it spans, and its painter's height is a demand on
+/// the **sum** of its rows. Neither demand is allowed to overflow the text
+/// column; when it cannot be met the content wraps inside its block instead.
 _Table _measureTable({
   required List<String> lines,
   required List<int> starts,
@@ -424,9 +468,38 @@ _Table _measureTable({
     0,
     (int m, _RowData r) => math.max(m, r.cells.length),
   );
-  final double rowHeight = _lineHeightOf(base);
+  final double baseRowHeight = _lineHeightOf(base);
   final TextStyle bodyStyle = base.copyWith(fontWeight: FontWeight.w400);
   final TextStyle headStyle = base.copyWith(fontWeight: FontWeight.w700);
+
+  final List<TableMerge> sourceMerges = tableMergesFromStyles(
+    rowCount: rows.length,
+    columns: cols,
+    styleAt: (int row, int column) =>
+        row < rows.length && column < rows[row].cells.length
+        ? rows[row].cells[column].format
+        : const TableCellStyle(),
+  );
+
+  // The escape hatch. A merge hides the source of everything it covers, so a
+  // caret that lands in a covered cell would be typing into text the renderer
+  // refuses to draw. Rendering the table **unmerged** for as long as the caret
+  // is in there gives that cell back its own row and column; leaving it
+  // restores the merge. It is the one state where the pixels disagree with the
+  // directive, and it only lasts while the user is editing against it.
+  final List<TableMerge> merges =
+      _caretInCoveredCell(rows, sourceMerges, editAt)
+      ? const <TableMerge>[]
+      : sourceMerges;
+
+  final Map<(int, int), TableMerge> blocks = <(int, int), TableMerge>{};
+  for (final TableMerge m in merges) {
+    for (int r = m.row; r <= m.lastRow; r++) {
+      for (int c = m.column; c <= m.lastColumn; c++) {
+        blocks[(r, c)] = m;
+      }
+    }
+  }
 
   // Pass one: build each cell's tree and measure it. The tree is kept — it is
   // exactly what the row renderer paints and what the skeleton redraws
@@ -440,12 +513,25 @@ _Table _measureTable({
   final List<List<List<_CellCode>>> codes = <List<List<_CellCode>>>[];
   final List<List<_CellMemo?>> memos = <List<_CellMemo?>>[];
   final List<double> natural = List<double>.filled(cols, 0);
-  for (final _RowData r in rows) {
-    final TextStyle style = r.header ? headStyle : bodyStyle;
+  final Map<TableMerge, double> spanNatural = <TableMerge, double>{};
+  for (int ri = 0; ri < rows.length; ri++) {
+    final _RowData r = rows[ri];
     final List<List<InlineSpan>> rowTrees = <List<InlineSpan>>[];
     final List<List<_CellCode>> rowCodes = <List<_CellCode>>[];
     final List<_CellMemo?> rowMemos = <_CellMemo?>[];
     for (int c = 0; c < r.cells.length; c++) {
+      final TableMerge? block = blocks[(ri, c)];
+      if (block != null && !(block.row == ri && block.column == c)) {
+        // Covered: it has neither visible text nor pixels of its own.
+        rowTrees.add(const <InlineSpan>[]);
+        rowCodes.add(const <_CellCode>[]);
+        rowMemos.add(null);
+        continue;
+      }
+      final Color? ink = tableCellInk(ctx.p, r.cells[c].format);
+      final TextStyle style = ink == null
+          ? (r.header ? headStyle : bodyStyle)
+          : (r.header ? headStyle : bodyStyle).copyWith(color: ink);
       final int from = r.cells[c].offset;
       final int to = from + r.cells[c].text.length;
       final bool editing = editAt >= from && editAt <= to;
@@ -454,7 +540,7 @@ _Table _measureTable({
       // never memoized — its source changes with each keystroke.
       _CellMemo? memoHit = editing
           ? null
-          : memo.cell(r.cells[c].text, r.header);
+          : memo.cell(r.cells[c].text, r.header, ink);
       final List<InlineSpan> rendered;
       final List<_CellCode> codeRuns;
       final double w;
@@ -480,6 +566,7 @@ _Table _measureTable({
           memoHit = memo.addCell(
             text: r.cells[c].text,
             header: r.header,
+            ink: ink,
             rendered: rendered,
             codes: codeRuns,
             natural: w,
@@ -492,7 +579,11 @@ _Table _measureTable({
       rowTrees.add(paintSpans);
       rowCodes.add(codeRuns);
       rowMemos.add(memoHit);
-      natural[c] = math.max(natural[c], w);
+      if (block != null && block.columnSpan > 1) {
+        spanNatural[block] = math.max(spanNatural[block] ?? 0, w);
+      } else {
+        natural[c] = math.max(natural[c], w);
+      }
     }
     trees.add(rowTrees);
     codes.add(rowCodes);
@@ -506,7 +597,7 @@ _Table _measureTable({
   // instead of stretching to the text column's right edge. A short table that
   // fills six hundred pixels of paper reads as a diagram, not as a table.
   //
-  // `_kMinCell` is the floor — it is what keeps `|  |  |` (the empty table
+  // `kTableMinColumnWidth` is the floor — it is what keeps `|  |  |` (the empty table
   // `insertTable` writes) a usable grid instead of a 32px speck, and what stops
   // a one-letter column from being a sliver.
   //
@@ -526,17 +617,40 @@ _Table _measureTable({
   // rounding decide whether the row wraps — and a wrapped row is twice as tall
   // as its cells.
   final double available = math.max(60, ctx.contentWidth - 1);
-  final List<double> wanted = <double>[
-    for (int c = 0; c < cols; c++) math.max(natural[c], _kMinCell),
-  ];
   final double fit = math.max(1, available - cols * 2 * _kCellPad);
+
+  // A `w=…` in the first cell's directive is a table-level manual width. The
+  // values are design pixels at 15.5pt, so they follow the editor's font size
+  // and the accessibility scale instead of pinning literal pixels. Manual
+  // widths replace the natural ones: content that outgrows its column wraps
+  // inside it, and the merge-demand block below deliberately does not widen
+  // the columns back.
+  final List<int>? designWidths = rows.isEmpty
+      ? null
+      : tableColumnWidthsOfLine(lines[rows.first.line], cols);
+  final double fontSize = base.fontSize ?? _kReadableColAt;
+  final List<double>? manualWidths = designWidths == null
+      ? null
+      : <double>[
+          for (final int design in designWidths)
+            math.max(
+              kTableMinColumnWidth,
+              ctx.textScaler.scale(design * fontSize / _kReadableColAt),
+            ),
+        ];
+  final double widthScale = ctx.textScaler.scale(fontSize) / _kReadableColAt;
+
+  final List<double> wanted = <double>[
+    for (int c = 0; c < cols; c++)
+      manualWidths?[c] ?? math.max(natural[c], kTableMinColumnWidth),
+  ];
   final double span = wanted.fold<double>(0, (double a, double w) => a + w);
   final List<double> widths;
   if (span <= fit) {
     widths = wanted;
   } else {
     final double readable = math.max(
-      _kMinCell,
+      kTableMinColumnWidth,
       ctx.textScaler.scale(
         _kReadableCol * (base.fontSize ?? _kReadableColAt) / _kReadableColAt,
       ),
@@ -544,7 +658,10 @@ _Table _measureTable({
     final List<double> floor = <double>[
       for (final double w in wanted) math.min(w, readable),
     ];
-    final double floorSum = floor.fold<double>(0, (double a, double b) => a + b);
+    final double floorSum = floor.fold<double>(
+      0,
+      (double a, double b) => a + b,
+    );
     if (floorSum > fit) {
       widths = <double>[for (int c = 0; c < cols; c++) fit / cols];
     } else {
@@ -557,50 +674,199 @@ _Table _measureTable({
     }
   }
 
-  // Pass three: record where each box ended up. The tree is painted exactly as
-  // measured — a cell that does not fit wraps inside its column, so there is
-  // no tracking correction to bake in any more.
+  // A column span asks for one wide text area, and its demand is on the sum of
+  // its columns. Give the columns their share only when the whole table still
+  // fits; otherwise the merged text wraps, exactly like an ordinary cell that
+  // is wider than its column.
+  if (merges.isNotEmpty && manualWidths == null) {
+    final List<(TableMerge, double)> demands = <(TableMerge, double)>[];
+    double extra = 0;
+    for (final TableMerge m in merges) {
+      if (m.columnSpan < 2) continue;
+      final double need = spanNatural[m] ?? 0;
+      final double have = _spanTextWidth(widths, m);
+      if (need <= have) continue;
+      final double add = (need - have) / m.columnSpan;
+      demands.add((m, add));
+      extra += add * m.columnSpan;
+    }
+    if (demands.isNotEmpty && extra > 0) {
+      final double used = widths.fold<double>(0, (double a, double b) => a + b);
+      final double room = math.max(0, fit - used);
+      final double scale = extra <= room ? 1 : room / extra;
+      for (final (TableMerge m, double add) in demands) {
+        for (int c = m.column; c <= m.lastColumn; c++) {
+          widths[c] += add * scale;
+        }
+      }
+    }
+  }
+
+  // Every source column keeps a box, covered or not: the grips, the drag
+  // preview and the selection band all address source columns.
+  final List<_ColumnBox> columns = <_ColumnBox>[];
+  double cx = 0;
+  for (int c = 0; c < cols; c++) {
+    final double box = widths[c] + 2 * _kCellPad;
+    columns.add(_ColumnBox(cx, box));
+    cx += box;
+  }
+  final double tableWidth = cx;
+
+  final List<TextAlign> aligns = <TextAlign>[
+    for (int c = 0; c < cols; c++)
+      divider >= 0 ? _alignOf(lines[divider], c) : TextAlign.start,
+  ];
+
+  // Pass three: record where each box ended up.
   for (int ri = 0; ri < rows.length; ri++) {
     final _RowData r = rows[ri];
-    final TextStyle style = r.header ? headStyle : bodyStyle;
     for (int c = 0; c < r.cells.length; c++) {
-      r.data.add(
-        _CellData(
-          cell: r.cells[c],
-          style: style,
-          spans: trees[ri][c],
-          memo: memos[ri][c],
-          codeRuns: codes[ri][c],
-          width: widths[c],
-          align: divider >= 0 ? _alignOf(lines[divider], c) : TextAlign.start,
-        ),
-      );
+      final TableMerge? block = blocks[(ri, c)];
+      final bool covered =
+          block != null && !(block.row == ri && block.column == c);
+      final bool anchor = block != null && block.row == ri && block.column == c;
+      final Color? ink = tableCellInk(ctx.p, r.cells[c].format);
+      final TextStyle plain = r.header ? headStyle : bodyStyle;
+      final TextStyle style = ink == null ? plain : plain.copyWith(color: ink);
+      final double textWidth = covered
+          ? 0
+          : anchor
+          ? _spanTextWidth(widths, block)
+          : widths[c];
+      final double x = block == null ? columns[c].x : columns[block.column].x;
+      final double boxWidth = covered
+          ? 0
+          : anchor
+          ? columns[block.lastColumn].right - columns[block.column].x
+          : columns[c].width;
+      final _CellData data =
+          _CellData(
+              cell: r.cells[c],
+              style: style,
+              spans: trees[ri][c],
+              codeRuns: codes[ri][c],
+              width: textWidth,
+              align: anchor ? TextAlign.center : aligns[c],
+              memo: memos[ri][c],
+            )
+            ..covered = covered
+            ..block = block
+            ..x = x
+            ..boxWidth = boxWidth
+            ..fill = tableCellFill(ctx.p, r.cells[c].format);
+      r.data.add(data);
+    }
+  }
+
+  // Painters. A merged block gets **one** painter, laid out at the width of its
+  // whole box; covered cells get none. Row heights are read from these
+  // painters, so they have to exist before the rows are handed their slices.
+  final List<TextPainter> owned = <TextPainter>[];
+  for (final _RowData r in rows) {
+    for (final _CellData cell in r.data) {
+      if (cell.covered) continue;
+      final double maxWidth = math.max(1, cell.width);
+      _PaintedCell? painted = memo.painted(cell.memo, cell.width, cell.align);
+      if (painted == null) {
+        final TextPainter tp = TextPainter(
+          text: TextSpan(style: cell.style, children: cell.spans),
+          textDirection: direction,
+          textScaler: ctx.textScaler,
+          textAlign: cell.align,
+        )..layout(minWidth: maxWidth, maxWidth: maxWidth);
+        memo.notePainterBuild();
+        final List<_PaintedChip> chips = _chipsFor(tp, cell, memo);
+        if (cell.memo == null) {
+          // 编辑中的格每击键都变，不写共享缓存，由这张表持有。
+          owned.add(tp);
+        } else {
+          painted = memo.addPainted(
+            memo: cell.memo!,
+            width: cell.width,
+            align: cell.align,
+            painter: tp,
+            chips: chips,
+          );
+        }
+        cell
+          ..painter = tp
+          ..chips = chips;
+      } else {
+        cell
+          ..painter = painted.painter
+          ..chips = painted.chips;
+      }
+      cell.painted = painted;
+    }
+  }
+
+  // Row heights: the base line, grown by the tallest cell that lives in one
+  // row, then shared out over the rows of every rowspan.
+  final List<double> rowHeights = List<double>.filled(
+    rows.length,
+    baseRowHeight,
+  );
+  for (int ri = 0; ri < rows.length; ri++) {
+    for (final _CellData cell in rows[ri].data) {
+      if (cell.covered) continue;
+      final TableMerge? block = cell.block;
+      if (block != null && block.rowSpan > 1) continue;
+      rowHeights[ri] = math.max(rowHeights[ri], cell.painter?.height ?? 0);
+    }
+  }
+  for (final TableMerge m in merges) {
+    if (m.rowSpan < 2) continue;
+    final _CellData anchor = rows[m.row].data[m.column];
+    final double need = anchor.painter?.height ?? 0;
+    double have = 0;
+    for (int r = m.row; r <= m.lastRow; r++) {
+      have += rowHeights[r];
+    }
+    if (need <= have) continue;
+    final double add = (need - have) / m.rowSpan;
+    for (int r = m.row; r <= m.lastRow; r++) {
+      rowHeights[r] += add;
+    }
+  }
+  final List<double> rowTops = <double>[];
+  double ty = 0;
+  for (final double h in rowHeights) {
+    rowTops.add(ty);
+    ty += h;
+  }
+
+  for (int ri = 0; ri < rows.length; ri++) {
+    for (final _CellData cell in rows[ri].data) {
+      final TableMerge? block = cell.block;
+      cell.mergeTop = block == null ? rowTops[ri] : rowTops[block.row];
+      cell.mergeHeight = block == null
+          ? rowHeights[ri]
+          : rowTops[block.lastRow] +
+                rowHeights[block.lastRow] -
+                rowTops[block.row];
+      final TextPainter? painter = cell.painter;
+      if (painter != null) {
+        cell.textTop = cell.mergeTop + (cell.mergeHeight - painter.height) / 2;
+      }
     }
   }
 
   final List<List<TableCellGeometry>> perRow = <List<TableCellGeometry>>[
     for (final _RowData _ in rows) <TableCellGeometry>[],
   ];
-  double cx = 0;
-  for (int c = 0; c < cols; c++) {
-    final double boxWidth = widths[c] + 2 * _kCellPad;
-    for (int ri = 0; ri < rows.length; ri++) {
-      final _RowData r = rows[ri];
-      if (c >= r.cells.length) continue;
-      final _CellData d = r.data[c];
-      d
-        ..x = cx
-        ..boxWidth = boxWidth;
+  for (int ri = 0; ri < rows.length; ri++) {
+    final _RowData r = rows[ri];
+    for (final _CellData cell in r.data) {
       perRow[ri].add(
         TableCellGeometry(
-          start: r.cells[c].offset,
-          end: r.cells[c].offset + r.cells[c].text.length,
-          x: cx,
-          width: boxWidth,
+          start: cell.cell.offset,
+          end: cell.cell.offset + cell.cell.text.length,
+          x: cell.x,
+          width: cell.boxWidth,
         ),
       );
     }
-    cx += boxWidth;
   }
   final List<TableRowGeometry> geometryRows = <TableRowGeometry>[
     for (int ri = 0; ri < rows.length; ri++)
@@ -612,19 +878,145 @@ _Table _measureTable({
       ),
   ];
 
-  return _Table(
+  final _Table table = _Table(
     rows: rows,
-    width: cx,
-    rowHeight: rowHeight,
-    dyShift: memo.overhang(base, rowHeight),
+    width: tableWidth,
+    rowHeight: baseRowHeight,
+    dyShift: memo.overhang(base, baseRowHeight),
     lineOfRow: lineOfRow,
+    columns: columns,
+    columnRoom: fit,
+    widthScale: widthScale,
+    rowHeights: rowHeights,
+    rowTops: rowTops,
+    merges: merges,
+    ownedPainters: owned,
     geometry: TableGeometry(
       first: first,
       last: last,
-      width: cx,
-      rowHeight: rowHeight,
+      width: tableWidth,
+      rowHeight: baseRowHeight,
       rows: geometryRows,
     ),
   );
+  return table;
 }
 
+/// The text width a merge's anchor gets: its columns' text widths plus the
+/// padding that moved to the inside of the span.
+double _spanTextWidth(List<double> widths, TableMerge m) {
+  double sum = 0;
+  for (int c = m.column; c <= m.lastColumn; c++) {
+    sum += widths[c];
+  }
+  return sum + 2 * _kCellPad * (m.columnSpan - 1);
+}
+
+/// Whether [caret] is inside a cell some **other** cell's merge covers.
+bool _caretInCoveredCell(
+  List<_RowData> rows,
+  List<TableMerge> merges,
+  int caret,
+) {
+  if (caret < 0 || merges.isEmpty) return false;
+  for (int r = 0; r < rows.length; r++) {
+    final _RowData row = rows[r];
+    for (int c = 0; c < row.cells.length; c++) {
+      final _ParsedCell cell = row.cells[c];
+      if (caret < cell.offset || caret > cell.offset + cell.text.length) {
+        continue;
+      }
+      for (final TableMerge m in merges) {
+        if (!m.covers(r, c)) continue;
+        return !(m.row == r && m.column == c);
+      }
+      return false;
+    }
+  }
+  return false;
+}
+
+/// Measures the rounded bands behind every inline code run of one cell.
+///
+/// 换行的格子会把一段代码折到两条视觉行上：底片按视觉行分别铺，否则会
+/// 拉成一条横跨两行文字的长条。
+List<_PaintedChip> _chipsFor(
+  TextPainter tp,
+  _CellData cell,
+  _CellMemoStore memoStore,
+) {
+  if (cell.codeRuns.isEmpty) return const <_PaintedChip>[];
+  final List<LineMetrics> lines = tp.computeLineMetrics();
+  final List<_PaintedChip> chips = <_PaintedChip>[];
+  for (final _CellCode code in cell.codeRuns) {
+    final List<TextBox> boxes = tp.getBoxesForSelection(
+      TextSelection(baseOffset: code.start, extentOffset: code.end),
+    );
+    if (boxes.isEmpty) continue;
+    // 探针尺寸只取决于文字与样式，跨表跨测量共用；换行时每条视觉行都要用。
+    final (double drop, double probeHeight) = memoStore.probeMetrics(
+      code.probe.isEmpty ? ' ' : code.probe,
+      code.style,
+    );
+    if (lines.length <= 1) {
+      final double baseline = tp.computeDistanceToActualBaseline(
+        TextBaseline.alphabetic,
+      );
+      double left = boxes.first.left;
+      double right = boxes.first.right;
+      for (final TextBox box in boxes) {
+        left = math.min(left, box.left);
+        right = math.max(right, box.right);
+      }
+      chips.add(
+        _PaintedChip(
+          Rect.fromLTRB(
+            left,
+            baseline - drop,
+            right,
+            baseline - drop + probeHeight,
+          ),
+          code.fill,
+          tint: code.isCode,
+        ),
+      );
+    } else {
+      final Map<int, (LineMetrics, double, double)> byLine =
+          <int, (LineMetrics, double, double)>{};
+      for (final TextBox box in boxes) {
+        final LineMetrics line = _lineAt(lines, (box.top + box.bottom) / 2);
+        final (LineMetrics, double, double) span =
+            byLine[line.lineNumber] ?? (line, box.left, box.right);
+        byLine[line.lineNumber] = (
+          line,
+          math.min(span.$2, box.left),
+          math.max(span.$3, box.right),
+        );
+      }
+      for (final (LineMetrics line, double left, double right)
+          in byLine.values) {
+        chips.add(
+          _PaintedChip(
+            Rect.fromLTRB(
+              left,
+              line.baseline - drop,
+              right,
+              line.baseline - drop + probeHeight,
+            ),
+            code.fill,
+            tint: code.isCode,
+          ),
+        );
+      }
+    }
+  }
+  return chips;
+}
+
+/// painter 坐标 [y] 落在哪条视觉行上。
+LineMetrics _lineAt(List<LineMetrics> lines, double y) {
+  for (final LineMetrics line in lines) {
+    if (y < line.baseline - line.ascent + line.height) return line;
+  }
+  return lines.last;
+}

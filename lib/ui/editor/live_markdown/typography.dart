@@ -75,6 +75,14 @@ const double kTagRadius = 5;
 const double kTagPadX = 6;
 const double kTagPadY = 1;
 
+/// `==高亮==` 底片的圆角与左右外扩，数值取自参考项目 EPUB Reader V7
+/// （`kHighlightFillRadius` / `_kHighlightFillPadX`）。
+///
+/// 参考项目的理由是「`TextStyle.backgroundColor` 画的是硬边直角矩形，
+/// 中文正文里像把字切出来」，所以改成自绘圆角色块、左右各让 1.5px 不贴脸。
+const double kHighlightRadius = 4;
+const double kHighlightPadX = 1.5;
+
 TextStyle _inlineCode(TextStyle base, AppPalette p, [Color? fill]) =>
     _inlineCodeSource(
       base,

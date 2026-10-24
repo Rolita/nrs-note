@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import '../models/note.dart';
 
 /// Result of comparing the on-disk vault with what the UI already knows about.
@@ -147,6 +149,21 @@ abstract class NoteStore {
   /// directory could not be removed. Empty sub-directories may already have been
   /// removed; nothing else is touched.
   Future<bool> deleteFolder(String folderPath) async => false;
+
+  /// Writes [bytes] to `<folderPath>/assets/<fileName>`, picking a free name
+  /// when that one is taken.
+  ///
+  /// Returns the reference to put in Markdown — `assets/x.png`, relative to the
+  /// note — or null where the platform has no real files to put an image in.
+  Future<String?> saveAsset(
+    String folderPath,
+    String fileName,
+    Uint8List bytes,
+  ) async => null;
+
+  /// Absolute path on disk for an image referenced by a note, or null for
+  /// remote sources, paths that escape the vault, and the web build.
+  String? assetPath(String folderPath, String source) => null;
 
   /// Writes [note] to its [Note.relativePath].
   ///

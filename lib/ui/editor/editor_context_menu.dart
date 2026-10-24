@@ -182,6 +182,7 @@ List<MenuNode> buildEditorMenu({
   required LineEditableTextState state,
   TableRangeResolver? resolve,
   VoidCallback? onEditCell,
+  Future<bool> Function()? onPasteImage,
 }) {
   final BlockStyle current = blockStyleOf(markerAt(value));
   final bool hasSelection =
@@ -716,8 +717,14 @@ List<MenuNode> buildEditorMenu({
       label: '粘贴',
       icon: LucideIcons.clipboardPaste,
       shortcut: 'Ctrl+V',
-      onPressed: () =>
-          unawaited(pasteIntoEditor(state, plain: false, resolve: resolve)),
+      onPressed: () => unawaited(
+        pasteIntoEditor(
+          state,
+          plain: false,
+          resolve: resolve,
+          onPasteImage: onPasteImage,
+        ),
+      ),
     ),
     MenuAction(
       label: '以纯文本形式粘贴',
@@ -818,14 +825,20 @@ void cutSelectionCells(
 /// rule can be applied and the only way Ctrl+V and this menu can agree.
 Future<void> pasteIntoEditor(
   LineEditableTextState state, {
-  // Kept so the two menu entries stay distinct at the call site — a
-  // format-aware paste would hang its behaviour here.
+  // Kept so the two menu entries stay distinct at the call site: only the
+  // format-aware 粘贴 row is handed [onPasteImage]; 纯文本 must never draw one.
   required bool plain,
   TableRangeResolver? resolve,
+  Future<bool> Function()? onPasteImage,
 }) async {
   final ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
   final String? text = data?.text;
-  if (text == null || text.isEmpty) return;
+  if (text == null || text.isEmpty) {
+    // No text to paste: the format-aware row falls back to the image path.
+    // If that draws nothing either, the paste is a no-op, as it always was.
+    if (onPasteImage != null && state.mounted) await onPasteImage();
+    return;
+  }
   if (!state.mounted) return;
   final String? refusal = pasteGridRefusal(text);
   if (refusal != null) {

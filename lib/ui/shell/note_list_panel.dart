@@ -24,6 +24,7 @@ class NoteListPanel extends StatefulWidget {
     required this.onDeleteNotes,
     required this.onDeleteFolder,
     required this.onSwitchView,
+    required this.onRevealOffset,
   });
 
   final SidebarView view;
@@ -34,6 +35,10 @@ class NoteListPanel extends StatefulWidget {
   /// forget the folder and the notes that lived there.
   final Future<bool> Function(String folderPath) onDeleteFolder;
   final ValueChanged<SidebarView> onSwitchView;
+
+  /// Asks the editor to scroll to a body offset after a search result opened
+  /// its note — the panel has no handle on the editor, the shell does.
+  final ValueChanged<int> onRevealOffset;
 
   @override
   State<NoteListPanel> createState() => NoteListPanelState();
@@ -453,9 +458,10 @@ class NoteListPanelState extends State<NoteListPanel> {
           onToggle: () => setState(() {
             if (!_collapsedResults.remove(id)) _collapsedResults.add(id);
           }),
-          onOpen: () {
+          onOpen: (int offset) {
             notes.setActiveFolder(hit.note.folderPath);
             notes.select(id);
+            widget.onRevealOffset(offset);
           },
         );
       },
@@ -664,7 +670,9 @@ class _SearchResultGroup extends StatelessWidget {
   final bool selected;
   final bool collapsed;
   final VoidCallback onToggle;
-  final VoidCallback onOpen;
+
+  /// Opens the note and jumps to the body offset of the snippet that was hit.
+  final ValueChanged<int> onOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -734,7 +742,10 @@ class _SearchResultGroup extends StatelessWidget {
         ),
         if (!collapsed)
           for (final SearchSnippet snippet in hit.snippets)
-            _SnippetCard(snippet: snippet, onTap: onOpen),
+            _SnippetCard(
+              snippet: snippet,
+              onTap: () => onOpen(snippet.matchOffset),
+            ),
       ],
     );
   }
@@ -811,8 +822,10 @@ class _SnippetCardState extends State<_SnippetCard> {
         TextSpan(
           text: snippet.text.substring(snippet.matchStart, snippet.matchEnd),
           style: TextStyle(
-            backgroundColor: _hovered ? p.accentSoft : p.outline,
-            color: _hovered ? p.accent : p.textSecondary,
+            // 命中词一出现就着色，不用等鼠标移上去；正文里的搜索色带也用
+            // 同一组 accentSoft / accent，两边看起来是同一个紫。
+            backgroundColor: p.accentSoft,
+            color: p.accent,
             fontWeight: FontWeight.w500,
           ),
         ),

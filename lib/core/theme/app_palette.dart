@@ -177,33 +177,37 @@ class AppPalette extends ThemeExtension<AppPalette> {
   );
 
   /// 石墨素白 / Graphite, dark face: neutral graphite ladder, near-white accent.
+  ///
+  /// 灰阶取自 Trae / VS Code 暗色：画布 `#171717`、侧栏 `#262626`、编辑区
+  /// `#1C1C1E`、浮层 `#303030`、下沉 `#141414`。侧栏比编辑区亮一档，是这组
+  /// 灰阶的特征；文字同样去掉暖色偏移，保持纯中性。
   static const AppPalette dark = AppPalette(
     brightness: Brightness.dark,
-    canvas: Color(0xFF151514),
-    sidebar: Color(0xFF1A1A19),
-    surface: Color(0xFF1F1F1E),
-    surfaceRaised: Color(0xFF272726),
-    surfaceSunken: Color(0xFF101010),
-    outline: Color(0xFF2F2F2E),
-    outlineSoft: Color(0xFF242423),
-    rule: Color(0xFF3A3A38),
-    textPrimary: Color(0xFFE9E9E6),
-    textSecondary: Color(0xFF9E9E9A),
-    textTertiary: Color(0xFF6E6E6A),
-    accent: Color(0xFFEDEDEA),
+    canvas: Color(0xFF171717),
+    sidebar: Color(0xFF262626),
+    surface: Color(0xFF1C1C1E),
+    surfaceRaised: Color(0xFF303030),
+    surfaceSunken: Color(0xFF141414),
+    outline: Color(0xFF363638),
+    outlineSoft: Color(0xFF2A2A2C),
+    rule: Color(0xFF3E3E40),
+    textPrimary: Color(0xFFE8E8E8),
+    textSecondary: Color(0xFFA1A1A1),
+    textTertiary: Color(0xFF737373),
+    accent: Color(0xFFEDEDED),
     accentHover: Color(0xFFFFFFFF),
-    accentSoft: Color(0xFF2E2E2C),
-    onAccent: Color(0xFF141413),
+    accentSoft: Color(0xFF333333),
+    onAccent: Color(0xFF141414),
     success: Color(0xFF6FC29A),
     successSoft: Color(0xFF17281F),
     warning: Color(0xFFE0964A),
     warningSoft: Color(0xFF33240F),
     danger: Color(0xFFE5796B),
     dangerSoft: Color(0xFF2E1A17),
-    selection: Color(0x38EDEDEA),
+    selection: Color(0x38EDEDED),
     // `ThemePresets` derives this from `accent` (lightness × 0.86) at runtime;
     // it is copied here as a literal only to keep this palette `const`.
-    selectionEdge: Color(0xFFCECEC7),
+    selectionEdge: Color(0xFFCCCCCC),
     shadow: Color(0x66000000),
     overlay: Color(0x99000000),
   );

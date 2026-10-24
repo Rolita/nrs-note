@@ -62,6 +62,26 @@ class LiveTableBlocks {
   @visibleForTesting
   int get debugCellPainterBuilds => _cellMemo.painterBuilds;
 
+  /// 第 [index] 张表每一行的选区横带（表坐标），`null` 表示该行没被选中。
+  ///
+  /// 绘制的色带没有 widget 可查，测试只能从这里读：选中合并块的一部分时，
+  /// 整块经过的每一行都应该是同一条通栏色带。
+  @visibleForTesting
+  List<(double, double)?> debugBandsOfTable(int index) {
+    if (index < 0 || index >= _records.length) {
+      return const <(double, double)?>[];
+    }
+    final _Table table = _records[index].table;
+    final TextSelection? sel = selection();
+    if (sel == null || !sel.isValid || sel.isCollapsed) {
+      return List<(double, double)?>.filled(table.rows.length, null);
+    }
+    return <(double, double)?>[
+      for (final _RowBand? band in _bandsOfTable(table, sel.start, sel.end))
+        band == null ? null : (band.left, band.right),
+    ];
+  }
+
   @override
   bool operator ==(Object other) =>
       other is LiveTableBlocks &&
@@ -130,8 +150,7 @@ class LiveTableBlocks {
 
     // 旧记录按源码块配对。源码没变的表，测量结果原样可用，只需把行号和
     // 偏移跟着上面的编辑挪一下。
-    final Map<String, List<_TableRecord>> pool =
-        <String, List<_TableRecord>>{};
+    final Map<String, List<_TableRecord>> pool = <String, List<_TableRecord>>{};
     for (final _TableRecord record in _records) {
       (pool[record.key] ??= <_TableRecord>[]).add(record);
     }
@@ -162,8 +181,7 @@ class LiveTableBlocks {
         continue;
       }
       int last = i;
-      while (last + 1 < sources.length &&
-          _isTableRun(sources[last + 1].kind)) {
+      while (last + 1 < sources.length && _isTableRun(sources[last + 1].kind)) {
         last++;
       }
       int divider = -1;
@@ -176,8 +194,7 @@ class LiveTableBlocks {
 
       final String key = _sourceKeyOf(lines, i, last);
       final List<_TableRecord>? available = pool[key];
-      final _TableRecord? reused =
-          available != null && available.isNotEmpty
+      final _TableRecord? reused = available != null && available.isNotEmpty
           ? available.removeLast()
           : null;
       if (reused != null) {
@@ -229,7 +246,6 @@ class LiveTableBlocks {
           last: ri == table.rows.length - 1,
           palette: palette,
           textScaler: context.textScaler,
-          direction: context.textDirection,
           memoStore: _cellMemo,
           bandOf: (int index) => _bandOf(table, index),
         );
@@ -260,12 +276,9 @@ class LiveTableBlocks {
         _bandCache.remove(record.table);
       }
     }
-    // 复用的表没有重新走 _measureCells，但它们的格仍属于这一代：先打标记，
-    // 再让 sweep 释放真正没人用的条目。
+    // 复用的表没有重新测量，但它们的格仍属于这一代：sweep 之前先打标记。
     for (final _TableRecord record in next) {
-      for (final _TableLineBlock block in record.blocks) {
-        block.touch(_cellMemo.generation);
-      }
+      record.table.touch(_cellMemo.generation);
     }
     _cellMemo.sweep();
     _records
@@ -357,7 +370,7 @@ class LiveTableBlocks {
 
 /// 一张表的测量记录：源码块、它的行号、以及上一次光标落在哪一格。
 ///
-/// 记录拥有每一行的 [TextPainter]；复用时只改绝对偏移，重测时整份换掉。
+/// 记录拥有整张表的 painter；复用时只改绝对偏移，重测时整份换掉。
 class _TableRecord {
   _TableRecord({
     required this.key,
@@ -384,21 +397,11 @@ class _TableRecord {
   int editColumn;
 
   void dispose() {
+    table.dispose();
     for (final _TableLineBlock block in blocks) {
       block.dispose();
     }
   }
-}
-
-/// A rounded fill behind one inline code run, in the cell painter's coordinates.
-class _PaintedChip {
-  const _PaintedChip(this.rect, this.fill, {this.tint = false});
-
-  final Rect rect;
-  final Color fill;
-
-  /// 底片是否跟着表格选区换色。标签不跟：它在选中格里也保留自己的配色。
-  final bool tint;
 }
 
 /// 整格落在 [band] 里就算选中。
@@ -409,6 +412,10 @@ bool _cellInBand(_CellData cell, _RowBand band) =>
     cell.x >= band.left - 0.5 && cell.x + cell.boxWidth <= band.right + 0.5;
 
 /// 一行实时表格：既是行引擎的自绘内容，也是指针层的 chrome 提供者。
+///
+/// 一行只画**自己那一段**：整表测量给出每格在表坐标里的位置与合并块的完整
+/// 矩形，绘制时按行裁剪，所以跨行的合并块由它经过的每一行各画一截，行滚出
+/// 视口也不会留下空白。
 class _TableLineBlock implements LineBlockView, TableRowChrome {
   _TableLineBlock({
     required this.table,
@@ -420,12 +427,9 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
     required this.last,
     required this.palette,
     required this.textScaler,
-    required this.direction,
     required this.memoStore,
     required this.bandOf,
-  }) {
-    _measureCells();
-  }
+  });
 
   final _Table table;
   final _RowData row;
@@ -442,211 +446,89 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
 
   final AppPalette palette;
   final TextScaler textScaler;
-  final TextDirection direction;
 
-  /// 格树与 painter 的共享缓存；实例归 [LiveTableBlocks] 所有。
+  /// 抓手图标的共享缓存；实例归 [LiveTableBlocks] 所有。
   final _CellMemoStore memoStore;
-
-  /// 每格对应的 memo（编辑中的格为 null），用于给这一代打标记。
-  final List<_CellMemo?> _memos = <_CellMemo?>[];
-
-  /// 由 store 拥有的 painter；null 表示这一格的 painter 归本块所有。
-  final List<_PaintedCell?> _paintedCells = <_PaintedCell?>[];
-
-  /// 本块自己建的 painter（编辑中的格），dispose 时由本块释放。
-  final List<TextPainter> _owned = <TextPainter>[];
 
   /// 按行号取整张表的选区色带（`null` 表示这一行没被选中）。
   final _RowBand? Function(int index) bandOf;
 
-  final List<TextPainter> _painters = <TextPainter>[];
-  final List<List<_PaintedChip>> _chips = <List<_PaintedChip>>[];
-
-  double _contentHeight = 0;
   Offset _globalOrigin = Offset.zero;
   bool _disposed = false;
 
-  void _measureCells() {
-    _contentHeight = table.rowHeight;
-    for (final _CellData cell in row.data) {
-      final _CellMemo? memo = cell.memo;
-      _PaintedCell? painted = memoStore.painted(
-        memo,
-        cell.width,
-        cell.align,
-      );
-      if (painted == null) {
-        // 格子的文本宽度就是列宽：放不下的部分在格子内部换行，行高随内容
-        // 变化（下面取各格 painter 高度的最大值）。
-        final double maxWidth = math.max(1, cell.width);
-        final TextPainter tp = TextPainter(
-          text: TextSpan(style: cell.style, children: cell.spans),
-          textDirection: direction,
-          textScaler: textScaler,
-          textAlign: cell.align,
-        )..layout(minWidth: maxWidth, maxWidth: maxWidth);
-        memoStore.notePainterBuild();
-        final List<_PaintedChip> chips = _chipsFor(tp, cell);
-        if (memo == null) {
-          // 编辑中的格每击键都变，不写共享缓存，由本块持有。
-          _owned.add(tp);
-        } else {
-          painted = memoStore.addPainted(
-            memo: memo,
-            width: cell.width,
-            align: cell.align,
-            painter: tp,
-            chips: chips,
-          );
-        }
-        _painters.add(tp);
-        _chips.add(chips);
-      } else {
-        _painters.add(painted.painter);
-        _chips.add(painted.chips);
-      }
-      _memos.add(memo);
-      _paintedCells.add(painted);
-      _contentHeight = math.max(_contentHeight, _painters.last.height);
-    }
-  }
-
-  /// 复用的表不会重新测量，但它的格仍在这一代里：sweep 之前必须打标记。
-  void touch(int generation) {
-    for (final _CellMemo? memo in _memos) {
-      if (memo != null) memo.usedIn = generation;
-    }
-    for (final _PaintedCell? cell in _paintedCells) {
-      if (cell != null) cell.usedIn = generation;
-    }
-  }
-
-  /// 量出一个格子里每段行内代码的圆角底片（格子坐标）。
-  ///
-  /// 换行的格子会把一段代码折到两条视觉行上：底片按视觉行分别铺，否则会
-  /// 拉成一条横跨两行文字的长条。
-  List<_PaintedChip> _chipsFor(TextPainter tp, _CellData cell) {
-    if (cell.codeRuns.isEmpty) return const <_PaintedChip>[];
-    final List<LineMetrics> lines = tp.computeLineMetrics();
-    final List<_PaintedChip> chips = <_PaintedChip>[];
-    for (final _CellCode code in cell.codeRuns) {
-      final List<TextBox> boxes = tp.getBoxesForSelection(
-        TextSelection(baseOffset: code.start, extentOffset: code.end),
-      );
-      if (boxes.isEmpty) continue;
-      // 探针尺寸只取决于文字与样式，跨表跨测量共用；换行时每条视觉行都要用。
-      final (double drop, double probeHeight) = memoStore.probeMetrics(
-        code.probe.isEmpty ? ' ' : code.probe,
-        code.style,
-      );
-      if (lines.length <= 1) {
-        final double baseline = tp.computeDistanceToActualBaseline(
-          TextBaseline.alphabetic,
-        );
-        double left = boxes.first.left;
-        double right = boxes.first.right;
-        for (final TextBox box in boxes) {
-          left = math.min(left, box.left);
-          right = math.max(right, box.right);
-        }
-        chips.add(
-          _PaintedChip(
-            Rect.fromLTRB(
-              left,
-              baseline - drop,
-              right,
-              baseline - drop + probeHeight,
-            ),
-            code.fill,
-            tint: code.isCode,
-          ),
-        );
-      } else {
-        final Map<int, (LineMetrics, double, double)> byLine =
-            <int, (LineMetrics, double, double)>{};
-        for (final TextBox box in boxes) {
-          final LineMetrics line = _lineAt(lines, (box.top + box.bottom) / 2);
-          final (LineMetrics, double, double) span =
-              byLine[line.lineNumber] ?? (line, box.left, box.right);
-          byLine[line.lineNumber] = (
-            line,
-            math.min(span.$2, box.left),
-            math.max(span.$3, box.right),
-          );
-        }
-        for (final (LineMetrics line, double left, double right)
-            in byLine.values) {
-          chips.add(
-            _PaintedChip(
-              Rect.fromLTRB(
-                left,
-                line.baseline - drop,
-                right,
-                line.baseline - drop + probeHeight,
-              ),
-              code.fill,
-              tint: code.isCode,
-            ),
-          );
-        }
-      }
-    }
-    return chips;
-  }
-
-  /// painter 坐标 [y] 落在哪条视觉行上。
-  static LineMetrics _lineAt(List<LineMetrics> lines, double y) {
-    for (final LineMetrics line in lines) {
-      if (y < line.baseline - line.ascent + line.height) return line;
-    }
-    return lines.last;
-  }
+  double get _rowHeight => table.rowHeights[rowIndex];
 
   @override
-  double get height => _contentHeight;
+  double get height => _rowHeight;
 
   @override
   double get width => table.width;
 
-  /// 文字在行框里垂直居中的偏移。
-  double _textTop(TextPainter tp) => (_contentHeight - tp.height) / 2;
+  /// Every cell that puts pixels on this row: the row's own cells, plus the
+  /// anchors of merges that started above and reach down here.
+  Iterable<_CellData> _cellsToPaint() sync* {
+    for (final _CellData cell in row.data) {
+      if (!cell.covered) yield cell;
+    }
+    for (final TableMerge m in table.merges) {
+      if (m.row < rowIndex && rowIndex <= m.lastRow) {
+        yield table.rows[m.row].data[m.column];
+      }
+    }
+  }
+
+  /// Where a cell's painter starts, in this row's coordinates.
+  double _localTop(_CellData cell) => cell.textTop - table.rowTops[rowIndex];
+
+  /// A cell's **whole** box in canvas coordinates. For a merge this is the
+  /// whole merged rectangle — the row clip keeps the slice.
+  Rect _paintRect(_CellData cell, double left, double top) => Rect.fromLTWH(
+    left + cell.x,
+    top - table.rowTops[rowIndex] + cell.mergeTop,
+    cell.boxWidth,
+    cell.mergeHeight,
+  );
 
   // ------------------------------------------------------------ 行内几何
 
-  /// 第 [column] 列的格子在本行里的矩形。
+  /// 第 [column] 列的格子在本行里的矩形。覆盖格宽度为零。
   Rect _cellRect(int column) {
     if (column < 0 || column >= row.data.length) {
-      return Rect.fromLTWH(table.width, 0, 0, _contentHeight);
+      return Rect.fromLTWH(table.width, 0, 0, _rowHeight);
     }
     final _CellData cell = row.data[column];
-    return Rect.fromLTWH(cell.x, 0, cell.boxWidth, _contentHeight);
+    return Rect.fromLTWH(cell.x, 0, cell.boxWidth, _rowHeight);
   }
 
   List<Rect> cells() => <Rect>[
     for (int i = 0; i < row.data.length; i++) _cellRect(i),
   ];
 
-  int? _cellAtLocal(Offset local) {
-    for (int i = 0; i < row.data.length; i++) {
-      final _CellData cell = row.data[i];
-      if (local.dx >= cell.x && local.dx < cell.x + cell.boxWidth) return i;
-    }
-    return null;
-  }
-
   @override
   int offsetAt(Offset local) {
     if (row.data.isEmpty) return row.start;
-    final int? index = _cellAtLocal(local);
-    if (index == null) {
+    final int? column = table.columnAt(local.dx);
+    if (column == null) {
       // 表格左/右的空白：贴到最近的一端，与段落里点空白的行为一致。
       return local.dx < 0 ? row.data.first.cell.offset : row.end;
     }
-    final _CellData cell = row.data[index];
-    final TextPainter tp = _painters[index];
+    final TableMerge? merge = table.mergeAt(rowIndex, column);
+    if (merge != null) {
+      return _offsetIn(table.anchorCell(rowIndex, column), local);
+    }
+    if (column >= row.data.length) return row.end;
+    return _offsetIn(row.data[column], local);
+  }
+
+  int _offsetIn(_CellData cell, Offset local) {
+    final TextPainter? tp = cell.painter;
+    if (tp == null) return cell.cell.offset;
     final int at = tp
         .getPositionForOffset(
-          Offset(local.dx - cell.textX, local.dy - _textTop(tp)),
+          Offset(
+            local.dx - cell.textX,
+            table.rowTops[rowIndex] + local.dy - cell.textTop,
+          ),
         )
         .offset;
     return (cell.cell.offset + at).clamp(
@@ -658,7 +540,7 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
   @override
   Rect caretRectAt(int offset) {
     if (row.data.isEmpty) {
-      return Rect.fromLTWH(0, 0, 0, _contentHeight);
+      return Rect.fromLTWH(0, 0, 0, _rowHeight);
     }
     int index = row.data.length - 1;
     for (int i = 0; i < row.data.length; i++) {
@@ -668,8 +550,14 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
         break;
       }
     }
-    final _CellData cell = row.data[index];
-    final TextPainter tp = _painters[index];
+    final _CellData raw = row.data[index];
+    final _CellData cell = table.mergeAt(rowIndex, index) == null
+        ? raw
+        : table.anchorCell(rowIndex, index);
+    final TextPainter? tp = cell.painter;
+    if (tp == null) {
+      return Rect.fromLTWH(cell.x, 0, 0, _rowHeight);
+    }
     final int local = (offset - cell.cell.offset).clamp(
       0,
       cell.cell.text.length,
@@ -679,7 +567,7 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
     final double caretHeight = tp.getFullHeightForCaret(position, Rect.zero);
     return Rect.fromLTWH(
       cell.textX + caret.dx,
-      _textTop(tp) + caret.dy,
+      _localTop(cell) + caret.dy,
       0,
       caretHeight > 0 ? caretHeight : tp.height,
     );
@@ -689,19 +577,20 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
   List<Rect> highlightRects(int from, int to) {
     if (to <= from || row.data.isEmpty) return const <Rect>[];
     final List<Rect> out = <Rect>[];
-    for (int i = 0; i < row.data.length && i < _painters.length; i++) {
-      final _CellData cell = row.data[i];
+    for (final _CellData cell in row.data) {
+      final TextPainter? tp = cell.painter;
+      if (tp == null) continue;
       final int start = cell.cell.offset;
       final int end = start + cell.cell.text.length;
       final int a = math.max(from, start);
       final int b = math.min(to, end);
       if (b <= a) continue;
-      final TextPainter tp = _painters[i];
       final List<TextBox> boxes = tp.getBoxesForSelection(
         TextSelection(baseOffset: a - start, extentOffset: b - start),
       );
       if (boxes.isEmpty) continue;
       final List<LineMetrics> lines = tp.computeLineMetrics();
+      final double origin = _localTop(cell);
       for (final TextBox box in boxes) {
         // 单行格沿用整行高度（与表格色带一致）；换行后的格子每一折行
         // 只染自己那一条，避免两条高亮在同一个格子里叠色。
@@ -709,14 +598,14 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
           out.add(
             Rect.fromLTRB(
               cell.textX + box.left,
-              0,
+              cell.mergeHeight == _rowHeight ? 0 : origin,
               cell.textX + box.right,
-              _contentHeight,
+              cell.mergeHeight == _rowHeight ? _rowHeight : origin + tp.height,
             ),
           );
         } else {
           final LineMetrics line = _lineAt(lines, (box.top + box.bottom) / 2);
-          final double top = _textTop(tp) + line.baseline - line.ascent;
+          final double top = origin + line.baseline - line.ascent;
           out.add(
             Rect.fromLTRB(
               cell.textX + box.left,
@@ -738,14 +627,14 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
     _globalOrigin = globalOrigin;
     if (row.data.isEmpty) return;
 
-    final double cellHeight = _contentHeight;
+    final double rowHeight = _rowHeight;
     // 1px 的网格线必须落在设备像素上：整体坐标里的那点小数偏差在这里抹掉。
     final double left =
         origin.dx + (globalOrigin.dx.roundToDouble() - globalOrigin.dx);
     final double top =
         origin.dy + (globalOrigin.dy.roundToDouble() - globalOrigin.dy);
     final double right = left + table.width;
-    final double bottom = top + cellHeight;
+    final double bottom = top + rowHeight;
 
     /// 表格坐标里的一条列边界，吸附到像素栅格上。每条单独取整，误差不会
     /// 沿表格累积，每根线都恰好一像素。
@@ -770,33 +659,58 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
         band != null && (below == null || below.left > band.left + 0.5);
     final bool roundBR =
         band != null && (below == null || below.right < band.right - 0.5);
+    RRect bandShape() => RRect.fromRectAndCorners(
+      Rect.fromLTRB(bl, top, br, bottom),
+      topLeft: roundTL ? Radius.circular(radius) : Radius.zero,
+      topRight: roundTR ? Radius.circular(radius) : Radius.zero,
+      bottomLeft: roundBL ? Radius.circular(radius) : Radius.zero,
+      bottomRight: roundBR ? Radius.circular(radius) : Radius.zero,
+    );
+
+    final List<_CellData> painted = _cellsToPaint().toList(growable: false);
+
+    canvas.save();
+    // The clip is the row slice: a rowspan's fill and glyphs must not reach
+    // into the rows above or below. Horizontally it bleeds one pixel each
+    // side, because the outer rules are snapped to the device grid and
+    // `edgeAt(table.width)` can round a fraction past the table's fractional
+    // right edge — a hard clip at `right` erased the right border.
+    canvas.clipRect(Rect.fromLTRB(left - 1, top, right + 1, bottom));
+
+    // 纸面：整行先铺一层不透明的纸色。字段自己那层整行高亮还在下面，
+    // 不铺这一层，没被格子覆盖到的地方会露出“整行都选中”的错觉。
+    final Paint paper = Paint()..color = palette.surface;
+    canvas.drawRect(Rect.fromLTRB(left, top, right, bottom), paper);
+
+    // 单元格填充在文字和选区**之下**：选中格里仍能看见填色。
+    for (final _CellData cell in painted) {
+      final Color? fill = cell.fill;
+      if (fill == null) continue;
+      canvas.drawRect(_paintRect(cell, left, top), Paint()..color = fill);
+    }
 
     // 选区洗色：**一整块不透明的、按格子吸附的**色带，只在形状真正拐弯的
-    // 角上圆角。上下两行叠起来就是一条连续的带子。
-    final Color wash = Color.alphaBlend(
-      palette.selectionEdge.withValues(alpha: header ? 0.18 : 0.11),
-      palette.surface,
-    );
+    // 角上圆角。上下两行叠起来就是一条连续的带子。有填色的格子从填色起调，
+    // 没填色的从纸面起调。
     if (band != null) {
-      // 未选中的那一段先用纸色盖一遍：字段自己那层整行高亮还在下面，
-      // 只盖中间一段会让整行看起来都被选中了。
-      final Paint paper = Paint()..color = palette.surface;
-      if (bl > left) {
-        canvas.drawRect(Rect.fromLTRB(left, top, bl, bottom), paper);
-      }
-      if (br < right) {
-        canvas.drawRect(Rect.fromLTRB(br, top, right, bottom), paper);
-      }
-      canvas.drawRRect(
-        RRect.fromRectAndCorners(
-          Rect.fromLTRB(bl, top, br, bottom),
-          topLeft: roundTL ? Radius.circular(radius) : Radius.zero,
-          topRight: roundTR ? Radius.circular(radius) : Radius.zero,
-          bottomLeft: roundBL ? Radius.circular(radius) : Radius.zero,
-          bottomRight: roundBR ? Radius.circular(radius) : Radius.zero,
-        ),
-        Paint()..color = wash,
+      final double washAlpha = header ? 0.18 : 0.11;
+      final Color tint = palette.selectionEdge.withValues(alpha: washAlpha);
+      final RRect shape = bandShape();
+      canvas.save();
+      canvas.clipRRect(shape);
+      canvas.drawRect(
+        Rect.fromLTRB(bl, top, br, bottom),
+        Paint()..color = Color.alphaBlend(tint, palette.surface),
       );
+      for (final _CellData cell in painted) {
+        final Color? fill = cell.fill;
+        if (fill == null) continue;
+        canvas.drawRect(
+          _paintRect(cell, left, top),
+          Paint()..color = Color.alphaBlend(tint, tableFillOver(palette, fill)),
+        );
+      }
+      canvas.restore();
     }
 
     // 拖拽预览：抓手正在提议的落点，画成一层浅强调色。
@@ -809,29 +723,26 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
         );
       if (preview.column) {
         final int stop = math.min(
-          row.data.length - 1,
+          table.columns.length - 1,
           preview.index + preview.count - 1,
         );
         for (int c = preview.index; c <= stop; c++) {
-          final Rect cell = _cellRect(c);
-          if (cell.width <= 0) continue;
+          final _ColumnBox box = table.columns[c];
+          if (box.width <= 0) continue;
           canvas.drawRect(
-            Rect.fromLTWH(left + cell.left, top, cell.width, cellHeight),
+            Rect.fromLTWH(left + box.x, top, box.width, rowHeight),
             hot,
           );
           if (c == preview.index) {
             canvas.drawRect(
-              Rect.fromLTWH(left + cell.left, top, 2, cellHeight),
+              Rect.fromLTWH(left + box.x, top, 2, rowHeight),
               Paint()..color = palette.accent,
             );
           }
         }
       } else if (rowIndex >= preview.index &&
           rowIndex < preview.index + preview.count) {
-        canvas.drawRect(
-          Rect.fromLTWH(left, top, table.width, cellHeight),
-          hot,
-        );
+        canvas.drawRect(Rect.fromLTWH(left, top, table.width, rowHeight), hot);
         if (rowIndex == preview.index) {
           canvas.drawRect(
             Rect.fromLTWH(left, top, table.width, 2),
@@ -848,15 +759,14 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
     // 选中色按**格子**上：色带就是这一行里被选中的那几格，格子要么整格在里
     // 面、要么整格在外面。按线性选区上色会把两端之间的邻列一起点亮。
     final Color selectedChip = _selectedChip(palette);
-    for (int i = 0; i < row.data.length && i < _chips.length; i++) {
-      if (_chips[i].isEmpty) continue;
-      final bool cellSelected = band != null && _cellInBand(row.data[i], band);
-      final TextPainter tp = _painters[i];
+    for (final _CellData cell in painted) {
+      if (cell.chips.isEmpty) continue;
+      final bool cellSelected = band != null && _cellInBand(cell, band);
       final Offset cellOrigin = Offset(
-        left + row.data[i].textX,
-        top + _textTop(tp),
+        left + cell.textX,
+        top + _localTop(cell),
       );
-      for (final _PaintedChip chip in _chips[i]) {
+      for (final _PaintedChip chip in cell.chips) {
         chipPaint.color = chip.tint && cellSelected ? selectedChip : chip.fill;
         canvas.drawRRect(
           RRect.fromRectAndRadius(
@@ -869,37 +779,38 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
     }
 
     // 网格：每一行都有一条顶线（表头和末行再加一条底线），每条列边界一根。
+    // 合并块内部的横线与竖线跳过——一个合并块是一个人眼里的一格。
     final Paint line = Paint()..color = palette.rule;
     final Paint strong = Paint()
       ..color = band == null ? _strongRule(palette) : palette.rule;
-    final Set<double> edges = <double>{0, table.width};
-    for (final _CellData cell in row.data) {
-      edges
-        ..add(cell.x)
-        ..add(cell.x + cell.boxWidth);
-    }
     void grid(Paint paint) {
-      canvas.drawRect(Rect.fromLTWH(left, top, table.width, 1), paint);
-      for (final double x in edges) {
-        canvas.drawRect(Rect.fromLTWH(edgeAt(x), top, 1, cellHeight), paint);
+      _lineAcross(canvas, left, top, table.width, _topSkips(), paint);
+      for (int c = 0; c < table.columns.length; c++) {
+        if (c > 0 && table.mergeAcross(rowIndex, c)) continue;
+        canvas.drawRect(
+          Rect.fromLTWH(edgeAt(table.columns[c].x), top, 1, rowHeight),
+          paint,
+        );
       }
+      canvas.drawRect(
+        Rect.fromLTWH(edgeAt(table.width), top, 1, rowHeight),
+        paint,
+      );
     }
 
     grid(line);
     if (header || last) {
-      canvas.drawRect(
-        Rect.fromLTWH(left, bottom - 1, table.width, 1),
+      _lineAcross(
+        canvas,
+        left,
+        bottom - 1,
+        table.width,
+        _bottomSkips(),
         strong,
       );
     }
     if (band != null) {
-      final RRect shape = RRect.fromRectAndCorners(
-        Rect.fromLTRB(bl, top, br, bottom),
-        topLeft: roundTL ? Radius.circular(radius) : Radius.zero,
-        topRight: roundTR ? Radius.circular(radius) : Radius.zero,
-        bottomLeft: roundBL ? Radius.circular(radius) : Radius.zero,
-        bottomRight: roundBR ? Radius.circular(radius) : Radius.zero,
-      );
+      final RRect shape = bandShape();
       // 提亮是从**网格色**上提的，不是从洗色上提：块里的线仍然读作线，
       // 而不是把整块切开的强调色亮条。
       final Paint lifted = Paint()
@@ -911,8 +822,12 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
       canvas.clipRRect(shape);
       grid(lifted);
       if (header || last) {
-        canvas.drawRect(
-          Rect.fromLTWH(left, bottom - 1, table.width, 1),
+        _lineAcross(
+          canvas,
+          left,
+          bottom - 1,
+          table.width,
+          _bottomSkips(),
           lifted,
         );
       }
@@ -921,46 +836,131 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
     }
 
     // 文字最后画，压在底色和网格上。
-    for (int i = 0; i < row.data.length && i < _painters.length; i++) {
-      _painters[i].paint(
-        canvas,
-        Offset(left + row.data[i].textX, top + _textTop(_painters[i])),
-      );
+    for (final _CellData cell in painted) {
+      final TextPainter? tp = cell.painter;
+      if (tp == null) continue;
+      tp.paint(canvas, Offset(left + cell.textX, top + _localTop(cell)));
     }
+
+    canvas.restore();
 
     // chrome 再压在一切之上，免得被自己画出来的洗色盖住。
     _paintChrome(canvas, left, top);
+
+    // 拖动列宽时的落点线：每一行各画自己那一截，拼起来就是整张表高度。
+    final TableResizePreview? resize = tableResizePreview.value;
+    if (resize != null && resize.tableId == tableId) {
+      final double x = (left + resize.localX).roundToDouble();
+      canvas.drawRect(
+        Rect.fromLTWH(x - 1, top, 2, rowHeight),
+        Paint()..color = palette.accent,
+      );
+    }
   }
 
-  /// 抓手和两个 `+` 按钮：**只有悬停时才画**，而且就是图标本身。
+  /// 本行顶线上被“从上面延续下来的合并块”占据的横向区间。
+  List<(double, double)> _topSkips() => <(double, double)>[
+    for (final TableMerge m in table.merges)
+      if (m.row < rowIndex && rowIndex <= m.lastRow) table.mergeSpan(m),
+  ];
+
+  /// 本行底线上被“继续向下延伸的合并块”占据的横向区间。
+  List<(double, double)> _bottomSkips() => <(double, double)>[
+    for (final TableMerge m in table.merges)
+      if (m.row <= rowIndex && rowIndex < m.lastRow) table.mergeSpan(m),
+  ];
+
+  /// 一条横向网格线，跳过 [skips] 的区间。
+  static void _lineAcross(
+    Canvas canvas,
+    double left,
+    double top,
+    double width,
+    List<(double, double)> skips,
+    Paint paint,
+  ) {
+    if (skips.isEmpty) {
+      canvas.drawRect(Rect.fromLTWH(left, top, width, 1), paint);
+      return;
+    }
+    final List<(double, double)> sorted = skips.toList()
+      ..sort((a, b) => a.$1.compareTo(b.$1));
+    double x = 0;
+    for (final (double a, double b) in sorted) {
+      if (a > x) {
+        canvas.drawRect(Rect.fromLTWH(left + x, top, a - x, 1), paint);
+      }
+      x = math.max(x, b);
+    }
+    if (x < width) {
+      canvas.drawRect(Rect.fromLTWH(left + x, top, width - x, 1), paint);
+    }
+  }
+
+  /// 抓手、两个 `+` 和列分隔线：**只有悬停时才画**。抓手是一枚按钮，
+  /// `+` 与分隔线仍然只有图标 / 线本身。
   void _paintChrome(Canvas canvas, double left, double top) {
     final Offset painted = Offset(left, top);
+    final bool resizing = tableResizePreview.value != null;
     for (final TableChromeTarget target in _controls()) {
+      if (!_visible(target.kind, target.rect, target.index)) continue;
       final bool grabbed = _dragging(target.kind, target.index);
-      final Rect local = target.rect.shift(-_globalOrigin);
-      if (!grabbed && !_hovering(local)) continue;
-      final bool on = grabbed || _pointing(local);
+      final bool on = grabbed || _pointing(target.rect);
       final Color color = on ? palette.accent : palette.textTertiary;
       final double weight = on ? 1.6 : 1.2;
-      final Rect r = local.shift(painted);
+      final Rect r = target.rect.shift(painted);
       switch (target.kind) {
         case TableChromeKind.rowHandle:
+          _paintGrip(canvas, r, active: on, horizontal: false);
         case TableChromeKind.columnHandle:
-          _paintGrip(canvas, r, color: color);
+          _paintGrip(canvas, r, active: on, horizontal: true);
         case TableChromeKind.addRow:
         case TableChromeKind.addColumn:
           _paintPlus(canvas, r, color: color, weight: weight);
+        case TableChromeKind.resizeColumn:
+          // 拖动时由落点线接管，悬停线让位。
+          if (resizing) continue;
+          canvas.drawRect(
+            Rect.fromLTWH(r.left.roundToDouble(), r.top, 1, r.height),
+            Paint()..color = palette.accent.withValues(alpha: 0.45),
+          );
       }
     }
   }
 
-  /// 六个点：两列三行，重排列表里人人都认得的那只手。
+  /// 六点抓手：一枚圆角按钮，行抓手两列三行，列抓手三列两行。
   ///
-  /// 从图标字体里重绘，而不是手描六个圆：绘制发生在自绘层里，`Icon` 需要
-  /// 一个 widget，而那个 widget 会把光标需要的点击吞掉。
-  void _paintGrip(Canvas canvas, Rect r, {required Color color}) {
-    // 图标 painter 按颜色缓存：绘制每帧、每个可见抓手都要用，但只有两种颜色。
-    final TextPainter tp = memoStore.gripPainter(color);
+  /// 只有六个点时，抓手在深色纸上既看不清也不像控件。按钮用浮层色打底、
+  /// 控件描边收口，点阵居中标出拖动方向；指到或抓住时整枚反相，与 `+` 的
+  /// 悬停反馈同一个语气。
+  ///
+  /// 点阵从图标字体里重绘，而不是手描六个圆：绘制发生在自绘层里，`Icon`
+  /// 需要一个 widget，而那个 widget 会把光标需要的点击吞掉。
+  void _paintGrip(
+    Canvas canvas,
+    Rect r, {
+    required bool active,
+    required bool horizontal,
+  }) {
+    final RRect button = RRect.fromRectAndRadius(r, const Radius.circular(4));
+    canvas.drawRRect(
+      button,
+      Paint()..color = active ? palette.accent : palette.surfaceRaised,
+    );
+    // 半像素内缩让 1px 描边落在像素中心；浅色主题下白底白纸也要有边。
+    canvas.drawRRect(
+      button.deflate(0.5),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = active ? palette.accent : palette.outline,
+    );
+    // 图标 painter 按颜色与方向缓存：绘制每帧、每个可见抓手都要用，
+    // 而同一帧里颜色只有静息 / 反相两种。
+    final TextPainter tp = memoStore.gripPainter(
+      active ? palette.onAccent : palette.textSecondary,
+      horizontal: horizontal,
+    );
     tp.paint(canvas, r.center - Offset(tp.width / 2, tp.height / 2));
   }
 
@@ -1103,15 +1103,7 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
-    // 共享 painter 由 _CellMemoStore 释放；这里只收自己建的那几个。
-    for (final TextPainter tp in _owned) {
-      tp.dispose();
-    }
-    _owned.clear();
-    _painters.clear();
-    _chips.clear();
-    _memos.clear();
-    _paintedCells.clear();
+    // 所有 painter 都归整表测量所有；行块只借来画。
   }
 
   // ------------------------------------------------------------ chrome 契约
@@ -1132,13 +1124,11 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
   set chromeOrigin(Offset value) => _globalOrigin = value;
 
   @override
-  Rect chromeBounds() =>
-      _globalOrigin & Size(table.width, _contentHeight);
+  Rect chromeBounds() => _globalOrigin & Size(table.width, _rowHeight);
 
   @override
   List<Rect> chromeCells() => <Rect>[
-    for (final Rect cell in cells())
-      _globalOrigin + cell.topLeft & cell.size,
+    for (final Rect cell in cells()) _globalOrigin + cell.topLeft & cell.size,
   ];
 
   @override
@@ -1147,21 +1137,35 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
       TextSpan(style: cell.style, children: cell.spans),
   ];
 
+  @override
+  List<double> chromeColumnWidths() => <double>[
+    for (final _ColumnBox box in table.columns) box.width - 2 * _kCellPad,
+  ];
+
+  @override
+  double chromeColumnRoom() => table.columnRoom;
+
+  @override
+  double chromeWidthScale() => table.widthScale;
+
   bool get _paintsColumnGrip => rowIndex == 0;
   bool get _paintsAddRow => rowIndex == rowCount - 1;
   bool get _paintsAddColumn => rowIndex == 0;
 
   Rect _rowGripRect() => Rect.fromLTWH(
     -_kChromeGap - _kGrip,
-    (_contentHeight - _kGrip) / 2,
+    (_rowHeight - _kGrip) / 2,
     _kGrip,
     _kGrip,
   );
 
   Rect _columnGripRect(int column) {
-    final Rect cell = _cellRect(column);
+    final _ColumnBox? box = column >= 0 && column < table.columns.length
+        ? table.columns[column]
+        : null;
+    final double cx = box == null ? table.width : box.x + box.width / 2;
     return Rect.fromLTWH(
-      cell.center.dx - _kGrip / 2,
+      cx - _kGrip / 2,
       -_kChromeGap - _kGrip,
       _kGrip,
       _kGrip,
@@ -1170,14 +1174,14 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
 
   Rect _addRowRect() => Rect.fromLTWH(
     table.width / 2 - _kAdd / 2,
-    _contentHeight + _kChromeGap,
+    _rowHeight + _kChromeGap,
     _kAdd,
     _kAdd,
   );
 
   Rect _addColumnRect() => Rect.fromLTWH(
     table.width + _kChromeGap,
-    (_contentHeight - _kAdd) / 2,
+    (_rowHeight - _kAdd) / 2,
     _kAdd,
     _kAdd,
   );
@@ -1186,22 +1190,89 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
   List<TableChromeTarget> _controls() => <TableChromeTarget>[
     TableChromeTarget(TableChromeKind.rowHandle, _rowGripRect(), rowIndex),
     if (_paintsColumnGrip)
-      for (int c = 0; c < row.data.length; c++)
-        TableChromeTarget(
-          TableChromeKind.columnHandle,
-          _columnGripRect(c),
-          c,
-        ),
+      for (int c = 0; c < table.columns.length; c++)
+        TableChromeTarget(TableChromeKind.columnHandle, _columnGripRect(c), c),
+    // 每一行都有一条条露出来的内部分隔线；合并块内部的边界没有。
+    // `mergeAcross` 要的是线右侧那一列的下标，而 chrome 的 `index` 记的是左列。
+    for (int c = 0; c + 1 < table.columns.length; c++)
+      if (!table.mergeAcross(rowIndex, c + 1))
+        TableChromeTarget(TableChromeKind.resizeColumn, _resizeRect(c), c),
+    // 最右边那条竖线是表格的外框，合并块盖不到它：拖它只改最后一列。
+    if (table.columns.isNotEmpty)
+      TableChromeTarget(
+        TableChromeKind.resizeColumn,
+        _resizeRect(table.columns.length - 1),
+        table.columns.length - 1,
+      ),
     if (_paintsAddColumn)
       TableChromeTarget(TableChromeKind.addColumn, _addColumnRect(), -1),
     if (_paintsAddRow)
       TableChromeTarget(TableChromeKind.addRow, _addRowRect(), -1),
   ];
 
-  bool _hovering(Rect local) {
+  /// 内部分隔线的命中矩形：就是网格里那根 1px 竖线。
+  Rect _resizeRect(int boundary) =>
+      Rect.fromLTWH(table.columns[boundary].right, 0, 1, _rowHeight);
+
+  bool _hovering(Rect local, {double slop = kTableChromeSlop}) {
     final Offset? p = tablePointerPosition.value;
     if (p == null) return false;
-    return local.shift(_globalOrigin).inflate(kTableChromeSlop).contains(p);
+    return local.shift(_globalOrigin).inflate(slop).contains(p);
+  }
+
+  /// 整张表在全局坐标里的矩形：这一行只是其中一条，抓手区却按整张表算。
+  Rect _tableBounds() {
+    final double top = _globalOrigin.dy - table.rowTops[rowIndex];
+    final double height = table.rowTops.last + table.rowHeights.last;
+    return Rect.fromLTWH(_globalOrigin.dx, top, table.width, height);
+  }
+
+  /// 左侧或上方那条整条悬停带：宽/高就是一枚抓手加两侧的容差。
+  ///
+  /// 左侧带纵向覆盖整张表，上方带横向覆盖整张表——但只有指针所在的那一
+  /// 行/列才露抓手：鼠标扫过整条边，抓手跟着行/列一枚一枚地走。容差只
+  /// 负责「够得着这条带」，行/列归谁另按恰好分界算（见 [_stripRowHovered]），
+  /// 免得相邻两行在边界附近同时认领指针。
+  Rect _stripRect(TableChromeStrip strip) {
+    final Rect table = _tableBounds();
+    return switch (strip) {
+      TableChromeStrip.rows => Rect.fromLTRB(
+        table.left - _kChromeGap - _kGrip - kTableChromeSlop,
+        table.top - kTableChromeSlop,
+        table.left - _kChromeGap + kTableChromeSlop,
+        table.bottom + kTableChromeSlop,
+      ),
+      TableChromeStrip.columns => Rect.fromLTRB(
+        table.left - kTableChromeSlop,
+        table.top - _kChromeGap - _kGrip - kTableChromeSlop,
+        table.right + kTableChromeSlop,
+        table.top - _kChromeGap + kTableChromeSlop,
+      ),
+    };
+  }
+
+  /// 指针在左带里、且纵向落在这**这一行**上——行与行恰好分界、互不重叠，
+  /// 所以任意时刻至多一枚行抓手露出来。分界处不给容差：指针瞄的是行中央
+  /// 那枚 20px 按钮，不是行与行之间的缝；给容差反而让相邻两行同时认领
+  /// 指针（±6 会重叠 12px），上一枚抓手就赖着不消失。
+  bool _stripRowHovered() {
+    final Offset? p = tablePointerPosition.value;
+    if (p == null || !_stripRect(TableChromeStrip.rows).contains(p)) {
+      return false;
+    }
+    return p.dy >= _globalOrigin.dy && p.dy < _globalOrigin.dy + _rowHeight;
+  }
+
+  /// 指针在上带里、且横向落在第 [column] 列上——列与列恰好分界、互不重叠，
+  /// 只有这一列的抓手该露面。列抓手只由第一行画。
+  bool _stripColumnHovered(int column) {
+    final Offset? p = tablePointerPosition.value;
+    if (p == null || !_stripRect(TableChromeStrip.columns).contains(p)) {
+      return false;
+    }
+    final _ColumnBox box = table.columns[column];
+    return p.dx >= _globalOrigin.dx + box.x &&
+        p.dx < _globalOrigin.dx + box.x + box.width;
   }
 
   bool _pointing(Rect local) {
@@ -1226,8 +1297,49 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
     return false;
   }
 
-  bool _visible(TableChromeKind kind, Rect local, int index) =>
-      _dragging(kind, index) || _hovering(local);
+  bool _visible(TableChromeKind kind, Rect local, int index) {
+    if (_dragging(kind, index)) return true;
+    return switch (kind) {
+      TableChromeKind.rowHandle => _stripRowHovered(),
+      TableChromeKind.columnHandle => _stripColumnHovered(index),
+      TableChromeKind.addRow || TableChromeKind.addColumn => _hovering(local),
+      TableChromeKind.resizeColumn => _hovering(
+        local,
+        slop: kTableResizeHitSlop,
+      ),
+    };
+  }
+
+  @override
+  TableChromeStrip? chromeStripAt(Offset globalPosition) {
+    if (_stripRect(TableChromeStrip.rows).contains(globalPosition)) {
+      return TableChromeStrip.rows;
+    }
+    if (_stripRect(TableChromeStrip.columns).contains(globalPosition)) {
+      return TableChromeStrip.columns;
+    }
+    return null;
+  }
+
+  @override
+  int? chromeStripIndexAt(Offset globalPosition, TableChromeStrip strip) {
+    if (!_stripRect(strip).contains(globalPosition)) return null;
+    if (strip == TableChromeStrip.rows) {
+      final bool inRow =
+          globalPosition.dy >= _globalOrigin.dy &&
+          globalPosition.dy < _globalOrigin.dy + _rowHeight;
+      return inRow ? rowIndex : null;
+    }
+    if (!_paintsColumnGrip) return null;
+    for (int c = 0; c < table.columns.length; c++) {
+      final _ColumnBox box = table.columns[c];
+      if (globalPosition.dx >= _globalOrigin.dx + box.x &&
+          globalPosition.dx < _globalOrigin.dx + box.x + box.width) {
+        return c;
+      }
+    }
+    return null;
+  }
 
   @override
   List<TableChromeTarget> chromeTargets() => <TableChromeTarget>[

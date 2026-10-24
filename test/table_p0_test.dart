@@ -680,10 +680,12 @@ void main() {
       final TableGrid grid = TableGrid.fromBlock(
         TableBlock.parse(controller.text, 0)!,
       );
-      expect(grid.rows[0], <String>['a', 'b']);
-      expect(grid.rows[1], <String>['你', '']);
+      List<String> texts(List<GridCell> row) =>
+          <String>[for (final GridCell cell in row) cell.text];
+      expect(texts(grid.rows[0]), <String>['a', 'b']);
+      expect(texts(grid.rows[1]), <String>['你', '']);
       // The 2×2 rectangle was consumed: the row below is cleared too.
-      expect(grid.rows[2], <String>['', '']);
+      expect(texts(grid.rows[2]), <String>['', '']);
 
       await tester.pump(const Duration(milliseconds: 600));
       await pressCtrl(tester, LogicalKeyboardKey.keyZ);
@@ -709,7 +711,10 @@ void main() {
           focusRow: block.bodyRows.length - 1,
           focusColumn: block.columns - 1,
         );
-        final List<List<String>> original = TableGrid.fromBlock(block).rows;
+        final List<List<String>> original = <List<String>>[
+          for (final List<GridCell> row in TableGrid.fromBlock(block).rows)
+            <String>[for (final GridCell cell in row) cell.text],
+        ];
 
         final String copied = all.markdown;
         expect(copied, contains(r'\|'));
@@ -724,7 +729,13 @@ void main() {
           copied,
         );
         final TableBlock again = TableBlock.parse(pasted.text, 0)!;
-        expect(TableGrid.fromBlock(again).rows, original);
+        expect(
+          <List<String>>[
+            for (final List<GridCell> row in TableGrid.fromBlock(again).rows)
+              <String>[for (final GridCell cell in row) cell.text],
+          ],
+          original,
+        );
 
         final TableRange allAgain = TableRange(
           block: again,
@@ -780,10 +791,16 @@ void main() {
       expect(result.text, '| c | d |\n| --- | --- |\n| e | f |');
       final TableBlock fresh = TableBlock.parse(result.text, 0)!;
       expect(fresh.hasHeader, isTrue);
-      expect(TableGrid.fromBlock(fresh).rows, <List<String>>[
-        <String>['c', 'd'],
-        <String>['e', 'f'],
-      ]);
+      expect(
+        <List<String>>[
+          for (final List<GridCell> row in TableGrid.fromBlock(fresh).rows)
+            <String>[for (final GridCell cell in row) cell.text],
+        ],
+        <List<String>>[
+          <String>['c', 'd'],
+          <String>['e', 'f'],
+        ],
+      );
     });
 
     test('the last column cannot be deleted', () {

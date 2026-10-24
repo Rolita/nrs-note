@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/core/theme/app_theme.dart';
 import 'package:nrs/core/utils/markdown_actions.dart';
+import 'package:nrs/core/utils/table_model.dart';
 import 'package:nrs/core/utils/table_selection.dart';
 import 'package:nrs/ui/editor/line_layout/line_editable_text.dart';
 import 'package:nrs/ui/editor/line_layout/render_line_editable.dart';
@@ -31,7 +32,9 @@ void main() {
     // in the process; a test that inherited it would see chrome it never asked
     // for.
     tablePointerPosition.value = null;
+    tableResizePreview.value = null;
     addTearDown(() => tablePointerPosition.value = null);
+    addTearDown(() => tableResizePreview.value = null);
     final MarkdownSourceController controller = MarkdownSourceController(
       text: text,
     );
@@ -58,7 +61,9 @@ void main() {
   }
 
   List<TableRowChrome> rows(WidgetTester tester) =>
-      tester.allRenderObjects.whereType<RenderLineEditable>().first
+      tester.allRenderObjects
+          .whereType<RenderLineEditable>()
+          .first
           .tableRows()
           .toList()
         ..sort(
@@ -81,6 +86,10 @@ void main() {
 
   TableChromeTarget target(WidgetTester tester, TableChromeKind kind) =>
       chrome(tester).firstWhere((TableChromeTarget t) => t.kind == kind);
+
+  List<TableChromeTarget> resizers(WidgetTester tester) => chrome(tester)
+      .where((TableChromeTarget t) => t.kind == TableChromeKind.resizeColumn)
+      .toList();
 
   /// Puts the mouse at [position] and lets the frame paint.
   Future<void> point(WidgetTester tester, Offset position) async {
@@ -143,35 +152,102 @@ void main() {
     await pump(tester, text, caret: 0);
     expect(visible(tester), isEmpty, reason: '鼠标不在边缘，不该有任何抓手');
 
-    // …and the row grip is to the *left* of the table, the column grip *above*
-    // it — the same edges Obsidian uses.
+    // …and the row grips are to the *left* of the table, the column grips
+    // *above* it — the same edges Obsidian uses.
     final Rect table = rows(tester).first.chromeBounds();
-    final TableChromeTarget grip = target(tester, TableChromeKind.rowHandle);
-    expect(grip.rect.right, lessThanOrEqualTo(table.left + 1));
-    final TableChromeTarget top = target(tester, TableChromeKind.columnHandle);
-    expect(top.rect.bottom, lessThanOrEqualTo(table.top + 1));
+    final List<TableChromeTarget> rowGrips = chrome(tester)
+        .where((TableChromeTarget t) => t.kind == TableChromeKind.rowHandle)
+        .toList();
+    final List<TableChromeTarget> columnGrips = chrome(tester)
+        .where((TableChromeTarget t) => t.kind == TableChromeKind.columnHandle)
+        .toList();
+    expect(rowGrips, hasLength(2), reason: '表头与正文行各有一枚行抓手');
+    expect(columnGrips, hasLength(2), reason: '每一列上方都有一枚列抓手');
+    expect(rowGrips.first.rect.right, lessThanOrEqualTo(table.left + 1));
+    expect(columnGrips.first.rect.bottom, lessThanOrEqualTo(table.top + 1));
+    expect(
+      rowGrips.first.rect.size,
+      const Size(20, 20),
+      reason: '抓手是一枚够得着的按钮，不是贴着表格的几点墨',
+    );
 
-    await point(tester, grip.rect.center);
-    expect(visibleKinds(tester), <TableChromeKind>[TableChromeKind.rowHandle]);
-    // The band is forgiving: a few pixels outside the glyph still counts, or
-    // aiming at a 10px arrow would be a game of skill.
-    await point(tester, grip.rect.center - const Offset(4, 0));
+    // Hovering one row's grip reveals only *that* row's handle: the grip
+    // follows the pointer down the edge, one row at a time, instead of
+    // lighting the whole side.
+    await point(tester, rowGrips.first.rect.center);
     expect(visibleKinds(tester), <TableChromeKind>[
       TableChromeKind.rowHandle,
-    ], reason: '边缘附近的几个像素也该算数');
+    ], reason: '指针在哪一行，就只露那一行的抓手');
+    // The band is forgiving: a few pixels outside the glyph still counts, or
+    // aiming at a 10px arrow would be a game of skill.
+    await point(tester, rowGrips.last.rect.center - const Offset(4, 0));
+    expect(visibleKinds(tester), <TableChromeKind>[
+      TableChromeKind.rowHandle,
+    ], reason: '边缘附近的几个像素也该算数，且仍然只有指针那一行');
 
-    // Hovering a column's grip above the table must not light the row's.
-    await point(
-      tester,
-      target(tester, TableChromeKind.columnHandle).rect.center,
-    );
+    // Above the table the same rule runs across the columns: the grip shown is
+    // the column under the pointer, not the whole row of grips.
+    await point(tester, columnGrips[0].rect.center);
     expect(visibleKinds(tester), <TableChromeKind>[
       TableChromeKind.columnHandle,
-    ], reason: '只有被指到的那一列该出现');
+    ], reason: '指针在第一列上方，只露第一列的抓手');
+    await point(tester, columnGrips[1].rect.center);
+    expect(visibleKinds(tester), <TableChromeKind>[
+      TableChromeKind.columnHandle,
+    ], reason: '移到第二列上方，就换成第二列的抓手');
+    // Hovering a column's grip above the table must not light the rows.
+    await point(tester, columnGrips[1].rect.center);
+    expect(visibleKinds(tester), <TableChromeKind>[
+      TableChromeKind.columnHandle,
+    ], reason: '上方的悬停不该连左侧一起点亮');
 
     // Leaving the table takes everything with it.
     await point(tester, table.center + const Offset(0, 200));
     expect(visible(tester), isEmpty);
+  });
+
+  testWidgets('跨过行/列分界时旧抓手立刻让位，边界附近只有一枚', (
+    WidgetTester tester,
+  ) async {
+    // 「我从一个抓手移到另一个的时候，上一个有概率不消失」 — the ±6 hover
+    // band used to reach into the next row / column, so near a boundary both
+    // neighbours claimed the pointer and two grips stayed lit at once. The
+    // bands now split exactly at the boundary: the old grip must give way the
+    // moment the pointer crosses.
+    const String text = '| a | b |\n| --- | --- |\n| c | d |';
+    await pump(tester, text, caret: 0);
+    final List<TableRowChrome> tableRows = rows(tester);
+    final List<TableChromeTarget> rowGrips = chrome(tester)
+        .where((TableChromeTarget t) => t.kind == TableChromeKind.rowHandle)
+        .toList();
+    final List<TableChromeTarget> columnGrips = chrome(tester)
+        .where((TableChromeTarget t) => t.kind == TableChromeKind.columnHandle)
+        .toList();
+
+    // 行与行的分界：上一行底边。贴着分界两侧各 2px（旧逻辑 12px 重叠区
+    // 的中央），两侧都只能看到一枚抓手，且正是指针所在那一行。
+    final double rowBoundary = tableRows[0].chromeBounds().bottom;
+    final double stripX = rowGrips.first.rect.center.dx;
+    await point(tester, Offset(stripX, rowBoundary - 2));
+    TableChromeTarget shown = visible(tester).single;
+    expect(shown.kind, TableChromeKind.rowHandle);
+    expect(shown.index, 0, reason: '分界上方归上一行，且只有那一枚');
+    await point(tester, Offset(stripX, rowBoundary + 2));
+    shown = visible(tester).single;
+    expect(shown.kind, TableChromeKind.rowHandle);
+    expect(shown.index, 1, reason: '跨过分界后旧抓手立刻让位给下一行');
+
+    // 列与列的分界：内部竖线的命中线正落在列盒边界上，贴两侧 2px 同理。
+    final double columnBoundary = resizers(tester).first.rect.center.dx;
+    final double stripY = columnGrips.first.rect.center.dy;
+    await point(tester, Offset(columnBoundary - 2, stripY));
+    shown = visible(tester).single;
+    expect(shown.kind, TableChromeKind.columnHandle);
+    expect(shown.index, 0);
+    await point(tester, Offset(columnBoundary + 2, stripY));
+    shown = visible(tester).single;
+    expect(shown.kind, TableChromeKind.columnHandle);
+    expect(shown.index, 1, reason: '跨过列分界后只剩新一列的抓手');
   });
 
   testWidgets('the plus buttons are hover-only too', (
@@ -189,12 +265,13 @@ void main() {
     expect(visibleKinds(tester), <TableChromeKind>[TableChromeKind.addColumn]);
   });
 
-  testWidgets('a grip shows the default arrow, even inside the field', (
+  testWidgets('a grip shows the open hand, even inside the field', (
     WidgetTester tester,
   ) async {
     // The column grip hangs above the table but *inside* the field, where the
     // field's own text cursor would otherwise win and draw an I-beam over the
-    // dots.
+    // button. The hand is the same one the platform uses for draggable things,
+    // which is what the grip is.
     const String text = '| a | b |\n| --- | --- |\n| c | d |';
     await pump(tester, text, caret: 0);
     LineEditableText field() => tester.widget<LineEditableText>(
@@ -206,7 +283,7 @@ void main() {
     final Offset row = target(tester, TableChromeKind.rowHandle).rect.center;
     await tester.sendEventToBinding(mouse.hover(row));
     await tester.pump();
-    expect(field().mouseCursor, SystemMouseCursors.basic);
+    expect(field().mouseCursor, SystemMouseCursors.grab);
 
     final Offset column = target(
       tester,
@@ -214,10 +291,13 @@ void main() {
     ).rect.center;
     await tester.sendEventToBinding(mouse.hover(column));
     await tester.pump();
-    expect(field().mouseCursor, SystemMouseCursors.basic);
+    expect(field().mouseCursor, SystemMouseCursors.grab);
 
-    // Anywhere off the chrome the text cursor comes back.
-    await tester.sendEventToBinding(mouse.hover(table.center));
+    // Anywhere off the chrome the text cursor comes back. (The table's centre
+    // is now the internal divider, so aim at a cell instead.)
+    await tester.sendEventToBinding(
+      mouse.hover(table.center + const Offset(20, 0)),
+    );
     await tester.pump();
     expect(field().mouseCursor, SystemMouseCursors.text);
   });
@@ -761,5 +841,308 @@ void main() {
     expect(cells, hasLength(2));
     // 64px of content plus 8px of padding on each side.
     expect(cells.first.width, closeTo(80, 1));
+  });
+
+  testWidgets('分隔线悬停给出 resizeColumn 光标，偏开 4px 回到文字', (
+    WidgetTester tester,
+  ) async {
+    const String text = '| a | b |\n| --- | --- |\n| c | d |';
+    await pump(tester, text, caret: 0);
+    final TableChromeTarget divider = resizers(tester).first;
+    LineEditableText field() => tester.widget<LineEditableText>(
+      find.byKey(const Key('nrs-editor-field')),
+    );
+    final TestPointer mouse = TestPointer(1, PointerDeviceKind.mouse);
+
+    await tester.sendEventToBinding(mouse.hover(divider.rect.center));
+    await tester.pump();
+    expect(field().mouseCursor, SystemMouseCursors.resizeColumn);
+
+    await point(tester, divider.rect.center);
+    expect(
+      visibleKinds(
+        tester,
+      ).where((TableChromeKind k) => k == TableChromeKind.resizeColumn),
+      hasLength(1),
+      reason: '只有指针所在的那一行画出悬停线',
+    );
+
+    // 命中带是 ±3px；再远就回到输入框自己的文字光标。
+    await tester.sendEventToBinding(
+      mouse.hover(divider.rect.center + const Offset(4, 0)),
+    );
+    await tester.pump();
+    expect(field().mouseCursor, SystemMouseCursors.text);
+  });
+
+  testWidgets('拖动中间的竖线改变列宽，松手只写一次', (WidgetTester tester) async {
+    const String text = '| a | b |\n| --- | --- |\n| c | d |';
+    final MarkdownSourceController controller = await pump(
+      tester,
+      text,
+      caret: 6, // 光标在第二格 `b`
+    );
+    final TableChromeTarget divider = resizers(tester).first;
+    final Rect table = rows(tester).first.chromeBounds();
+    final double boundaryX = divider.rect.left - table.left;
+    expect(divider.index, 0);
+    expect(rows(tester).first.chromeColumnWidths(), <double>[64, 64]);
+
+    await point(tester, divider.rect.center);
+    final TestGesture drag = await tester.startGesture(
+      divider.rect.center,
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump();
+    expect(controller.selection.start, 6, reason: '按下分隔线不改选区');
+
+    await drag.moveBy(const Offset(40, 0));
+    await tester.pump();
+    expect(controller.text, text, reason: '拖动过程中不写文档');
+    final TableResizePreview? preview = tableResizePreview.value;
+    expect(preview, isNotNull);
+    expect(preview!.tableId, 0);
+    expect(preview.localX, closeTo(boundaryX + 40, 0.01));
+
+    await drag.up();
+    await tester.pumpAndSettle();
+    expect(tableResizePreview.value, isNull);
+    expect(
+      controller.text,
+      '| <!--nrs w=104,64-->a | b |\n| --- | --- |\n| c | d |',
+      reason: '第一次拖动把两列都冻结成手动宽度',
+    );
+    // 光标还在原来的格子里，只是被新增的指令整体推后。
+    final active = tableActiveCell(controller.value);
+    expect(active, isNotNull);
+    expect((active!.row, active.column), (0, 1));
+    expect(controller.selection.start, 6 + '<!--nrs w=104,64-->'.length);
+    expect(controller.text[controller.selection.start], 'b');
+  });
+
+  testWidgets('拖过正文宽度时停在正文宽度，右列缩到 64', (WidgetTester tester) async {
+    const String text =
+        '| <!--nrs w=200,200-->a | b |\n'
+        '| --- | --- |\n'
+        '| c | d |';
+    final MarkdownSourceController controller = await pump(tester, text);
+    final TableRowChrome first = rows(tester).first;
+    final double room = first.chromeColumnRoom();
+    expect(first.chromeColumnWidths(), <double>[200, 200]);
+
+    final TestGesture drag = await tester.startGesture(
+      resizers(tester).first.rect.center,
+      kind: PointerDeviceKind.mouse,
+    );
+    await drag.moveBy(const Offset(1000, 0));
+    await tester.pump();
+    await drag.up();
+    await tester.pumpAndSettle();
+
+    final TableBlock block = TableBlock.parse(controller.text, 0)!;
+    expect(block.columnWidths![1], 64, reason: '右列只让到地板');
+    expect(block.columnWidths![0], closeTo(room - 64, 1));
+    final TableRowChrome after = rows(tester).first;
+    final List<double> widths = after.chromeColumnWidths();
+    expect(widths[1], closeTo(64, 1));
+    expect(widths[0] + widths[1], closeTo(room, 1), reason: '表格停在正文宽度');
+  });
+
+  testWidgets('拖动一次只占一步撤销', (WidgetTester tester) async {
+    const String text = '| a | b |\n| --- | --- |\n| c | d |';
+    final MarkdownSourceController controller = await pump(tester, text);
+    await tester.pump(const Duration(milliseconds: 600));
+
+    final TableChromeTarget divider = resizers(tester).first;
+    final TestGesture drag = await tester.startGesture(
+      divider.rect.center,
+      kind: PointerDeviceKind.mouse,
+    );
+    await drag.moveBy(const Offset(40, 0));
+    await tester.pump();
+    await drag.up();
+    await tester.pumpAndSettle();
+    const String resized =
+        '| <!--nrs w=104,64-->a | b |\n| --- | --- |\n| c | d |';
+    expect(controller.text, resized);
+
+    await pressCtrl(tester, LogicalKeyboardKey.keyZ);
+    expect(controller.text, text, reason: '一步撤销回到拖动前');
+    await pressCtrl(tester, LogicalKeyboardKey.keyY);
+    expect(controller.text, resized);
+  });
+
+  testWidgets('拖回起点不产生编辑，也不占撤销记录', (WidgetTester tester) async {
+    const String text = '| a | b |\n| --- | --- |\n| c | d |';
+    final MarkdownSourceController controller = await pump(
+      tester,
+      text,
+      caret: 2,
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+    // 先做一次普通编辑：撤销一步应当撤掉它，而不是一次没有落点的拖动。
+    controller.value = controller.value.copyWith(
+      text: '| xa | b |\n| --- | --- |\n| c | d |',
+      selection: const TextSelection.collapsed(offset: 4),
+    );
+    await tester.pumpAndSettle();
+
+    final TableChromeTarget divider = resizers(tester).first;
+    final TestGesture drag = await tester.startGesture(
+      divider.rect.center,
+      kind: PointerDeviceKind.mouse,
+    );
+    await drag.moveBy(const Offset(30, 0));
+    await tester.pump();
+    expect(tableResizePreview.value, isNotNull);
+
+    await drag.moveTo(divider.rect.center);
+    await tester.pump();
+    await drag.up();
+    await tester.pumpAndSettle();
+    expect(controller.text, '| xa | b |\n| --- | --- |\n| c | d |');
+    expect(controller.text, isNot(contains('w=')));
+
+    await pressCtrl(tester, LogicalKeyboardKey.keyZ);
+    expect(controller.text, text, reason: '撤销撤掉的是键入，不是拖动');
+  });
+
+  testWidgets('取消拖动清掉落点线，不写文档', (WidgetTester tester) async {
+    const String text = '| a | b |\n| --- | --- |\n| c | d |';
+    final MarkdownSourceController controller = await pump(tester, text);
+    final TestGesture drag = await tester.startGesture(
+      resizers(tester).first.rect.center,
+      kind: PointerDeviceKind.mouse,
+    );
+    await drag.moveBy(const Offset(40, 0));
+    await tester.pump();
+    expect(tableResizePreview.value, isNotNull);
+
+    await drag.cancel();
+    await tester.pumpAndSettle();
+    expect(tableResizePreview.value, isNull);
+    expect(controller.text, text);
+  });
+
+  testWidgets('最右边那条竖线也能拖，只改最后一列', (WidgetTester tester) async {
+    // 用户要求：「我的表格只有中间的竖线可以拖拽改变宽度，最右边那条竖线
+    // 应该也要可以拖拽改变宽度。」
+    const String text = '| a | b |\n| --- | --- |\n| c | d |';
+    final MarkdownSourceController controller = await pump(
+      tester,
+      text,
+      caret: 6, // 光标在第二格 `b`
+    );
+    final TableRowChrome first = rows(tester).first;
+    final List<TableChromeTarget> lines = <TableChromeTarget>[
+      for (final TableChromeTarget t in first.chromeTargets())
+        if (t.kind == TableChromeKind.resizeColumn) t,
+    ];
+    expect(lines, hasLength(2), reason: '中间一条，最右边一条');
+    final TableChromeTarget edge = lines.last;
+    expect(edge.index, 1, reason: '外沿记的是它左边那一列');
+    expect(
+      edge.rect.left,
+      closeTo(first.chromeBounds().right, 0.01),
+      reason: '手柄落在表格右沿上',
+    );
+
+    final TestGesture drag = await tester.startGesture(
+      edge.rect.center,
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump();
+    expect(controller.selection.start, 6, reason: '按下外沿不改选区');
+
+    await drag.moveBy(const Offset(40, 0));
+    await tester.pump();
+    expect(controller.text, text, reason: '拖动过程中不写文档');
+    final TableResizePreview? preview = tableResizePreview.value;
+    expect(preview, isNotNull);
+    expect(
+      preview!.localX,
+      closeTo(first.chromeBounds().width + 40, 0.01),
+      reason: '落点线跟着指针走',
+    );
+
+    await drag.up();
+    await tester.pumpAndSettle();
+    expect(
+      controller.text,
+      '| <!--nrs w=64,104-->a | b |\n| --- | --- |\n| c | d |',
+      reason: '左列不动，最后一列变宽',
+    );
+    // 光标还在第二格，只是被新增的指令整体推后。
+    expect(controller.selection.start, 6 + '<!--nrs w=64,104-->'.length);
+  });
+
+  testWidgets('右外沿最多把最后一列拖到正文宽度', (WidgetTester tester) async {
+    const String text = '| a | b |\n| --- | --- |\n| c | d |';
+    final MarkdownSourceController controller = await pump(tester, text);
+    final TableRowChrome first = rows(tester).first;
+    final double room = first.chromeColumnRoom();
+
+    final TestGesture drag = await tester.startGesture(
+      resizers(tester).last.rect.center,
+      kind: PointerDeviceKind.mouse,
+    );
+    await drag.moveBy(const Offset(1000, 0));
+    await tester.pump();
+    await drag.up();
+    await tester.pumpAndSettle();
+
+    final TableBlock block = TableBlock.parse(controller.text, 0)!;
+    expect(block.columnWidths![0], 64, reason: '左列一个像素都不动');
+    expect(
+      block.columnWidths![1],
+      closeTo(room - 64, 1),
+      reason: '表格停在正文宽度，不会比正文更宽',
+    );
+  });
+
+  testWidgets('只有一列的表也能拖右外沿', (WidgetTester tester) async {
+    const String text = '| a |\n| --- |\n| b |';
+    final MarkdownSourceController controller = await pump(tester, text);
+    final TableRowChrome first = rows(tester).first;
+    expect(first.chromeColumnWidths(), hasLength(1));
+
+    final TestGesture drag = await tester.startGesture(
+      resizers(tester).last.rect.center,
+      kind: PointerDeviceKind.mouse,
+    );
+    await drag.moveBy(const Offset(50, 0));
+    await tester.pump();
+    await drag.up();
+    await tester.pumpAndSettle();
+
+    expect(controller.text, '| <!--nrs w=114-->a |\n| --- |\n| b |');
+  });
+
+  testWidgets('拖中间那条线不会把表格拖得比正文宽', (WidgetTester tester) async {
+    // 三列以上时「余量」要扣掉别的列，否则一路拖到底会让表格超宽、
+    // 松手后又被压缩回去，看起来像没拖动。
+    const String text = '| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3 |';
+    final MarkdownSourceController controller = await pump(tester, text);
+    final double room = rows(tester).first.chromeColumnRoom();
+    expect(rows(tester).first.chromeColumnWidths(), <double>[64, 64, 64]);
+
+    final TestGesture drag = await tester.startGesture(
+      resizers(tester).first.rect.center,
+      kind: PointerDeviceKind.mouse,
+    );
+    await drag.moveBy(const Offset(1000, 0));
+    await tester.pump();
+    await drag.up();
+    await tester.pumpAndSettle();
+
+    final TableBlock block = TableBlock.parse(controller.text, 0)!;
+    final List<int> widths = block.columnWidths!;
+    expect(widths[1], 64);
+    expect(widths[2], 64);
+    expect(
+      widths.reduce((int a, int b) => a + b),
+      closeTo(room, 2),
+      reason: '整张表刚好铺满正文宽度',
+    );
   });
 }

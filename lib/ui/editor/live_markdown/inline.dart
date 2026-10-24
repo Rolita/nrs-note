@@ -106,6 +106,39 @@ List<({int start, int end, String target})> wikilinkRuns(String text) {
   return runs;
 }
 
+/// `[标签](地址)` 里的外链地址；不是能交给浏览器的链接时返回 `null`。
+///
+/// 只认 http/https（`www.` 补上 https）；相对路径留给双链/笔记互链，不该
+/// 被当成网页丢进浏览器。图片 `![说明](地址)` 也不在这里处理。
+String? linkUrl(String token) {
+  if (!token.startsWith('[')) return null;
+  final int close = token.indexOf('](');
+  if (close < 0 || !token.endsWith(')')) return null;
+  final String url = token.substring(close + 2, token.length - 1).trim();
+  final String lower = url.toLowerCase();
+  if (lower.startsWith('http://') || lower.startsWith('https://')) return url;
+  if (lower.startsWith('www.')) return 'https://$url';
+  return null;
+}
+
+/// 一段文本里的外链：行内区间（含方括号与地址）与外链地址。
+///
+/// 和 [wikilinkRuns] 一样共用 [_inlineRe]，所以反引号里的 `[标签](地址)`
+/// 只是代码，不是链接。
+List<({int start, int end, String url})> linkRuns(String text) {
+  if (!text.contains('](')) {
+    return const <({int start, int end, String url})>[];
+  }
+  final List<({int start, int end, String url})> runs =
+      <({int start, int end, String url})>[];
+  for (final RegExpMatch m in _inlineRe.allMatches(text)) {
+    final String token = m.group(0)!;
+    final String? url = linkUrl(token);
+    if (url != null) runs.add((start: m.start, end: m.end, url: url));
+  }
+  return runs;
+}
+
 List<InlineSpan> _inline(
   String text,
   TextStyle body,
@@ -261,14 +294,37 @@ List<InlineSpan> _inline(
       );
       spans.add(TextSpan(text: '~~', style: mark));
     } else if (token.startsWith('==')) {
+      final String inner = token.substring(2, token.length - 2);
       spans.add(TextSpan(text: '==', style: mark));
+      // 亮色底片不动字色；暗色的荧光金底必须把字压深，否则亮字落在亮金上
+      // 读不出来。光标进来（`open`）时底片撤掉，字色一起回到正文色。
       spans.add(
         TextSpan(
-          text: token.substring(2, token.length - 2),
-          style: style.copyWith(backgroundColor: p.warningSoft),
+          text: inner,
+          style: open ? style : HighlightColors.inkOn(p, style),
         ),
       );
       spans.add(TextSpan(text: '==', style: mark));
+      // 底片交给渲染层自绘：参考项目嫌 `TextStyle.backgroundColor` 的硬边直角
+      // 矩形「像把字切出来」，改成圆角色块；纵向按视觉行高上下各内缩 16%，
+      // 不再铺满整条行盒。
+      //
+      // 光标落在里面时和高亮标签一样退回源码：只留 `==文字==`，底片撤掉。
+      if (!open) {
+        codeRuns?.add(
+          _CellCode(
+            start: m.start + 2,
+            end: m.end - 2,
+            probe: inner,
+            style: style,
+            fill: HighlightColors.band(p),
+            radius: kHighlightRadius,
+            padX: kHighlightPadX,
+            isCode: false,
+            rowBox: true,
+          ),
+        );
+      }
     } else if (token.startsWith('[[') || token.startsWith('![[')) {
       final String? target = wikilinkTarget(token);
       if (open || target == null) {
@@ -305,6 +361,9 @@ List<InlineSpan> _inline(
       final String label = token.substring(openLen, close);
       final String url = token.substring(close + 2, token.length - 1);
       if (open) {
+        // 编辑态：方括号与地址的括号退回标记色，标签和地址保持链接配色
+        // （强调色 + 下划线）。整段都染成标记灰，链接一进编辑就「掉色」，
+        // 看起来像变成普通源码了——用户要的是「编辑时文字和链接还变色」。
         spans.add(TextSpan(text: token.substring(0, openLen), style: mark));
         spans.add(
           TextSpan(
@@ -312,7 +371,16 @@ List<InlineSpan> _inline(
             style: image ? _wikiText(style, p) : _linkText(style, p),
           ),
         );
-        spans.add(TextSpan(text: token.substring(close), style: mark));
+        spans.add(TextSpan(text: token.substring(close, close + 2), style: mark));
+        spans.add(
+          TextSpan(
+            text: token.substring(close + 2, token.length - 1),
+            style: _linkText(style, p),
+          ),
+        );
+        spans.add(
+          TextSpan(text: token.substring(token.length - 1), style: mark),
+        );
       } else if (image && url.trim().isNotEmpty && !ctx.plain) {
         spans.add(_imageSpan(p, url.trim(), label, ctx.contentWidth));
         spans.add(_swallowed(token, body));
@@ -421,7 +489,7 @@ InlineSpan buildLiveInlineSpan(
   );
 }
 
-/// 一行里行内代码与 `#标签` 的圆角底片区间（行内偏移，含两侧反引号）。
+/// 一行里行内代码、`#标签` 与 `==高亮` 的底片区间（行内偏移）。
 ///
 /// 和 [buildLiveInlineSpan] 用的是同一个扫描器、同一份 `plain` 上下文，所以
 /// 「哪些反引号算代码」「哪些 `#` 算标签」「光标落在里面时退回源码」这些规则
@@ -435,7 +503,7 @@ List<LineFillRun> inlineFills(
   int hoverA = -1,
   int hoverB = -1,
 }) {
-  if (!text.contains('`') && !text.contains('#')) {
+  if (!text.contains('`') && !text.contains('#') && !text.contains('==')) {
     return const <LineFillRun>[];
   }
   final List<_CellCode> runs = <_CellCode>[];
@@ -469,6 +537,7 @@ List<LineFillRun> inlineFills(
         padY: run.padY,
         probe: run.probe,
         style: run.style,
+        rowBox: run.rowBox,
       ),
   ];
 }

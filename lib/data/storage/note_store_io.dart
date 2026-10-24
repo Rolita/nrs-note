@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:path_provider/path_provider.dart';
 
@@ -193,6 +194,11 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     final List<String> folders = found
         .map(_relativeOf)
         .where((String p) => p.isNotEmpty)
+        .where(
+          (String p) => !p
+              .split('/')
+              .any((String segment) => segment.toLowerCase() == 'assets'),
+        )
         .toList();
     folders.sort(
       (String a, String b) => a.toLowerCase().compareTo(b.toLowerCase()),
@@ -401,6 +407,87 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
       // name: it still opens, and the title simply carries the suffix.
       return fileName;
     }
+  }
+
+  @override
+  Future<String?> saveAsset(
+    String folderPath,
+    String fileName,
+    Uint8List bytes,
+  ) async {
+    if (_vault == null) await init();
+    final String folder = Note.normalizeFolderPath(folderPath);
+    final String assetsRel = folder.isEmpty ? 'assets' : '$folder/assets';
+    final Directory dir = Directory(_pathFor(assetsRel));
+    await dir.create(recursive: true);
+
+    String base = _baseName(fileName.trim());
+    base = base.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_');
+    base = base.replaceAll('..', '_');
+    String stem = base
+        .replaceAll(RegExp(r'\.png$', caseSensitive: false), '')
+        .trim();
+    if (stem.isEmpty || stem == '.') stem = 'image';
+
+    final String candidate = await _freeAssetName(dir, stem);
+    final File target = File('${dir.path}${Platform.pathSeparator}$candidate');
+    // The same temp-then-rename rule the note writer uses: a crash leaves a
+    // `.tmp` beside the picture, never a half-written PNG the editor will read.
+    final File temp = File('${target.path}.tmp');
+    await temp.writeAsBytes(bytes, flush: true);
+    await temp.rename(target.path);
+    return 'assets/$candidate';
+  }
+
+  Future<String> _freeAssetName(Directory dir, String stem) async {
+    String candidate = '$stem.png';
+    for (int i = 2; i < 1000; i++) {
+      final File file = File('${dir.path}${Platform.pathSeparator}$candidate');
+      if (!await file.exists()) return candidate;
+      candidate = '${stem}_$i.png';
+    }
+    return '${stem}_${DateTime.now().microsecondsSinceEpoch}.png';
+  }
+
+  @override
+  String? assetPath(String folderPath, String source) {
+    final Directory? root = _vault;
+    if (root == null) return null;
+    final String raw = source.trim();
+    if (raw.isEmpty) return null;
+    final String lower = raw.toLowerCase();
+    if (lower.startsWith('http://') ||
+        lower.startsWith('https://') ||
+        lower.startsWith('data:')) {
+      return null;
+    }
+    if (raw.startsWith('/') ||
+        raw.startsWith('\\') ||
+        RegExp(r'^[A-Za-z]:').hasMatch(raw)) {
+      return null;
+    }
+
+    String decoded;
+    try {
+      decoded = Uri.decodeComponent(raw);
+    } on ArgumentError {
+      return null;
+    }
+    decoded = decoded.replaceAll('\\', '/');
+    if (decoded.startsWith('/') || RegExp(r'^[A-Za-z]:').hasMatch(decoded)) {
+      return null;
+    }
+    if (decoded.split('/').any((String part) => part == '..')) return null;
+
+    final String relative = _join(
+      Note.normalizeFolderPath(folderPath),
+      decoded,
+    );
+    final String absolute = _pathFor(relative);
+    final String vaultPrefix = '${root.path}${Platform.pathSeparator}'
+        .toLowerCase();
+    if (!absolute.toLowerCase().startsWith(vaultPrefix)) return null;
+    return absolute;
   }
 
   @override
