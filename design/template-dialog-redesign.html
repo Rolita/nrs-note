@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>模板界面 · 重设计</title>
+<style>
+  :root{ --radius:12px; }
+  [data-theme="dark"]{
+    --canvas:#151514; --surface:#1F1F1E; --raised:#272726; --sunken:#101010;
+    --outline:#2F2F2E; --hair:#242423; --rule:#3A3A38;
+    --t1:#E9E9E6; --t2:#9E9E9A; --t3:#6E6E6A;
+    --accent:#EDEDEA; --accent-soft:#2E2E2C; --on-accent:#141413;
+    --hover:rgba(233,233,230,.05);
+    --shadow:0 18px 48px rgba(0,0,0,.55), 0 2px 6px rgba(0,0,0,.45);
+  }
+  [data-theme="light"]{
+    --canvas:#F7F7F5; --surface:#FCFCFB; --raised:#FFFFFF; --sunken:#EFEFED;
+    --outline:#DCDCD9; --hair:#E9E9E6; --rule:#D5D5D1;
+    --t1:#1B1B1A; --t2:#5C5C59; --t3:#8C8C88;
+    --accent:#2A2A28; --accent-soft:#E9E9E6; --on-accent:#FFFFFF;
+    --hover:rgba(27,27,26,.045);
+    --shadow:0 18px 48px rgba(27,27,26,.14), 0 2px 6px rgba(27,27,26,.08);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--canvas);color:var(--t1);
+    font:13px/1.5 "Microsoft YaHei","Segoe UI",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    transition:background .18s ease,color .18s ease;
+  }
+  .page{max-width:980px;margin:0 auto;padding:30px 24px 64px}
+  .page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap;margin-bottom:22px}
+  h1{margin:0 0 6px;font-size:17px;font-weight:600;letter-spacing:-.1px}
+  .page-head p{margin:0;max-width:600px;color:var(--t3);font-size:12.5px;line-height:1.65}
+  .seg{display:inline-flex;border:1px solid var(--outline);border-radius:8px;overflow:hidden}
+  .seg button{
+    appearance:none;border:0;background:transparent;color:var(--t3);
+    font:inherit;font-size:12px;padding:5px 13px;cursor:pointer;
+  }
+  .seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--t1)}
+
+  /* ── 对话框：一个底色，层级只靠发丝线 ─────────────── */
+  .dialog{
+    width:780px;height:520px;margin:0 auto;
+    background:var(--surface);
+    border:1px solid var(--outline);border-radius:var(--radius);
+    box-shadow:var(--shadow);
+    display:flex;flex-direction:column;overflow:hidden;
+    font-size:13px;
+    transition:background .18s ease,border-color .18s ease;
+  }
+
+  .ic{width:14px;height:14px;stroke:currentColor;stroke-width:1.6;fill:none;
+      stroke-linecap:round;stroke-linejoin:round;flex:none}
+  .ic.lg{width:16px;height:16px}
+
+  /* 标题栏 */
+  .dhead{
+    height:46px;flex:none;display:flex;align-items:center;gap:9px;
+    padding:0 10px 0 18px;border-bottom:1px solid var(--hair);
+  }
+  .dhead .dicon{color:var(--accent);display:flex}
+  .dhead .dtitle{font-size:13.5px;font-weight:600;letter-spacing:.1px}
+  .dhead .dspace{flex:1}
+  .iconbtn{
+    width:26px;height:26px;border:0;border-radius:6px;background:transparent;
+    color:var(--t3);display:flex;align-items:center;justify-content:center;cursor:pointer;
+  }
+  .iconbtn:hover{background:var(--hover);color:var(--t2)}
+
+  /* 主体 */
+  .dbody{flex:1;display:flex;min-height:0}
+
+  /* 左栏 */
+  .library{width:292px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--hair)}
+  .search{display:flex;align-items:center;gap:8px;padding:11px 12px 10px;border-bottom:1px solid var(--hair);color:var(--t3)}
+  .search input{
+    flex:1;min-width:0;border:0;outline:0;background:transparent;color:var(--t1);
+    font:inherit;font-size:12.5px;padding:0;
+  }
+  .search input::placeholder{color:var(--t3)}
+  .search .ic{color:var(--t3)}
+
+  .list{flex:1;overflow:auto;padding:6px 8px 10px}
+  .grouplabel{
+    padding:9px 10px 4px;font-size:10px;font-weight:600;letter-spacing:.55px;
+    color:var(--t3);text-transform:none;
+  }
+  .row{
+    position:relative;height:44px;display:flex;align-items:center;
+    padding:0 10px;border-radius:6px;cursor:pointer;
+  }
+  .row:hover{background:var(--hover)}
+  .row[aria-selected="true"]{background:var(--accent-soft)}
+  .row[aria-selected="true"]::before{
+    content:"";position:absolute;left:0;top:9px;bottom:9px;width:2px;
+    border-radius:2px;background:var(--accent);
+  }
+  .rtext{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:1px}
+  .rname{font-size:12.5px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rtime{font-size:10.5px;color:var(--t3);font-family:Consolas,"Cascadia Mono",monospace}
+  .kbd{
+    font:9.5px/1 Consolas,"Cascadia Mono",monospace;color:var(--t3);
+    border:1px solid var(--outline);border-radius:4px;padding:3px 5px;
+    background:var(--surface);
+  }
+  .row .kbd{margin-left:8px}
+
+  /* 右栏 */
+  .preview{flex:1;min-width:0;display:flex;flex-direction:column}
+  .phead{display:flex;align-items:flex-start;gap:8px;padding:15px 14px 12px 22px;border-bottom:1px solid var(--hair)}
+  .phead .ptitle{font-size:16px;font-weight:600;letter-spacing:-.2px;color:var(--t1);line-height:1.35}
+  .phead .pmeta{
+    margin-top:3px;font-size:10.5px;color:var(--t3);
+    font-family:Consolas,"Cascadia Mono",monospace;
+    display:flex;align-items:center;gap:7px;white-space:nowrap;overflow:hidden;
+  }
+  .pmeta .dot{width:3px;height:3px;border-radius:50%;background:var(--t3);flex:none}
+  .pmeta .path{overflow:hidden;text-overflow:ellipsis}
+  .pbody{flex:1;overflow:auto;padding:16px 22px 20px}
+  .vars{
+    flex:none;display:flex;align-items:center;gap:9px;
+    padding:8px 22px;border-top:1px solid var(--hair);
+    font-size:10.5px;color:var(--t3);overflow:hidden;white-space:nowrap;
+  }
+  .vars .exprlist{display:flex;align-items:center;gap:12px;overflow:hidden}
+  .vars .e{font-family:Consolas,"Cascadia Mono",monospace;color:var(--t2);font-size:10.5px}
+  .vars .tail{margin-left:auto;color:var(--t3);flex:none}
+
+  /* 预览里的 markdown */
+  .pbody h3{margin:0 0 10px;font-size:15px;font-weight:600;letter-spacing:-.1px}
+  .pbody h4{margin:18px 0 6px;font-size:12px;font-weight:600;color:var(--t2);letter-spacing:.2px}
+  .pbody p{margin:0 0 9px;font-size:13px;line-height:1.75;color:var(--t1)}
+  .pbody p.lead{color:var(--t2);font-size:12.5px}
+  .pbody ul,.pbody ol{margin:0 0 10px;padding-left:20px;color:var(--t1);font-size:13px;line-height:1.9}
+  .pbody li{min-height:1.9em}
+  .pbody blockquote{
+    margin:14px 0 0;padding:1px 0 1px 12px;border-left:2px solid var(--accent);
+    color:var(--t2);font-size:12.5px;line-height:1.7;
+  }
+  .pbody hr{border:0;border-top:1px solid var(--rule);margin:16px 0}
+  .pbody code{
+    font-family:Consolas,"Cascadia Mono",monospace;font-size:11.5px;
+    background:var(--sunken);border-radius:4px;padding:1px 5px;color:var(--t2);
+  }
+  .pbody code.expr{color:var(--accent);background:var(--accent-soft)}
+
+  /* 底栏：同底色，只有一条发丝线 */
+  .dfoot{
+    flex:none;display:flex;align-items:center;gap:8px;
+    padding:9px 12px 9px 14px;border-top:1px solid var(--hair);
+  }
+  .hints{flex:1;min-width:0;display:flex;align-items:center;gap:6px;overflow:hidden}
+  .hint{display:flex;align-items:center;gap:5px;white-space:nowrap}
+  .hint span{font-size:10.5px;color:var(--t3)}
+  .hint .kbd{background:transparent}
+
+  .btn{
+    appearance:none;height:30px;padding:0 11px;border-radius:8px;
+    display:inline-flex;align-items:center;gap:6px;cursor:pointer;
+    font:12px/1 inherit;font-family:inherit;font-size:12px;
+    border:1px solid var(--outline);background:transparent;color:var(--t2);
+  }
+  .btn:hover{background:var(--hover);color:var(--t1)}
+  .btn.primary{
+    border-color:var(--accent);background:var(--accent);color:var(--on-accent);
+    font-weight:600;
+  }
+  .btn.primary:hover{filter:brightness(1.04)}
+  .btn .ic{width:13px;height:13px}
+
+  /* 说明 */
+  .notes{margin:30px auto 0;max-width:780px}
+  .notes h2{font-size:12px;font-weight:600;letter-spacing:.4px;color:var(--t2);margin:0 0 10px}
+  .notes ul{margin:0;padding:0;list-style:none;display:grid;gap:7px}
+  .notes li{
+    display:flex;gap:9px;font-size:12.5px;line-height:1.65;color:var(--t3);
+  }
+  .notes li b{color:var(--t2);font-weight:600;flex:none}
+  .notes .swatch{display:inline-flex;gap:6px;align-items:center;margin-top:14px;font-size:11.5px;color:var(--t3)}
+  .notes .chip{width:26px;height:14px;border-radius:3px;border:1px solid var(--outline)}
+</style>
+</head>
+<body data-theme="dark">
+  <div class="page">
+    <header class="page-head">
+      <div>
+        <h1>模板界面 · 单底色重设计</h1>
+        <p>整块面板只用一种纸色，标题、列表、预览、底栏之间的分层全部交给 1px 发丝线；唯一的高亮是选中行和主按钮。可以点列表、输搜索词，右上角切明暗。</p>
+      </div>
+      <div class="seg" role="group" aria-label="明暗">
+        <button data-theme-btn="dark" aria-pressed="true">暗面</button>
+        <button data-theme-btn="light" aria-pressed="false">亮面</button>
+      </div>
+    </header>
+
+    <div class="dialog" role="dialog" aria-label="模板">
+      <div class="dhead">
+        <span class="dicon">
+          <svg class="ic lg" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="7" rx="1"/>
+            <rect x="14" y="3" width="7" height="10" rx="1"/>
+            <rect x="3" y="14" width="7" height="7" rx="1"/>
+            <rect x="14" y="17" width="7" height="4" rx="1"/>
+          </svg>
+        </span>
+        <span class="dtitle">模板</span>
+        <span class="dspace"></span>
+        <button class="iconbtn" aria-label="关闭">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+
+      <div class="dbody">
+        <div class="library">
+          <div class="search">
+            <svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/></svg>
+            <input id="q" type="text" placeholder="搜索模板…" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="list" id="list"></div>
+        </div>
+
+        <div class="preview">
+          <div class="phead">
+            <div style="flex:1;min-width:0">
+              <div class="ptitle" id="ptitle">日期</div>
+              <div class="pmeta">
+                <span class="path" id="ppath">templates/日期.md</span>
+                <span class="dot"></span>
+                <span id="ptime">昨天 14:52</span>
+              </div>
+            </div>
+            <button class="iconbtn" aria-label="编辑这个模板">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l3 3"/></svg>
+            </button>
+          </div>
+          <div class="pbody" id="pbody"></div>
+          <div class="vars">
+            <span>模板代码</span>
+            <span class="exprlist" id="pexpr"></span>
+            <span class="tail">插入时求值</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="dfoot">
+        <div class="hints">
+          <span class="hint"><b class="kbd">↑</b><b class="kbd">↓</b><span>选择</span></span>
+          <span class="hint"><b class="kbd">Enter</b><span>插入</span></span>
+          <span class="hint"><b class="kbd">Ctrl+Enter</b><span>新建</span></span>
+        </div>
+        <button class="btn">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h3.6l1.8 2H19a2 2 0 0 1 2 2v1"/><path d="M3.2 9.5l1.6 9.1a1.5 1.5 0 0 0 1.5 1.2h11.4a1.5 1.5 0 0 0 1.5-1.2l1.6-9.1z"/></svg>
+          打开文件夹
+        </button>
+        <button class="btn">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 21H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h8l5 5v12a1 1 0 0 1-1 1z"/><path d="M12 11v6M9 14h6"/></svg>
+          新建笔记
+        </button>
+        <button class="btn primary">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M20 4v7a3 3 0 0 1-3 3H5"/><path d="M9 10l-4 4 4 4"/></svg>
+          插入到当前笔记
+        </button>
+      </div>
+    </div>
+
+    <section class="notes">
+      <h2>相对现在改了这些</h2>
+      <ul>
+        <li><b>一种底色</b><span>标题栏、左栏、预览、底栏统一用 surface；原来 surfaceRaised + sidebar + surface 三层同时出现的断层全部取消。</span></li>
+        <li><b>去掉图标砖</b><span>列表行不再有 28px 的圆角方块，改成纯文字两行（标题 + 修改时间），左边缘对齐。</span></li>
+        <li><b>搜索改成命令行式</b><span>无边框，只有一条底线和放大镜；焦点靠光标本身，不再出现第三层输入框底色。</span></li>
+        <li><b>预览头的发丝线</b><span>标题 / 路径 / 时间下面是一条 outline-soft，不再用整块异色区域分隔。</span></li>
+        <li><b>底栏降噪</b><span>按钮全部同高 30px；次级按钮是透明描边，只有主按钮实底；快捷键键帽统一 9.5px 等宽。</span></li>
+        <li><b>变量条</b><span>去掉每个表达式的药丸描边，改成一行等宽小字，和预览共用同一条发丝线。</span></li>
+      </ul>
+      <div class="swatch">当前纸色
+        <span class="chip" style="background:var(--surface)"></span>
+        <span class="chip" style="background:var(--accent-soft)"></span>
+        <span class="chip" style="background:var(--accent)"></span>
+      </div>
+    </section>
+  </div>
+
+<script>
+const TEMPLATES = [
+  {
+    group:'', name:'日期', time:'昨天 14:52', path:'templates/日期.md',
+    expr:['tp.date.now("YYYY-MM-DD")','tp.date.now("dddd")'],
+    body:`
+      <p class="lead">把今天的日期写进笔记，插入时会自动求值，落盘后就是普通文本。</p>
+      <p><code class="expr">&lt;% tp.date.now("YYYY-MM-DD") %&gt;</code></p>
+      <hr>
+      <blockquote>模板代码只在插入那一刻执行；之后再打开笔记，看到的就是求值结果。</blockquote>`
+  },
+  {
+    group:'', name:'会议记录', time:'3 天前', path:'templates/会议记录.md',
+    expr:['tp.date.now("YYYY-MM-DD")'],
+    body:`
+      <h3>会议记录</h3>
+      <p><strong>日期</strong>：<code class="expr">&lt;% tp.date.now("YYYY-MM-DD") %&gt;</code>　<strong>主持</strong>：</p>
+      <p><strong>参会人</strong>：</p>
+      <ul><li></li><li></li></ul>
+      <h4>议题</h4>
+      <ol><li></li><li></li></ol>
+      <h4>结论</h4>
+      <blockquote>需要拍板的事情写在这里。</blockquote>`
+  },
+  {
+    group:'项目', name:'周报', time:'上周', path:'templates/项目/周报.md',
+    expr:['tp.date.now("YYYY-[W]ww")'],
+    body:`
+      <h3>周报 · <code class="expr">&lt;% tp.date.now("YYYY-[W]ww") %&gt;</code></h3>
+      <h4>本周完成</h4>
+      <ul><li></li><li></li></ul>
+      <h4>下周计划</h4>
+      <ul><li></li></ul>
+      <blockquote>风险与需要协调的事项。</blockquote>`
+  }
+];
+
+let selected = 0;
+
+const listEl = document.getElementById('list');
+const q = document.getElementById('q');
+
+function matches(t, query){
+  if (!query) return true;
+  const s = query.trim().toLowerCase();
+  return t.name.toLowerCase().includes(s) || t.path.toLowerCase().includes(s);
+}
+
+function renderList(){
+  const query = q.value;
+  const rows = [];
+  const groups = new Map();
+  TEMPLATES.forEach((t, i) => {
+    if (!matches(t, query)) return;
+    if (!groups.has(t.group)) groups.set(t.group, []);
+    groups.get(t.group).push(i);
+  });
+  let visible = 0;
+  for (const [label, idxs] of groups){
+    if (idxs.length === 0) continue;
+    if (label) rows.push(`<div class="grouplabel">${label}</div>`);
+    idxs.forEach(i => {
+      const t = TEMPLATES[i];
+      const sel = i === selected ? 'true' : 'false';
+      rows.push(`<div class="row" role="option" aria-selected="${sel}" data-i="${i}">
+        <div class="rtext">
+          <div class="rname">${t.name}</div>
+          <div class="rtime">${t.time}</div>
+        </div>
+        ${i === selected ? '<span class="kbd">Enter</span>' : ''}
+      </div>`);
+      visible++;
+    });
+  }
+  if (!visible){
+    rows.push(`<div style="padding:26px 12px;text-align:center;color:var(--t3);font-size:11.5px;line-height:1.6">
+      没有标题或路径包含「${escapeHtml(query.trim())}」。</div>`);
+  }
+  listEl.innerHTML = rows.join('');
+  listEl.querySelectorAll('.row').forEach(el => {
+    el.addEventListener('click', () => {
+      selected = Number(el.dataset.i);
+      q.focus();
+      renderAll();
+    });
+    el.addEventListener('dblclick', () => {});
+  });
+}
+
+function escapeHtml(s){
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function renderPreview(){
+  const t = TEMPLATES[selected];
+  document.getElementById('ptitle').textContent = t.name;
+  document.getElementById('ppath').textContent = t.path;
+  document.getElementById('ptime').textContent = t.time;
+  document.getElementById('pbody').innerHTML = t.body;
+  document.getElementById('pexpr').innerHTML =
+    t.expr.map(e => `<span class="e">${escapeHtml(e)}</span>`).join('');
+}
+
+function renderAll(){ renderList(); renderPreview(); }
+
+q.addEventListener('input', () => {
+  const before = selected;
+  // 过滤后如果当前选中项被筛掉，就落到第一条可见项
+  const visible = TEMPLATES.map((t,i)=>[t,i]).filter(([t])=>matches(t, q.value)).map(([,i])=>i);
+  if (!visible.includes(selected) && visible.length) selected = visible[0];
+  renderAll();
+});
+
+document.querySelectorAll('[data-theme-btn]').forEach(b => {
+  b.addEventListener('click', () => {
+    const theme = b.dataset.themeBtn;
+    document.body.dataset.theme = theme;
+    document.querySelectorAll('[data-theme-btn]').forEach(x =>
+      x.setAttribute('aria-pressed', String(x.dataset.themeBtn === theme)));
+  });
+});
+
+renderAll();
+</script>
+</body>
+</html>

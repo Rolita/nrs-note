@@ -122,87 +122,6 @@ double _measureSpans(
   return w;
 }
 
-/// Copies a span tree with every run re-styled.
-///
-/// Only [TextSpan] leaves carry text, and in a cell there is nothing else: the
-/// plain context (`_Ctx.plain`) turns every chip — tag, wikilink, link, image —
-/// into styled text, precisely so a cell can be measured and repainted by a
-/// render object.
-List<InlineSpan> _restyle(
-  List<InlineSpan> spans,
-  TextStyle Function(TextStyle) f,
-) => <InlineSpan>[
-  for (final InlineSpan s in spans)
-    if (s is TextSpan)
-      TextSpan(
-        text: s.text,
-        style: s.style == null ? null : f(s.style!),
-        children: s.children == null ? null : _restyle(s.children!, f),
-      )
-    else
-      s,
-];
-
-/// The tree with [extra] tracking added on top of each run's own — the width
-/// correction a squeezed column needs.
-///
-/// Added, not assigned: a run inside a cell may already carry tracking, and
-/// replacing it would make the painted text disagree with the measured width.
-List<InlineSpan> _spaced(List<InlineSpan> spans, double extra) => extra == 0
-    ? spans
-    : _restyle(
-        spans,
-        (TextStyle s) =>
-            s.copyWith(letterSpacing: (s.letterSpacing ?? 0) + extra),
-      );
-
-/// The same, but the cell's **first character** keeps its natural advance.
-///
-/// Skia applies half of a text run's tracking *before* its first glyph. On the
-/// first run of a paragraph line that half pulls the whole line back, so a
-/// squeezed first cell moved its row — the row widget, the skeleton under it,
-/// every column rule — up to several pixels left of the rest of the table
-/// (`ls = -5.18` shifted the header by 2.6px, measured). A run that starts on
-/// the second character is not the line's first: its tracking only bites the
-/// glyphs behind it, and the row origin never moves.
-///
-/// The caller divides the correction over the characters that actually receive
-/// it, so the cell still comes out exactly as wide as its column.
-List<InlineSpan> _squeeze(
-  List<InlineSpan> spans,
-  double extra,
-  TextStyle base,
-) {
-  if (extra == 0 || spans.isEmpty) return spans;
-  final InlineSpan first = spans.first;
-  if (first is! TextSpan || first.text == null || first.text!.isEmpty) {
-    return _spaced(spans, extra);
-  }
-  final String text = first.text!;
-  final int cut = text.characters.first.length;
-  final TextStyle firstStyle = first.style ?? base;
-  final TextStyle restStyle = firstStyle.copyWith(
-    letterSpacing: (firstStyle.letterSpacing ?? 0) + extra,
-  );
-  final List<InlineSpan> rest = <InlineSpan>[
-    if (text.length > cut) TextSpan(text: text.substring(cut), style: restStyle),
-    if (first.children != null)
-      TextSpan(
-        style: restStyle,
-        children: _restyle(
-          first.children!,
-          (TextStyle s) =>
-              s.copyWith(letterSpacing: (s.letterSpacing ?? 0) + extra),
-        ),
-      ),
-  ];
-  return <InlineSpan>[
-    TextSpan(text: text.substring(0, cut), style: first.style),
-    ...rest,
-    ..._spaced(spans.skip(1).toList(), extra),
-  ];
-}
-
 /// Column alignment, read off the divider row (`:---`, `:-:`, `---:`).
 ///
 /// Obsidian honours these, and a column of numbers that refuses to line up on
@@ -244,6 +163,221 @@ double _middleOverhang(
   return (box - (m.ascent + m.descent)) / 2;
 }
 
+/// One cell's expensive measurement, reused by every later measure.
+///
+/// A rendered (not being edited) cell's tree depends on nothing but its display
+/// text and whether the row is a header: the table context disables the caret,
+/// selection and hover reveals, so no absolute offset leaks into the tree.
+class _CellMemo {
+  _CellMemo({
+    required this.text,
+    required this.header,
+    required this.rendered,
+    required this.codes,
+    required this.natural,
+  });
+
+  final String text;
+  final bool header;
+
+  /// The tree as rendered (exactly what the row paints).
+  final List<InlineSpan> rendered;
+
+  /// Inline code / tag runs, in cell-relative offsets.
+  final List<_CellCode> codes;
+
+  /// Width the rendered tree wants on one line.
+  final double natural;
+
+  /// Generation of the last measure that used this cell.
+  int usedIn = 0;
+}
+
+/// A cell painter plus the chips measured from it, shared across measures.
+class _PaintedCell {
+  _PaintedCell(this.painter, this.chips);
+
+  final TextPainter painter;
+  final List<_PaintedChip> chips;
+
+  int usedIn = 0;
+}
+
+/// Per-cell memoization for one `LiveTableBlocks` instance.
+///
+/// The palette, base style, scale and direction are fixed for the instance, so
+/// a cell's tree only has to be rebuilt when its text changes. Entries unused
+/// by a measure are swept at the end of it, which keeps a long editing session
+/// from growing the store without bound.
+class _CellMemoStore {
+  final Map<(String, bool), _CellMemo> _cells = <(String, bool), _CellMemo>{};
+  final Map<(Object, int, TextAlign), _PaintedCell> _painted =
+      <(Object, int, TextAlign), _PaintedCell>{};
+
+  /// 行内代码探针量测结果：`(文字, 样式)` 决定行高与基线距离，与列宽无关。
+  final Map<(TextStyle, String), (double, double)> _probes =
+      <(TextStyle, String), (double, double)>{};
+
+  /// `_middleOverhang` 的结果：每张表都要问一次，但答案只取决于字体。
+  final Map<(TextStyle, double), double> _overhangs =
+      <(TextStyle, double), double>{};
+
+  /// 抓手图标 painter。只有强调色与三级文字色两种，按颜色缓存。
+  final Map<Color, TextPainter> _grips = <Color, TextPainter>{};
+
+  int _generation = 0;
+
+  /// Cell trees actually built (memo misses). Typing inside one cell adds
+  /// none: every other cell, and its own rendered tree, is a hit.
+  @visibleForTesting
+  int spanBuilds = 0;
+
+  /// Cell painters actually laid out, the cell being edited included.
+  @visibleForTesting
+  int painterBuilds = 0;
+
+  /// 环境（缩放与方向）在一次实例生命周期内不变：变了宿主会 `clear()`。
+  TextScaler _scaler = TextScaler.noScaling;
+  TextDirection _direction = TextDirection.ltr;
+
+  int get generation => _generation;
+
+  void useEnvironment(TextScaler scaler, TextDirection direction) {
+    _scaler = scaler;
+    _direction = direction;
+  }
+
+  void beginMeasure() => _generation++;
+
+  _CellMemo? cell(String text, bool header) {
+    final _CellMemo? memo = _cells[(text, header)];
+    if (memo != null) memo.usedIn = _generation;
+    return memo;
+  }
+
+  _CellMemo addCell({
+    required String text,
+    required bool header,
+    required List<InlineSpan> rendered,
+    required List<_CellCode> codes,
+    required double natural,
+  }) {
+    spanBuilds++;
+    return _cells[(text, header)] = _CellMemo(
+      text: text,
+      header: header,
+      rendered: rendered,
+      codes: codes,
+      natural: natural,
+    )..usedIn = _generation;
+  }
+
+  _PaintedCell? painted(
+    _CellMemo? memo,
+    double width,
+    TextAlign align,
+  ) {
+    if (memo == null) return null;
+    final _PaintedCell? cell =
+        _painted[(memo, _widthKey(width), align)];
+    if (cell != null) cell.usedIn = _generation;
+    return cell;
+  }
+
+  _PaintedCell addPainted({
+    required _CellMemo memo,
+    required double width,
+    required TextAlign align,
+    required TextPainter painter,
+    required List<_PaintedChip> chips,
+  }) {
+    final _PaintedCell cell = _PaintedCell(painter, chips)
+      ..usedIn = _generation;
+    _painted[(memo, _widthKey(width), align)] = cell;
+    return cell;
+  }
+
+  /// 行内代码探针的 `(基线到顶的距离, 行高)`。
+  ///
+  /// 每段代码每次测量都会问一次，但答案只取决于文字与样式；探针通常只有一个
+  /// 字符，所以重复量测的代价全在建 `TextPainter` 与一次布局上。
+  (double, double) probeMetrics(String text, TextStyle style) {
+    final (TextStyle, String) key = (style, text);
+    final (double, double)? hit = _probes[key];
+    if (hit != null) return hit;
+    final TextPainter tp = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: _direction,
+      textScaler: _scaler,
+    )..layout();
+    final (double, double) value = (
+      tp.computeDistanceToActualBaseline(TextBaseline.alphabetic),
+      tp.height,
+    );
+    tp.dispose();
+    return _probes[key] = value;
+  }
+
+  /// 盒子垂直居中相对文字行的上悬量（见 `_middleOverhang`）。
+  double overhang(TextStyle style, double box) {
+    final (TextStyle, double) key = (style, box);
+    final double? hit = _overhangs[key];
+    if (hit != null) return hit;
+    final double value = _middleOverhang(style, _scaler, _direction, box);
+    _overhangs[key] = value;
+    return value;
+  }
+
+  /// 抓手图标：固定字号、不做无障碍缩放，随颜色缓存。
+  TextPainter gripPainter(Color color) {
+    final TextPainter? hit = _grips[color];
+    if (hit != null) return hit;
+    final IconData icon = LucideIcons.gripVertical;
+    final TextPainter tp = TextPainter(
+      text: TextSpan(
+        text: String.fromCharCode(icon.codePoint),
+        style: TextStyle(
+          fontSize: _kGrip,
+          fontFamily: icon.fontFamily,
+          package: icon.fontPackage,
+          color: color,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+      // 抓手是界面，不是笔记：缩放时不该跟着变大。
+      textScaler: TextScaler.noScaling,
+    )..layout();
+    return _grips[color] = tp;
+  }
+
+  void notePainterBuild() => painterBuilds++;
+
+  void sweep() {
+    _cells.removeWhere((_, _CellMemo memo) => memo.usedIn != _generation);
+    _painted.removeWhere((_, _PaintedCell cell) {
+      if (cell.usedIn == _generation) return false;
+      cell.painter.dispose();
+      return true;
+    });
+  }
+
+  void clear() {
+    for (final _PaintedCell cell in _painted.values) {
+      cell.painter.dispose();
+    }
+    _painted.clear();
+    _cells.clear();
+    for (final TextPainter grip in _grips.values) {
+      grip.dispose();
+    }
+    _grips.clear();
+    _probes.clear();
+    _overhangs.clear();
+  }
+
+  static int _widthKey(double width) => (width * 4).round();
+}
+
 /// Measures a whole table block.
 ///
 /// Two rules decide the geometry:
@@ -265,6 +399,7 @@ _Table _measureTable({
   required _Ctx ctx,
   required int editAt,
   required TextDirection direction,
+  required _CellMemoStore memo,
 }) {
   final List<_RowData> rows = <_RowData>[];
   final Map<int, int> lineOfRow = <int, int>{};
@@ -300,49 +435,68 @@ _Table _measureTable({
   // The cell under the caret gets **two** trees: the rendered one decides the
   // column widths (so entering a cell never reflows the table under the
   // pointer), and the source-revealed one is what is painted and laid out
-  // underneath it. Any squeeze the revealed text needs is baked into both.
+  // underneath it.
   final List<List<List<InlineSpan>>> trees = <List<List<InlineSpan>>>[];
   final List<List<List<_CellCode>>> codes = <List<List<_CellCode>>>[];
-  final List<List<double>> measured = <List<double>>[];
-  final List<List<double>> painted = <List<double>>[];
+  final List<List<_CellMemo?>> memos = <List<_CellMemo?>>[];
   final List<double> natural = List<double>.filled(cols, 0);
   for (final _RowData r in rows) {
     final TextStyle style = r.header ? headStyle : bodyStyle;
     final List<List<InlineSpan>> rowTrees = <List<InlineSpan>>[];
     final List<List<_CellCode>> rowCodes = <List<_CellCode>>[];
-    final List<double> rowWidths = <double>[];
-    final List<double> rowPainted = <double>[];
+    final List<_CellMemo?> rowMemos = <_CellMemo?>[];
     for (int c = 0; c < r.cells.length; c++) {
       final int from = r.cells[c].offset;
       final int to = from + r.cells[c].text.length;
       final bool editing = editAt >= from && editAt <= to;
-      final List<_CellCode> codeRuns = <_CellCode>[];
-      final List<InlineSpan> rendered = _inline(
-        r.cells[c].text,
-        style,
-        from,
-        ctx,
-        // A revealed cell paints no chip, so it has no chip runs to report.
-        codeRuns: editing ? null : codeRuns,
-      );
-      final double w = _measureSpans(rendered, style, ctx.textScaler, direction);
+      // While typing, every cell but one is unchanged: its tree, code runs and
+      // natural width come straight out of the memo. The cell being edited is
+      // never memoized — its source changes with each keystroke.
+      _CellMemo? memoHit = editing
+          ? null
+          : memo.cell(r.cells[c].text, r.header);
+      final List<InlineSpan> rendered;
+      final List<_CellCode> codeRuns;
+      final double w;
+      if (memoHit != null) {
+        rendered = memoHit.rendered;
+        codeRuns = memoHit.codes;
+        w = memoHit.natural;
+      } else {
+        final List<_CellCode> fresh = <_CellCode>[];
+        rendered = _inline(
+          r.cells[c].text,
+          style,
+          from,
+          ctx,
+          // A revealed cell paints no chip, so it has no chip runs to report.
+          codeRuns: editing ? null : fresh,
+        );
+        w = _measureSpans(rendered, style, ctx.textScaler, direction);
+        if (editing) {
+          codeRuns = const <_CellCode>[];
+        } else {
+          codeRuns = fresh;
+          memoHit = memo.addCell(
+            text: r.cells[c].text,
+            header: r.header,
+            rendered: rendered,
+            codes: codeRuns,
+            natural: w,
+          );
+        }
+      }
       final List<InlineSpan> paintSpans = editing
           ? _inline(r.cells[c].text, style, from, _cellEditCtx(ctx, from, to))
           : rendered;
       rowTrees.add(paintSpans);
-      rowCodes.add(editing ? const <_CellCode>[] : codeRuns);
-      rowWidths.add(w);
-      rowPainted.add(
-        editing
-            ? _measureSpans(paintSpans, style, ctx.textScaler, direction)
-            : w,
-      );
+      rowCodes.add(codeRuns);
+      rowMemos.add(memoHit);
       natural[c] = math.max(natural[c], w);
     }
     trees.add(rowTrees);
     codes.add(rowCodes);
-    measured.add(rowWidths);
-    painted.add(rowPainted);
+    memos.add(rowMemos);
   }
 
   // Pass two: hand out the columns.
@@ -356,13 +510,16 @@ _Table _measureTable({
   // `insertTable` writes) a usable grid instead of a 32px speck, and what stops
   // a one-letter column from being a sliver.
   //
-  // When the natural widths exceed the column, the **minimum is served first**
-  // and only the demand above it is squeezed proportionally: a table with one
-  // long paragraph column and four short ones used to shrink all five by the
-  // same percentage, which turned labels into unreadable slivers while the
-  // paragraph was still wide. Proportional-from-the-floor keeps every short
-  // column whole and takes the space out of the column that can spare it.
-  // Only when even the floors do not fit does everything shrink linearly.
+  // When the natural widths exceed the column, the table **wraps** instead of
+  // squeezing: every column keeps a readable floor, the space above it is
+  // shared in proportion to what each column still wants, and a cell that does
+  // not fit its column wraps inside it. Negative `letterSpacing` — the old way
+  // of forcing the table onto one line — made long cells into unreadable
+  // slivers of overlapping glyphs, so it is gone for good.
+  //
+  // Only when even the floors do not fit (`cols × readable > fit`, a table
+  // with more columns than the text column can host) does every column get an
+  // equal share; long unbreakable words then break inside the cell.
   //
   // The 1px from `contentWidth` is not cosmetic: a line break fires on a strict
   // `> contentWidth`, so a table landing exactly on the last pixel makes
@@ -374,57 +531,49 @@ _Table _measureTable({
   ];
   final double fit = math.max(1, available - cols * 2 * _kCellPad);
   final double span = wanted.fold<double>(0, (double a, double w) => a + w);
-  final double floor = cols * _kMinCell;
   final List<double> widths;
   if (span <= fit) {
     widths = wanted;
-  } else if (floor <= fit) {
-    final double extra = span - floor;
-    final double room = fit - floor;
-    widths = <double>[
-      for (final double w in wanted)
-        _kMinCell + (extra <= 0 ? 0 : (w - _kMinCell) * room / extra),
-    ];
   } else {
-    widths = <double>[for (final double w in wanted) w * fit / span];
+    final double readable = math.max(
+      _kMinCell,
+      ctx.textScaler.scale(
+        _kReadableCol * (base.fontSize ?? _kReadableColAt) / _kReadableColAt,
+      ),
+    );
+    final List<double> floor = <double>[
+      for (final double w in wanted) math.min(w, readable),
+    ];
+    final double floorSum = floor.fold<double>(0, (double a, double b) => a + b);
+    if (floorSum > fit) {
+      widths = <double>[for (int c = 0; c < cols; c++) fit / cols];
+    } else {
+      final double extra = span - floorSum;
+      final double room = fit - floorSum;
+      widths = <double>[
+        for (int c = 0; c < cols; c++)
+          floor[c] + (extra <= 0 ? 0 : (wanted[c] - floor[c]) * room / extra),
+      ];
+    }
   }
 
-  // Pass three: bake each cell's tracking correction into its tree and record
-  // where the box ended up.
+  // Pass three: record where each box ended up. The tree is painted exactly as
+  // measured — a cell that does not fit wraps inside its column, so there is
+  // no tracking correction to bake in any more.
   for (int ri = 0; ri < rows.length; ri++) {
     final _RowData r = rows[ri];
     final TextStyle style = r.header ? headStyle : bodyStyle;
     for (int c = 0; c < r.cells.length; c++) {
-      final _ParsedCell parsed = r.cells[c];
-      final List<InlineSpan> spans = trees[ri][c];
-      // A revealed cell is wider than its rendered form; squeeze it back into
-      // the column it was measured for, exactly like a long cell. The column
-      // itself keeps the width it had before the cell opened.
-      //
-      // The squeeze skips the cell's first character (see [_squeeze]) so it
-      // cannot move the row's line origin, and is spread over the characters
-      // that do carry it, so the cell still measures exactly `widths[c]`.
-      final double nat = painted[ri][c];
-      final int len = parsed.text.length;
-      final int head = parsed.text.isEmpty
-          ? 0
-          : parsed.text.characters.first.length;
-      final int tracked = len - head;
-      // Negative only: a squeezed column has to shrink its text, while a
-      // stretched one simply keeps the extra room *after* the text.
-      final double ls = len > 0 && nat > widths[c]
-          ? (widths[c] - nat) / (tracked > 0 ? tracked : len)
-          : 0;
       r.data.add(
         _CellData(
-          cell: parsed,
+          cell: r.cells[c],
           style: style,
-          spans: tracked > 0 ? _squeeze(spans, ls, style) : _spaced(spans, ls),
+          spans: trees[ri][c],
+          memo: memos[ri][c],
           codeRuns: codes[ri][c],
-          natural: nat,
           width: widths[c],
           align: divider >= 0 ? _alignOf(lines[divider], c) : TextAlign.start,
-        )..letterSpacing = ls,
+        ),
       );
     }
   }
@@ -467,7 +616,7 @@ _Table _measureTable({
     rows: rows,
     width: cx,
     rowHeight: rowHeight,
-    dyShift: _middleOverhang(base, ctx.textScaler, direction, rowHeight),
+    dyShift: memo.overhang(base, rowHeight),
     lineOfRow: lineOfRow,
     geometry: TableGeometry(
       first: first,

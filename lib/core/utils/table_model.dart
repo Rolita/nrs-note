@@ -310,6 +310,37 @@ class TableBlock {
     if (rows.isEmpty) return null;
     return TableBlock(text: text, start: start, end: end, rows: rows);
   }
+
+  /// Every table in [text], in document order.
+  ///
+  /// The fenced-code state is tracked here instead of calling [parse] per line:
+  /// a note with a dozen tables would otherwise re-scan the whole document for
+  /// each one, and this runs while the table tools are listing a file's tables.
+  static List<TableBlock> allIn(String text) {
+    final List<TableBlock> out = <TableBlock>[];
+    if (text.isEmpty) return out;
+    int lineStart = 0;
+    bool fenced = false;
+    while (lineStart <= text.length) {
+      final int lineEnd = _lineEndOf(text, lineStart);
+      final String line = text.substring(lineStart, lineEnd);
+      if (RegExp(r'^\s{0,3}```').hasMatch(line)) {
+        fenced = !fenced;
+      } else if (!fenced && isRowLine(line)) {
+        final TableBlock? block = parse(text, lineStart);
+        // `block.start == lineStart` keeps a table from being listed once per
+        // line: only the row that opens it produces the block.
+        if (block != null && block.start == lineStart) {
+          out.add(block);
+          lineStart = block.end + 1;
+          continue;
+        }
+      }
+      if (lineEnd >= text.length) break;
+      lineStart = lineEnd + 1;
+    }
+    return out;
+  }
 }
 
 String _line(String text, int start) =>
@@ -879,8 +910,53 @@ class TableCommands {
     return _commit(block, grid, row: row, column: column.clamp(a, b));
   }
 
+  /// Adds or removes the header row.
+  ///
+  /// The header is the first row **plus the divider after it** — Markdown has no
+  /// way to have one without the other. Removing it therefore also drops the
+  /// alignment, which lives inside the divider; that is the same rule
+  /// [setAlign] already follows, where a dividerless table has no alignment.
+  /// The rows themselves are untouched: the first one merely stops being the
+  /// header, so toggling back restores exactly the table that was there.
+  static TableEditResult setHeader(
+    TableBlock block, {
+    required bool header,
+    required int row,
+    required int column,
+  }) {
+    final TableGrid grid = TableGrid.fromBlock(block);
+    if (grid.rows.isEmpty) {
+      return TableEditResult(
+        block.text,
+        TextSelection.collapsed(offset: block.start),
+      );
+    }
+    // Already in the requested state: keep the source verbatim instead of
+    // re-rendering, which would rewrite the user's spacing around the pipes.
+    if (grid.header == header) {
+      final List<TableRow> body = block.bodyRows;
+      if (body.isEmpty) {
+        return TableEditResult(
+          block.text,
+          TextSelection.collapsed(offset: block.start),
+        );
+      }
+      final TableRow r = body[row.clamp(0, body.length - 1)];
+      return TableEditResult(
+        block.text,
+        TextSelection.collapsed(
+          offset: r.cells.isEmpty
+              ? r.start
+              : r.cells[column.clamp(0, r.cells.length - 1)].contentStart,
+        ),
+      );
+    }
+    grid.header = header;
+    return _commit(block, grid, row: row, column: column);
+  }
+
   /// Removes the whole block, and the newline that closed it, so deleting a
-  /// table does not leave a blank line where it used to be.
+  /// table does not leave a blank line where it used to.
   static TableEditResult deleteTable(TableBlock block) {
     final int end = block.end < block.text.length ? block.end + 1 : block.end;
     final String next = block.text.replaceRange(block.start, end, '');
@@ -942,6 +1018,54 @@ class TableCommands {
       grid.rows[first + k] = body[order[k]];
     }
     return _commit(block, grid, row: row, column: at);
+  }
+
+  /// Drops body rows whose cell in [column] repeats an earlier one.
+  ///
+  /// The first occurrence wins and the order is kept: this is 「去掉重复项」,
+  /// not a sort. Empty cells are never treated as duplicates — a table of
+  /// half-filled rows would otherwise collapse to one blank line.
+  static TableEditResult? dedupeColumn(
+    TableBlock block, {
+    required int column,
+    required int row,
+  }) {
+    final TableGrid grid = TableGrid.fromBlock(block);
+    if (grid.rows.isEmpty) return null;
+    final int at = column.clamp(0, grid.columns - 1);
+    final int first = grid.header ? 1 : 0;
+    if (grid.rows.length - first < 2) return null;
+
+    final Set<String> seen = <String>{};
+    final List<List<String>> kept = <List<String>>[];
+    for (int i = first; i < grid.rows.length; i++) {
+      final List<String> cells = grid.rows[i];
+      final String key = (at < cells.length ? cells[at] : '')
+          .trim()
+          .toLowerCase();
+      if (key.isNotEmpty && !seen.add(key)) continue;
+      kept.add(cells);
+    }
+    if (kept.length == grid.rows.length - first) {
+      final List<TableRow> body = block.bodyRows;
+      final TableRow r = body[row.clamp(0, body.length - 1)];
+      return TableEditResult(
+        block.text,
+        TextSelection.collapsed(
+          offset: r.cells.isEmpty
+              ? r.start
+              : r.cells[at.clamp(0, r.cells.length - 1)].contentStart,
+        ),
+      );
+    }
+    grid.rows.removeRange(first, grid.rows.length);
+    grid.rows.addAll(kept);
+    return _commit(
+      block,
+      grid,
+      row: row.clamp(first, grid.rows.length - 1),
+      column: at,
+    );
   }
 
   /// Inserts a copy of [row] directly under it.

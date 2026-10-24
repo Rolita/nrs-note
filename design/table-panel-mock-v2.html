@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>表格侧边栏 · 四版图标方案</title>
+<style>
+  :root {
+    --canvas: #F7F7F5;
+    --sidebar: #F1F1EF;
+    --surface: #FCFCFB;
+    --raised: #FFFFFF;
+    --sunken: #EFEFED;
+    --outline: #DCDCD9;
+    --outline-soft: #E9E9E6;
+    --rule: #D5D5D1;
+    --t1: #1B1B1A;
+    --t2: #5C5C59;
+    --t3: #8C8C88;
+    --accent: #2A2A28;
+    --accent-soft: #E9E9E6;
+    --danger: #C0392B;
+    --danger-soft: #FAE7E4;
+    --shadow: 0 18px 50px rgba(0, 0, 0, 0.10), 0 2px 8px rgba(0, 0, 0, 0.06);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0;
+    background: #EDEDEA;
+    color: var(--t1);
+    font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body { padding: 28px 24px 48px; }
+  .stage { max-width: 1400px; margin: 0 auto; }
+
+  .mockbar { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; flex-wrap: wrap; }
+  .mockbar .label { font-size: 12px; color: #6E6E6A; letter-spacing: .3px; }
+
+  .seg { display: inline-flex; padding: 3px; background: #E4E4E0; border-radius: 8px; gap: 2px; }
+  .seg button {
+    border: 0; background: transparent; color: #5C5C59;
+    font: inherit; font-size: 12px; height: 26px; padding: 0 14px;
+    border-radius: 6px; cursor: pointer;
+  }
+  .seg button.on { background: #FFFFFF; color: #1B1B1A; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+
+  .vdesc { font-size: 12px; color: #8C8C88; margin: -2px 0 16px; line-height: 1.6; }
+
+  /* ---------------------------------------------------------------- frame */
+
+  .app {
+    display: flex; flex-direction: column;
+    height: 900px;
+    background: var(--canvas);
+    border: 1px solid var(--outline);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+
+  .titlebar {
+    height: 40px; flex: none;
+    display: flex; align-items: center;
+    background: var(--surface);
+    border-bottom: 1px solid var(--outline-soft);
+    padding-left: 6px;
+    position: relative;
+  }
+
+  .tb-left { display: flex; align-items: center; gap: 4px; }
+  .tb-divider { width: 1px; height: 16px; background: var(--outline); margin: 0 6px; }
+
+  .iconbtn {
+    width: 32px; height: 32px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 0; background: transparent; border-radius: 7px;
+    color: var(--t2); cursor: pointer; position: relative;
+  }
+  .iconbtn:hover { background: var(--raised); color: var(--t1); }
+  .iconbtn svg { width: 17px; height: 17px; }
+
+  .iconbtn.on { background: var(--accent-soft); color: var(--accent); }
+  .iconbtn.on::before {
+    content: ""; position: absolute; left: 0; top: 8px; bottom: 8px;
+    width: 2px; border-radius: 1px; background: var(--accent);
+  }
+
+  .tabs { display: flex; align-items: stretch; height: 100%; margin-left: 6px; margin-right: 232px; min-width: 0; overflow: hidden; }
+  .tab {
+    display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    font-size: 12.5px; color: var(--t2);
+    border-right: 1px solid var(--outline-soft); white-space: nowrap;
+  }
+  .tab.active { color: var(--t1); box-shadow: inset 0 -2px 0 var(--accent); }
+  .tab .x { color: var(--t3); font-size: 12px; }
+  .tab.new { border-right: 0; color: var(--t3); font-size: 16px; padding: 0 10px; }
+
+  .tb-right { position: absolute; top: 4px; left: calc(100% - 232px); display: flex; align-items: center; gap: 2px; }
+
+  .caption { display: flex; align-items: center; height: 40px; margin-left: auto; padding-right: 2px; }
+  .caption span { width: 44px; height: 40px; display: inline-flex; align-items: center; justify-content: center; color: var(--t2); font-size: 12px; }
+
+  .main { flex: 1; display: flex; min-height: 0; }
+
+  .rail {
+    width: 44px; flex: none;
+    background: var(--canvas);
+    border-right: 1px solid var(--outline-soft);
+    display: flex; flex-direction: column; align-items: center;
+    padding: 8px 0; gap: 4px;
+  }
+  .rail .iconbtn { color: var(--t3); }
+  .rail .spacer { flex: 1; }
+
+  .list {
+    width: 288px; flex: none;
+    background: var(--sidebar);
+    border-right: 1px solid var(--outline-soft);
+    display: flex; flex-direction: column;
+  }
+  .panel-head {
+    height: 32px; flex: none;
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 12px;
+    font-size: 11.5px; font-weight: 600; letter-spacing: .4px;
+    color: var(--t3);
+  }
+  .panel-head .count { font-weight: 400; }
+  .panel-head .tail { margin-left: auto; display: flex; gap: 2px; }
+  .panel-head .mini {
+    width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
+    color: var(--t3); border-radius: 5px;
+  }
+  .panel-head .mini:hover { background: var(--raised); color: var(--t1); }
+
+  .filelist { padding: 2px 8px; display: flex; flex-direction: column; }
+  .filerow {
+    height: 28px; display: flex; align-items: center; gap: 6px;
+    padding: 0 8px; border-radius: 5px;
+    font-size: 12.5px; color: var(--t2);
+    white-space: nowrap; overflow: hidden;
+  }
+  .filerow .fold { width: 12px; color: var(--t3); font-size: 9px; }
+  .filerow.sel { background: var(--accent-soft); color: var(--t1); }
+  .filerow.child { padding-left: 26px; }
+
+  .editor { flex: 1; min-width: 0; background: var(--surface); display: flex; flex-direction: column; }
+  .doc { flex: 1; overflow: hidden; padding: 40px 72px; max-width: 780px; margin: 0 auto; width: 100%; }
+  .doc h1 { font-size: 26px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.2px; }
+  .doc .meta { font-size: 11.5px; color: var(--t3); margin-bottom: 26px; }
+  .doc h2 { font-size: 18px; font-weight: 650; margin: 26px 0 10px; }
+  .doc p { font-size: 14.5px; line-height: 1.8; color: var(--t2); margin: 0 0 12px; }
+  .doc .caret { display: inline-block; width: 1.5px; height: 20px; background: var(--accent); vertical-align: -4px; margin-left: 1px; }
+
+  table.md { width: 100%; border-collapse: collapse; margin: 6px 0 18px; font-size: 13px; }
+  table.md th, table.md td { border: 1px solid var(--rule); padding: 6px 8px; text-align: left; color: var(--t2); }
+  table.md th { color: var(--t1); font-weight: 650; background: var(--sunken); }
+  table.md .cell-active { box-shadow: inset 0 0 0 1px var(--accent); }
+
+  /* --------------------------------------------------------------- panels */
+
+  .right {
+    width: 232px; flex: none;
+    background: var(--sidebar);
+    border-left: 1px solid var(--outline-soft);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+
+  .rp-body { flex: 1; overflow: auto; padding-bottom: 14px; }
+
+  .info {
+    margin: 4px 12px 6px;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11.5px; color: var(--t3);
+  }
+  .info .dot { width: 3px; height: 3px; border-radius: 50%; background: var(--outline); }
+  .info .addr { margin-left: auto; font-family: Consolas, monospace; font-size: 10.5px; color: var(--t2); }
+
+  .hair { height: 1px; background: var(--outline-soft); margin: 6px 10px; }
+
+  /* icon + tooltip */
+  .ic {
+    width: 17px; height: 17px; flex: none;
+    fill: none; stroke: currentColor; stroke-width: 1.7;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
+
+  .it {
+    position: relative;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--t2);
+    cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    font: inherit; padding: 0;
+  }
+  .it:hover { color: var(--t1); }
+  .it.on { color: var(--accent); background: var(--accent-soft); }
+  .it.danger:hover { color: var(--danger); background: var(--danger-soft); border-color: transparent; }
+
+  /* 悬浮气泡挂在固定层上：面板自己会滚动，放在面板里会被裁掉 */
+  #tip {
+    position: fixed;
+    z-index: 100;
+    pointer-events: none;
+    background: #232322;
+    color: #F3F3F0;
+    font-size: 11px;
+    line-height: 1;
+    padding: 6px 8px;
+    border-radius: 5px;
+    white-space: nowrap;
+    opacity: 0;
+    transform: translate(-100%, -50%) translateX(4px);
+    transition: opacity .1s ease, transform .1s ease;
+    box-shadow: 0 6px 16px rgba(0,0,0,.18);
+  }
+  #tip.show { opacity: 1; transform: translate(-100%, -50%) translateX(0); }
+
+  /* ---------------------------------------------------------- A 紧凑网格 */
+
+  .ghtml { display: flex; flex-direction: column; }
+  .gg {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 2px;
+    padding: 4px 10px;
+  }
+  .gg .it { width: 100%; height: 30px; border-radius: 6px; }
+  .gg .it:hover { background: var(--raised); border-color: var(--outline-soft); }
+  .A .gg .it.on:hover { background: var(--accent-soft); }
+
+  /* ---------------------------------------------------------- B 分组卡片 */
+
+  .B .rp-body { padding: 2px 8px 14px; }
+  .B .gcard {
+    background: var(--surface);
+    border: 1px solid var(--outline-soft);
+    border-radius: 8px;
+    padding: 6px;
+    margin-bottom: 6px;
+  }
+  .B .ghead {
+    display: flex; align-items: center; gap: 6px;
+    height: 18px; padding: 0 4px; margin-bottom: 2px;
+    color: var(--t3);
+  }
+  .B .ghead .ic { width: 13px; height: 13px; }
+  .B .ghead .line { flex: 1; height: 1px; background: var(--outline-soft); }
+  .B .gg { padding: 0; gap: 2px; }
+  .B .gg .it { width: 100%; height: 30px; border-radius: 5px; }
+  .B .gg .it:hover { background: var(--sunken); }
+  .B .gg .it.on:hover { background: var(--accent-soft); }
+  .B .info { margin: 2px 8px 8px; padding: 0 4px; }
+
+  /* ------------------------------------------------------------ C 双列竖排 */
+
+  .C .cols { display: flex; gap: 6px; padding: 4px 10px; }
+  .C .col {
+    flex: 1; min-width: 0;
+    background: var(--surface);
+    border: 1px solid var(--outline-soft);
+    border-radius: 8px;
+    padding: 5px;
+  }
+  .C .colhead {
+    display: flex; align-items: center; justify-content: center;
+    height: 18px; margin-bottom: 4px;
+    color: var(--t3);
+  }
+  .C .colhead .ic { width: 13px; height: 13px; }
+  .C .colgrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 2px; }
+  .C .colgrid .it { width: 100%; height: 30px; border-radius: 6px; }
+  .C .colgrid .it:hover { background: var(--sunken); }
+  .C .cols + .hair { margin-top: 4px; }
+  .C .rowgroup { padding: 2px 10px 6px; }
+  .C .rowgroup .gg { padding: 0; }
+
+  /* ---------------------------------------------------------------- D 药丸 */
+
+  .D .rppills { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 12px; }
+  .D .rppills .it {
+    width: 30px; height: 30px; border-radius: 15px;
+    background: var(--surface);
+    border: 1px solid var(--outline-soft);
+    transition: transform .12s ease, background .12s ease, border-color .12s ease;
+  }
+  .D .rppills .it:hover {
+    transform: scale(1.1);
+    background: var(--raised);
+    border-color: var(--outline);
+  }
+  .D .rppills .it.on { border-color: var(--accent-soft); }
+  .D .rppills .it.danger:hover { background: var(--danger-soft); border-color: #F0CFC9; }
+  .D .rp-headinfo {
+    margin: 2px 12px 4px;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; color: var(--t3);
+  }
+  .D .rp-headinfo .addr {
+    margin-left: auto; font-family: Consolas, monospace;
+    background: var(--sunken); border: 1px solid var(--outline-soft);
+    padding: 1px 6px; border-radius: 4px; color: var(--t2); font-size: 10px;
+  }
+
+  /* ------------------------------------------------------------ D mini map */
+
+  .minimap { margin: 2px 12px 8px; }
+  .minimap .mgrid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px;
+  }
+  .minimap .mcell {
+    height: 14px; background: var(--surface);
+    border: 1px solid var(--outline-soft); border-radius: 3px;
+  }
+  .minimap .mcell.hd { background: var(--sunken); }
+  .minimap .mcell.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+
+  /* ------------------------------------------------------------------ spec */
+
+  .specs { margin-top: 22px; display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+  .card { background: #FCFCFB; border: 1px solid #E3E3DF; border-radius: 8px; padding: 14px 16px; }
+  .card h3 { margin: 0 0 6px; font-size: 12px; font-weight: 650; color: #1B1B1A; }
+  .card p { margin: 0; font-size: 11.5px; line-height: 1.8; color: #5C5C59; }
+  .card b { color: #1B1B1A; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<!-- 图标精灵：全部借用 Lucide 的线性风格，一次定义四版共用 -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-rows" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18"/></symbol>
+    <symbol id="i-cols" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/></symbol>
+    <symbol id="i-all" viewBox="0 0 24 24"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M3 12h18M12 3v18"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 20V5M5 12l7-7 7 7"/><path d="M5 3h14"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v15M5 12l7 7 7-7"/><path d="M5 21h14"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></symbol>
+    <symbol id="i-moveup" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/><path d="M5 21h14"/></symbol>
+    <symbol id="i-movedown" viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/><path d="M5 3h14"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/><path d="M10 11v6M14 11v6"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24"><path d="M21 12H5M12 5l-7 7 7 7"/><path d="M3 5v14"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24"><path d="M3 12h16M12 5l7 7-7 7"/><path d="M21 5v14"/></symbol>
+    <symbol id="i-moveleft" viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7"/><path d="M21 3v18"/></symbol>
+    <symbol id="i-moveright" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/><path d="M3 3v18"/></symbol>
+    <symbol id="i-delcol" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="m14 10 4 4m0-4-4 4"/></symbol>
+    <symbol id="i-sortasc" viewBox="0 0 24 24"><path d="M11 5h9M11 12h6M11 19h3"/><path d="m4 8 3-3 3 3M7 5v14"/></symbol>
+    <symbol id="i-sortdesc" viewBox="0 0 24 24"><path d="M11 5h3M11 12h6M11 19h9"/><path d="m4 16 3 3 3-3M7 19V5"/></symbol>
+    <symbol id="i-alignleft" viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h13"/></symbol>
+    <symbol id="i-aligncenter" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M6 18h12"/></symbol>
+    <symbol id="i-alignright" viewBox="0 0 24 24"><path d="M4 6h16M10 12h10M7 18h13"/></symbol>
+    <symbol id="i-wand" viewBox="0 0 24 24"><path d="m3 21 4-1 11-11a2 2 0 0 0-3-3L4 17l-1 4Z"/><path d="m14 6 4 4"/></symbol>
+    <symbol id="i-sigma" viewBox="0 0 24 24"><path d="M18 7V5H6l6 7-6 7h12v-2"/></symbol>
+    <symbol id="i-average" viewBox="0 0 24 24"><path d="M5 12h14"/><circle cx="7" cy="6" r="1"/><circle cx="7" cy="18" r="1"/><circle cx="17" cy="6" r="1"/><circle cx="17" cy="18" r="1"/></symbol>
+    <symbol id="i-hash" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 4 8 20M16 4l-2 16"/></symbol>
+    <symbol id="i-min" viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></symbol>
+    <symbol id="i-max" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+    <symbol id="i-filldown" viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/><path d="M5 3h14"/></symbol>
+    <symbol id="i-fillright" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/><path d="M3 5v14"/></symbol>
+    <symbol id="i-dedupe" viewBox="0 0 24 24"><path d="M4 5h16l-6 7v6l-4 2v-8L4 5Z"/></symbol>
+    <symbol id="i-header" viewBox="0 0 24 24"><path d="M6 4v16M18 4v10M6 8h12M6 18h8"/></symbol>
+    <symbol id="i-transpose" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/><path d="m13 13 4 4m0-4-4 4"/></symbol>
+    <symbol id="i-eraser" viewBox="0 0 24 24"><path d="m7 21-4-4 10-10 6 6-8 8H7Z"/><path d="M11 11l6 6"/></symbol>
+    <symbol id="i-panel-left" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
+    <symbol id="i-tag" viewBox="0 0 24 24"><path d="M20.6 13.4 12 22l-9-9V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.2"/></symbol>
+    <symbol id="i-blocks" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M17.5 14v7M14 17.5h7"/></symbol>
+    <symbol id="i-tree" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="i-table" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 13.6a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9"/></symbol>
+  </defs>
+</svg>
+
+<div class="stage">
+
+  <div class="mockbar">
+    <span class="label">方案</span>
+    <div class="seg" id="variants">
+      <button data-v="A" class="on">A · 紧凑网格</button>
+      <button data-v="B">B · 分组卡片</button>
+      <button data-v="C">C · 双列竖排</button>
+      <button data-v="D">D · 圆形药丸</button>
+    </div>
+  </div>
+  <div class="vdesc" id="vdesc">全部只留图标，悬浮即出文字。A 版最密：4 列铺满，组间一条细线，几乎不浪费纵向空间。</div>
+
+  <div class="app">
+    <div class="titlebar">
+      <div class="tb-left">
+        <button class="iconbtn" title="收起侧边栏"><svg class="ic"><use href="#i-panel-left"/></svg></button>
+        <div class="tb-divider"></div>
+        <button class="iconbtn on" title="文件"><svg class="ic"><use href="#i-file"/></svg></button>
+        <button class="iconbtn" title="搜索"><svg class="ic"><use href="#i-search"/></svg></button>
+      </div>
+
+      <div class="tabs">
+        <div class="tab active">从零开始做一张表 <span class="x">×</span></div>
+        <div class="tab">产品周报 <span class="x">×</span></div>
+        <div class="tab new">＋</div>
+      </div>
+
+      <div class="tb-right">
+        <button class="iconbtn" title="大纲"><svg class="ic"><use href="#i-tree"/></svg></button>
+        <button class="iconbtn on" title="表格"><svg class="ic"><use href="#i-table"/></svg></button>
+      </div>
+
+      <div class="caption"><span>—</span><span>▢</span><span>✕</span></div>
+    </div>
+
+    <div class="main">
+      <div class="rail">
+        <button class="iconbtn" title="标签"><svg class="ic"><use href="#i-tag"/></svg></button>
+        <button class="iconbtn" title="插入模板"><svg class="ic"><use href="#i-blocks"/></svg></button>
+        <div class="spacer"></div>
+        <button class="iconbtn" title="回收站"><svg class="ic"><use href="#i-trash"/></svg></button>
+        <button class="iconbtn" title="设置"><svg class="ic"><use href="#i-settings"/></svg></button>
+      </div>
+
+      <div class="list">
+        <div class="panel-head">
+          <span>文件</span>
+          <span class="tail"><span class="mini">⇅</span><span class="mini">⊞</span><span class="mini">＋</span></span>
+        </div>
+        <div class="filelist">
+          <div class="filerow"><span class="fold">▸</span>工作</div>
+          <div class="filerow child">产品周报</div>
+          <div class="filerow child sel">从零开始做一张表</div>
+          <div class="filerow child">会议纪要</div>
+          <div class="filerow"><span class="fold">▾</span>读书</div>
+          <div class="filerow child">设计的方法</div>
+          <div class="filerow child">写作是思考</div>
+        </div>
+      </div>
+
+      <div class="editor">
+        <div class="doc">
+          <h1>从零开始做一张表</h1>
+          <div class="meta">2026 年 10 月 24 日 · 2 分钟阅读</div>
+          <p>表格不是把文字塞进格子，而是先决定要回答什么问题。列是问题，行是样本。</p>
+          <h2>先把要看的指标列出来<span class="caret"></span></h2>
+          <table class="md">
+            <tr><th>指标</th><th>本周</th><th>上周</th><th>变化</th></tr>
+            <tr><td>新增笔记</td><td>42</td><td>38</td><td class="cell-active">+10.5%</td></tr>
+            <tr><td>平均字数</td><td>680</td><td>712</td><td>−4.5%</td></tr>
+            <tr><td>打开次数</td><td>1,284</td><td>1,190</td><td>+7.9%</td></tr>
+          </table>
+          <p>右边这一栏只认「光标此刻在哪张表里」。没有表的时候，它不会假装自己有用。</p>
+          <h2>下一步</h2>
+          <p>把这一页抄成自己的模板，下周只改数字。</p>
+        </div>
+      </div>
+
+      <div class="right" id="right">
+        <div class="panel-head"><span>表格</span><span class="count">4 × 4 · C3</span></div>
+
+        <!-- ===================================================== A 紧凑网格 -->
+        <div class="rp-body ghtml A" id="vA">
+          <div class="info">
+            <svg class="ic" style="width:13px;height:13px"><use href="#i-table"/></svg>
+            <span>第 1 张表</span><span class="dot"></span><span>「变化」列</span>
+            <span class="addr">C3</span>
+          </div>
+
+          <div class="gg">
+            <button class="it" data-tip="选中整行"><svg class="ic"><use href="#i-rows"/></svg></button>
+            <button class="it" data-tip="选中整列"><svg class="ic"><use href="#i-cols"/></svg></button>
+            <button class="it" data-tip="选中整张表"><svg class="ic"><use href="#i-all"/></svg></button>
+            <button class="it" data-tip="在上方插入行"><svg class="ic"><use href="#i-up"/></svg></button>
+            <button class="it" data-tip="在下方插入行"><svg class="ic"><use href="#i-down"/></svg></button>
+            <button class="it" data-tip="复制本行"><svg class="ic"><use href="#i-copy"/></svg></button>
+            <button class="it" data-tip="上移本行"><svg class="ic"><use href="#i-moveup"/></svg></button>
+            <button class="it" data-tip="下移本行"><svg class="ic"><use href="#i-movedown"/></svg></button>
+            <button class="it" data-tip="删除本行"><svg class="ic"><use href="#i-trash"/></svg></button>
+            <button class="it" data-tip="在左侧插入列"><svg class="ic"><use href="#i-left"/></svg></button>
+            <button class="it" data-tip="在右侧插入列"><svg class="ic"><use href="#i-right"/></svg></button>
+            <button class="it" data-tip="复制本列"><svg class="ic"><use href="#i-copy"/></svg></button>
+            <button class="it" data-tip="左移本列"><svg class="ic"><use href="#i-moveleft"/></svg></button>
+            <button class="it" data-tip="右移本列"><svg class="ic"><use href="#i-moveright"/></svg></button>
+            <button class="it" data-tip="删除本列"><svg class="ic"><use href="#i-delcol"/></svg></button>
+          </div>
+
+          <div class="hair"></div>
+
+          <div class="gg">
+            <button class="it" data-tip="按本列升序"><svg class="ic"><use href="#i-sortasc"/></svg></button>
+            <button class="it" data-tip="按本列降序"><svg class="ic"><use href="#i-sortdesc"/></svg></button>
+            <button class="it on" data-tip="左对齐"><svg class="ic"><use href="#i-alignleft"/></svg></button>
+            <button class="it" data-tip="居中对齐"><svg class="ic"><use href="#i-aligncenter"/></svg></button>
+            <button class="it" data-tip="右对齐"><svg class="ic"><use href="#i-alignright"/></svg></button>
+            <button class="it" data-tip="自动对齐（数字贴右）"><svg class="ic"><use href="#i-wand"/></svg></button>
+            <button class="it" data-tip="合计"><svg class="ic"><use href="#i-sigma"/></svg></button>
+            <button class="it" data-tip="平均"><svg class="ic"><use href="#i-average"/></svg></button>
+            <button class="it" data-tip="计数"><svg class="ic"><use href="#i-hash"/></svg></button>
+            <button class="it" data-tip="最小"><svg class="ic"><use href="#i-min"/></svg></button>
+            <button class="it" data-tip="最大"><svg class="ic"><use href="#i-max"/></svg></button>
+            <button class="it" data-tip="向下填充"><svg class="ic"><use href="#i-filldown"/></svg></button>
+          </div>
+
+          <div class="hair"></div>
+
+          <div class="gg">
+            <button class="it" data-tip="向右填充"><svg class="ic"><use href="#i-fillright"/></svg></button>
+            <button class="it" data-tip="按本列去重"><svg class="ic"><use href="#i-dedupe"/></svg></button>
+            <button class="it on" data-tip="表头行"><svg class="ic"><use href="#i-header"/></svg></button>
+            <button class="it" data-tip="转置（行列互换）"><svg class="ic"><use href="#i-transpose"/></svg></button>
+            <button class="it" data-tip="清空所选单元格"><svg class="ic"><use href="#i-eraser"/></svg></button>
+            <button class="it danger" data-tip="删除整张表格"><svg class="ic"><use href="#i-trash"/></svg></button>
+          </div>
+        </div>
+
+        <!-- ===================================================== B 分组卡片 -->
+        <div class="rp-body B" id="vB" style="display:none">
+          <div class="info">
+            <svg class="ic" style="width:13px;height:13px"><use href="#i-table"/></svg>
+            <span>第 1 张表</span><span class="dot"></span><span>「变化」列</span>
+            <span class="addr">C3</span>
+          </div>
+
+          <div class="gcard">
+            <div class="ghead"><svg class="ic"><use href="#i-all"/></svg><span class="line"></span></div>
+            <div class="gg">
+              <button class="it" data-tip="选中整行"><svg class="ic"><use href="#i-rows"/></svg></button>
+              <button class="it" data-tip="选中整列"><svg class="ic"><use href="#i-cols"/></svg></button>
+              <button class="it" data-tip="选中整张表"><svg class="ic"><use href="#i-all"/></svg></button>
+            </div>
+          </div>
+
+          <div class="gcard">
+            <div class="ghead"><svg class="ic"><use href="#i-rows"/></svg><span class="line"></span></div>
+            <div class="gg">
+              <button class="it" data-tip="在上方插入行"><svg class="ic"><use href="#i-up"/></svg></button>
+              <button class="it" data-tip="在下方插入行"><svg class="ic"><use href="#i-down"/></svg></button>
+              <button class="it" data-tip="复制本行"><svg class="ic"><use href="#i-copy"/></svg></button>
+              <button class="it" data-tip="上移本行"><svg class="ic"><use href="#i-moveup"/></svg></button>
+              <button class="it" data-tip="下移本行"><svg class="ic"><use href="#i-movedown"/></svg></button>
+              <button class="it" data-tip="删除本行"><svg class="ic"><use href="#i-trash"/></svg></button>
+            </div>
+          </div>
+
+          <div class="gcard">
+            <div class="ghead"><svg class="ic"><use href="#i-cols"/></svg><span class="line"></span></div>
+            <div class="gg">
+              <button class="it" data-tip="在左侧插入列"><svg class="ic"><use href="#i-left"/></svg></button>
+              <button class="it" data-tip="在右侧插入列"><svg class="ic"><use href="#i-right"/></svg></button>
+              <button class="it" data-tip="复制本列"><svg class="ic"><use href="#i-copy"/></svg></button>
+              <button class="it" data-tip="左移本列"><svg class="ic"><use href="#i-moveleft"/></svg></button>
+              <button class="it" data-tip="右移本列"><svg class="ic"><use href="#i-moveright"/></svg></button>
+              <button class="it" data-tip="删除本列"><svg class="ic"><use href="#i-delcol"/></svg></button>
+            </div>
+          </div>
+
+          <div class="gcard">
+            <div class="ghead"><svg class="ic"><use href="#i-sigma"/></svg><span class="line"></span></div>
+            <div class="gg">
+              <button class="it" data-tip="合计"><svg class="ic"><use href="#i-sigma"/></svg></button>
+              <button class="it" data-tip="平均"><svg class="ic"><use href="#i-average"/></svg></button>
+              <button class="it" data-tip="计数"><svg class="ic"><use href="#i-hash"/></svg></button>
+              <button class="it" data-tip="最小"><svg class="ic"><use href="#i-min"/></svg></button>
+              <button class="it" data-tip="最大"><svg class="ic"><use href="#i-max"/></svg></button>
+            </div>
+          </div>
+
+          <div class="gcard">
+            <div class="ghead"><svg class="ic"><use href="#i-sortasc"/></svg><span class="line"></span></div>
+            <div class="gg">
+              <button class="it" data-tip="按本列升序"><svg class="ic"><use href="#i-sortasc"/></svg></button>
+              <button class="it" data-tip="按本列降序"><svg class="ic"><use href="#i-sortdesc"/></svg></button>
+              <button class="it" data-tip="按本列去重"><svg class="ic"><use href="#i-dedupe"/></svg></button>
+              <button class="it" data-tip="向下填充"><svg class="ic"><use href="#i-filldown"/></svg></button>
+              <button class="it" data-tip="向右填充"><svg class="ic"><use href="#i-fillright"/></svg></button>
+            </div>
+          </div>
+
+          <div class="gcard">
+            <div class="ghead"><svg class="ic"><use href="#i-alignleft"/></svg><span class="line"></span></div>
+            <div class="gg">
+              <button class="it on" data-tip="左对齐"><svg class="ic"><use href="#i-alignleft"/></svg></button>
+              <button class="it" data-tip="居中对齐"><svg class="ic"><use href="#i-aligncenter"/></svg></button>
+              <button class="it" data-tip="右对齐"><svg class="ic"><use href="#i-alignright"/></svg></button>
+              <button class="it" data-tip="自动对齐（数字贴右）"><svg class="ic"><use href="#i-wand"/></svg></button>
+            </div>
+          </div>
+
+          <div class="gcard">
+            <div class="ghead"><svg class="ic"><use href="#i-table"/></svg><span class="line"></span></div>
+            <div class="gg">
+              <button class="it on" data-tip="表头行"><svg class="ic"><use href="#i-header"/></svg></button>
+              <button class="it" data-tip="转置（行列互换）"><svg class="ic"><use href="#i-transpose"/></svg></button>
+              <button class="it" data-tip="清空所选单元格"><svg class="ic"><use href="#i-eraser"/></svg></button>
+              <button class="it danger" data-tip="删除整张表格"><svg class="ic"><use href="#i-trash"/></svg></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===================================================== C 双列竖排 -->
+        <div class="rp-body C" id="vC" style="display:none">
+          <div class="info">
+            <svg class="ic" style="width:13px;height:13px"><use href="#i-table"/></svg>
+            <span>第 1 张表</span><span class="dot"></span><span>「变化」列</span>
+            <span class="addr">C3</span>
+          </div>
+
+          <div class="cols">
+            <div class="col">
+              <div class="colhead"><svg class="ic"><use href="#i-rows"/></svg></div>
+              <div class="colgrid">
+                <button class="it" data-tip="在上方插入行"><svg class="ic"><use href="#i-up"/></svg></button>
+                <button class="it" data-tip="在下方插入行"><svg class="ic"><use href="#i-down"/></svg></button>
+                <button class="it" data-tip="复制本行"><svg class="ic"><use href="#i-copy"/></svg></button>
+                <button class="it" data-tip="删除本行"><svg class="ic"><use href="#i-trash"/></svg></button>
+                <button class="it" data-tip="上移本行"><svg class="ic"><use href="#i-moveup"/></svg></button>
+                <button class="it" data-tip="下移本行"><svg class="ic"><use href="#i-movedown"/></svg></button>
+              </div>
+            </div>
+            <div class="col">
+              <div class="colhead"><svg class="ic"><use href="#i-cols"/></svg></div>
+              <div class="colgrid">
+                <button class="it" data-tip="在左侧插入列"><svg class="ic"><use href="#i-left"/></svg></button>
+                <button class="it" data-tip="在右侧插入列"><svg class="ic"><use href="#i-right"/></svg></button>
+                <button class="it" data-tip="复制本列"><svg class="ic"><use href="#i-copy"/></svg></button>
+                <button class="it" data-tip="删除本列"><svg class="ic"><use href="#i-delcol"/></svg></button>
+                <button class="it" data-tip="左移本列"><svg class="ic"><use href="#i-moveleft"/></svg></button>
+                <button class="it" data-tip="右移本列"><svg class="ic"><use href="#i-moveright"/></svg></button>
+              </div>
+            </div>
+          </div>
+
+          <div class="hair"></div>
+
+          <div class="rowgroup">
+            <div class="gg">
+              <button class="it" data-tip="选中整行"><svg class="ic"><use href="#i-rows"/></svg></button>
+              <button class="it" data-tip="选中整列"><svg class="ic"><use href="#i-cols"/></svg></button>
+              <button class="it" data-tip="选中整张表"><svg class="ic"><use href="#i-all"/></svg></button>
+              <button class="it" data-tip="按本列升序"><svg class="ic"><use href="#i-sortasc"/></svg></button>
+              <button class="it" data-tip="按本列降序"><svg class="ic"><use href="#i-sortdesc"/></svg></button>
+              <button class="it" data-tip="按本列去重"><svg class="ic"><use href="#i-dedupe"/></svg></button>
+              <button class="it" data-tip="向下填充"><svg class="ic"><use href="#i-filldown"/></svg></button>
+              <button class="it" data-tip="向右填充"><svg class="ic"><use href="#i-fillright"/></svg></button>
+              <button class="it on" data-tip="左对齐"><svg class="ic"><use href="#i-alignleft"/></svg></button>
+              <button class="it" data-tip="居中对齐"><svg class="ic"><use href="#i-aligncenter"/></svg></button>
+              <button class="it" data-tip="右对齐"><svg class="ic"><use href="#i-alignright"/></svg></button>
+              <button class="it" data-tip="自动对齐（数字贴右）"><svg class="ic"><use href="#i-wand"/></svg></button>
+            </div>
+          </div>
+
+          <div class="hair"></div>
+
+          <div class="rowgroup">
+            <div class="gg">
+              <button class="it" data-tip="合计"><svg class="ic"><use href="#i-sigma"/></svg></button>
+              <button class="it" data-tip="平均"><svg class="ic"><use href="#i-average"/></svg></button>
+              <button class="it" data-tip="计数"><svg class="ic"><use href="#i-hash"/></svg></button>
+              <button class="it" data-tip="最小"><svg class="ic"><use href="#i-min"/></svg></button>
+              <button class="it" data-tip="最大"><svg class="ic"><use href="#i-max"/></svg></button>
+              <button class="it on" data-tip="表头行"><svg class="ic"><use href="#i-header"/></svg></button>
+              <button class="it" data-tip="转置（行列互换）"><svg class="ic"><use href="#i-transpose"/></svg></button>
+              <button class="it" data-tip="清空所选单元格"><svg class="ic"><use href="#i-eraser"/></svg></button>
+              <button class="it danger" data-tip="删除整张表格"><svg class="ic"><use href="#i-trash"/></svg></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===================================================== D 圆形药丸 -->
+        <div class="rp-body D" id="vD" style="display:none">
+          <div class="rp-headinfo">
+            <svg class="ic" style="width:13px;height:13px"><use href="#i-table"/></svg>
+            <span>第 1 张表 · 4 × 4</span>
+            <span class="addr">C3</span>
+          </div>
+
+          <div class="minimap">
+            <div class="mgrid">
+              <div class="mcell hd"></div><div class="mcell hd"></div><div class="mcell hd"></div><div class="mcell hd"></div>
+              <div class="mcell"></div><div class="mcell"></div><div class="mcell active"></div><div class="mcell"></div>
+              <div class="mcell"></div><div class="mcell"></div><div class="mcell"></div><div class="mcell"></div>
+              <div class="mcell"></div><div class="mcell"></div><div class="mcell"></div><div class="mcell"></div>
+            </div>
+          </div>
+
+          <div class="hair"></div>
+
+          <div class="rppills">
+            <button class="it" data-tip="选中整行"><svg class="ic"><use href="#i-rows"/></svg></button>
+            <button class="it" data-tip="选中整列"><svg class="ic"><use href="#i-cols"/></svg></button>
+            <button class="it" data-tip="选中整张表"><svg class="ic"><use href="#i-all"/></svg></button>
+            <button class="it" data-tip="在上方插入行"><svg class="ic"><use href="#i-up"/></svg></button>
+            <button class="it" data-tip="在下方插入行"><svg class="ic"><use href="#i-down"/></svg></button>
+            <button class="it" data-tip="复制本行"><svg class="ic"><use href="#i-copy"/></svg></button>
+            <button class="it" data-tip="上移本行"><svg class="ic"><use href="#i-moveup"/></svg></button>
+            <button class="it" data-tip="下移本行"><svg class="ic"><use href="#i-movedown"/></svg></button>
+            <button class="it" data-tip="删除本行"><svg class="ic"><use href="#i-trash"/></svg></button>
+            <button class="it" data-tip="在左侧插入列"><svg class="ic"><use href="#i-left"/></svg></button>
+            <button class="it" data-tip="在右侧插入列"><svg class="ic"><use href="#i-right"/></svg></button>
+            <button class="it" data-tip="复制本列"><svg class="ic"><use href="#i-copy"/></svg></button>
+            <button class="it" data-tip="左移本列"><svg class="ic"><use href="#i-moveleft"/></svg></button>
+            <button class="it" data-tip="右移本列"><svg class="ic"><use href="#i-moveright"/></svg></button>
+            <button class="it" data-tip="删除本列"><svg class="ic"><use href="#i-delcol"/></svg></button>
+          </div>
+
+          <div class="hair"></div>
+
+          <div class="rppills">
+            <button class="it" data-tip="按本列升序"><svg class="ic"><use href="#i-sortasc"/></svg></button>
+            <button class="it" data-tip="按本列降序"><svg class="ic"><use href="#i-sortdesc"/></svg></button>
+            <button class="it" data-tip="按本列去重"><svg class="ic"><use href="#i-dedupe"/></svg></button>
+            <button class="it" data-tip="向下填充"><svg class="ic"><use href="#i-filldown"/></svg></button>
+            <button class="it" data-tip="向右填充"><svg class="ic"><use href="#i-fillright"/></svg></button>
+            <button class="it on" data-tip="左对齐"><svg class="ic"><use href="#i-alignleft"/></svg></button>
+            <button class="it" data-tip="居中对齐"><svg class="ic"><use href="#i-aligncenter"/></svg></button>
+            <button class="it" data-tip="右对齐"><svg class="ic"><use href="#i-alignright"/></svg></button>
+            <button class="it" data-tip="自动对齐（数字贴右）"><svg class="ic"><use href="#i-wand"/></svg></button>
+          </div>
+
+          <div class="hair"></div>
+
+          <div class="rppills">
+            <button class="it" data-tip="合计"><svg class="ic"><use href="#i-sigma"/></svg></button>
+            <button class="it" data-tip="平均"><svg class="ic"><use href="#i-average"/></svg></button>
+            <button class="it" data-tip="计数"><svg class="ic"><use href="#i-hash"/></svg></button>
+            <button class="it" data-tip="最小"><svg class="ic"><use href="#i-min"/></svg></button>
+            <button class="it" data-tip="最大"><svg class="ic"><use href="#i-max"/></svg></button>
+            <button class="it on" data-tip="表头行"><svg class="ic"><use href="#i-header"/></svg></button>
+            <button class="it" data-tip="转置（行列互换）"><svg class="ic"><use href="#i-transpose"/></svg></button>
+            <button class="it" data-tip="清空所选单元格"><svg class="ic"><use href="#i-eraser"/></svg></button>
+            <button class="it danger" data-tip="删除整张表格"><svg class="ic"><use href="#i-trash"/></svg></button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="specs">
+    <div class="card">
+      <h3>A · 紧凑网格</h3>
+      <p>4 列铺满，组间只有一条 1px 细线，<b>最省纵向空间</b>，31 个命令一屏看完。图标 17px，悬浮给一块浅底方块。</p>
+    </div>
+    <div class="card">
+      <h3>B · 分组卡片</h3>
+      <p>每组一张 <b>surface 底色卡片</b>，组头放一个 13px 的组图标 + 细线。组与组之间靠留白分开，读起来像 Excel 的功能区。</p>
+    </div>
+    <div class="card">
+      <h3>C · 双列竖排</h3>
+      <p>顶部把<b>行 / 列</b>两组并排成两块 2×3 面板，最常用的增删挪放在拇指最顺手的左上角；其余命令在下方 4 列铺开。</p>
+    </div>
+    <div class="card">
+      <h3>D · 圆形药丸</h3>
+      <p>每个命令一颗 <b>30px 药丸</b>，悬浮放大 1.1 倍并带投影；顶部多一张 4×4 迷你表，直接标出当前格 <b>C3</b>。</p>
+    </div>
+  </div>
+
+</div>
+
+<div id="tip"></div>
+
+<script>
+  const descs = {
+    A: 'A 版最密：4 列铺满，组间一条细线，几乎不浪费纵向空间。',
+    B: 'B 版按功能分卡片：每组一张 surface 卡，组头用小图标区分，留白更松。',
+    C: 'C 版把行、列两组并排放在最上面，其余命令在下方四列铺开。',
+    D: 'D 版是药丸按钮：悬浮放大并出气泡，顶部还有一张 4×4 迷你表标出当前格。'
+  };
+
+  document.querySelectorAll('#variants button').forEach(b => {
+    b.addEventListener('click', () => {
+      const v = b.dataset.v;
+      document.querySelectorAll('#variants button').forEach(x => x.classList.toggle('on', x === b));
+      document.getElementById('vA').style.display = v === 'A' ? 'block' : 'none';
+      document.getElementById('vB').style.display = v === 'B' ? 'block' : 'none';
+      document.getElementById('vC').style.display = v === 'C' ? 'block' : 'none';
+      document.getElementById('vD').style.display = v === 'D' ? 'block' : 'none';
+      document.getElementById('right').className = 'right ' + v;
+      document.getElementById('vdesc').textContent = descs[v];
+    });
+  });
+
+  // 悬浮气泡：固定定位，不受面板滚动裁切影响
+  const tip = document.getElementById('tip');
+  document.querySelectorAll('.it').forEach(el => {
+    el.addEventListener('mouseenter', () => {
+      const label = el.dataset.tip;
+      if (!label) return;
+      const r = el.getBoundingClientRect();
+      tip.textContent = label;
+      tip.style.left = (r.left - 8) + 'px';
+      tip.style.top = (r.top + r.height / 2) + 'px';
+      tip.classList.add('show');
+    });
+    el.addEventListener('mouseleave', () => tip.classList.remove('show'));
+    el.addEventListener('click', () => {
+      const label = el.dataset.tip || '';
+      if (label.includes('对齐') || label.includes('表头')) el.classList.toggle('on');
+    });
+  });
+</script>
+</body>
+</html>

@@ -554,12 +554,24 @@ List<MenuNode> buildEditorMenu({
               ),
               // The divider is the table's own skeleton: deleting it would turn
               // the grid back into a plain run of pipes, so it cannot be
-              // removed.
+              // removed. Turning it off is the header switch below, which
+              // removes the header row and the divider as one operation.
               tableData(
                 multiRows ? '删除 $selectedRows 行' : '删除本行',
                 LucideIcons.trash2,
                 (TextEditingValue v) => tableDeleteRows(v, resolve: resolve),
                 enabled: !isTableDivider(caretLine) || range != null,
+              ),
+              const MenuSeparator(),
+              // A header is the first row *and* the divider under it, so the
+              // switch adds or removes both; the rows themselves stay put.
+              tableData(
+                table != null && table.hasHeader ? '取消表头' : '设为表头',
+                LucideIcons.tableProperties,
+                (TextEditingValue v) => setTableHeader(
+                  v,
+                  header: table == null ? false : !table.hasHeader,
+                ),
               ),
             ],
           ),

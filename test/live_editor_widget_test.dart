@@ -2339,7 +2339,32 @@ void main() {
     final List<List<Rect>> after = <List<Rect>>[
       for (final TableRowChrome row in rows()) row.chromeCells(),
     ];
-    expect(after, before, reason: '展开一格不能把整张表重新排版');
+    // 展开一格不能改变任何一列的位置与宽度：列宽仍由渲染态决定，光标下的表
+    // 不会在点击瞬间被重新分栏。展开的源码比渲染态多出标记字符（这里是两颗
+    // 反引号），而表格已经不再用负字距硬挤，所以被展开的这一行可以多占一行
+    // 高度；其余行的高度不变。
+    for (int r = 0; r < before.length; r++) {
+      for (int c = 0; c < before[r].length; c++) {
+        expect(
+          after[r][c].left,
+          before[r][c].left,
+          reason: '第 $r 行第 $c 格的左边缘被展开动作挤动了',
+        );
+        expect(
+          after[r][c].width,
+          before[r][c].width,
+          reason: '第 $r 行第 $c 格的列宽被展开动作挤动了',
+        );
+      }
+      if (r > 0) {
+        expect(
+          after[r][0].height,
+          before[r][0].height,
+          reason: '展开第 0 行不应改变第 $r 行的高度',
+        );
+      }
+    }
+    expect(after.first.first.height, greaterThanOrEqualTo(before.first.first.height));
 
     // A range across cells is a selection, not an edit: everything renders.
     // Disarm the click guard first — a real drag disarms it as soon as the

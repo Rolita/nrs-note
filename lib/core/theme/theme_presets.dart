@@ -12,9 +12,9 @@ import 'app_palette.dart';
 /// the retired amber board — is deliberately first.
 ///
 /// Every scheme is editable in place: the user's changes live as a per-preset
-/// [PaletteOverride], so editing 曜石 never touches 午夜靛.
+/// [PaletteOverride], so editing 石墨素白 never touches 午夜靛.
 enum ThemePresetId {
-  obsidian('曜石', LucideIcons.gem),
+  obsidian('石墨素白', LucideIcons.pencil),
   midnight('午夜靛', LucideIcons.moonStar),
   vivid('高对比', LucideIcons.zap);
 
@@ -41,7 +41,7 @@ class ThemePreset {
 
 /// The three built-in schemes, the resolver, and the editor's starting point.
 abstract final class ThemePresets {
-  /// 曜石 reuses the hand-written constants, so [AppPalette.light] /
+  /// 石墨素白 reuses the hand-written constants, so [AppPalette.light] /
   /// [AppPalette.dark] *are* this preset — which is what lets the existing
   /// test fixtures keep using those two names unchanged.
   static const ThemePreset _obsidian = ThemePreset(
@@ -165,7 +165,7 @@ abstract final class ThemePresets {
     _vivid,
   ];
 
-  /// Looks a preset up by id. Anything unknown falls back to 曜石.
+  /// Looks a preset up by id. Anything unknown falls back to 石墨素白.
   static ThemePreset of(ThemePresetId id) {
     for (final ThemePreset p in builtIn) {
       if (p.id == id) return p;
@@ -316,7 +316,7 @@ class PaletteOverride {
   /// does not parse.
   ///
   /// [base] is the preset this overlay belongs to: token keys it does not
-  /// mention fall back to that preset's built-in value, not to 曜石's, so an
+  /// mention fall back to that preset's built-in value, not to 石墨素白's, so an
   /// overlay written by an older build still lands on the right board after a
   /// token is added. Unknown keys are ignored, and `"v"` is the migration hook
   /// for the day a token's *meaning* changes.

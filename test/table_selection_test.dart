@@ -294,6 +294,120 @@ void main() {
       )!;
       expect(right.text, '| h1 | h2 |\n| --- | --- |\n| a | b |\n| c | c |');
     });
+
+    test('整行 selects the row the caret is in, line break included', () {
+      final TextEditingValue picked = selectTableRow(
+        TextEditingValue(
+          text: grid,
+          selection: TextSelection.collapsed(offset: at(grid, 'b')),
+        ),
+      )!;
+      expect(picked.text.substring(picked.selection.start, picked.selection.end),
+          '| a | b |\n');
+      final TableRange range = TableRange.fromSelection(
+        picked.text,
+        picked.selection,
+      )!;
+      expect((range.firstRow, range.lastRow), (1, 1));
+      expect(range.kind, TableRangeKind.rows);
+    });
+
+    test('整列 selects the column the caret is in', () {
+      final TextEditingValue picked = selectTableColumn(
+        TextEditingValue(
+          text: grid,
+          selection: TextSelection.collapsed(offset: at(grid, 'd')),
+        ),
+      )!;
+      // Markdown has no single range for a column, so the selection runs from
+      // the first cell of that column to the last one; the renderer paints the
+      // rectangle by cell, and structural commands read the intent from it.
+      final String selected = picked.text.substring(
+        picked.selection.start,
+        picked.selection.end,
+      );
+      expect(selected.startsWith('h2'), isTrue);
+      expect(selected.endsWith('d'), isTrue);
+      final TableRange range = TableRange.fromSelection(
+        picked.text,
+        picked.selection,
+      )!;
+      expect((range.firstColumn, range.lastColumn), (1, 1));
+      expect((range.firstRow, range.lastRow), (0, 2));
+    });
+
+    test('整张表 selects every row of the table at the caret', () {
+      final TextEditingValue picked = selectTableAll(
+        TextEditingValue(
+          text: '前文\n$grid\n后文',
+          selection: TextSelection.collapsed(
+            offset: at('前文\n$grid', 'd'),
+          ),
+        ),
+      )!;
+      expect(picked.text.substring(picked.selection.start, picked.selection.end),
+          '$grid\n');
+      expect(
+        TableRange.fromSelection(picked.text, picked.selection)!
+            .kind,
+        TableRangeKind.rows,
+      );
+    });
+
+    test('selection commands leave a caret outside any table alone', () {
+      expect(
+        selectTableRow(
+          const TextEditingValue(
+            text: '没有表格',
+            selection: TextSelection.collapsed(offset: 1),
+          ),
+        ),
+        isNull,
+      );
+      expect(
+        selectTableColumn(
+          const TextEditingValue(
+            text: '没有表格',
+            selection: TextSelection.collapsed(offset: 1),
+          ),
+        ),
+        isNull,
+      );
+      expect(
+        selectTableAll(
+          const TextEditingValue(
+            text: '没有表格',
+            selection: TextSelection.collapsed(offset: 1),
+          ),
+        ),
+        isNull,
+      );
+    });
+
+    test('按列去重 drops the repeated row under the caret', () {
+      final TextEditingValue deduped = dedupeTableColumn(
+        TextEditingValue(
+          text: grid,
+          selection: TextSelection.collapsed(offset: at(grid, 'd')),
+        ),
+      )!;
+      // Column 1 is `b` then `d` — nothing repeats here, so the text is kept.
+      expect(deduped.text, grid);
+
+      const String repeated =
+          '| h |\n| --- |\n| x |\n| y |\n| x |';
+      final TextEditingValue out = dedupeTableColumn(
+        TextEditingValue(
+          text: repeated,
+          selection: TextSelection.collapsed(offset: at(repeated, 'y')),
+        ),
+      )!;
+      expect(out.text, '| h |\n| --- |\n| x |\n| y |');
+      // The caret stays in the cell it was in, so the next keystroke still
+      // types into the row the user was looking at.
+      expect(out.selection.isCollapsed, isTrue);
+      expect(out.selection.start, out.text.indexOf('y'));
+    });
   });
 
   group('painted cell text', () {

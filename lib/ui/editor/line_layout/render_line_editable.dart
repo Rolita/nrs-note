@@ -698,12 +698,16 @@ class RenderLineEditable extends RenderEditable {
     // 刚挂上来的输入框（切回一篇刚才挂起的笔记）：直接采用那份布局，只按
     // 新的揭示选区重排少数行，不重排整篇。
     final LineDocumentLayout? pooled = _adoptPooledLayout(width, plain, style);
-    if (pooled != null) return pooled;
+    if (pooled != null) {
+      return pooled;
+    }
 
     final LineDocumentLayout? cached = _cachedLineLayout(width);
     if (cached != null) {
       final Set<int>? dirty = _pendingRevealDirty;
-      if (dirty == null || dirty.isEmpty) return cached;
+      if (dirty == null || dirty.isEmpty) {
+        return cached;
+      }
       _pendingRevealDirty = null;
       final LineDocumentLayout next = relayoutLines(
         previous: cached,
@@ -949,6 +953,20 @@ class RenderLineEditable extends RenderEditable {
     if (height.isFinite) {
       top = top.clamp(0.0, height);
       bottom = bottom.clamp(top, height);
+    }
+    // 兜底：跳到文档中段的那一帧，视口链上的变换偶尔会把区间算成空段甚至
+    // 负段。按行绘制只画区间内的行，空区间就是整屏空白，而动画结束后不会再
+    // 有新帧——空白会一直留到下一次 hover 重建。这里至少给出一个视口高。
+    if (bottom - top <= 0) {
+      final double extent = node is RenderBox && node.hasSize
+          ? node.size.height
+          : size.height;
+      top = offset.pixels;
+      bottom = top + (extent.isFinite && extent > 0 ? extent : size.height);
+      if (height.isFinite) {
+        top = top.clamp(0.0, height);
+        bottom = bottom.clamp(top, height);
+      }
     }
     return (top: top, bottom: bottom);
   }

@@ -16,6 +16,37 @@ void main() {
 
   TableBlock blockOf(String text) => TableBlock.parse(text, 0)!;
 
+  group('全文表格清单', () {
+    test('lists every table in document order, with its own offsets', () {
+      const String doc =
+          '# 标题\n\n$numbers\n\n一段正文\n\n| 城市 | 人口 |\n| --- | --- |\n| 杭州 | 900 |';
+      final List<TableBlock> tables = TableBlock.allIn(doc);
+
+      expect(tables, hasLength(2));
+      expect(tables[0].start, doc.indexOf('| 名称'));
+      expect(tables[1].start, doc.indexOf('| 城市'));
+      expect(tables[0].columns, 2);
+      expect(tables[1].bodyRows, hasLength(2));
+    });
+
+    test('a table is listed once, not once per row', () {
+      expect(TableBlock.allIn(numbers), hasLength(1));
+    });
+
+    test('pipe lines inside a fence are code, not tables', () {
+      const String doc =
+          '```\n| a | b |\n| --- | --- |\n| 1 | 2 |\n```\n\n| 真 | 表 |\n| --- | --- |';
+      final List<TableBlock> tables = TableBlock.allIn(doc);
+      expect(tables, hasLength(1));
+      expect(tables.single.start, doc.indexOf('| 真'));
+    });
+
+    test('an empty document has no tables', () {
+      expect(TableBlock.allIn(''), isEmpty);
+      expect(TableBlock.allIn('只有正文\n没有管子'), isEmpty);
+    });
+  });
+
   test('sorts data rows by a numeric column and leaves the header on top', () {
     final TableEditResult out = TableCommands.sortRows(
       blockOf(numbers),
@@ -194,6 +225,76 @@ void main() {
     );
   });
 
+  group('按列去重', () {
+    const String duplicates =
+        '| 名称 | 数量 |\n'
+        '| --- | --- |\n'
+        '| 苹果 | 10 |\n'
+        '| 香蕉 | 2 |\n'
+        '| 苹果 | 30 |\n'
+        '|  | 5 |\n'
+        '|  | 6 |';
+
+    test('keeps the header and the first of each repeated value', () {
+      final TableEditResult out = TableCommands.dedupeColumn(
+        blockOf(duplicates),
+        column: 0,
+        row: 1,
+      )!;
+      expect(
+        out.text,
+        '| 名称 | 数量 |\n'
+        '| --- | --- |\n'
+        '| 苹果 | 10 |\n'
+        '| 香蕉 | 2 |\n'
+        '|  | 5 |\n'
+        '|  | 6 |',
+        reason: '第一项留下，空值不算重复',
+      );
+      // The caret stays in the cell it was in — the surviving 苹果 row.
+      expect(
+        out.text.substring(
+          out.selection.start,
+          out.text.indexOf('苹果') + 2,
+        ),
+        '苹果',
+      );
+    });
+
+    test('ignores case and surrounding spaces when comparing', () {
+      const String table =
+          '| 名称 |\n| --- |\n| Apple |\n| apple |\n|  APPLE  |';
+      final TableEditResult out = TableCommands.dedupeColumn(
+        blockOf(table),
+        column: 0,
+        row: 1,
+      )!;
+      expect(out.text, '| 名称 |\n| --- |\n| Apple |');
+    });
+
+    test('does not rewrite the text when nothing is repeated', () {
+      final TableBlock block = blockOf(numbers);
+      final TableEditResult out = TableCommands.dedupeColumn(
+        block,
+        column: 0,
+        row: 1,
+      )!;
+      expect(out.text, numbers);
+      expect(out.selection.start, block.bodyRows[1].cells[0].contentStart);
+    });
+
+    test('a single data row has nothing to dedupe', () {
+      expect(
+        TableCommands.dedupeColumn(
+          blockOf('| h |\n| --- |\n| 1 |'),
+          column: 0,
+          row: 1,
+        ),
+        isNull,
+      );
+    });
+  });
+
   test('the selected cells copy as tab-separated values', () {
     final String text = numbers;
     final int from = text.indexOf('苹果');
@@ -299,6 +400,58 @@ void main() {
         align: TableAlign.none,
       );
       expect(none.text, headerless);
+    });
+
+    test('the header switch adds and removes the divider, rows untouched', () {
+      // No header yet: the first row becomes the header and a divider appears
+      // under it, with the same column count.
+      final TableEditResult on = TableCommands.setHeader(
+        blockOf(headerless),
+        header: true,
+        row: 1,
+        column: 2,
+      );
+      expect(
+        on.text.split('\n'),
+        <String>[
+          '| 想要 | 就写 | 快捷键 |  |',
+          '| --- | --- | --- | --- |',
+          '| **加粗** | `**文字**` | `Ctrl + B` |  |',
+          '| *斜体* | `*文字*` | `Ctrl + I` |  |',
+        ],
+      );
+      final TableBlock after = TableBlock.parse(on.text, 0)!;
+      expect(after.hasHeader, isTrue);
+      // The caret stays in the cell it was in (`Ctrl + B`, column 2 of the row
+      // that used to be the first data row).
+      expect(after.bodyRows[1].cells[2].text.trim(), '`Ctrl + B`');
+      expect(on.selection.start, after.bodyRows[1].cells[2].contentStart);
+
+      // Switching back removes the divider — and therefore the alignment that
+      // lives in it — but not a single row.
+      final TableEditResult off = TableCommands.setHeader(
+        blockOf(on.text),
+        header: false,
+        row: 2,
+        column: 2,
+      );
+      expect(off.text.split('\n'), hasLength(3));
+      expect(TableBlock.parse(off.text, 0)!.hasHeader, isFalse);
+      expect(
+        TableBlock.parse(off.text, 0)!.aligns,
+        everyElement(TableAlign.none),
+      );
+    });
+
+    test('the header switch is a no-op when already in that state', () {
+      final TableBlock block = blockOf(headerless);
+      final TableEditResult same = TableCommands.setHeader(
+        block,
+        header: false,
+        row: 0,
+        column: 0,
+      );
+      expect(same.text, headerless, reason: '已是无表头，不应重写空格');
     });
 
     test('a summary row keeps its right alignment', () {

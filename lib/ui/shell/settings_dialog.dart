@@ -131,7 +131,8 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                                 _section(
                                   _Section.appearance,
                                   title: '外观',
-                                  desc: '整个应用共用一套色板。三套预设都可以直接改：'
+                                  desc:
+                                      '整个应用共用一套色板。三套预设都可以直接改：'
                                       '点任意一套右上角的铅笔，就能逐个颜色调整，'
                                       '每套的改动互不影响。',
                                   children: <Widget>[
@@ -140,8 +141,9 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                                       stretch: true,
                                       control: ThemePresetPicker(
                                         value: settings.themePreset,
-                                        brightness:
-                                            Theme.of(context).brightness,
+                                        brightness: Theme.of(
+                                          context,
+                                        ).brightness,
                                         overrides: settings.overrideFor,
                                         // Tapping a cell only switches schemes;
                                         // the pencil is the way into editing.
@@ -197,7 +199,8 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                                 _section(
                                   _Section.typography,
                                   title: '排版',
-                                  desc: '只影响阅读区域。拖动侧边栏与编辑栏的交界，'
+                                  desc:
+                                      '只影响阅读区域。拖动侧边栏与编辑栏的交界，'
                                       '这里的宽度数值也会跟着变。',
                                   children: <Widget>[
                                     _SettingRow(
@@ -280,7 +283,8 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                                     _SettingRow(
                                       label: '模板文件夹',
                                       stretch: true,
-                                      note: '填库里任意文件夹的路径，支持子文件夹'
+                                      note:
+                                          '填库里任意文件夹的路径，支持子文件夹'
                                           '（如 工作/模板），也可从右侧选择；'
                                           '留空回到「模板」。',
                                       control: const _TemplatesFolderField(),
@@ -291,8 +295,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                                       control: _Switch(
                                         value:
                                             settings.autoApplyFolderTemplates,
-                                        label:
-                                            settings.autoApplyFolderTemplates
+                                        label: settings.autoApplyFolderTemplates
                                             ? '开'
                                             : '关',
                                         onChanged: (bool v) =>
@@ -322,9 +325,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                                 _section(
                                   _Section.vault,
                                   title: '笔记库',
-                                  children: <Widget>[
-                                    _VaultCard(notes: notes),
-                                  ],
+                                  children: <Widget>[_VaultCard(notes: notes)],
                                 ),
                                 _section(
                                   _Section.shortcuts,
@@ -383,26 +384,24 @@ class _SettingsDialogState extends State<_SettingsDialog> {
 
   Widget _buildHeader(AppPalette p) {
     return Container(
-      height: 50,
-      padding: const EdgeInsets.fromLTRB(AppSpace.xl - 2, 0, AppSpace.sm, 0),
+      constraints: const BoxConstraints(minHeight: 46),
+      padding: const EdgeInsets.fromLTRB(18, 0, 10, 0),
       decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: p.outlineSoft)),
       ),
       child: Row(
         children: <Widget>[
+          Icon(LucideIcons.settings, size: AppIconSize.sm, color: p.accent),
+          const SizedBox(width: 9),
           Text(
             '设置',
             style: TextStyle(
-              fontSize: AppText.display,
+              fontSize: 13.5,
+              height: 1.35,
               fontWeight: FontWeight.w600,
-              letterSpacing: -0.2,
+              letterSpacing: -0.1,
               color: p.textPrimary,
             ),
-          ),
-          const SizedBox(width: AppSpace.md),
-          Text(
-            '所有更改即时生效',
-            style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
           ),
           const Spacer(),
           AppIconButton(
@@ -421,7 +420,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
           (_Section.appearance, LucideIcons.palette, '外观'),
           (_Section.typography, LucideIcons.type, '排版'),
           (_Section.editor, LucideIcons.pencil, '编辑器'),
-          (_Section.templates, LucideIcons.layoutTemplate, '模板'),
+          (_Section.templates, LucideIcons.blocks, '模板'),
           (_Section.vault, LucideIcons.folder, '笔记库'),
           (_Section.shortcuts, LucideIcons.keyboard, '快捷键'),
           (_Section.about, LucideIcons.info, '关于'),
@@ -430,7 +429,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     return Container(
       width: 186,
       decoration: BoxDecoration(
-        color: p.canvas,
+        color: p.surface,
         border: Border(right: BorderSide(color: p.outlineSoft)),
       ),
       child: Column(
@@ -619,9 +618,7 @@ class _NavItem extends StatelessWidget {
                     label,
                     style: TextStyle(
                       fontSize: 12.5,
-                      fontWeight: selected
-                          ? FontWeight.w600
-                          : FontWeight.w500,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                       color: fg,
                     ),
                   ),
@@ -1315,8 +1312,8 @@ class _FolderTemplateRules extends StatelessWidget {
                           !folderExists(rules[i].folderPath))
                         rules[i].folderPath,
                     },
-                    onChanged: (String folder) => settings.folderTemplateRules =
-                        _replaced(
+                    onChanged: (String folder) =>
+                        settings.folderTemplateRules = _replaced(
                           rules,
                           i,
                           FolderTemplateRule(
@@ -1358,8 +1355,8 @@ class _FolderTemplateRules extends StatelessWidget {
                   tooltip: '删除规则',
                   size: 26,
                   iconSize: 13,
-                  onPressed: () => settings.folderTemplateRules =
-                      <FolderTemplateRule>[
+                  onPressed: () =>
+                      settings.folderTemplateRules = <FolderTemplateRule>[
                         for (int j = 0; j < rules.length; j++)
                           if (j != i) rules[j],
                       ],
@@ -1376,14 +1373,13 @@ class _FolderTemplateRules extends StatelessWidget {
               icon: LucideIcons.plus,
               onPressed: freeFolder == null
                   ? null
-                  : () => settings.folderTemplateRules =
-                        <FolderTemplateRule>[
-                          ...rules,
-                          FolderTemplateRule(
-                            folderPath: freeFolder!,
-                            templateId: templates.first.id,
-                          ),
-                        ],
+                  : () => settings.folderTemplateRules = <FolderTemplateRule>[
+                      ...rules,
+                      FolderTemplateRule(
+                        folderPath: freeFolder!,
+                        templateId: templates.first.id,
+                      ),
+                    ],
             ),
           ),
         ),

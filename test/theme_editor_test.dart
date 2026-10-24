@@ -229,7 +229,7 @@ void main() {
     const Color accent = Color(0xFFF5E050);
     final AppPalette light = settings.paletteFor(Brightness.light);
     expect(light.accent, accent);
-    // 曜石的 onAccent 是白色，这里必须翻成黑色，否则主按钮读不出。
+    // 默认板亮面的 onAccent 是白色，换成亮黄底后必须翻成黑色，否则主按钮读不出。
     expect(light.onAccent, AppPalette.readableOn(accent));
     expect(light.onAccent, isNot(AppPalette.light.onAccent));
     expect(light.accentHover, isNot(AppPalette.light.accentHover));
@@ -245,8 +245,12 @@ void main() {
     await selectTier(tester, ThemeEditorTier.advanced);
 
     final Color before = settings.paletteFor(Brightness.light).selection;
+    // 用当前令牌自己的 rgb 配一个 alpha 字节，这样「rgb 没被动过」才测得出来。
+    final String rgb = (before.toARGB32() & 0xFFFFFF)
+        .toRadixString(16)
+        .padLeft(6, '0');
     await openToken(tester, AppPaletteToken.selection);
-    await typeHex(tester, AppPaletteToken.selection, '802f6feb');
+    await typeHex(tester, AppPaletteToken.selection, '80$rgb');
 
     final Color after = settings.paletteFor(Brightness.light).selection;
     expect(after.a, closeTo(128 / 255, 0.002));

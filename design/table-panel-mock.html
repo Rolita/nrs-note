@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>表格侧边栏 · 交互稿</title>
+<style>
+  :root {
+    --canvas: #F7F7F5;
+    --sidebar: #F1F1EF;
+    --surface: #FCFCFB;
+    --raised: #FFFFFF;
+    --sunken: #EFEFED;
+    --outline: #DCDCD9;
+    --outline-soft: #E9E9E6;
+    --rule: #D5D5D1;
+    --t1: #1B1B1A;
+    --t2: #5C5C59;
+    --t3: #8C8C88;
+    --accent: #2A2A28;
+    --accent-hover: #111110;
+    --accent-soft: #E9E9E6;
+    --on-accent: #FFFFFF;
+    --danger: #C0392B;
+    --danger-soft: #FAE7E4;
+    --selection: rgba(42, 42, 40, 0.16);
+    --shadow: 0 18px 50px rgba(0, 0, 0, 0.10), 0 2px 8px rgba(0, 0, 0, 0.06);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #EDEDEA;
+    color: var(--t1);
+    font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body { padding: 28px 24px 48px; }
+
+  .stage { max-width: 1400px; margin: 0 auto; }
+
+  .mockbar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+
+  .mockbar .label {
+    font-size: 12px;
+    color: #6E6E6A;
+    letter-spacing: .3px;
+  }
+
+  .seg {
+    display: inline-flex;
+    padding: 3px;
+    background: #E4E4E0;
+    border-radius: 8px;
+    gap: 2px;
+  }
+  .seg button {
+    border: 0;
+    background: transparent;
+    color: #5C5C59;
+    font: inherit;
+    font-size: 12px;
+    height: 26px;
+    padding: 0 12px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .seg button.on {
+    background: #FFFFFF;
+    color: #1B1B1A;
+    box-shadow: 0 1px 2px rgba(0,0,0,.08);
+  }
+
+  .hint { font-size: 12px; color: #8C8C88; }
+
+  /* ---------------------------------------------------------------- frame */
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 900px;
+    background: var(--canvas);
+    border: 1px solid var(--outline);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+
+  .titlebar {
+    height: 40px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    background: var(--surface);
+    border-bottom: 1px solid var(--outline-soft);
+    padding-left: 6px;
+    position: relative;
+  }
+
+  .tb-left { display: flex; align-items: center; gap: 4px; }
+  .tb-divider { width: 1px; height: 16px; background: var(--outline); margin: 0 6px; }
+
+  .iconbtn {
+    width: 32px; height: 32px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 0; background: transparent; border-radius: 7px;
+    color: var(--t2); cursor: pointer;
+    position: relative;
+  }
+  .iconbtn:hover { background: var(--raised); color: var(--t1); }
+  .iconbtn svg { width: 17px; height: 17px; }
+
+  .iconbtn.on {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .iconbtn.on::before {
+    content: "";
+    position: absolute; left: 0; top: 8px; bottom: 8px;
+    width: 2px; border-radius: 1px; background: var(--accent);
+  }
+
+  .tabs {
+    display: flex; align-items: stretch; height: 100%;
+    margin-left: 6px; margin-right: 146px; min-width: 0; overflow: hidden;
+  }
+  .app.panel-open .tabs { margin-right: 232px; }
+  .tab {
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 12px;
+    font-size: 12.5px;
+    color: var(--t2);
+    border-right: 1px solid var(--outline-soft);
+    white-space: nowrap;
+  }
+  .tab.active {
+    color: var(--t1);
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+  .tab .x { color: var(--t3); font-size: 12px; }
+  .tab.new { border-right: 0; color: var(--t3); font-size: 16px; padding: 0 10px; }
+
+  .tb-right {
+    position: absolute; top: 4px; right: 146px;
+    display: flex; align-items: center; gap: 2px;
+  }
+  .app.panel-open .tb-right { right: auto; left: calc(100% - 232px); }
+
+  .caption { display: flex; align-items: center; height: 40px; margin-left: auto; padding-right: 2px; }
+  .caption span {
+    width: 44px; height: 40px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--t2); font-size: 12px;
+  }
+
+  /* ------------------------------------------------------------------ main */
+
+  .main { flex: 1; display: flex; min-height: 0; }
+
+  .rail {
+    width: 44px; flex: none;
+    background: var(--canvas);
+    border-right: 1px solid var(--outline-soft);
+    display: flex; flex-direction: column; align-items: center;
+    padding: 8px 0;
+    gap: 4px;
+  }
+  .rail .iconbtn { color: var(--t3); }
+  .rail .spacer { flex: 1; }
+
+  .list {
+    width: 288px; flex: none;
+    background: var(--sidebar);
+    border-right: 1px solid var(--outline-soft);
+    display: flex; flex-direction: column;
+  }
+  .panel-head {
+    height: 32px; flex: none;
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 12px;
+    font-size: 11.5px; font-weight: 600; letter-spacing: .4px;
+    color: var(--t3);
+  }
+  .panel-head .count { font-weight: 400; }
+  .panel-head .tail { margin-left: auto; display: flex; gap: 2px; }
+  .panel-head .mini {
+    width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
+    color: var(--t3); border-radius: 5px;
+  }
+  .panel-head .mini:hover { background: var(--raised); color: var(--t1); }
+
+  .filelist { padding: 2px 8px; display: flex; flex-direction: column; }
+  .filerow {
+    height: 28px; display: flex; align-items: center; gap: 6px;
+    padding: 0 8px; border-radius: 5px;
+    font-size: 12.5px; color: var(--t2);
+    white-space: nowrap; overflow: hidden;
+  }
+  .filerow .fold { width: 12px; color: var(--t3); font-size: 9px; }
+  .filerow.sel { background: var(--accent-soft); color: var(--t1); }
+  .filerow.child { padding-left: 26px; }
+  .filerow .badge { margin-left: auto; font-size: 10.5px; color: var(--t3); }
+
+  .editor {
+    flex: 1; min-width: 0;
+    background: var(--surface);
+    display: flex; flex-direction: column;
+    position: relative;
+  }
+  .doc {
+    flex: 1; overflow: hidden;
+    padding: 40px 72px;
+    max-width: 780px;
+    margin: 0 auto;
+    width: 100%;
+  }
+  .doc h1 { font-size: 26px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.2px; }
+  .doc .meta { font-size: 11.5px; color: var(--t3); margin-bottom: 26px; }
+  .doc h2 { font-size: 18px; font-weight: 650; margin: 26px 0 10px; }
+  .doc p { font-size: 14.5px; line-height: 1.8; color: var(--t2); margin: 0 0 12px; }
+  .doc .caret { display: inline-block; width: 1.5px; height: 20px; background: var(--accent); vertical-align: -4px; margin-left: 1px; }
+
+  table.md { width: 100%; border-collapse: collapse; margin: 6px 0 18px; font-size: 13px; }
+  table.md th, table.md td {
+    border: 1px solid var(--rule);
+    padding: 6px 8px;
+    text-align: left;
+    color: var(--t2);
+  }
+  table.md th { color: var(--t1); font-weight: 650; background: var(--sunken); }
+  table.md tr:hover td { background: #F7F7F5; }
+  table.md .cell-active { box-shadow: inset 0 0 0 1px var(--accent); }
+
+  /* --------------------------------------------------------------- panels */
+
+  .right {
+    width: 232px; flex: none;
+    background: var(--sidebar);
+    border-left: 1px solid var(--outline-soft);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .right.hidden { width: 0; border-left: 0; }
+
+  .rp-body { flex: 1; overflow: auto; padding-bottom: 12px; }
+
+  .outline-item {
+    display: flex; align-items: baseline; gap: 6px;
+    min-height: 28px; padding: 5px 12px;
+    font-size: 12.5px; color: var(--t2);
+    border-radius: 5px; margin: 0 6px;
+  }
+  .outline-item.h1 { font-size: 13.5px; font-weight: 600; color: var(--t1); }
+  .outline-item.h2 { padding-left: 22px; font-size: 12.5px; }
+  .outline-item.h3 { padding-left: 36px; font-size: 11.5px; color: var(--t3); }
+  .outline-item.active { background: var(--accent-soft); color: var(--t1); }
+
+  /* table panel */
+
+  .tinfo {
+    margin: 4px 10px 8px;
+    padding: 8px 10px;
+    background: var(--sunken);
+    border: 1px solid var(--outline);
+    border-radius: 7px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .tinfo svg { width: 16px; height: 16px; color: var(--t2); flex: none; }
+  .tinfo .big { font-size: 12.5px; color: var(--t1); font-weight: 600; }
+  .tinfo .sub { font-size: 11px; color: var(--t3); margin-top: 1px; }
+
+  .group { padding: 6px 2px 2px; }
+  .group-title {
+    font-size: 10.5px; font-weight: 600; letter-spacing: .5px;
+    color: var(--t3); padding: 4px 12px 2px;
+    text-transform: uppercase;
+  }
+
+  .tool {
+    height: 30px; margin: 0 8px;
+    display: flex; align-items: center; gap: 9px;
+    padding: 0 8px; border-radius: 5px;
+    font-size: 12.5px; color: var(--t2);
+    cursor: pointer;
+    border: 0; background: transparent; width: calc(100% - 16px);
+    text-align: left; font-family: inherit;
+  }
+  .tool svg { width: 15px; height: 15px; color: var(--t3); flex: none; }
+  .tool:hover { background: var(--raised); color: var(--t1); }
+  .tool:hover svg { color: var(--t2); }
+  .tool .kbd { margin-left: auto; font-size: 10.5px; color: var(--t3); }
+  .tool.danger { color: var(--danger); }
+  .tool.danger svg { color: var(--danger); }
+  .tool.danger:hover { background: var(--danger-soft); color: var(--danger); }
+
+  .sep { height: 1px; background: var(--outline-soft); margin: 6px 12px; }
+
+  .segmented {
+    margin: 2px 10px 6px;
+    display: flex; padding: 2px;
+    background: var(--sunken);
+    border: 1px solid var(--outline-soft);
+    border-radius: 7px;
+    gap: 2px;
+  }
+  .segmented button {
+    flex: 1; height: 26px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+    border: 0; border-radius: 5px; background: transparent;
+    color: var(--t2); font-size: 11.5px; font-family: inherit; cursor: pointer;
+  }
+  .segmented button svg { width: 14px; height: 14px; }
+  .segmented button.on { background: var(--raised); color: var(--t1); box-shadow: 0 1px 1px rgba(0,0,0,.05); }
+
+  .pills { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 10px 4px; }
+  .pill {
+    height: 26px; padding: 0 10px;
+    border: 1px solid var(--outline);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--t2);
+    font-size: 11.5px; font-family: inherit;
+    cursor: pointer;
+  }
+  .pill:hover { border-color: var(--t3); color: var(--t1); background: var(--raised); }
+
+  .group-note { font-size: 10.5px; font-weight: 400; color: var(--t3); letter-spacing: 0; margin-left: 2px; }
+  .group-hint { font-size: 10.5px; line-height: 1.6; color: var(--t3); padding: 2px 12px 4px; }
+
+  .switchrow {
+    height: 32px; margin: 0 8px;
+    display: flex; align-items: center; gap: 9px;
+    padding: 0 8px; border-radius: 5px;
+    font-size: 12.5px; color: var(--t2);
+    cursor: pointer;
+  }
+  .switchrow:hover { background: var(--raised); color: var(--t1); }
+  .switchrow svg { width: 15px; height: 15px; color: var(--t3); }
+  .switch {
+    margin-left: auto; width: 28px; height: 16px; border-radius: 8px;
+    background: var(--accent); position: relative; flex: none;
+  }
+  .switch::after {
+    content: ""; position: absolute; top: 2px; left: 14px;
+    width: 12px; height: 12px; border-radius: 50%; background: var(--on-accent);
+  }
+  .switch.off { background: #D2D2CE; }
+  .switch.off::after { left: 2px; background: #FFFFFF; }
+
+  .panel-foot {
+    flex: none; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    border-top: 1px solid var(--outline-soft);
+    font-size: 10.5px; color: var(--t3);
+  }
+
+  .empty {
+    flex: 1;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    text-align: center; padding: 0 28px 40px;
+    gap: 6px;
+  }
+  .empty .ring {
+    width: 40px; height: 40px; border-radius: 10px;
+    background: var(--sunken);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--t3); margin-bottom: 6px;
+  }
+  .empty .ring svg { width: 20px; height: 20px; }
+  .empty .ttl { font-size: 12.5px; color: var(--t2); font-weight: 600; }
+  .empty .desc { font-size: 11.5px; line-height: 1.7; color: var(--t3); }
+
+  /* ------------------------------------------------------------------ spec */
+
+  .specs {
+    margin-top: 22px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+  }
+  .card {
+    background: #FCFCFB;
+    border: 1px solid #E3E3DF;
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .card h3 {
+    margin: 0 0 8px; font-size: 12px; font-weight: 650;
+    color: #1B1B1A; letter-spacing: .2px;
+  }
+  .card ul { margin: 0; padding-left: 16px; }
+  .card li { font-size: 11.5px; line-height: 1.85; color: #5C5C59; }
+  .card code {
+    font-family: "Cascadia Mono", Consolas, monospace;
+    font-size: 10.5px; background: #EFEFED; padding: 1px 4px; border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+
+  <div class="mockbar">
+    <span class="label">状态</span>
+    <div class="seg" id="states">
+      <button data-state="outline">大纲面板</button>
+      <button data-state="table" class="on">表格面板</button>
+      <button data-state="empty">表格 · 空态</button>
+      <button data-state="none">都收起</button>
+    </div>
+    <span class="hint">点标题栏右侧的两个图标也能切换；点已选中的图标会收起面板</span>
+  </div>
+
+  <div class="app panel-open" id="app">
+    <!-- --------------------------------------------------------- title bar -->
+    <div class="titlebar">
+      <div class="tb-left">
+        <button class="iconbtn" title="收起侧边栏">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+        </button>
+        <div class="tb-divider"></div>
+        <button class="iconbtn on" title="文件">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+        </button>
+        <button class="iconbtn" title="搜索">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        </button>
+      </div>
+
+      <div class="tabs">
+        <div class="tab active">从零开始做一张表 <span class="x">×</span></div>
+        <div class="tab">产品周报 <span class="x">×</span></div>
+        <div class="tab new">＋</div>
+      </div>
+
+      <div class="tb-right">
+        <button class="iconbtn" id="tbOutline" title="大纲">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>
+        </button>
+        <button class="iconbtn on" id="tbTable" title="表格">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/></svg>
+        </button>
+        <div class="caption"><span>—</span><span>▢</span><span>✕</span></div>
+      </div>
+    </div>
+
+    <div class="main">
+      <!-- ------------------------------------------------------------- rail -->
+      <div class="rail">
+        <button class="iconbtn" title="标签">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4 12 22l-9-9V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.2"/></svg>
+        </button>
+        <button class="iconbtn" title="插入模板">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M17.5 14v7M14 17.5h7"/></svg>
+        </button>
+        <div class="spacer"></div>
+        <button class="iconbtn" title="回收站">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+        </button>
+        <button class="iconbtn" title="设置">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 13.6H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 3V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9"/></svg>
+        </button>
+      </div>
+
+      <!-- ------------------------------------------------------------- list -->
+      <div class="list">
+        <div class="panel-head">
+          <span>文件</span>
+          <span class="tail">
+            <span class="mini">⇅</span><span class="mini">⊞</span><span class="mini">＋</span>
+          </span>
+        </div>
+        <div class="filelist">
+          <div class="filerow"><span class="fold">▸</span>工作</div>
+          <div class="filerow child">产品周报</div>
+          <div class="filerow child sel">从零开始做一张表</div>
+          <div class="filerow child">会议纪要</div>
+          <div class="filerow"><span class="fold">▾</span>读书</div>
+          <div class="filerow child">设计的方法</div>
+          <div class="filerow child">写作是思考</div>
+        </div>
+      </div>
+
+      <!-- ----------------------------------------------------------- editor -->
+      <div class="editor">
+        <div class="doc">
+          <h1>从零开始做一张表</h1>
+          <div class="meta">2026 年 10 月 24 日 · 2 分钟阅读</div>
+
+          <p>表格不是把文字塞进格子，而是先决定要回答什么问题。列是问题，行是样本。</p>
+
+          <h2>先把要看的指标列出来<span class="caret"></span></h2>
+
+          <table class="md">
+            <tr>
+              <th>指标</th>
+              <th>本周</th>
+              <th>上周</th>
+              <th>变化</th>
+            </tr>
+            <tr>
+              <td>新增笔记</td>
+              <td>42</td>
+              <td>38</td>
+              <td class="cell-active">+10.5%</td>
+            </tr>
+            <tr>
+              <td>平均字数</td>
+              <td>680</td>
+              <td>712</td>
+              <td>−4.5%</td>
+            </tr>
+            <tr>
+              <td>打开次数</td>
+              <td>1,284</td>
+              <td>1,190</td>
+              <td>+7.9%</td>
+            </tr>
+          </table>
+
+          <p>右边这一栏只认「光标此刻在哪张表里」。没有表的时候，它不会假装自己有用。</p>
+
+          <h2>下一步</h2>
+          <p>把这一页抄成自己的模板，下周只改数字。</p>
+        </div>
+      </div>
+
+      <!-- ------------------------------------------------------------ right -->
+      <div class="right" id="right">
+
+        <!-- 大纲 -->
+        <div class="rp" id="rpOutline" style="display:none; flex-direction:column; flex:1; min-height:0;">
+          <div class="panel-head"><span>大纲</span><span class="count">3</span></div>
+          <div class="rp-body">
+            <div class="outline-item h1 active">从零开始做一张表</div>
+            <div class="outline-item h2">先把要看的指标列出来</div>
+            <div class="outline-item h2">下一步</div>
+          </div>
+        </div>
+
+        <!-- 表格 -->
+        <div class="rp" id="rpTable" style="display:flex; flex-direction:column; flex:1; min-height:0;">
+          <div class="panel-head"><span>表格</span><span class="count">4 × 4</span></div>
+          <div class="rp-body">
+
+            <div class="tinfo">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/></svg>
+              <div>
+                <div class="big">第 1 张表 · 4 列 × 4 行</div>
+                <div class="sub">光标在「变化」列 · 第 2 数据行</div>
+              </div>
+            </div>
+
+            <div class="group">
+              <div class="group-title">选择</div>
+              <div class="pills">
+                <button class="pill">整行</button>
+                <button class="pill">整列</button>
+                <button class="pill">整张表</button>
+              </div>
+            </div>
+
+            <div class="sep"></div>
+
+            <div class="group">
+              <div class="group-title">行</div>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                在上方插入行
+              </button>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+                在下方插入行
+              </button>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg>
+                复制本行
+              </button>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/><path d="M3 21h18"/></svg>
+                上移本行
+              </button>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12l7 7 7-7"/><path d="M3 3h18"/></svg>
+                下移本行
+              </button>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/><path d="M10 10v6M14 10v6"/></svg>
+                删除本行
+              </button>
+            </div>
+
+            <div class="sep"></div>
+
+            <div class="group">
+              <div class="group-title">列</div>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+                在左侧插入列
+              </button>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                在右侧插入列
+              </button>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg>
+                复制本列
+              </button>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 5l-7 7 7 7"/><path d="M21 3v18"/></svg>
+                左移本列
+              </button>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/><path d="M3 3v18"/></svg>
+                右移本列
+              </button>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="m14 10 4 4m0-4-4 4"/></svg>
+                删除本列
+              </button>
+            </div>
+
+            <div class="sep"></div>
+
+            <div class="group">
+              <div class="group-title">排序 <span class="group-note">按「变化」列</span></div>
+              <div class="segmented">
+                <button class="on">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5h9M11 12h6M11 19h3"/><path d="m4 8 3-3 3 3M7 5v14"/></svg>
+                  升序
+                </button>
+                <button>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5h3M11 12h6M11 19h9"/><path d="m4 16 3 3 3-3M7 19V5"/></svg>
+                  降序
+                </button>
+              </div>
+              <div class="group-hint">数字按大小，文本按拼音；空行排最后</div>
+            </div>
+
+            <div class="sep"></div>
+
+            <div class="group">
+              <div class="group-title">对齐</div>
+              <div class="segmented">
+                <button class="on">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 6h16M4 12h10M4 18h13"/></svg>
+                  左
+                </button>
+                <button>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 6h16M7 12h10M6 18h12"/></svg>
+                  中
+                </button>
+                <button>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 6h16M10 12h10M7 18h13"/></svg>
+                  右
+                </button>
+                <button>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m3 21 4-1 11-11a2 2 0 0 0-3-3L4 17l-1 4Z"/><path d="m14 6 4 4"/></svg>
+                  自动
+                </button>
+              </div>
+              <div class="group-hint">自动：数字列贴右，文本列贴左</div>
+            </div>
+
+            <div class="sep"></div>
+
+            <div class="group">
+              <div class="group-title">汇总 <span class="group-note">插入到表尾</span></div>
+              <div class="pills">
+                <button class="pill">合计</button>
+                <button class="pill">平均</button>
+                <button class="pill">计数</button>
+                <button class="pill">最小</button>
+                <button class="pill">最大</button>
+              </div>
+            </div>
+
+            <div class="sep"></div>
+
+            <div class="group">
+              <div class="group-title">数据</div>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12l7 7 7-7"/><path d="M5 5h14"/></svg>
+                向下填充
+              </button>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/><path d="M5 5v14"/></svg>
+                向右填充
+              </button>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/><path d="M10 10v6M14 10v6"/></svg>
+                按本列去重
+              </button>
+            </div>
+
+            <div class="sep"></div>
+
+            <div class="group">
+              <div class="group-title">表格</div>
+              <div class="switchrow">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4v16M18 8v12M6 8h12"/></svg>
+                表头行
+                <span class="switch" id="swHeader"></span>
+              </div>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16M15 10v10"/><path d="m13 14 2 2 4-4"/></svg>
+                转置（行列互换）
+              </button>
+              <button class="tool">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l4-3 4 3 4-3 4 3"/><path d="M4 7v12h16V7"/><path d="m9 14 6 0"/></svg>
+                清空所选单元格
+              </button>
+              <button class="tool danger">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+                删除整张表格
+              </button>
+            </div>
+
+          </div>
+          <div class="panel-foot">右键表格也有同样的操作</div>
+        </div>
+
+        <!-- 空态 -->
+        <div class="rp" id="rpEmpty" style="display:none; flex-direction:column; flex:1; min-height:0;">
+          <div class="panel-head"><span>表格</span></div>
+          <div class="empty">
+            <div class="ring">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/></svg>
+            </div>
+            <div class="ttl">把光标放进表格</div>
+            <div class="desc">插入行列、对齐、表头这些操作<br>会跟着光标所在的表格出现。</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="specs">
+    <div class="card">
+      <h3>入口与互斥</h3>
+      <ul>
+        <li>标题栏右侧，大纲按钮的<b>右边</b>新增一个 32×32 表格图标按钮，图标用 <code>table</code>。</li>
+        <li>三态互斥：大纲开 / 表格开 / 都收起。点已选中的按钮即收起。</li>
+        <li>两个按钮同一套选中态：<code>accentSoft</code> 底 + 左侧 2px <code>accent</code> 竖线。</li>
+        <li>面板开时按钮组与面板左边缘对齐；都收起时并排停在窗口按钮左侧。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>面板</h3>
+      <ul>
+        <li>宽度沿用 232px 默认值、可拖拽调宽，窗口窄于 980px 时与大纲一起让位给正文。</li>
+        <li>底色 <code>sidebar</code>，与大纲、文件栏同一步；仅靠 1px 发丝线分隔。</li>
+        <li>头部 32px：「表格」+ 列 × 行；下方一块「当前表格」信息条。</li>
+        <li>分组顺序：选择 → 行 → 列 → 排序 → 对齐 → 汇总 → 数据 → 表格；组间用 <code>outlineSoft</code> 细线，内容区可滚动。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>工具（对齐 Excel 常用操作）</h3>
+      <ul>
+        <li>选择：整行 / 整列 / 整张表。</li>
+        <li>行：上/下插入、复制、上移、下移、删除。</li>
+        <li>列：左/右插入、复制、左移、右移、删除。</li>
+        <li>排序：按当前列升序 / 降序，数字按值、文本按拼音，表头不动。</li>
+        <li>对齐：左 / 中 / 右 + 自动（数字列贴右、文本列贴左）。</li>
+        <li>汇总：合计 / 平均 / 计数 / 最小 / 最大，追加成表尾一行。</li>
+        <li>数据：向下填充、向右填充、按本列去重。</li>
+        <li>表格：表头开关、转置、清空所选、删除整张表格。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>实现状态</h3>
+      <ul>
+        <li>已有命令：插入 / 删除 / 移动 / 复制行列、排序、自动对齐、汇总行、转置、清空。</li>
+        <li>需新增：整行 / 整列 / 整表选择（设置选区）、向下 / 向右填充、按列去重。</li>
+        <li>面板只是这些命令的第二种入口，右键菜单保持不变。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>没有表格时</h3>
+      <ul>
+        <li>光标不在任何表格内：正文区居中显示空态，只留一句「把光标放进表格」。</li>
+        <li>不用操作成功提示；操作结果直接体现在正文里。</li>
+        <li>表格结构被改坏（不再是合法表格）时，面板自动回到空态。</li>
+      </ul>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const right = document.getElementById('right');
+  const tbOutline = document.getElementById('tbOutline');
+  const tbTable = document.getElementById('tbTable');
+  const rpOutline = document.getElementById('rpOutline');
+  const rpTable = document.getElementById('rpTable');
+  const rpEmpty = document.getElementById('rpEmpty');
+
+  let state = 'table';
+
+  function render() {
+    const open = state !== 'none';
+    right.style.display = open ? 'flex' : 'none';
+    document.getElementById('app').classList.toggle('panel-open', open);
+    tbOutline.classList.toggle('on', state === 'outline');
+    tbTable.classList.toggle('on', state === 'table');
+    rpOutline.style.display = state === 'outline' ? 'flex' : 'none';
+    rpTable.style.display = state === 'table' ? 'flex' : 'none';
+    rpEmpty.style.display = state === 'empty' ? 'flex' : 'none';
+    document.querySelectorAll('#states button').forEach(b => {
+      b.classList.toggle('on', b.dataset.state === state);
+    });
+  }
+
+  document.querySelectorAll('#states button').forEach(b => {
+    b.addEventListener('click', () => { state = b.dataset.state; render(); });
+  });
+
+  tbOutline.addEventListener('click', () => {
+    state = state === 'outline' ? 'none' : 'outline';
+    render();
+  });
+
+  tbTable.addEventListener('click', () => {
+    state = state === 'table' ? 'none' : 'table';
+    render();
+  });
+
+  document.getElementById('swHeader').addEventListener('click', e => {
+    e.currentTarget.classList.toggle('off');
+  });
+
+  render();
+</script>
+</body>
+</html>

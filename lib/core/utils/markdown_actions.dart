@@ -1679,11 +1679,66 @@ TextEditingValue? setTableAlignRange(
   );
 }
 
+/// Adds or removes the header row of the table the caret is in.
+///
+/// The caret stays in the cell it was in: toggling the header only decides
+/// whether the first row is a header, it never inserts or removes a row.
+TextEditingValue? setTableHeader(TextEditingValue raw, {required bool header}) {
+  final TextEditingValue v = _normalised(raw);
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null) return null;
+  final (int row, int column) = _cellOf(block, v.selection.start);
+  return _valueOf(
+    TableCommands.setHeader(block, header: header, row: row, column: column),
+  );
+}
+
 /// Removes the table the caret is in, newline included.
 TextEditingValue? deleteTableAt(TextEditingValue raw) {
   final TableBlock? block = TableBlock.parse(raw.text, raw.selection.start);
   if (block == null) return null;
   return _valueOf(TableCommands.deleteTable(block));
+}
+
+/// Selects the row the caret is in — the panel's 「整行」.
+///
+/// The selection is the row's whole source line, newline included, which is
+/// what makes the renderer treat it as a row rather than a block of cells.
+TextEditingValue? selectTableRow(TextEditingValue raw) {
+  final TextEditingValue v = _normalised(raw);
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null) return null;
+  final (int row, _) = _cellOf(block, v.selection.start);
+  return v.copyWith(
+    selection: TableRange.rowsOf(block, row, row).toTextSelection(),
+  );
+}
+
+/// Selects the column the caret is in — the panel's 「整列」.
+///
+/// A column has no single text range in Markdown, so this selects the column's
+/// cells from the first one's text to the last one's; the renderer paints the
+/// rectangle by cell, which is what makes it look like a column.
+TextEditingValue? selectTableColumn(TextEditingValue raw) {
+  final TextEditingValue v = _normalised(raw);
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null) return null;
+  final (_, int column) = _cellOf(block, v.selection.start);
+  return v.copyWith(
+    selection: TableRange.columnsOf(block, column, column).toTextSelection(),
+  );
+}
+
+/// Selects every row of the table the caret is in — the panel's 「整张表」.
+TextEditingValue? selectTableAll(TextEditingValue raw) {
+  final TextEditingValue v = _normalised(raw);
+  final TableBlock? block = TableBlock.parse(v.text, v.selection.start);
+  if (block == null) return null;
+  final List<TableRow> body = block.bodyRows;
+  if (body.isEmpty) return null;
+  return v.copyWith(
+    selection: TableRange.rowsOf(block, 0, body.length - 1).toTextSelection(),
+  );
 }
 
 /// Sorts the table at the caret by the column it sits in.
@@ -1728,6 +1783,19 @@ TextEditingValue? summarizeTable(
     block,
     column: column,
     aggregate: aggregate,
+  );
+  return result == null ? null : _valueOf(result);
+}
+
+/// Removes the rows whose cell repeats an earlier one in the caret's column.
+TextEditingValue? dedupeTableColumn(TextEditingValue raw) {
+  final TableBlock? block = TableBlock.parse(raw.text, raw.selection.start);
+  if (block == null) return null;
+  final (int row, int column) = _cellOf(block, raw.selection.start);
+  final TableEditResult? result = TableCommands.dedupeColumn(
+    block,
+    column: column,
+    row: row,
   );
   return result == null ? null : _valueOf(result);
 }

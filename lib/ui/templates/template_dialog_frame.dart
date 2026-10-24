@@ -47,7 +47,7 @@ class TemplateDialogFrame extends StatelessWidget {
               width: width,
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: p.surfaceRaised,
+                  color: p.surface,
                   borderRadius: AppRadius.lgAll,
                   border: Border.all(color: p.outline),
                   boxShadow: <BoxShadow>[
@@ -84,18 +84,20 @@ class TemplateDialogFrame extends StatelessWidget {
   }
 
   Widget _header(AppPalette p) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 14, 12, 12),
+    return Container(
+      constraints: const BoxConstraints(minHeight: 46),
+      padding: const EdgeInsets.fromLTRB(18, 0, 10, 0),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: p.outlineSoft)),
+      ),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: <Widget>[
-          Padding(
-            padding: const EdgeInsets.only(top: 1),
-            child: Icon(icon, size: AppIconSize.md, color: p.accent),
-          ),
-          const SizedBox(width: 10),
+          Icon(icon, size: AppIconSize.sm, color: p.accent),
+          const SizedBox(width: 9),
           Expanded(
             child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 Text(
@@ -103,8 +105,8 @@ class TemplateDialogFrame extends StatelessWidget {
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 15,
-                    height: 1.3,
+                    fontSize: 13.5,
+                    height: 1.35,
                     fontWeight: FontWeight.w600,
                     letterSpacing: -0.1,
                     color: p.textPrimary,
@@ -138,7 +140,7 @@ class TemplateDialogFrame extends StatelessWidget {
 
   Widget _footer(AppPalette p, Widget child) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(18, 10, 14, 10),
+      padding: const EdgeInsets.fromLTRB(14, 9, 12, 9),
       decoration: BoxDecoration(
         border: Border(top: BorderSide(color: p.outlineSoft)),
       ),
@@ -190,7 +192,7 @@ class _TemplateDialogButtonState extends State<TemplateDialogButton> {
         ? AppPalette.readableOn(p.accent)
         : p.textSecondary;
     final TextStyle textStyle = TextStyle(
-      fontSize: 12.5,
+      fontSize: 12,
       fontWeight: FontWeight.w600,
       color: ink,
       fontFamily: AppFonts.ui,
@@ -213,7 +215,7 @@ class _TemplateDialogButtonState extends State<TemplateDialogButton> {
         autofocus: widget.autofocus,
         style:
             FilledButton.styleFrom(
-              minimumSize: const Size(0, 28),
+              minimumSize: const Size(0, 30),
               padding: const EdgeInsets.symmetric(horizontal: 12),
               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               shape: RoundedRectangleBorder(borderRadius: AppRadius.mdAll),
@@ -248,10 +250,12 @@ class _TemplateDialogButtonState extends State<TemplateDialogButton> {
         behavior: HitTestBehavior.opaque,
         child: AnimatedContainer(
           duration: AppMotion.fast,
-          height: 28,
+          height: 30,
           padding: const EdgeInsets.symmetric(horizontal: AppSpace.md),
           decoration: BoxDecoration(
-            color: enabled && _hovered ? p.surfaceSunken : Colors.transparent,
+            color: enabled && _hovered
+                ? p.textPrimary.withValues(alpha: 0.05)
+                : Colors.transparent,
             borderRadius: AppRadius.mdAll,
             border: Border.all(color: p.outline),
           ),
@@ -264,8 +268,10 @@ class _TemplateDialogButtonState extends State<TemplateDialogButton> {
 
 /// The search field shared by the picker and the suggester.
 ///
-/// Focus is shown three ways — accent border, accent wash and a soft ring —
-/// because one of them alone disappears against the sidebar greys.
+/// It is deliberately borderless: its only line is the underline, which turns
+/// from `outlineSoft` to `accent` on focus. The caret and the magnifier carry
+/// the rest of the focus signal, so the field never introduces a second fill
+/// colour into an otherwise single-surface dialog.
 class TemplateSearchField extends StatefulWidget {
   const TemplateSearchField({
     super.key,
@@ -326,19 +332,11 @@ class _TemplateSearchFieldState extends State<TemplateSearchField> {
     final AppPalette p = context.palette;
     return AnimatedContainer(
       duration: AppMotion.fast,
-      height: 32,
+      height: 34,
       decoration: BoxDecoration(
-        color: _focused ? p.accentSoft : p.surfaceSunken,
-        borderRadius: AppRadius.mdAll,
-        border: Border.all(color: _focused ? p.accent : p.outline),
-        boxShadow: _focused
-            ? <BoxShadow>[
-                BoxShadow(
-                  color: p.accent.withValues(alpha: 0.18),
-                  spreadRadius: 2,
-                ),
-              ]
-            : null,
+        border: Border(
+          bottom: BorderSide(color: _focused ? p.accent : p.outlineSoft),
+        ),
       ),
       child: Row(
         children: <Widget>[
@@ -456,7 +454,7 @@ class _CloseButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
-    if (onPressed == null) return const SizedBox(width: 20, height: 20);
+    if (onPressed == null) return const SizedBox(width: 26, height: 26);
     return Tooltip(
       message: '关闭',
       waitDuration: const Duration(milliseconds: 600),
@@ -468,17 +466,17 @@ class _CloseButton extends StatelessWidget {
             onTap: onPressed,
             child: AnimatedContainer(
               duration: AppMotion.fast,
-              width: 20,
-              height: 20,
+              width: 26,
+              height: 26,
               decoration: BoxDecoration(
                 color: hovered
                     ? p.textPrimary.withValues(alpha: 0.07)
                     : Colors.transparent,
-                borderRadius: BorderRadius.circular(AppRadius.xs),
+                borderRadius: BorderRadius.circular(AppRadius.sm),
               ),
               child: Icon(
                 LucideIcons.x,
-                size: 13,
+                size: AppIconSize.xs,
                 color: hovered ? p.textPrimary : p.textTertiary,
               ),
             ),

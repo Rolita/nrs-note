@@ -52,7 +52,7 @@ class AppRail extends StatelessWidget {
           ),
           const SizedBox(height: AppSpace.xs),
           _RailButton(
-            icon: LucideIcons.layoutTemplate,
+            icon: LucideIcons.blocks,
             tooltip: '插入模板',
             shortcut: 'Ctrl+P',
             onPressed: onOpenTemplates,

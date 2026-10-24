@@ -171,16 +171,19 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
             _newNote,
         const SingleActivator(LogicalKeyboardKey.escape): _cancel,
       },
-      child: TemplateDialogFrame(
-        icon: LucideIcons.layoutTemplate,
-        title: '模板',
-        onClose: () => Navigator.of(context).pop(),
-        width: 780,
-        maxHeight: 520,
-        body: hasTemplates
-            ? _browser(p, results, selected)
-            : _empty(p),
-        footer: _footer(p, selected),
+      // 打开时焦点落在这层，而不是搜索框：方向键 / Enter 仍然可用，
+      // 但输入法不会一进来就接管，搜索要用户自己点进输入框。
+      child: Focus(
+        autofocus: true,
+        child: TemplateDialogFrame(
+          icon: LucideIcons.blocks,
+          title: '模板',
+          onClose: () => Navigator.of(context).pop(),
+          width: 780,
+          maxHeight: 520,
+          body: hasTemplates ? _browser(p, results, selected) : _empty(p),
+          footer: _footer(p, selected),
+        ),
       ),
     );
   }
@@ -202,25 +205,25 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
   Widget _library(AppPalette p, List<Note> results, Note? selected) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: p.sidebar,
         border: Border(right: BorderSide(color: p.outlineSoft)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
             child: TemplateSearchField(
               controller: _search,
               focusNode: _searchFocus,
-              autofocus: true,
               hint: '搜索模板…',
               onChanged: (_) => setState(() => _selected = 0),
               onSubmitted: (_) => _insert(),
             ),
           ),
           Expanded(
-            child: results.isEmpty ? _noMatches(p) : _list(p, results, selected),
+            child: results.isEmpty
+                ? _noMatches(p)
+                : _list(p, results, selected),
           ),
         ],
       ),
@@ -230,29 +233,26 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
   /// 右栏：标题 / 路径 / 修改时间，下面是渲染后的正文，底部是模板代码。
   Widget _preview(AppPalette p, Note? note) {
     if (note == null) {
-      return DecoratedBox(
-        decoration: BoxDecoration(color: p.surface),
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Icon(
-                LucideIcons.layoutTemplate,
-                size: AppIconSize.sm,
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(
+              LucideIcons.blocks,
+              size: AppIconSize.sm,
+              color: p.textTertiary,
+            ),
+            const SizedBox(height: AppSpace.sm),
+            Text(
+              '选择一个模板查看正文',
+              style: TextStyle(
+                fontSize: AppText.caption,
                 color: p.textTertiary,
+                fontFamily: AppFonts.ui,
+                fontFamilyFallback: AppFonts.uiFallback,
               ),
-              const SizedBox(height: AppSpace.sm),
-              Text(
-                '选择一个模板查看正文',
-                style: TextStyle(
-                  fontSize: AppText.caption,
-                  color: p.textTertiary,
-                  fontFamily: AppFonts.ui,
-                  fontFamilyFallback: AppFonts.uiFallback,
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       );
     }
@@ -260,60 +260,39 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
     final String title = note.title.trim().isEmpty ? '未命名' : note.title;
     final List<String> expressions = _expressions(note.body);
 
-    return DecoratedBox(
-      decoration: BoxDecoration(color: p.surface),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          Padding(
-            padding: const EdgeInsets.fromLTRB(22, 15, 14, 12),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Text(
-                        title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: -0.25,
-                          color: p.textPrimary,
-                          fontFamily: AppFonts.ui,
-                          fontFamilyFallback: AppFonts.uiFallback,
-                        ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        Padding(
+          padding: const EdgeInsets.fromLTRB(22, 15, 14, 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: -0.25,
+                        color: p.textPrimary,
+                        fontFamily: AppFonts.ui,
+                        fontFamilyFallback: AppFonts.uiFallback,
                       ),
-                      const SizedBox(height: 3),
-                      Row(
-                        children: <Widget>[
-                          Flexible(
-                            child: Text(
-                              note.relativePath,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 10.5,
-                                color: p.textTertiary,
-                                fontFamily: AppFonts.mono,
-                                fontFamilyFallback: AppFonts.monoFallback,
-                              ),
-                            ),
-                          ),
-                          Container(
-                            width: 3,
-                            height: 3,
-                            margin: const EdgeInsets.symmetric(horizontal: 7),
-                            decoration: BoxDecoration(
-                              color: p.textTertiary,
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                          Text(
-                            _modifiedLabel(note.updatedAt),
+                    ),
+                    const SizedBox(height: 3),
+                    Row(
+                      children: <Widget>[
+                        Flexible(
+                          child: Text(
+                            note.relativePath,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               fontSize: 10.5,
                               color: p.textTertiary,
@@ -321,43 +300,61 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
                               fontFamilyFallback: AppFonts.monoFallback,
                             ),
                           ),
-                        ],
-                      ),
-                    ],
-                  ),
+                        ),
+                        Container(
+                          width: 3,
+                          height: 3,
+                          margin: const EdgeInsets.symmetric(horizontal: 7),
+                          decoration: BoxDecoration(
+                            color: p.textTertiary,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        Text(
+                          _modifiedLabel(note.updatedAt),
+                          style: TextStyle(
+                            fontSize: 10.5,
+                            color: p.textTertiary,
+                            fontFamily: AppFonts.mono,
+                            fontFamilyFallback: AppFonts.monoFallback,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
-                const SizedBox(width: AppSpace.sm),
-                AppIconButton(
-                  icon: LucideIcons.pencil,
-                  tooltip: '编辑这个模板',
-                  size: 24,
-                  iconSize: AppIconSize.xs,
-                  onPressed: () => _finish(TemplatePickerAction.edit, note),
-                ),
-              ],
-            ),
+              ),
+              const SizedBox(width: AppSpace.sm),
+              AppIconButton(
+                icon: LucideIcons.pencil,
+                tooltip: '编辑这个模板',
+                size: 24,
+                iconSize: AppIconSize.xs,
+                onPressed: () => _finish(TemplatePickerAction.edit, note),
+              ),
+            ],
           ),
-          Container(height: 1, color: p.outlineSoft),
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(22, 16, 22, 18),
-              child: note.body.trim().isEmpty
-                  ? Text(
-                      '这个模板还没有正文。',
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        height: 1.6,
-                        color: p.textTertiary,
-                        fontFamily: AppFonts.ui,
-                        fontFamilyFallback: AppFonts.uiFallback,
-                      ),
-                    )
-                  : _MarkdownPreview(body: note.body),
-            ),
+        ),
+        Container(height: 1, color: p.outlineSoft),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(22, 16, 22, 18),
+            child: note.body.trim().isEmpty
+                ? Text(
+                    '这个模板还没有正文。',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      height: 1.6,
+                      color: p.textTertiary,
+                      fontFamily: AppFonts.ui,
+                      fontFamilyFallback: AppFonts.uiFallback,
+                    ),
+                  )
+                : _MarkdownPreview(body: note.body),
           ),
-          if (expressions.isNotEmpty) _variablesStrip(p, expressions),
-        ],
-      ),
+        ),
+        if (expressions.isNotEmpty) _variablesStrip(p, expressions),
+      ],
     );
   }
 
@@ -369,37 +366,28 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
       ),
       child: Row(
         children: <Widget>[
-          Text(
-            '模板代码',
-            style: TextStyle(fontSize: 10.5, color: p.textTertiary),
-          ),
-          const SizedBox(width: 6),
+          Text('模板代码', style: TextStyle(fontSize: 10.5, color: p.textTertiary)),
+          const SizedBox(width: 9),
           Expanded(
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: <Widget>[
                   for (final String expression in expressions)
-                    Container(
-                      margin: const EdgeInsets.only(right: 6),
-                      constraints: const BoxConstraints(maxWidth: 180),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 1,
-                      ),
-                      decoration: BoxDecoration(
-                        border: Border.all(color: p.outline),
-                        borderRadius: AppRadius.pillAll,
-                      ),
-                      child: Text(
-                        expression,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 10,
-                          color: p.textSecondary,
-                          fontFamily: AppFonts.mono,
-                          fontFamilyFallback: AppFonts.monoFallback,
+                    Padding(
+                      padding: const EdgeInsets.only(right: 12),
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 180),
+                        child: Text(
+                          expression,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 10.5,
+                            color: p.textSecondary,
+                            fontFamily: AppFonts.mono,
+                            fontFamilyFallback: AppFonts.monoFallback,
+                          ),
                         ),
                       ),
                     ),
@@ -502,7 +490,6 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
           onTap: () {
             final int index = _results.indexWhere((Note n) => n.id == note.id);
             if (index >= 0) setState(() => _selected = index);
-            _searchFocus.requestFocus();
           },
           onDoubleTap: _insert,
           child: SizedBox(
@@ -514,29 +501,14 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
                   decoration: BoxDecoration(
                     color: selected
                         ? p.accentSoft
-                        : (hovered ? p.surfaceSunken : Colors.transparent),
+                        : (hovered
+                              ? p.accent.withValues(alpha: 0.05)
+                              : Colors.transparent),
                     borderRadius: AppRadius.mdAll,
                   ),
                   padding: const EdgeInsets.symmetric(horizontal: 10),
                   child: Row(
                     children: <Widget>[
-                      Container(
-                        width: 28,
-                        height: 28,
-                        decoration: BoxDecoration(
-                          color: selected ? p.surfaceRaised : p.surfaceSunken,
-                          borderRadius: AppRadius.mdAll,
-                          border: Border.all(
-                            color: selected ? p.outline : p.outlineSoft,
-                          ),
-                        ),
-                        child: Icon(
-                          LucideIcons.fileText,
-                          size: AppIconSize.xs,
-                          color: selected ? p.accent : p.textSecondary,
-                        ),
-                      ),
-                      const SizedBox(width: 9),
                       Expanded(
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
@@ -603,62 +575,53 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
         padding: const EdgeInsets.fromLTRB(20, 22, 20, 20),
         child: Column(
           mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: p.surfaceSunken,
-              borderRadius: AppRadius.lgAll,
-              border: Border.all(color: p.outlineSoft),
-            ),
-            child: Icon(
-              LucideIcons.layoutTemplate,
-              size: 17,
-              color: p.textSecondary,
-            ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            '还没有模板',
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: p.textPrimary,
-              fontFamily: AppFonts.ui,
-              fontFamilyFallback: AppFonts.uiFallback,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '在「${widget.templatesFolder}」文件夹里放任意 Markdown 笔记，它就会出现在这里。模板也是普通笔记，可以直接编辑。',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 11.5,
-              height: 1.6,
+          children: <Widget>[
+            Icon(
+              LucideIcons.blocks,
+              size: AppIconSize.lg,
               color: p.textTertiary,
-              fontFamily: AppFonts.ui,
-              fontFamilyFallback: AppFonts.uiFallback,
             ),
-          ),
-          const SizedBox(height: AppSpace.md),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: <Widget>[
-              TemplateDialogButton(
-                label: '打开模板文件夹',
-                icon: LucideIcons.folderOpen,
-                onPressed: () => _finish(TemplatePickerAction.openFolder),
+            const SizedBox(height: 10),
+            Text(
+              '还没有模板',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: p.textPrimary,
+                fontFamily: AppFonts.ui,
+                fontFamilyFallback: AppFonts.uiFallback,
               ),
-              const SizedBox(width: AppSpace.sm),
-              TemplateDialogButton(
-                label: '新建模板',
-                icon: LucideIcons.filePlus2,
-                onPressed: () => _finish(TemplatePickerAction.newTemplate),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '在「${widget.templatesFolder}」文件夹里放任意 Markdown 笔记，它就会出现在这里。模板也是普通笔记，可以直接编辑。',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 11.5,
+                height: 1.6,
+                color: p.textTertiary,
+                fontFamily: AppFonts.ui,
+                fontFamilyFallback: AppFonts.uiFallback,
               ),
-            ],
-          ),
-        ],
+            ),
+            const SizedBox(height: AppSpace.md),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: <Widget>[
+                TemplateDialogButton(
+                  label: '打开模板文件夹',
+                  icon: LucideIcons.folderOpen,
+                  onPressed: () => _finish(TemplatePickerAction.openFolder),
+                ),
+                const SizedBox(width: AppSpace.sm),
+                TemplateDialogButton(
+                  label: '新建模板',
+                  icon: LucideIcons.filePlus2,
+                  onPressed: () => _finish(TemplatePickerAction.newTemplate),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
@@ -932,9 +895,7 @@ class _MarkdownPreview extends StatelessWidget {
   }
 
   Widget _rich(AppPalette p, String text, TextStyle style) {
-    return Text.rich(
-      TextSpan(style: style, children: _inline(p, text, style)),
-    );
+    return Text.rich(TextSpan(style: style, children: _inline(p, text, style)));
   }
 
   Widget _codeBlock(AppPalette p, String code) {
@@ -1030,10 +991,7 @@ class _MarkdownPreview extends StatelessWidget {
           SizedBox(
             width: 22,
             height: 12.5 * 1.72,
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: markerWidget,
-            ),
+            child: Align(alignment: Alignment.centerLeft, child: markerWidget),
           ),
           Expanded(child: _rich(p, text, style)),
         ],
@@ -1153,7 +1111,12 @@ class _MarkdownPreview extends StatelessWidget {
         if (tag != null) {
           final String name = tag.group(0)!;
           flush();
-          spans.add(TextSpan(text: name, style: base.copyWith(color: p.accent)));
+          spans.add(
+            TextSpan(
+              text: name,
+              style: base.copyWith(color: p.accent),
+            ),
+          );
           i += name.length;
           continue;
         }
@@ -1180,7 +1143,6 @@ class _Kbd extends StatelessWidget {
       margin: const EdgeInsets.only(right: 2),
       padding: const EdgeInsets.symmetric(horizontal: 4),
       decoration: BoxDecoration(
-        color: p.surfaceSunken,
         border: Border.all(color: p.outline),
         borderRadius: BorderRadius.circular(AppRadius.xs),
       ),

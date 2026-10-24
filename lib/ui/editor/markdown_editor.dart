@@ -907,6 +907,7 @@ class MarkdownEditor extends StatefulWidget {
     this.onChanged,
     this.onTopLineChanged,
     this.onLineTopProbe,
+    this.onJumpSettled,
     this.onTagTap,
     this.onWikilinkTap,
     this.documentId,
@@ -947,6 +948,13 @@ class MarkdownEditor extends StatefulWidget {
   /// 注册、卸载时注销，调用时再向渲染对象取当前排版结果。返回值包含滚动内边距
   /// 与头部（标题）的高度，滚动控制器要的正是这个坐标。
   final ValueChanged<double? Function(int line)?>? onLineTopProbe;
+
+  /// 把「立刻重排 + 重绘一次正文输入框」的能力交给宿主（大纲跳转用）。
+  ///
+  /// 按行绘制只画当前视口区间：跳转那一帧若把区间算成空段（或该帧因为需要
+  /// 排版被跳过绘制），位置落定之后就再没有新帧，屏幕会一直空白到下一次
+  /// hover。宿主在跳转后调用一次，把最终画面落定。挂载时注册、卸载时注销。
+  final ValueChanged<VoidCallback?>? onJumpSettled;
 
   /// 点击 `#标签` 胶囊时回调，参数是不带 `#` 的标签名。
   ///
@@ -1146,6 +1154,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     widget.scrollController.addListener(_scheduleOverlayRefresh);
     widget.scrollController.addListener(_reportTopLine);
     widget.onLineTopProbe?.call(_lineTopOf);
+    widget.onJumpSettled?.call(_forceRepaint);
     _foldDocument = widget.documentId ?? '';
     _foldText = widget.controller.text;
     _foldedListStarts = Set<int>.of(
@@ -1168,6 +1177,18 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
         ? header.size.height
         : 0;
     return widget.padding.top + headerHeight + top;
+  }
+
+  /// 让正文输入框按当前状态重排 + 重绘一次（大纲跳转收尾用）。
+  ///
+  /// 不靠 `setState`：重建出来的 `LineEditableText` 属性与上一帧完全相同，
+  /// `didUpdateWidget` 会早退，既不排版也不重绘。这里直接给渲染对象打标记；
+  /// 排版走增量缓存命中路径（未变行直接复用），代价在 1ms 量级。
+  void _forceRepaint() {
+    final RenderLineEditable? field = _editable();
+    if (field == null || !field.attached) return;
+    field.markNeedsLayout();
+    field.markNeedsPaint();
   }
 
   @override
@@ -3190,6 +3211,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     widget.scrollController.removeListener(_scheduleOverlayRefresh);
     widget.scrollController.removeListener(_reportTopLine);
     widget.onLineTopProbe?.call(null);
+    widget.onJumpSettled?.call(null);
     _cellText?.dispose();
     _cellFocus?.dispose();
     _layoutPool.dispose();

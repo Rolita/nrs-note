@@ -7,6 +7,7 @@ import '../../core/app_enums.dart';
 import '../../core/platform/vault_sync.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
+import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/markdown_outline.dart';
 import '../../data/models/note.dart';
 import '../../data/storage/note_store.dart';
@@ -21,6 +22,7 @@ import '../common/delete_dialog.dart';
 import '../common/notices.dart';
 import '../editor/editor_pane.dart';
 import '../editor/outline_panel.dart';
+import '../editor/table_panel.dart';
 import '../templates/template_interaction.dart';
 import '../templates/template_new_note_dialog.dart';
 import '../templates/template_picker.dart';
@@ -49,6 +51,12 @@ class _AppShellState extends State<AppShell> {
   final FocusNode _shellFocus = FocusNode(debugLabel: 'nrs-shell');
   final NoticeController _notices = NoticeController();
   final TemplateService _templates = const TemplateService();
+
+  /// The body field's value, republished by [EditorPane] for the table tools.
+  /// It lives here so the panel can rebuild on a caret move without rebuilding
+  /// the shell around it.
+  final ValueNotifier<TextEditingValue> _bodyValue =
+      ValueNotifier<TextEditingValue>(const TextEditingValue());
 
   late final NotesController _notes;
   late final SettingsController _settings;
@@ -85,6 +93,7 @@ class _AppShellState extends State<AppShell> {
     _stopVaultSync?.call();
     _notices.dispose();
     _shellFocus.dispose();
+    _bodyValue.dispose();
     super.dispose();
   }
 
@@ -366,11 +375,7 @@ class _AppShellState extends State<AppShell> {
       return;
     }
     if (_notes.draft == null && _notes.selectedNote == null) {
-      _toast(
-        '没有打开的笔记',
-        kind: NoticeKind.info,
-        detail: '先打开一篇笔记，或把动作改成「新建笔记」',
-      );
+      _toast('没有打开的笔记', kind: NoticeKind.info, detail: '先打开一篇笔记，或把动作改成「新建笔记」');
       return;
     }
     await _insertTemplate(template);
@@ -489,51 +494,51 @@ class _AppShellState extends State<AppShell> {
     final SettingsController settings = context.read<SettingsController>();
     final Map<ShortcutActivator, VoidCallback> bindings =
         <ShortcutActivator, VoidCallback>{
-      const SingleActivator(LogicalKeyboardKey.keyN, control: true):
-          _createNote,
-      const SingleActivator(LogicalKeyboardKey.keyP, control: true):
-          _openTemplatePicker,
-      const SingleActivator(LogicalKeyboardKey.comma, control: true): () =>
-          showSettingsDialog(context),
-      const SingleActivator(LogicalKeyboardKey.backslash, control: true):
-          _toggleSidebar,
-      const SingleActivator(
-        LogicalKeyboardKey.keyF,
-        control: true,
-        shift: true,
-      ): () =>
-          settings.focusMode = !settings.focusMode,
-      const SingleActivator(
-        LogicalKeyboardKey.keyO,
-        control: true,
-        shift: true,
-      ): () =>
-          settings.outlineVisible = !settings.outlineVisible,
-      const SingleActivator(
-        LogicalKeyboardKey.arrowUp,
-        control: true,
-        alt: true,
-      ): () =>
-          notes.selectAdjacentInList(notes.visibleNotes, -1),
-      const SingleActivator(
-        LogicalKeyboardKey.arrowDown,
-        control: true,
-        alt: true,
-      ): () =>
-          notes.selectAdjacentInList(notes.visibleNotes, 1),
-      // Ctrl+Tab walks the open tabs, the way every tabbed app does.
-      const SingleActivator(LogicalKeyboardKey.tab, control: true): () =>
-          notes.selectAdjacentTab(1),
-      const SingleActivator(
-        LogicalKeyboardKey.tab,
-        control: true,
-        shift: true,
-      ): () =>
-          notes.selectAdjacentTab(-1),
-      const SingleActivator(LogicalKeyboardKey.escape): () {
-        if (settings.focusMode) settings.focusMode = false;
-      },
-    };
+          const SingleActivator(LogicalKeyboardKey.keyN, control: true):
+              _createNote,
+          const SingleActivator(LogicalKeyboardKey.keyP, control: true):
+              _openTemplatePicker,
+          const SingleActivator(LogicalKeyboardKey.comma, control: true): () =>
+              showSettingsDialog(context),
+          const SingleActivator(LogicalKeyboardKey.backslash, control: true):
+              _toggleSidebar,
+          const SingleActivator(
+            LogicalKeyboardKey.keyF,
+            control: true,
+            shift: true,
+          ): () =>
+              settings.focusMode = !settings.focusMode,
+          const SingleActivator(
+            LogicalKeyboardKey.keyO,
+            control: true,
+            shift: true,
+          ): () =>
+              settings.outlineVisible = !settings.outlineVisible,
+          const SingleActivator(
+            LogicalKeyboardKey.arrowUp,
+            control: true,
+            alt: true,
+          ): () =>
+              notes.selectAdjacentInList(notes.visibleNotes, -1),
+          const SingleActivator(
+            LogicalKeyboardKey.arrowDown,
+            control: true,
+            alt: true,
+          ): () =>
+              notes.selectAdjacentInList(notes.visibleNotes, 1),
+          // Ctrl+Tab walks the open tabs, the way every tabbed app does.
+          const SingleActivator(LogicalKeyboardKey.tab, control: true): () =>
+              notes.selectAdjacentTab(1),
+          const SingleActivator(
+            LogicalKeyboardKey.tab,
+            control: true,
+            shift: true,
+          ): () =>
+              notes.selectAdjacentTab(-1),
+          const SingleActivator(LogicalKeyboardKey.escape): () {
+            if (settings.focusMode) settings.focusMode = false;
+          },
+        };
 
     // Template bindings come from settings, so they are added on top of the
     // built-ins. putIfAbsent keeps a stale or hand-edited binding from
@@ -591,6 +596,12 @@ class _AppShellState extends State<AppShell> {
                     !zen &&
                     settings.outlineVisible &&
                     c.maxWidth >= AppLayout.outlineMinShellWidth;
+                // 大纲与表格共用右侧那一栏：设置层已保证两者不会同时为真，
+                // 这里只负责在窗口太窄时把这一栏让给正文。
+                final bool showTable =
+                    !zen &&
+                    settings.tablePanelVisible &&
+                    c.maxWidth >= AppLayout.outlineMinShellWidth;
                 final double leftInset = zen
                     ? 0
                     : AppLayout.railWidth +
@@ -598,11 +609,11 @@ class _AppShellState extends State<AppShell> {
                               ? 0
                               : settings.listWidth +
                                     AppLayout.resizeHandleWidth);
-                // The outline button aligns with the *panel*, not with the drag
+                // The toggle pair aligns with the *panel*, not with the drag
                 // handle in front of it, so the handle's width is not counted.
                 final double rightInset = showOutline
                     ? settings.outlineWidth
-                    : 0;
+                    : (showTable ? settings.tablePanelWidth : 0);
                 return Column(
                   children: <Widget>[
                     // The app's own caption: drag to move, double-click to
@@ -662,6 +673,7 @@ class _AppShellState extends State<AppShell> {
                               Expanded(
                                 child: EditorPane(
                                   key: _editorKey,
+                                  bodyValue: _bodyValue,
                                   onDelete: _confirmDelete,
                                   onOpenSearch: () =>
                                       _selectView(SidebarView.search),
@@ -685,6 +697,24 @@ class _AppShellState extends State<AppShell> {
                                   onSelect: (int line) => _editorKey
                                       .currentState
                                       ?.goToHeading(line),
+                                ),
+                              ],
+                              if (showTable) ...<Widget>[
+                                ResizeHandle(
+                                  background: p.surface,
+                                  onDelta: (double d) =>
+                                      settings.tablePanelWidth =
+                                          settings.tablePanelWidth - d,
+                                ),
+                                TablePanel(
+                                  width: settings.tablePanelWidth,
+                                  value: _bodyValue,
+                                  onApply: (MarkdownEditFn fn) =>
+                                      _editorKey.currentState?.applyEdit(fn),
+                                  onJump: (int offset) =>
+                                      _editorKey.currentState?.goToOffset(
+                                        offset,
+                                      ),
                                 ),
                               ],
                             ],

@@ -130,6 +130,8 @@ void main() {
   test('内容宽度变化让所有表重测', () {
     layoutTables();
     expect(blocks.debugTableMeasures, 2);
+    // 两张表一共 10 个非编辑格，首次测量全部建树。
+    expect(blocks.debugCellSpanBuilds, 10);
 
     const LineBlockContext narrow = LineBlockContext(
       contentWidth: 320,
@@ -138,6 +140,76 @@ void main() {
     );
     layoutTables(narrow);
     expect(blocks.debugTableMeasures, 4);
+    // 环境变化清空了按格缓存：所有格重新建树。
+    expect(blocks.debugCellSpanBuilds, 20);
+  });
+
+  test('同一格连续输入只重建该格', () {
+    // 被编辑的那一格远窄于同列其它内容：连打几个字符不会撑宽列，列宽
+    // 不动，其余格的 painter 才能原样命中。列宽一旦变化，同列每一格都得
+    // 重排（它们的挤压结果与列宽绑定），这是测量本身的约束。
+    text =
+        '| 宽列 | 很窄的列 |\n'
+        '| --- | --- |\n'
+        '| aaaaaaaaaaaaaaaaaaaaaa | x |\n'
+        '| bbbbbbbbbbbbbbbbbbbbbb | y |\n';
+    layoutTables();
+    expect(blocks.debugTableMeasures, 1);
+    final int baseSpans = blocks.debugCellSpanBuilds;
+    final int basePainters = blocks.debugCellPainterBuilds;
+    expect(baseSpans, 6);
+    expect(basePainters, 6);
+
+    // 进入这一格：整表重测一次，只有这一格需要新 painter。
+    final int x = text.indexOf('x');
+    selection = TextSelection.collapsed(offset: x + 1);
+    layoutTables();
+    expect(blocks.debugTableMeasures, 2);
+    expect(blocks.debugCellSpanBuilds, baseSpans);
+    expect(blocks.debugCellPainterBuilds, basePainters + 1);
+
+    // 在同一格里连打三个字符：其余格全部命中缓存。
+    for (int i = 0; i < 3; i++) {
+      text = text.replaceRange(x + 1, x + 1, 'x');
+      layoutTables();
+    }
+    expect(blocks.debugTableMeasures, 5);
+    expect(blocks.debugCellSpanBuilds, baseSpans);
+    expect(blocks.debugCellPainterBuilds, basePainters + 4);
+  });
+
+  test('增量测量与全新实例的几何一致', () {
+    layoutTables();
+    final int a = text.indexOf('a');
+    selection = TextSelection.collapsed(offset: a + 1);
+    for (int i = 0; i < 3; i++) {
+      text = text.replaceRange(a + 1, a + 1, 'x');
+      layoutTables();
+    }
+
+    final LiveTableBlocks fresh = LiveTableBlocks(
+      base: base,
+      palette: palette,
+      text: () => text,
+      selection: () => selection,
+    );
+    addTearDown(fresh.dispose);
+
+    for (final SourceLine line in tableLines(text)) {
+      final LineBlockView incremental = blocks.blockFor(line, context)!;
+      final LineBlockView expected = fresh.blockFor(line, context)!;
+      expect(
+        (incremental as TableRowChrome).chromeCells(),
+        (expected as TableRowChrome).chromeCells(),
+      );
+      for (int offset = line.start; offset <= line.end; offset++) {
+        expect(
+          incremental.caretRectAt(offset),
+          expected.caretRectAt(offset),
+          reason: 'offset $offset on line ${line.index}',
+        );
+      }
+    }
   });
 
   test('表格上方插入行后行号与偏移重绑，不重测', () {

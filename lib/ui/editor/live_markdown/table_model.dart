@@ -163,52 +163,45 @@ class _CellData {
     required this.style,
     required this.spans,
     required this.codeRuns,
-    required this.natural,
     required this.width,
     required this.align,
+    this.memo,
   });
 
   final _ParsedCell cell;
   final TextStyle style;
 
+  /// The cell's memoized tree and natural width, or null for the cell being
+  /// edited (its source changes with every keystroke, so it is never cached).
+  final _CellMemo? memo;
+
   /// Inline code tokens, in [cell] text coordinates.
   final List<_CellCode> codeRuns;
 
   /// The cell's painted tree — the same runs the row renderer draws and the
-  /// skeleton lays out invisibly. Any tracking correction is already in it, so
-  /// the two can never disagree about where a character sits.
+  /// skeleton lays out invisibly, so the two can never disagree about where a
+  /// character sits.
   final List<InlineSpan> spans;
 
-  /// Width the text wants, one line, no wrapping.
-  final double natural;
-
-  /// Width the column's *text area* got after the whole table was fitted.
+  /// Width the column's *text area* got after the whole table was fitted. A
+  /// cell wider than this wraps inside it.
   final double width;
 
   /// Column alignment, from the divider row.
   final TextAlign align;
-
-  /// Letter spacing that squeezes [spans] into [width]. Zero unless the
-  /// column had to shrink.
-  double letterSpacing = 0;
 
   /// The cell box's left edge and full width (padding included), in the
   /// table's own coordinates. Filled by [_measureTable].
   double x = 0;
   double boxWidth = 0;
 
-  /// How wide the painted text actually comes out: [natural], or exactly the
-  /// text area when the column had to squeeze it.
-  double get advance => math.min(natural, width);
-
-  /// Where the painted text starts inside the box, honouring [align]. The
-  /// skeleton is placed from this number, which is what keeps a click in a
-  /// centred or right-aligned cell on the character under the pointer.
-  double get textX => switch (align) {
-    TextAlign.center => x + (boxWidth - advance) / 2,
-    TextAlign.end => x + boxWidth - _kCellPad - advance,
-    _ => x + _kCellPad,
-  };
+  /// Where the painted text starts inside the box: always the padding edge.
+  ///
+  /// The painter itself is laid out at exactly [width] with [align], so it
+  /// aligns every line of a wrapped cell; shifting the whole block by an
+  /// `advance` (which only describes the unwrapped text) would leave wrapped
+  /// cells flush left no matter what the divider asked for.
+  double get textX => x + _kCellPad;
 }
 
 class _Table {
@@ -264,6 +257,19 @@ const double _kSelectRadius = 2;
 /// 「插入 ▸ 表格」 snippet writes — has a natural width of zero and collapses to
 /// a 32px speck.
 const double _kMinCell = 64;
+
+/// The narrowest a column is allowed to get once the table is too wide to fit
+/// on one line, in logical pixels at [_kReadableColAt] font size.
+///
+/// A wide table wraps rather than shrinks: 88px is about six Chinese
+/// characters at the default 15.5px, enough for a short label to stay on one
+/// line and wide enough for a wrapped paragraph to still read in columns.
+/// Scaled with the editor's font size and the accessibility text scale.
+const double _kReadableCol = 88;
+
+/// Font size [_kReadableCol] was designed at; the readable floor keeps the same
+/// number of glyphs as the editor's font size changes.
+const double _kReadableColAt = 15.5;
 
 /// Splits `| a | b |` into its cells, keeping each cell's absolute offset.
 ///

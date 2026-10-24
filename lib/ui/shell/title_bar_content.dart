@@ -127,6 +127,14 @@ class TitleBarLayout extends StatelessWidget {
       onPressed: () => settings.outlineVisible = !settings.outlineVisible,
     );
 
+    // 大纲与表格共用右侧那一栏，互斥关系由 SettingsController 保证。
+    final Widget tableButton = _BarButton(
+      icon: LucideIcons.table,
+      tooltip: '表格',
+      selected: settings.tablePanelVisible,
+      onPressed: () => settings.tablePanelVisible = !settings.tablePanelVisible,
+    );
+
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints c) {
         final double width = c.maxWidth;
@@ -136,16 +144,14 @@ class TitleBarLayout extends StatelessWidget {
           leftInset,
           collapsed ? _kLeadingCollapsedWidth : _kLeadingWidth,
         );
-        // The outline button sits *on* the outline's left edge; when there is no
-        // outline to align with it parks against the caption buttons instead.
-        final double outlineLeft = math
-            .min(width - rightInset, width - captionWidth - _kBarButtonSize)
-            .clamp(0.0, math.max(0.0, width - captionWidth - _kBarButtonSize));
-        // The tab strip may grow up to the outline button, and no further.
-        final double tabsRight = math.max(
-          rightInset,
-          captionWidth + _kBarButtonSize,
-        );
+        // Two toggles, one seam: they sit on the left edge of whichever panel is
+        // open, so the pair lines up with the panel below instead of drifting.
+        final double pairWidth = _kBarButtonSize * 2 + AppSpace.xs;
+        final double pairLeft = math
+            .min(width - rightInset, width - captionWidth - pairWidth)
+            .clamp(0.0, math.max(0.0, width - captionWidth - pairWidth));
+        // The tab strip may grow up to the toggles, and no further.
+        final double tabsRight = math.max(rightInset, captionWidth + pairWidth);
 
         return Stack(
           children: <Widget>[
@@ -159,11 +165,20 @@ class TitleBarLayout extends StatelessWidget {
               ),
             ),
             Positioned(
-              left: outlineLeft,
-              width: _kBarButtonSize,
+              left: pairLeft,
+              width: pairWidth,
               top: 0,
               bottom: 0,
-              child: Center(child: outlineButton),
+              child: Center(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    outlineButton,
+                    const SizedBox(width: AppSpace.xs),
+                    tableButton,
+                  ],
+                ),
+              ),
             ),
             Positioned(
               left: tabsLeft,
@@ -262,11 +277,7 @@ class _BarButtonState extends State<_BarButton> {
               color: background,
               borderRadius: AppRadius.mdAll,
             ),
-            child: Icon(
-              widget.icon,
-              size: AppIconSize.sm,
-              color: foreground,
-            ),
+            child: Icon(widget.icon, size: AppIconSize.sm, color: foreground),
           ),
         ),
       ),
@@ -326,7 +337,9 @@ class _TitleTabState extends State<_TitleTab> {
         : widget.note.title.trim();
     final Color background = widget.active
         ? p.surface
-        : (_hovered ? p.surfaceRaised.withValues(alpha: 0.6) : Colors.transparent);
+        : (_hovered
+              ? p.surfaceRaised.withValues(alpha: 0.6)
+              : Colors.transparent);
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,

@@ -547,6 +547,35 @@ void main() {
     );
   });
 
+  testWidgets('表头开关在「行」里加、删分隔行', (WidgetTester tester) async {
+    const String table = '| a | b |\n| c | d |';
+    final MarkdownSourceController controller = await pump(tester, table);
+
+    await openMenu(tester, glyph(tester, table.indexOf('a')).center);
+    await openSubmenu(tester, '表格工具');
+    await openSubmenu(tester, '行');
+    expect(find.text('设为表头'), findsOneWidget);
+    expect(find.text('取消表头'), findsNothing);
+    await openSubmenu(tester, '设为表头');
+    expect(
+      controller.text,
+      '| a | b |\n| --- | --- |\n| c | d |',
+      reason: '设为表头 = 第一行当表头 + 补一行分隔行，行本身不动',
+    );
+
+    await openMenu(tester, glyph(tester, controller.text.indexOf('c')).center);
+    await openSubmenu(tester, '表格工具');
+    await openSubmenu(tester, '行');
+    expect(find.text('取消表头'), findsOneWidget);
+    expect(find.text('设为表头'), findsNothing);
+    await openSubmenu(tester, '取消表头');
+    expect(
+      controller.text,
+      table,
+      reason: '取消表头只删分隔行，数据行一行不少',
+    );
+  });
+
   testWidgets(
     '表格工具 counts selected rows but not a perpendicular column block',
     (WidgetTester tester) async {

@@ -51,6 +51,17 @@ class LiveTableBlocks {
   final Map<_Table, (int, int, List<_RowBand?>)> _bandCache =
       <_Table, (int, int, List<_RowBand?>)>{};
 
+  /// 格的 span 树、自然宽、painter 跨测量复用：一次按键只新建真正变了的格。
+  final _CellMemoStore _cellMemo = _CellMemoStore();
+
+  /// 实际建过多少棵非编辑格的树；同格连续输入时应保持不变。
+  @visibleForTesting
+  int get debugCellSpanBuilds => _cellMemo.spanBuilds;
+
+  /// 实际排版过多少次格 painter，包含正在编辑的那一格。
+  @visibleForTesting
+  int get debugCellPainterBuilds => _cellMemo.painterBuilds;
+
   @override
   bool operator ==(Object other) =>
       other is LiveTableBlocks &&
@@ -92,6 +103,7 @@ class LiveTableBlocks {
     _records.clear();
     _byLine.clear();
     _bandCache.clear();
+    _cellMemo.clear();
   }
 
   void _measure(String source, LineBlockContext context, int caret) {
@@ -109,6 +121,8 @@ class LiveTableBlocks {
     // 列宽、行高和每个格子的 TextPainter 一起构成一张表的测量，只有环境变了
     // 才会让所有表一起作废；源码或光标的变化按表处理。
     if (environmentChanged) _disposeBlocks();
+    _cellMemo.useEnvironment(context.textScaler, context.textDirection);
+    _cellMemo.beginMeasure();
 
     final List<SourceLine> sources = scanSourceLines(source);
     final List<String> lines = source.split('\n');
@@ -198,6 +212,7 @@ class LiveTableBlocks {
         ctx: ctx,
         editAt: caret,
         direction: context.textDirection,
+        memo: _cellMemo,
       );
       debugTableMeasures++;
       final (int, int) edit = _editCellOf(table, caret);
@@ -215,6 +230,7 @@ class LiveTableBlocks {
           palette: palette,
           textScaler: context.textScaler,
           direction: context.textDirection,
+          memoStore: _cellMemo,
           bandOf: (int index) => _bandOf(table, index),
         );
         blocks.add(block);
@@ -244,6 +260,14 @@ class LiveTableBlocks {
         _bandCache.remove(record.table);
       }
     }
+    // 复用的表没有重新走 _measureCells，但它们的格仍属于这一代：先打标记，
+    // 再让 sweep 释放真正没人用的条目。
+    for (final _TableRecord record in next) {
+      for (final _TableLineBlock block in record.blocks) {
+        block.touch(_cellMemo.generation);
+      }
+    }
+    _cellMemo.sweep();
     _records
       ..clear()
       ..addAll(next);
@@ -397,6 +421,7 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
     required this.palette,
     required this.textScaler,
     required this.direction,
+    required this.memoStore,
     required this.bandOf,
   }) {
     _measureCells();
@@ -419,6 +444,18 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
   final TextScaler textScaler;
   final TextDirection direction;
 
+  /// 格树与 painter 的共享缓存；实例归 [LiveTableBlocks] 所有。
+  final _CellMemoStore memoStore;
+
+  /// 每格对应的 memo（编辑中的格为 null），用于给这一代打标记。
+  final List<_CellMemo?> _memos = <_CellMemo?>[];
+
+  /// 由 store 拥有的 painter；null 表示这一格的 painter 归本块所有。
+  final List<_PaintedCell?> _paintedCells = <_PaintedCell?>[];
+
+  /// 本块自己建的 painter（编辑中的格），dispose 时由本块释放。
+  final List<TextPainter> _owned = <TextPainter>[];
+
   /// 按行号取整张表的选区色带（`null` 表示这一行没被选中）。
   final _RowBand? Function(int index) bandOf;
 
@@ -432,65 +469,137 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
   void _measureCells() {
     _contentHeight = table.rowHeight;
     for (final _CellData cell in row.data) {
-      final TextPainter tp = TextPainter(
-        text: TextSpan(style: cell.style, children: cell.spans),
-        textDirection: direction,
-        textScaler: textScaler,
-        // 永远一行：换行的格子会画到自己的行框外面，直接切到下一行。
-        maxLines: 1,
-        ellipsis: '…',
+      final _CellMemo? memo = cell.memo;
+      _PaintedCell? painted = memoStore.painted(
+        memo,
+        cell.width,
+        cell.align,
       );
-      tp.layout(maxWidth: math.max(1, cell.boxWidth - 2 * _kCellPad));
-      _painters.add(tp);
-      _chips.add(_chipsFor(tp, cell));
-      _contentHeight = math.max(_contentHeight, tp.height);
+      if (painted == null) {
+        // 格子的文本宽度就是列宽：放不下的部分在格子内部换行，行高随内容
+        // 变化（下面取各格 painter 高度的最大值）。
+        final double maxWidth = math.max(1, cell.width);
+        final TextPainter tp = TextPainter(
+          text: TextSpan(style: cell.style, children: cell.spans),
+          textDirection: direction,
+          textScaler: textScaler,
+          textAlign: cell.align,
+        )..layout(minWidth: maxWidth, maxWidth: maxWidth);
+        memoStore.notePainterBuild();
+        final List<_PaintedChip> chips = _chipsFor(tp, cell);
+        if (memo == null) {
+          // 编辑中的格每击键都变，不写共享缓存，由本块持有。
+          _owned.add(tp);
+        } else {
+          painted = memoStore.addPainted(
+            memo: memo,
+            width: cell.width,
+            align: cell.align,
+            painter: tp,
+            chips: chips,
+          );
+        }
+        _painters.add(tp);
+        _chips.add(chips);
+      } else {
+        _painters.add(painted.painter);
+        _chips.add(painted.chips);
+      }
+      _memos.add(memo);
+      _paintedCells.add(painted);
+      _contentHeight = math.max(_contentHeight, _painters.last.height);
+    }
+  }
+
+  /// 复用的表不会重新测量，但它的格仍在这一代里：sweep 之前必须打标记。
+  void touch(int generation) {
+    for (final _CellMemo? memo in _memos) {
+      if (memo != null) memo.usedIn = generation;
+    }
+    for (final _PaintedCell? cell in _paintedCells) {
+      if (cell != null) cell.usedIn = generation;
     }
   }
 
   /// 量出一个格子里每段行内代码的圆角底片（格子坐标）。
+  ///
+  /// 换行的格子会把一段代码折到两条视觉行上：底片按视觉行分别铺，否则会
+  /// 拉成一条横跨两行文字的长条。
   List<_PaintedChip> _chipsFor(TextPainter tp, _CellData cell) {
     if (cell.codeRuns.isEmpty) return const <_PaintedChip>[];
-    final double baseline = tp.computeDistanceToActualBaseline(
-      TextBaseline.alphabetic,
-    );
+    final List<LineMetrics> lines = tp.computeLineMetrics();
     final List<_PaintedChip> chips = <_PaintedChip>[];
     for (final _CellCode code in cell.codeRuns) {
       final List<TextBox> boxes = tp.getBoxesForSelection(
         TextSelection(baseOffset: code.start, extentOffset: code.end),
       );
       if (boxes.isEmpty) continue;
-      double left = boxes.first.left;
-      double right = boxes.first.right;
-      for (final TextBox box in boxes) {
-        left = math.min(left, box.left);
-        right = math.max(right, box.right);
-      }
-      final TextPainter metrics = TextPainter(
-        text: TextSpan(
-          text: code.probe.isEmpty ? ' ' : code.probe,
-          style: code.style,
-        ),
-        textDirection: direction,
-        textScaler: textScaler,
-      )..layout();
-      final double drop = metrics.computeDistanceToActualBaseline(
-        TextBaseline.alphabetic,
+      // 探针尺寸只取决于文字与样式，跨表跨测量共用；换行时每条视觉行都要用。
+      final (double drop, double probeHeight) = memoStore.probeMetrics(
+        code.probe.isEmpty ? ' ' : code.probe,
+        code.style,
       );
-      chips.add(
-        _PaintedChip(
-          Rect.fromLTRB(
-            left,
-            baseline - drop,
-            right,
-            baseline - drop + metrics.height,
+      if (lines.length <= 1) {
+        final double baseline = tp.computeDistanceToActualBaseline(
+          TextBaseline.alphabetic,
+        );
+        double left = boxes.first.left;
+        double right = boxes.first.right;
+        for (final TextBox box in boxes) {
+          left = math.min(left, box.left);
+          right = math.max(right, box.right);
+        }
+        chips.add(
+          _PaintedChip(
+            Rect.fromLTRB(
+              left,
+              baseline - drop,
+              right,
+              baseline - drop + probeHeight,
+            ),
+            code.fill,
+            tint: code.isCode,
           ),
-          code.fill,
-          tint: code.isCode,
-        ),
-      );
-      metrics.dispose();
+        );
+      } else {
+        final Map<int, (LineMetrics, double, double)> byLine =
+            <int, (LineMetrics, double, double)>{};
+        for (final TextBox box in boxes) {
+          final LineMetrics line = _lineAt(lines, (box.top + box.bottom) / 2);
+          final (LineMetrics, double, double) span =
+              byLine[line.lineNumber] ?? (line, box.left, box.right);
+          byLine[line.lineNumber] = (
+            line,
+            math.min(span.$2, box.left),
+            math.max(span.$3, box.right),
+          );
+        }
+        for (final (LineMetrics line, double left, double right)
+            in byLine.values) {
+          chips.add(
+            _PaintedChip(
+              Rect.fromLTRB(
+                left,
+                line.baseline - drop,
+                right,
+                line.baseline - drop + probeHeight,
+              ),
+              code.fill,
+              tint: code.isCode,
+            ),
+          );
+        }
+      }
     }
     return chips;
+  }
+
+  /// painter 坐标 [y] 落在哪条视觉行上。
+  static LineMetrics _lineAt(List<LineMetrics> lines, double y) {
+    for (final LineMetrics line in lines) {
+      if (y < line.baseline - line.ascent + line.height) return line;
+    }
+    return lines.last;
   }
 
   @override
@@ -591,15 +700,32 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
       final List<TextBox> boxes = tp.getBoxesForSelection(
         TextSelection(baseOffset: a - start, extentOffset: b - start),
       );
+      if (boxes.isEmpty) continue;
+      final List<LineMetrics> lines = tp.computeLineMetrics();
       for (final TextBox box in boxes) {
-        out.add(
-          Rect.fromLTRB(
-            cell.textX + box.left,
-            0,
-            cell.textX + box.right,
-            _contentHeight,
-          ),
-        );
+        // 单行格沿用整行高度（与表格色带一致）；换行后的格子每一折行
+        // 只染自己那一条，避免两条高亮在同一个格子里叠色。
+        if (lines.length <= 1) {
+          out.add(
+            Rect.fromLTRB(
+              cell.textX + box.left,
+              0,
+              cell.textX + box.right,
+              _contentHeight,
+            ),
+          );
+        } else {
+          final LineMetrics line = _lineAt(lines, (box.top + box.bottom) / 2);
+          final double top = _textTop(tp) + line.baseline - line.ascent;
+          out.add(
+            Rect.fromLTRB(
+              cell.textX + box.left,
+              top,
+              cell.textX + box.right,
+              top + line.height,
+            ),
+          );
+        }
       }
     }
     return out;
@@ -833,23 +959,9 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
   /// 从图标字体里重绘，而不是手描六个圆：绘制发生在自绘层里，`Icon` 需要
   /// 一个 widget，而那个 widget 会把光标需要的点击吞掉。
   void _paintGrip(Canvas canvas, Rect r, {required Color color}) {
-    final IconData icon = LucideIcons.gripVertical;
-    final TextPainter tp = TextPainter(
-      text: TextSpan(
-        text: String.fromCharCode(icon.codePoint),
-        style: TextStyle(
-          fontSize: _kGrip,
-          fontFamily: icon.fontFamily,
-          package: icon.fontPackage,
-          color: color,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-      // 抓手是界面，不是笔记：缩放时不该跟着变大。
-      textScaler: TextScaler.noScaling,
-    )..layout();
+    // 图标 painter 按颜色缓存：绘制每帧、每个可见抓手都要用，但只有两种颜色。
+    final TextPainter tp = memoStore.gripPainter(color);
     tp.paint(canvas, r.center - Offset(tp.width / 2, tp.height / 2));
-    tp.dispose();
   }
 
   void _paintPlus(
@@ -991,11 +1103,15 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
-    for (final TextPainter tp in _painters) {
+    // 共享 painter 由 _CellMemoStore 释放；这里只收自己建的那几个。
+    for (final TextPainter tp in _owned) {
       tp.dispose();
     }
+    _owned.clear();
     _painters.clear();
     _chips.clear();
+    _memos.clear();
+    _paintedCells.clear();
   }
 
   // ------------------------------------------------------------ chrome 契约

@@ -26,9 +26,7 @@ abstract final class AppRadius {
   static const BorderRadius mdAll = BorderRadius.all(Radius.circular(md));
   static const BorderRadius lgAll = BorderRadius.all(Radius.circular(lg));
   static const BorderRadius xlAll = BorderRadius.all(Radius.circular(xl));
-  static const BorderRadius pillAll = BorderRadius.all(
-    Radius.circular(pill),
-  );
+  static const BorderRadius pillAll = BorderRadius.all(Radius.circular(pill));
 }
 
 abstract final class AppMotion {
@@ -166,6 +164,12 @@ abstract final class AppLayout {
   static const double outlineWidth = 232;
   static const double outlineMinWidth = 200;
   static const double outlineMaxWidth = 420;
+
+  /// Far-right table tools panel. Slightly wider than the outline because its
+  /// commands sit four to a row and a 56px button has to hold a 17px glyph.
+  static const double tablePanelWidth = 252;
+  static const double tablePanelMinWidth = 220;
+  static const double tablePanelMaxWidth = 420;
 
   /// Below this width the outline yields to the editor.
   static const double outlineMinShellWidth = 980;

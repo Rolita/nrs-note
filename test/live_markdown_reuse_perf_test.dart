@@ -300,6 +300,57 @@ void main() {
     expect(h.blocks.debugTableMeasures, 24);
   });
 
+  test('持久实例：100 × 10 表内同格打字', () {
+    final Harness h = Harness(withTables: true);
+    addTearDown(h.dispose);
+    // 第一列的表头远宽于数据格：在同一格里连打几个字符也不会改变任何
+    // 列宽，于是只有被编辑的那一格需要重排。
+    final List<String> cells = <String>[
+      'headerheader',
+      for (int c = 1; c < 10; c++) 'c$c',
+    ];
+    final String row = '| ${List<String>.filled(10, 'a').join(' | ')} |';
+    h.text = <String>[
+      '| ${cells.join(' | ')} |',
+      '| ${List<String>.filled(10, '---').join(' | ')} |',
+      for (int r = 0; r < 99; r++) row,
+    ].join('\n');
+    h.selection = const TextSelection.collapsed(offset: -1);
+    h.layout().dispose();
+    expect(h.blocks.debugTableMeasures, 1);
+
+    // 光标放进第一行数据的第一格：整表重测一次。
+    final int cell = h.text.indexOf('| a |') + 3;
+    h.selection = TextSelection.collapsed(offset: cell);
+    h.layout().dispose();
+    expect(h.blocks.debugTableMeasures, 2);
+    final int spans = h.blocks.debugCellSpanBuilds;
+    final int painters = h.blocks.debugCellPainterBuilds;
+
+    const int rounds = 5;
+    final Stopwatch watch = Stopwatch()..start();
+    for (int i = 0; i < rounds; i++) {
+      h.text = h.text.replaceRange(cell, cell, 'x');
+      h.layout().dispose();
+    }
+    watch.stop();
+    final double ms = watch.elapsedMicroseconds / rounds / 1000;
+    // ignore: avoid_print
+    print(
+      'perf(持久实例): 100×10 表内同格打字 = ${ms.toStringAsFixed(2)} ms/次 '
+      '(measures=${h.blocks.debugTableMeasures}, '
+      'spans=${h.blocks.debugCellSpanBuilds - spans}, '
+      'painters=${h.blocks.debugCellPainterBuilds - painters})',
+    );
+    expect(h.blocks.debugTableMeasures, 2 + rounds);
+    // 其余 999 格全部命中按格缓存。
+    expect(h.blocks.debugCellSpanBuilds, spans);
+    expect(h.blocks.debugCellPainterBuilds, painters + rounds);
+    // 改造前 41.9 ms/次，改造后 8.5 ms/次（本机）。上限卡在 30 ms：
+    // 退回「整表逐格重建」会立刻撞线。
+    expect(ms, lessThan(30));
+  });
+
   test('持久实例：P2 光标移动只重排脏行', () {
     final Harness h = Harness(withTables: true);
     addTearDown(h.dispose);

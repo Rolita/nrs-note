@@ -25,8 +25,10 @@ class SettingsController extends ChangeNotifier {
   static const String _kSort = 'nrs.sort';
   static const String _kSidebar = 'nrs.sidebarCollapsed';
   static const String _kOutline = 'nrs.outlineVisible';
+  static const String _kTablePanel = 'nrs.tablePanelVisible';
   static const String _kListWidth = 'nrs.listWidth';
   static const String _kOutlineWidth = 'nrs.outlineWidth';
+  static const String _kTablePanelWidth = 'nrs.tablePanelWidth';
   static const String _kProseSize = 'nrs.proseSize';
   static const String _kFocus = 'nrs.focusMode';
   static const String _kSessionTabs = 'nrs.sessionTabs';
@@ -89,7 +91,10 @@ class SettingsController extends ChangeNotifier {
   PaletteOverride? overrideFor(ThemePresetId preset) {
     final ({ThemePresetId preset, PaletteOverride board})? draft = _draft;
     if (draft != null && draft.preset == preset) return draft.board;
-    return PaletteOverride.decode(_prefs.getString(_overrideKey(preset)), base: preset);
+    return PaletteOverride.decode(
+      _prefs.getString(_overrideKey(preset)),
+      base: preset,
+    );
   }
 
   /// While the pointer is down: update the draft and notify, **do not write**.
@@ -237,9 +242,21 @@ class SettingsController extends ChangeNotifier {
 
   bool get outlineVisible => _prefs.getBool(_kOutline) ?? true;
 
+  /// The outline and the table tools share the far-right column, so at most one
+  /// of them is open. Turning one on closes the other in the same write.
   set outlineVisible(bool value) {
     if (outlineVisible == value) return;
     _prefs.setBool(_kOutline, value);
+    if (value) _prefs.setBool(_kTablePanel, false);
+    notifyListeners();
+  }
+
+  bool get tablePanelVisible => _prefs.getBool(_kTablePanel) ?? false;
+
+  set tablePanelVisible(bool value) {
+    if (tablePanelVisible == value) return;
+    _prefs.setBool(_kTablePanel, value);
+    if (value) _prefs.setBool(_kOutline, false);
     notifyListeners();
   }
 
@@ -267,6 +284,20 @@ class SettingsController extends ChangeNotifier {
     );
     if ((outlineWidth - clamped).abs() < 0.5) return;
     _prefs.setDouble(_kOutlineWidth, clamped);
+    notifyListeners();
+  }
+
+  /// Width of the table tools column, dragged by its own handle.
+  double get tablePanelWidth =>
+      _prefs.getDouble(_kTablePanelWidth) ?? AppLayout.tablePanelWidth;
+
+  set tablePanelWidth(double value) {
+    final double clamped = value.clamp(
+      AppLayout.tablePanelMinWidth,
+      AppLayout.tablePanelMaxWidth,
+    );
+    if ((tablePanelWidth - clamped).abs() < 0.5) return;
+    _prefs.setDouble(_kTablePanelWidth, clamped);
     notifyListeners();
   }
 
@@ -298,7 +329,9 @@ class SettingsController extends ChangeNotifier {
 
   set templatesFolder(String value) {
     final String normalized = Note.normalizeFolderPath(value);
-    final String next = normalized.isEmpty ? kDefaultTemplatesFolder : normalized;
+    final String next = normalized.isEmpty
+        ? kDefaultTemplatesFolder
+        : normalized;
     if (templatesFolder == next) return;
     _prefs.setString(_kTemplatesFolder, next);
     notifyListeners();
@@ -352,10 +385,7 @@ class SettingsController extends ChangeNotifier {
   /// 通知每次正文输入也会来，而输入并不改变标签——不比较就会在打字时反复
   /// 重写整个偏好文件。
   void saveSession(List<String> tabs, String? selectedTab) {
-    final bool sameTabs = listEquals(
-      _prefs.getStringList(_kSessionTabs),
-      tabs,
-    );
+    final bool sameTabs = listEquals(_prefs.getStringList(_kSessionTabs), tabs);
     final bool sameSelected =
         _prefs.getString(_kSessionSelected) == selectedTab;
     if (sameTabs && sameSelected) return;

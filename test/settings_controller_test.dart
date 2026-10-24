@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:nrs/core/app_enums.dart';
 import 'package:nrs/core/theme/app_palette.dart';
+import 'package:nrs/core/theme/app_tokens.dart';
 import 'package:nrs/core/theme/theme_presets.dart';
 import 'package:nrs/state/settings_controller.dart';
 
@@ -285,6 +286,48 @@ void main() {
       );
       settings.restoreTheme(snapshot);
       expect(settings.overrideFor(ThemePresetId.obsidian), isNull);
+    });
+  });
+
+  group('表格面板', () {
+    test('默认关闭，宽度取面板默认值', () async {
+      final (:settings, :prefs) = await load();
+      expect(settings.tablePanelVisible, isFalse);
+      expect(settings.tablePanelWidth, AppLayout.tablePanelWidth);
+    });
+
+    test('开一个就关掉另一个：大纲与表格共用最右栏', () async {
+      final (:settings, :prefs) = await load();
+      expect(settings.outlineVisible, isTrue);
+
+      settings.tablePanelVisible = true;
+      expect(settings.tablePanelVisible, isTrue);
+      expect(settings.outlineVisible, isFalse);
+      expect(prefs.getBool('nrs.tablePanelVisible'), isTrue);
+      expect(prefs.getBool('nrs.outlineVisible'), isFalse);
+
+      settings.outlineVisible = true;
+      expect(settings.outlineVisible, isTrue);
+      expect(settings.tablePanelVisible, isFalse);
+      expect(prefs.getBool('nrs.tablePanelVisible'), isFalse);
+    });
+
+    test('宽度夹在 220–420，同值不再通知', () async {
+      final (:settings, :prefs) = await load();
+      int notifications = 0;
+      settings.addListener(() => notifications++);
+
+      settings.tablePanelWidth = 1000;
+      expect(settings.tablePanelWidth, AppLayout.tablePanelMaxWidth);
+      expect(notifications, 1);
+
+      settings.tablePanelWidth = 10;
+      expect(settings.tablePanelWidth, AppLayout.tablePanelMinWidth);
+      expect(notifications, 2);
+
+      settings.tablePanelWidth = AppLayout.tablePanelMinWidth;
+      expect(notifications, 2, reason: '同值不再通知');
+      expect(prefs.containsKey('nrs.tablePanelWidth'), isTrue);
     });
   });
 }

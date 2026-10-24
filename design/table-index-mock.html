@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>表格清单 · 四种可辨识方案</title>
+<style>
+  :root {
+    --canvas: #F7F7F5;
+    --sidebar: #F1F1EF;
+    --surface: #FCFCFB;
+    --raised: #FFFFFF;
+    --sunken: #EFEFED;
+    --outline: #DCDCD9;
+    --outline-soft: #E9E9E6;
+    --t1: #1B1B1A;
+    --t2: #5C5C59;
+    --t3: #8C8C88;
+    --accent: #2A2A28;
+    --accent-soft: #E9E9E6;
+    --mono: Consolas, "SF Mono", "Cascadia Mono", monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0;
+    background: #EDEDEA;
+    color: var(--t1);
+    font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body { padding: 28px 24px 60px; }
+  .stage { max-width: 1240px; margin: 0 auto; }
+
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 6px; letter-spacing: .2px; }
+  .sub { font-size: 12px; color: #6E6E6A; margin: 0 0 22px; line-height: 1.75; }
+
+  .grid { display: flex; gap: 22px; align-items: flex-start; flex-wrap: wrap; }
+  .col { width: 252px; flex: none; }
+  .col h2 {
+    font-size: 12px; font-weight: 600; margin: 0 0 5px;
+    color: #2A2A28; letter-spacing: .3px;
+  }
+  .col h2 span { color: #A0A09B; font-weight: 400; margin-left: 6px; }
+  .col .note {
+    font-size: 11px; color: #8C8C88; line-height: 1.65;
+    margin: 0 0 10px; min-height: 72px;
+  }
+
+  /* ------------------------------------------------------------- panel */
+
+  .panel {
+    height: 600px; display: flex; flex-direction: column;
+    background: var(--sidebar);
+    border: 1px solid var(--outline);
+    border-radius: 8px; overflow: hidden;
+    box-shadow: 0 10px 26px rgba(0, 0, 0, .07);
+  }
+
+  .ph {
+    height: 32px; flex: none;
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 12px;
+    font-size: 11.5px; font-weight: 600; letter-spacing: .4px;
+    color: var(--t3);
+  }
+  .ph svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .ph .n { margin-left: auto; font-weight: 400; font-size: 10.5px; font-family: var(--mono); }
+
+  .body { flex: 1; overflow: auto; padding: 2px 10px 14px; }
+  .body::-webkit-scrollbar { width: 0; }
+
+  .lead { font-size: 11px; color: var(--t3); padding: 4px 2px 8px; }
+
+  .titem {
+    position: relative; cursor: pointer; padding: 0 6px;
+    border-radius: 6px; transition: background .12s ease;
+  }
+  .titem:hover { background: var(--raised); }
+  .titem + .titem { border-top: 1px solid var(--outline-soft); }
+  .titem:hover + .titem, .titem:hover { border-top-color: transparent; }
+
+  .sect {
+    font-size: 11px; color: var(--t3);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .sect i { font-style: normal; color: var(--t2); }
+  .sect .hash { font-family: var(--mono); font-size: 9.5px; margin-right: 3px; color: #B0B0AA; }
+
+  .foot {
+    font-family: var(--mono); font-size: 10px; color: var(--t3);
+    display: flex; justify-content: flex-end; gap: 8px;
+  }
+
+  /* --- A: heading + real pipe preview --- */
+
+  .a-item { padding: 7px 2px 8px; }
+  .a-item .sect { margin-bottom: 4px; }
+  .pipe {
+    font-family: var(--mono); font-size: 10.5px; line-height: 1.55;
+    color: var(--t2);
+    white-space: pre; overflow: hidden; text-overflow: ellipsis;
+  }
+  .pipe .hdr { color: var(--t1); }
+  .a-item .foot { margin-top: 3px; }
+
+  /* --- B: mini grid --- */
+
+  .b-item { padding: 7px 2px 9px; }
+  .b-item .sect { margin-bottom: 5px; }
+  .mini {
+    border-collapse: collapse; table-layout: fixed; width: 100%;
+    font-family: var(--mono); font-size: 9.5px; color: var(--t2);
+    border-radius: 4px; overflow: hidden;
+  }
+  .mini td {
+    border: 1px solid var(--outline-soft);
+    padding: 2px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    line-height: 1.35;
+  }
+  .mini tr:first-child td { background: rgba(255, 255, 255, .6); color: var(--t1); }
+  .b-item .foot { margin-top: 4px; }
+
+  /* --- C: context paragraph + line --- */
+
+  .c-item { padding: 8px 2px 9px; }
+  .c-item .sect { margin-bottom: 3px; }
+  .ctx {
+    font-size: 12px; line-height: 1.55; color: var(--t2);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .c-item .foot { margin-top: 4px; }
+  .ln { color: var(--t2); }
+
+  /* --- D: grouped by heading, compact rows, search --- */
+
+  .search {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 2px 7px; margin-bottom: 2px;
+    border-bottom: 1px solid var(--outline-soft);
+  }
+  .search svg { width: 13px; height: 13px; stroke: var(--t3); fill: none; stroke-width: 1.8; stroke-linecap: round; }
+  .search .ph2 { font-size: 12px; color: var(--t3); flex: 1; }
+  .search .kbd {
+    font-family: var(--mono); font-size: 9.5px; color: var(--t3);
+    border: 1px solid var(--outline); border-radius: 4px; padding: 0 4px; line-height: 15px;
+  }
+
+  .group { padding-top: 6px; }
+  .gname {
+    display: flex; align-items: center; gap: 8px;
+    height: 22px; padding: 0 2px;
+  }
+  .gname .txt { font-size: 11px; font-weight: 600; color: var(--t3); letter-spacing: .3px; }
+  .gname .rule { flex: 1; height: 1px; background: var(--outline-soft); }
+
+  .d-row {
+    height: 28px; display: flex; align-items: center; gap: 8px;
+    padding: 0 6px; border-radius: 5px; cursor: pointer;
+  }
+  .d-row:hover { background: var(--raised); }
+  .d-row .no { width: 14px; font-family: var(--mono); font-size: 10px; color: var(--t3); text-align: right; }
+  .d-row .prev {
+    flex: 1; font-family: var(--mono); font-size: 10.5px; color: var(--t2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .d-row .sz { font-family: var(--mono); font-size: 10px; color: var(--t3); }
+
+  .legend {
+    margin-top: 26px; font-size: 11.5px; color: #6E6E6A; line-height: 1.8;
+    border-top: 1px solid #DCDCD9; padding-top: 14px;
+  }
+  .legend b { color: #2A2A28; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <h1>光标不在表格里时，侧边栏怎么列出全文的表格</h1>
+  <p class="sub">
+    同一篇示例文档、同样的 252px 面板宽度。四条都带悬浮态与点击跳转，差别只在「用什么线索帮你认出那张表」。
+    示例文档里有 6 张表，其中 5 张在小节标题下，最后一张直接跟在正文后面。
+  </p>
+
+  <div class="grid">
+
+    <!-- ==================================================== A -->
+    <section class="col">
+      <h2>A<span>标题归属 + 原文缩略表</span></h2>
+      <p class="note">先用「它在哪个小节」定位，再用真实的两三行 pipe 原文确认列名。最接近「我记得表头是这几个字」的记忆方式，信息密度高。</p>
+      <div class="panel">
+        <div class="ph">
+          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
+          表格 <span class="n">6 张</span>
+        </div>
+        <div class="body">
+          <div class="lead">全文 6 张表 · 点击跳转</div>
+
+          <div class="titem a-item">
+            <div class="sect"><span class="hash">##</span>2026 Q3 季度报告</div>
+            <div class="pipe"><span class="hdr">| 指标 | 目标 | 实际 |</span>
+| 收入 | 1200 | 1180 |
+| 成本 |  800 |  760 |</div>
+            <div class="foot">3 × 3 · L142</div>
+          </div>
+
+          <div class="titem a-item">
+            <div class="sect"><span class="hash">##</span>预算</div>
+            <div class="pipe"><span class="hdr">| 项目 | 2026 | 2027 |</span>
+| 研发 | 4800 | 5600 |
+| 市场 | 2100 | 2400 |</div>
+            <div class="foot">4 × 3 · L208</div>
+          </div>
+
+          <div class="titem a-item">
+            <div class="sect"><span class="hash">###</span>人员编制</div>
+            <div class="pipe"><span class="hdr">| 姓名 | 职位 | 入职 |</span>
+| 陈璐 | 设计 | 2024 |
+| 周舟 | 前端 | 2025 |</div>
+            <div class="foot">5 × 3 · L236</div>
+          </div>
+
+          <div class="titem a-item">
+            <div class="sect"><span class="hash">##</span>库存清单</div>
+            <div class="pipe"><span class="hdr">| SKU | 名称 | 库存 | 单价 | 供应商 |</span>
+| A-01 | 螺丝 | 1200 | 0.4 | 华强 |
+| A-02 | 垫片 |  860 | 0.2 | 华强 |</div>
+            <div class="foot">8 × 5 · L356</div>
+          </div>
+
+          <div class="titem a-item">
+            <div class="sect"><span class="hash">##</span>竞品对比</div>
+            <div class="pipe"><span class="hdr">| 产品 | 价格 | 优势 |</span>
+| Atlas | ￥99 | 速度 |
+| Nova  | ￥79 | 便宜 |</div>
+            <div class="foot">4 × 3 · L412</div>
+          </div>
+
+          <div class="titem a-item">
+            <div class="sect"><i>（正文后 · 无标题）</i></div>
+            <div class="pipe"><span class="hdr">| 时间 | 版本 | 变更 |</span>
+| 09-01 | 0.9 | 初版 |
+| 09-18 | 1.0 | 发布 |</div>
+            <div class="foot">3 × 3 · L520</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================================================== B -->
+    <section class="col">
+      <h2>B<span>迷你网格缩略图</span></h2>
+      <p class="note">直接画出表头和头两行数据，像 Excel 的 sheet 缩略图。形状与列宽一眼可见，适合「我记得那张表很宽／只有两列」的场景；但每条更高，同屏能看到的表更少。</p>
+      <div class="panel">
+        <div class="ph">
+          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
+          表格 <span class="n">6 张</span>
+        </div>
+        <div class="body">
+          <div class="lead">全文 6 张表 · 点击跳转</div>
+
+          <div class="titem b-item">
+            <div class="sect"><span class="hash">##</span>2026 Q3 季度报告</div>
+            <table class="mini">
+              <tr><td>指标</td><td>目标</td><td>实际</td></tr>
+              <tr><td>收入</td><td>1200</td><td>1180</td></tr>
+              <tr><td>成本</td><td>800</td><td>760</td></tr>
+            </table>
+            <div class="foot">3 × 3 · L142</div>
+          </div>
+
+          <div class="titem b-item">
+            <div class="sect"><span class="hash">##</span>预算</div>
+            <table class="mini">
+              <tr><td>项目</td><td>2026</td><td>2027</td></tr>
+              <tr><td>研发</td><td>4800</td><td>5600</td></tr>
+              <tr><td>市场</td><td>2100</td><td>2400</td></tr>
+            </table>
+            <div class="foot">4 × 3 · L208</div>
+          </div>
+
+          <div class="titem b-item">
+            <div class="sect"><span class="hash">###</span>人员编制</div>
+            <table class="mini">
+              <tr><td>姓名</td><td>职位</td><td>入职</td></tr>
+              <tr><td>陈璐</td><td>设计</td><td>2024</td></tr>
+              <tr><td>周舟</td><td>前端</td><td>2025</td></tr>
+            </table>
+            <div class="foot">5 × 3 · L236</div>
+          </div>
+
+          <div class="titem b-item">
+            <div class="sect"><span class="hash">##</span>库存清单</div>
+            <table class="mini">
+              <tr><td>SKU</td><td>名称</td><td>库存</td><td>单价</td><td>供应商</td></tr>
+              <tr><td>A-01</td><td>螺丝</td><td>1200</td><td>0.4</td><td>华强</td></tr>
+              <tr><td>A-02</td><td>垫片</td><td>860</td><td>0.2</td><td>华强</td></tr>
+            </table>
+            <div class="foot">8 × 5 · L356</div>
+          </div>
+
+          <div class="titem b-item">
+            <div class="sect"><span class="hash">##</span>竞品对比</div>
+            <table class="mini">
+              <tr><td>产品</td><td>价格</td><td>优势</td></tr>
+              <tr><td>Atlas</td><td>￥99</td><td>速度</td></tr>
+              <tr><td>Nova</td><td>￥79</td><td>便宜</td></tr>
+            </table>
+            <div class="foot">4 × 3 · L412</div>
+          </div>
+
+          <div class="titem b-item">
+            <div class="sect"><i>（正文后 · 无标题）</i></div>
+            <table class="mini">
+              <tr><td>时间</td><td>版本</td><td>变更</td></tr>
+              <tr><td>09-01</td><td>0.9</td><td>初版</td></tr>
+              <tr><td>09-18</td><td>1.0</td><td>发布</td></tr>
+            </table>
+            <div class="foot">3 × 3 · L520</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================================================== C -->
+    <section class="col">
+      <h2>C<span>上下文摘要 + 行号</span></h2>
+      <p class="note">只显示表前最近的小节标题与那一段正文，不画表格。最省空间、同屏最多，适合「记得表前面那句话」的人；同类表多时仍要靠文字分辨。</p>
+      <div class="panel">
+        <div class="ph">
+          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
+          表格 <span class="n">6 张</span>
+        </div>
+        <div class="body">
+          <div class="lead">全文 6 张表 · 点击跳转</div>
+
+          <div class="titem c-item">
+            <div class="sect"><span class="hash">##</span>2026 Q3 季度报告</div>
+            <div class="ctx">本季度收入小幅低于目标，成本控制好于预期，差额将在 Q4 追回。</div>
+            <div class="foot"><span class="ln">L142</span> · 3 × 3</div>
+          </div>
+
+          <div class="titem c-item">
+            <div class="sect"><span class="hash">##</span>预算</div>
+            <div class="ctx">研发与市场两条线的年度预算，2027 按 15% 增长预估，未计入新业务。</div>
+            <div class="foot"><span class="ln">L208</span> · 4 × 3</div>
+          </div>
+
+          <div class="titem c-item">
+            <div class="sect"><span class="hash">###</span>人员编制</div>
+            <div class="ctx">当前在职名单与入职年份，外包与实习不在表内。</div>
+            <div class="foot"><span class="ln">L236</span> · 5 × 3</div>
+          </div>
+
+          <div class="titem c-item">
+            <div class="sect"><span class="hash">##</span>库存清单</div>
+            <div class="ctx">仓库 A 的实时库存，单价为含税采购价，低于 500 的条目需要补货。</div>
+            <div class="foot"><span class="ln">L356</span> · 8 × 5</div>
+          </div>
+
+          <div class="titem c-item">
+            <div class="sect"><span class="hash">##</span>竞品对比</div>
+            <div class="ctx">三家竞品的公开报价与主要卖点，数据采集于 9 月 12 日。</div>
+            <div class="foot"><span class="ln">L412</span> · 4 × 3</div>
+          </div>
+
+          <div class="titem c-item">
+            <div class="sect"><i>（正文后 · 无标题）</i></div>
+            <div class="ctx">以下为历史备份数据，仅保留最近两次发布记录。</div>
+            <div class="foot"><span class="ln">L520</span> · 3 × 3</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================================================== D -->
+    <section class="col">
+      <h2>D<span>按标题分组 + 紧凑行</span></h2>
+      <p class="note">把清单当成大纲的延伸：先按小节标题分组，表作为组内条目，一行预览 + 行号。表格多时顶部出现筛选框；结构最清晰，但每张表占两行。</p>
+      <div class="panel">
+        <div class="ph">
+          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
+          表格 <span class="n">6 张</span>
+        </div>
+        <div class="body">
+          <div class="search">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+            <span class="ph2">筛选表格内容…</span>
+            <span class="kbd">6 张</span>
+          </div>
+
+          <div class="group">
+            <div class="gname"><span class="txt">2026 Q3 季度报告</span><span class="rule"></span></div>
+            <div class="d-row">
+              <span class="no">1</span>
+              <span class="prev">| 指标 | 目标 | 实际 |</span>
+              <span class="sz">3 × 3</span>
+            </div>
+          </div>
+
+          <div class="group">
+            <div class="gname"><span class="txt">预算</span><span class="rule"></span></div>
+            <div class="d-row">
+              <span class="no">2</span>
+              <span class="prev">| 项目 | 2026 | 2027 |</span>
+              <span class="sz">4 × 3</span>
+            </div>
+          </div>
+
+          <div class="group">
+            <div class="gname"><span class="txt">人员编制</span><span class="rule"></span></div>
+            <div class="d-row">
+              <span class="no">3</span>
+              <span class="prev">| 姓名 | 职位 | 入职 |</span>
+              <span class="sz">5 × 3</span>
+            </div>
+          </div>
+
+          <div class="group">
+            <div class="gname"><span class="txt">库存清单</span><span class="rule"></span></div>
+            <div class="d-row">
+              <span class="no">4</span>
+              <span class="prev">| SKU | 名称 | 库存 | 单价 | 供应商 |</span>
+              <span class="sz">8 × 5</span>
+            </div>
+          </div>
+
+          <div class="group">
+            <div class="gname"><span class="txt">竞品对比</span><span class="rule"></span></div>
+            <div class="d-row">
+              <span class="no">5</span>
+              <span class="prev">| 产品 | 价格 | 优势 |</span>
+              <span class="sz">4 × 3</span>
+            </div>
+          </div>
+
+          <div class="group">
+            <div class="gname"><span class="txt">（正文后 · 无标题）</span><span class="rule"></span></div>
+            <div class="d-row">
+              <span class="no">6</span>
+              <span class="prev">| 时间 | 版本 | 变更 |</span>
+              <span class="sz">3 × 3</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <p class="legend">
+    <b>四种方案的取舍：</b>
+    A 用「标题 + 真实表头」两条线索，信息密度与可辨识度最均衡；
+    B 视觉最强、最占高度，252px 下约只能同时看到 5 张；
+    C 最紧凑，但把辨识责任全压在一段可能重复的正文上；
+    D 结构最清楚、能筛选，但每条两行，表格少时略显啰嗦。
+    也可以组合：A 的缩略表 + D 的标题分组/筛选框。
+  </p>
+</div>
+</body>
+</html>

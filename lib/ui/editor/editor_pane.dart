@@ -25,6 +25,7 @@ class EditorPane extends StatefulWidget {
     required this.onDelete,
     this.onCursorLineChanged,
     this.onOpenSearch,
+    this.bodyValue,
   });
 
   final void Function(Note note) onDelete;
@@ -33,6 +34,12 @@ class EditorPane extends StatefulWidget {
   /// Called when a `#tag` in the text is clicked: the shell switches the
   /// sidebar to search so the results are actually on screen.
   final VoidCallback? onOpenSearch;
+
+  /// The live value of the body field, published for panels outside the pane
+  /// (the table tools read the table at the caret). Written here instead of
+  /// being read through the state's key, which is not available while the
+  /// shell is still building.
+  final ValueNotifier<TextEditingValue>? bodyValue;
 
   @override
   State<EditorPane> createState() => EditorPaneState();
@@ -76,6 +83,13 @@ class EditorPaneState extends State<EditorPane> {
   /// 「源码行 → 文档坐标 y」，由编辑器注册；未挂载时为 `null`。
   double? Function(int line)? _lineTopProbe;
 
+  /// 让正文输入框立刻重排并重绘一次，由编辑器注册；未挂载时为 `null`。
+  ///
+  /// 跳转收尾时用：按行绘制只看当前视口区间，万一收尾那一帧把区间算成了空段
+  /// （或该帧被跳过），动画结束后又不会再有新帧，屏幕上就一直是空白，直到
+  /// 指针 hover 触发重建。这里显式补一帧，把结果落定。
+  VoidCallback? _settleJumpRepaint;
+
   bool _binding = false;
 
   @override
@@ -99,6 +113,7 @@ class EditorPaneState extends State<EditorPane> {
     // Binding a note writes the controller from inside `build`; swallowing the
     // notification there keeps us out of "setState during build" territory.
     if (_binding) return;
+    _publishBody();
     // 用户动过正文（落点、移动光标、输入）：打开笔记时的静默揭示解除。
     _body.revealSuppressed = false;
     final TextSelection sel = _body.selection;
@@ -154,6 +169,24 @@ class EditorPaneState extends State<EditorPane> {
       return;
     }
     _reportOutlineLine(line);
+  }
+
+  /// Hands the current body value to whoever listens (the table tools).
+  ///
+  /// Called from the controller's own notification, never from `build`, so a
+  /// listener that rebuilds cannot land in the middle of a layout pass. A bind
+  /// is the exception — it writes the controller inside `build` — and goes
+  /// through [publishBodyAfterFrame] instead.
+  void _publishBody() {
+    final ValueNotifier<TextEditingValue>? out = widget.bodyValue;
+    if (out == null || !mounted) return;
+    out.value = _body.value;
+  }
+
+  void _publishBodyAfterFrame() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _publishBody();
+    });
   }
 
   /// Called by the shell so global shortcuts can reach the live controllers.
@@ -212,6 +245,7 @@ class EditorPaneState extends State<EditorPane> {
     _cursorColumn = 1;
     _outlineLine = 0;
     _binding = false;
+    _publishBodyAfterFrame();
     if (hadCursor) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) widget.onCursorLineChanged?.call(0);
@@ -259,6 +293,7 @@ class EditorPaneState extends State<EditorPane> {
       _binding = false;
     }
     _bodyEpoch++;
+    _publishBodyAfterFrame();
     // `_binding` 挡住了 `_onBodyChanged`，这里自己把状态栏的行列数算回去。
     final int caret = nextSelection.baseOffset.clamp(0, note.body.length);
     final ({int line, int column}) position = _caretPosition(note.body, caret);
@@ -272,22 +307,37 @@ class EditorPaneState extends State<EditorPane> {
   ///
   /// 行高由行引擎按每行自己的字号量出来（标题、代码、正文各不相同），宿主
   /// 推算会一路累积误差；只有编辑器还没排版时（首帧）才退回旧推算。
-  double _lineTop(int line, TextStyle style) =>
-      _lineTopProbe?.call(line) ??
-      textHeightAbove(
-        text: _body.text,
-        base: style,
-        p: context.palette,
-        line: line,
-        contentWidth: _contentWidth,
-      );
+  double _lineTop(int line, TextStyle style) {
+    final double? Function(int line)? lineTopProbe = _lineTopProbe;
+    final double? probed = lineTopProbe?.call(line);
+    return probed ??
+        textHeightAbove(
+          text: _body.text,
+          base: style,
+          p: context.palette,
+          line: line,
+          contentWidth: _contentWidth,
+        );
+  }
 
-  Future<void> _scrollToLine(
-    int line, {
-    required TextStyle style,
-    double anchor = 0.2,
-    Duration duration = AppMotion.slow,
-  }) async {
+  /// 一次跳转的收尾：复位 `_jumping`，并让正文输入框补一次排版 + 重绘。
+  ///
+  /// 两件事都必须无条件发生：`_jumping` 若残留，之后滚动时大纲再也不跟随；
+  /// 收尾那一帧若画空，没有新帧时屏幕会一直空白到下一次 hover。
+  void _settleJump() {
+    // 补一帧，顺带保证下面那个 post-frame 一定有帧可挂。
+    _settleJumpRepaint?.call();
+    // 让这次跳转产生的滚动通知先走完再复位，避免大纲被拽到视口首行。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _jumping = false);
+  }
+
+  /// 跳转到某一行：**瞬时**把滚动位置放到目标，并让输入框立刻补一帧。
+  ///
+  /// 这里刻意不做动画（Obsidian 的大纲也是瞬到）：动画期间每一帧的可见区间
+  /// 都在变，收尾那一帧一旦画空，动画结束就没有新帧了——屏幕会一直空白到
+  /// 下一次指针 hover。瞬时跳转只产生一次位置变化、一次重算、一次重绘，
+  /// 点击后的第一帧就是最终画面。
+  void _jumpToLine(int line, {required TextStyle style, double anchor = 0.2}) {
     if (!_editorScroll.hasClients) return;
     final ScrollPosition pos = _editorScroll.position;
     // The probe already reports scroll-content coordinates (padding and the
@@ -301,18 +351,13 @@ class EditorPaneState extends State<EditorPane> {
     // though the jump lands it a fifth of the way down and the lines above it
     // are what the viewport now starts on.
     _jumping = true;
-    try {
-      await _editorScroll.animateTo(
-        target,
-        duration: duration,
-        curve: AppMotion.enter,
-      );
-    } finally {
-      // One more frame: the last scroll notification of the animation arrives
-      // after `animateTo` completes.
-      WidgetsBinding.instance.addPostFrameCallback((_) => _jumping = false);
-    }
+    pos.jumpTo(target);
+    _settleJump();
   }
+
+  /// 跳转后是否还在收尾（复位前的那一帧）；测试用。
+  @visibleForTesting
+  bool get jumping => _jumping;
 
   /// Jumping from the outline also parks the caret on that heading, so the raw
   /// markers of the block you landed on reveal themselves.
@@ -327,7 +372,7 @@ class EditorPaneState extends State<EditorPane> {
     _body.selection = TextSelection.collapsed(
       offset: offset.clamp(0, _body.text.length),
     );
-    unawaited(_scrollToLine(target, style: style, anchor: 0.12));
+    _jumpToLine(target, style: style, anchor: 0.12);
   }
 
   /// Used by the far-right outline region, which lives outside this pane and so
@@ -335,6 +380,25 @@ class EditorPaneState extends State<EditorPane> {
   void goToHeading(int line) {
     final SettingsController settings = context.read<SettingsController>();
     _goToHeading(line, editorProseStyle(context.palette, settings.proseSize));
+  }
+
+  /// Used by the table tools' index: parks the caret on [offset] and scrolls
+  /// that line into view. Moving the caret is the whole point — it is also what
+  /// makes the panel switch from the file's table list to that table's tools.
+  void goToOffset(int offset) {
+    final String text = _body.text;
+    final int at = offset.clamp(0, text.length);
+    int line = 0;
+    for (int i = 0; i < at; i++) {
+      if (text.codeUnitAt(i) == 0x0A) line++;
+    }
+    _body.selection = TextSelection.collapsed(offset: at);
+    final SettingsController settings = context.read<SettingsController>();
+    _jumpToLine(
+      line,
+      style: editorProseStyle(context.palette, settings.proseSize),
+      anchor: 0.12,
+    );
   }
 
   // ------------------------------------------------------------------ build
@@ -728,6 +792,7 @@ class EditorPaneState extends State<EditorPane> {
       onTopLineChanged: _onTopLine,
       onLineTopProbe: (double? Function(int line)? probe) =>
           _lineTopProbe = probe,
+      onJumpSettled: (VoidCallback? settle) => _settleJumpRepaint = settle,
       onTagTap: (String tag) {
         notes.toggleTag(tag);
         widget.onOpenSearch?.call();
