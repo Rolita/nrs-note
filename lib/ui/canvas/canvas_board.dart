@@ -11,6 +11,7 @@ import '../../core/utils/canvas_document.dart';
 import '../../core/utils/canvas_geometry.dart';
 import '../../core/utils/table_model.dart' show CellColor;
 import 'canvas_card.dart';
+import 'canvas_edge_painter.dart';
 import 'canvas_grid_painter.dart';
 import 'canvas_style.dart';
 import 'canvas_toolbar.dart';
@@ -69,6 +70,9 @@ enum _Interaction {
   dragging,
 
   resizing,
+
+  /// 从卡片边上的圆点拖出来一条连线，还没落地。
+  connecting,
 }
 
 class CanvasBoardState extends State<CanvasBoard> {
@@ -108,6 +112,17 @@ class CanvasBoardState extends State<CanvasBoard> {
   CanvasResizeHandle? _handle;
   String? _resizeId;
   Rect _resizeStart = Rect.zero;
+
+  /// 悬停在哪张卡片上（连线圆点只给悬停的那张）。
+  String? _hoverNodeId;
+
+  /// 连线：从哪张卡片的哪条边出发，光标现在在屏幕哪里。
+  String? _connectFromId;
+  CanvasSide _connectSide = CanvasSide.right;
+  Offset? _connectCursor;
+
+  /// 正在编辑标签的边。
+  String? _editingEdgeId;
 
   /// 空格按住 = 临时切换成抓手。
   bool _spaceHeld = false;
@@ -149,6 +164,14 @@ class CanvasBoardState extends State<CanvasBoard> {
   Set<String> get debugSelection => Set<String>.of(_selected);
   String? get debugEditing => _editingId;
   String? debugColorOf(String id) => _doc?.nodeById(id)?.color;
+  String? get debugEditingEdge => _editingEdgeId;
+  int get debugEdgeCount => _doc?.edges.length ?? 0;
+  String? debugLabelOf(String id) {
+    for (final CanvasEdge edge in _doc?.edges ?? const <CanvasEdge>[]) {
+      if (edge.id == id) return edge.label;
+    }
+    return null;
+  }
 
   @override
   void initState() {
@@ -275,6 +298,10 @@ class CanvasBoardState extends State<CanvasBoard> {
   }
 
   void _commitEdit() {
+    if (_editingEdgeId != null) {
+      _commitEdgeEdit();
+      return;
+    }
     final CanvasDocument? doc = _doc;
     final String? id = _editingId;
     if (id == null) return;
@@ -290,12 +317,16 @@ class CanvasBoardState extends State<CanvasBoard> {
   // ---------------------------------------------------------- hit testing
 
   /// 最上面的那张卡片。后加的在上，所以倒着找。
-  CanvasNode? _nodeAt(Offset world) {
+  ///
+  /// [tolerance] 只给悬停用：连线圆点摆在卡片边界**上**，而 `Rect.contains`
+  /// 不含右边界和下边界。不给一点容差的话，指针正好压在圆点上时反而判成
+  /// 「不在卡片上」，圆点就永远点不到。
+  CanvasNode? _nodeAt(Offset world, {double tolerance = 0}) {
     final CanvasDocument? doc = _doc;
     if (doc == null) return null;
     for (int i = doc.nodes.length - 1; i >= 0; i--) {
       final CanvasNode node = doc.nodes[i];
-      if (hitsRect(node.rect, world)) return node;
+      if (hitsRect(node.rect, world, tolerance: tolerance)) return node;
     }
     return null;
   }
@@ -319,14 +350,110 @@ class CanvasBoardState extends State<CanvasBoard> {
     return null;
   }
 
+  /// 悬停卡片四条边中点的圆点。只给**悬停的那一张**——每张卡片都挂着
+  /// 四个点，屏幕上会全是点。
+  ({CanvasNode node, CanvasSide side})? _connectDotAt(Offset screen) {
+    final String? id = _hoverNodeId;
+    if (id == null || _readOnly) return null;
+    final CanvasNode? node = _doc?.nodeById(id);
+    if (node == null) return null;
+    final Rect rect = _viewport.rectToScreen(node.rect);
+    if (rect.width < 20 || rect.height < 20) return null;
+    for (final CanvasSide side in CanvasSide.values) {
+      final Offset at = anchorOf(rect, side);
+      if ((at - screen).distance <= CanvasConnectDotsPainter.dotRadius + 2) {
+        return (node: node, side: side);
+      }
+    }
+    return null;
+  }
+
+  /// 当前视口下的所有连线。命中测试和绘制都用这一份，免得出现两套公式。
+  List<CanvasEdgeVisual> _edgeVisuals() => buildEdgeVisuals(
+    document: _doc,
+    viewport: _viewport,
+    selected: _selected,
+  );
+
+  CanvasEdgeVisual? _edgeAt(Offset screen) =>
+      edgeAt(_edgeVisuals(), screen, tolerance: 6);
+
+  /// 松手：落在另一张卡片上就建边，落在空白或自己身上就取消。
+  void _finishConnect(Offset screen) {
+    final CanvasDocument? doc = _doc;
+    final String? fromId = _connectFromId;
+    if (doc == null || fromId == null) return;
+    final CanvasNode? target = _nodeAt(_viewport.toWorld(screen));
+    if (target == null || target.id == fromId) return;
+
+    final CanvasEdge edge = CanvasEdge(
+      id: newCanvasId(),
+      fromNode: fromId,
+      toNode: target.id,
+      // 只记出发那条边；目标那头交给自动选边，线才不会为了对齐
+      // 绕一圈从卡片背面穿过去。
+      fromSide: _connectSide.name,
+    );
+    _mutate(() {
+      doc.edges.add(edge);
+      _selected
+        ..clear()
+        ..add(edge.id);
+    });
+  }
+
+  // ------------------------------------------------------------ 边标签
+
+  void _beginEdgeEdit(CanvasEdgeVisual visual) {
+    _editor.text = visual.edge.label ?? '';
+    _editor.selection = TextSelection.collapsed(offset: _editor.text.length);
+    setState(() {
+      _editingEdgeId = visual.edge.id;
+      _editingId = null;
+      _selected
+        ..clear()
+        ..add(visual.edge.id);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _editingEdgeId != null) _editorFocus.requestFocus();
+    });
+  }
+
+  void _commitEdgeEdit() {
+    final CanvasDocument? doc = _doc;
+    final String? id = _editingEdgeId;
+    if (id == null) return;
+    final String text = _editor.text.trim();
+    if (doc != null) {
+      for (final CanvasEdge edge in doc.edges) {
+        if (edge.id != id) continue;
+        edge.label = text.isEmpty ? null : text;
+        break;
+      }
+    }
+    setState(() => _editingEdgeId = null);
+    widget.onChanged?.call();
+    _focus.requestFocus();
+  }
+
+  /// 正在编辑标签的那条边（用来摆输入框的位置）。
+  CanvasEdgeVisual? get _editingEdge {
+    final String? id = _editingEdgeId;
+    if (id == null) return null;
+    for (final CanvasEdgeVisual visual in _edgeVisuals()) {
+      if (visual.edge.id == id) return visual;
+    }
+    return null;
+  }
+
   // ------------------------------------------------------------- pointers
 
   void _onPointerDown(PointerDownEvent e) {
     _focus.requestFocus();
     _lastPointer = e.localPosition;
 
-    // 点别处就先把正在编辑的卡片收掉。
-    if (_editingId != null) _commitEdit();
+    // 点别处就先把正在编辑的东西收掉（卡片或边标签）。
+    if (_editingId != null || _editingEdgeId != null) _commitEdit();
 
     // 中键平移。右键留给菜单，不在这里当抓手。
     if (e.buttons & kMiddleMouseButton != 0) {
@@ -361,7 +488,21 @@ class CanvasBoardState extends State<CanvasBoard> {
       return;
     }
 
-    // 2. 卡片
+    // 2. 连线圆点
+    final ({CanvasNode node, CanvasSide side})? dot = _connectDotAt(
+      e.localPosition,
+    );
+    if (dot != null) {
+      setState(() {
+        _mode = _Interaction.connecting;
+        _connectFromId = dot.node.id;
+        _connectSide = dot.side;
+        _connectCursor = e.localPosition;
+      });
+      return;
+    }
+
+    // 3. 卡片
     final CanvasNode? node = _nodeAt(world);
     if (node != null) {
       if (_isDoubleTap(e.localPosition, node.id)) {
@@ -397,7 +538,22 @@ class CanvasBoardState extends State<CanvasBoard> {
       return;
     }
 
-    // 3. 空白
+    // 4. 连线。放在卡片后面：线画在卡片下面，压到卡片上的那一段
+    // 应该点中卡片，而不是点中一条看不见的线。
+    final CanvasEdgeVisual? edge = _edgeAt(e.localPosition);
+    if (edge != null) {
+      if (_isDoubleTap(e.localPosition, edge.edge.id)) {
+        _beginEdgeEdit(edge);
+        return;
+      }
+      setState(() {
+        if (!HardwareKeyboard.instance.isControlPressed) _selected.clear();
+        _selected.add(edge.edge.id);
+      });
+      return;
+    }
+
+    // 5. 空白
     if (_isDoubleTap(e.localPosition, '')) {
       createCard(at: world);
       return;
@@ -429,6 +585,8 @@ class CanvasBoardState extends State<CanvasBoard> {
         _dragTo(e.localPosition);
       case _Interaction.resizing:
         _resizeTo(e.localPosition);
+      case _Interaction.connecting:
+        setState(() => _connectCursor = e.localPosition);
     }
   }
 
@@ -472,6 +630,15 @@ class CanvasBoardState extends State<CanvasBoard> {
 
   void _onPointerUp(PointerEvent e) {
     if (_mode == _Interaction.idle) return;
+    if (_mode == _Interaction.connecting) {
+      _finishConnect(e.localPosition);
+      setState(() {
+        _mode = _Interaction.idle;
+        _connectFromId = null;
+        _connectCursor = null;
+      });
+      return;
+    }
     final bool moved = _mode == _Interaction.dragging && _dragMoved;
     final bool resized = _mode == _Interaction.resizing;
 
@@ -535,14 +702,30 @@ class CanvasBoardState extends State<CanvasBoard> {
 
   void _onPointerHover(PointerHoverEvent e) {
     final CanvasResizeHandle? handle = _handleAt(e.localPosition);
+    final ({CanvasNode node, CanvasSide side})? dot = _connectDotAt(
+      e.localPosition,
+    );
+    final CanvasNode? over = _nodeAt(
+      _viewport.toWorld(e.localPosition),
+      tolerance: 1 / _viewport.zoom,
+    );
+
     final MouseCursor next = handle != null
         ? _cursorFor(handle)
-        : (_spaceHeld
-              ? SystemMouseCursors.grab
-              : (_nodeAt(_viewport.toWorld(e.localPosition)) != null
-                    ? SystemMouseCursors.click
-                    : SystemMouseCursors.basic));
-    if (next != _cursor) setState(() => _cursor = next);
+        : (dot != null
+              ? SystemMouseCursors.precise
+              : (_spaceHeld
+                    ? SystemMouseCursors.grab
+                    : (over != null
+                          ? SystemMouseCursors.click
+                          : SystemMouseCursors.basic)));
+    final String? hoverId = dot?.node.id ?? over?.id;
+    if (next != _cursor || hoverId != _hoverNodeId) {
+      setState(() {
+        _cursor = next;
+        _hoverNodeId = hoverId;
+      });
+    }
   }
 
   static MouseCursor _cursorFor(CanvasResizeHandle handle) {
@@ -694,7 +877,7 @@ class CanvasBoardState extends State<CanvasBoard> {
     }
     if (event.logicalKey == LogicalKeyboardKey.escape) {
       // 编辑中按 Esc：先退出编辑，选择留着。再按一次才清选择。
-      if (_editingId != null) {
+      if (_editingId != null || _editingEdgeId != null) {
         _commitEdit();
         return KeyEventResult.handled;
       }
@@ -776,6 +959,12 @@ class CanvasBoardState extends State<CanvasBoard> {
         final CanvasNode? editing = _editingId == null
             ? null
             : doc?.nodeById(_editingId!);
+        final List<CanvasEdgeVisual> edges = buildEdgeVisuals(
+          document: doc,
+          viewport: _viewport,
+          selected: _selected,
+        );
+        final CanvasEdgeVisual? editingEdge = _editingEdge;
 
         return Focus(
           focusNode: _focus,
@@ -809,6 +998,19 @@ class CanvasBoardState extends State<CanvasBoard> {
                         willChange: true,
                       ),
                     ),
+                    // 连线画在卡片下面：白板的主体是内容，线是内容之间的
+                    // 关系。线压在卡片上会让每张卡片看起来都被划了一道。
+                    IgnorePointer(
+                      child: CustomPaint(
+                        painter: CanvasEdgePainter(
+                          edges: edges,
+                          palette: p,
+                          preview: _connectPreview(),
+                          previewColor: p.accent,
+                          labelHalo: style.background,
+                        ),
+                      ),
+                    ),
                     // 卡片层不吃指针：所有命中测试都在上面那层 Listener 里
                     // 自己做了。让卡片也参与，就会出现「拖卡片时画布跟着
                     // 平移」这种两份真相打架的 bug。
@@ -835,6 +1037,16 @@ class CanvasBoardState extends State<CanvasBoard> {
                       _positioned(editing, _cardWithEditor(p, editing)),
                     IgnorePointer(
                       child: CustomPaint(
+                        painter: CanvasConnectDotsPainter(
+                          rect: _hoveredRect(),
+                          viewport: _viewport,
+                          fill: p.accent,
+                          ring: p.surface,
+                        ),
+                      ),
+                    ),
+                    IgnorePointer(
+                      child: CustomPaint(
                         painter: CanvasHandlesPainter(
                           rect: _singleSelection?.rect,
                           viewport: _viewport,
@@ -843,6 +1055,8 @@ class CanvasBoardState extends State<CanvasBoard> {
                         ),
                       ),
                     ),
+                    if (editingEdge != null)
+                      _edgeLabelEditor(p, editingEdge),
                     if (doc == null || doc.isEmpty)
                       _EmptyHint(style: style, canCreate: doc != null),
                     IgnorePointer(
@@ -872,6 +1086,75 @@ class CanvasBoardState extends State<CanvasBoard> {
           ),
         );
       },
+    );
+  }
+
+  /// 连线预览：从出发卡片的某条边画到光标。
+  CanvasEdgeGeometry? _connectPreview() {
+    final Offset? cursor = _connectCursor;
+    final String? fromId = _connectFromId;
+    if (cursor == null || fromId == null) return null;
+    final CanvasNode? node = _doc?.nodeById(fromId);
+    if (node == null) return null;
+    return connectPreview(
+      fromRect: _viewport.rectToScreen(node.rect),
+      side: _connectSide,
+      cursor: cursor,
+    );
+  }
+
+  /// 要显示连线圆点的那张卡片：拖连线时是出发的那张，否则是悬停的那张。
+  Rect? _hoveredRect() {
+    final String? id = _connectFromId ?? _hoverNodeId;
+    if (id == null || _readOnly) return null;
+    return _doc?.nodeById(id)?.rect;
+  }
+
+  /// 边标签的输入框：一条压在线上、居中的小输入框。
+  ///
+  /// 不做成「贴着线走的一段文字」是因为 `TextField` 的宽度由布局决定，
+  /// 跟着贝塞尔排会一直在跳；给它一块固定的位置反而好点。
+  Widget _edgeLabelEditor(AppPalette p, CanvasEdgeVisual visual) {
+    final Offset center = visual.geometry.pointAt(0.5);
+    const double width = 132;
+    const double height = 26;
+    return Positioned(
+      left: center.dx - width / 2,
+      top: center.dy - height / 2,
+      width: width,
+      height: height,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        decoration: BoxDecoration(
+          color: p.surfaceRaised,
+          borderRadius: AppRadius.smAll,
+          border: Border.all(color: p.accent),
+        ),
+        alignment: Alignment.centerLeft,
+        child: TextField(
+          controller: _editor,
+          focusNode: _editorFocus,
+          maxLines: 1,
+          style: TextStyle(
+            fontSize: AppText.caption,
+            color: p.textPrimary,
+            fontFamily: AppFonts.ui,
+            fontFamilyFallback: AppFonts.uiFallback,
+          ),
+          cursorColor: p.accent,
+          decoration: InputDecoration.collapsed(
+            hintText: '边标签',
+            hintStyle: TextStyle(
+              fontSize: AppText.caption,
+              color: p.textTertiary,
+              fontFamily: AppFonts.ui,
+              fontFamilyFallback: AppFonts.uiFallback,
+            ),
+          ),
+          onTapOutside: (_) => _commitEdit(),
+          onSubmitted: (_) => _commitEdit(),
+        ),
+      ),
     );
   }
 

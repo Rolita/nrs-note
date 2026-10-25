@@ -121,6 +121,13 @@ Future<void> doubleTapCard(
   await tester.pump();
 }
 
+/// 悬停到某一点（鼠标指针移到那里，不按下）。
+Future<void> hoverAt(WidgetTester tester, Offset at) async {
+  final TestPointer pointer = TestPointer(9, PointerDeviceKind.mouse);
+  await tester.sendEventToBinding(pointer.hover(at));
+  await tester.pump();
+}
+
 void main() {
   group('空板', () {
     testWidgets('给一句提示，工具条显示 100%', (WidgetTester tester) async {
@@ -803,6 +810,217 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(h.state.debugColorOf('a'), isNull);
+    });
+  });
+
+  group('连线', () {
+    CanvasDocument twoCards({String? fromSide}) => CanvasDocument(
+      nodes: <CanvasNode>[
+        cardAtOrigin(id: 'a'),
+        textNode('b', x: 400, y: 0),
+      ],
+      edges: <CanvasEdge>[
+        if (fromSide != null)
+          CanvasEdge(
+            id: 'e1',
+            fromNode: 'a',
+            toNode: 'b',
+            fromSide: fromSide,
+          ),
+      ],
+    );
+
+    testWidgets('从圆点拖到另一张卡片，建一条边', (WidgetTester tester) async {
+      final CanvasDocument doc = twoCards();
+      final Harness h = await pumpBoard(tester, document: doc);
+      final CanvasNode a = doc.nodeById('a')!;
+      final CanvasNode b = doc.nodeById('b')!;
+
+      final Offset dot = anchorOf(
+        h.state.viewport.rectToScreen(a.rect),
+        CanvasSide.right,
+      );
+      await hoverAt(tester, dot);
+
+      final TestGesture g = await tester.startGesture(
+        dot,
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveTo(centerOf(h, b));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(doc.edges.length, 1);
+      expect(doc.edges.single.fromNode, 'a');
+      expect(doc.edges.single.toNode, 'b');
+      expect(doc.edges.single.fromSide, 'right');
+      expect(h.state.debugSelection, <String>{doc.edges.single.id});
+    });
+
+    testWidgets('松手在空白处，不建边', (WidgetTester tester) async {
+      final CanvasDocument doc = twoCards();
+      final Harness h = await pumpBoard(tester, document: doc);
+      final CanvasNode a = doc.nodeById('a')!;
+
+      final Offset dot = anchorOf(
+        h.state.viewport.rectToScreen(a.rect),
+        CanvasSide.right,
+      );
+      await hoverAt(tester, dot);
+
+      final TestGesture g = await tester.startGesture(
+        dot,
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveTo(const Offset(60, 60));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(doc.edges, isEmpty);
+    });
+
+    testWidgets('松手回到自己身上，不建自环', (WidgetTester tester) async {
+      final CanvasDocument doc = twoCards();
+      final Harness h = await pumpBoard(tester, document: doc);
+      final CanvasNode a = doc.nodeById('a')!;
+
+      final Offset dot = anchorOf(
+        h.state.viewport.rectToScreen(a.rect),
+        CanvasSide.right,
+      );
+      await hoverAt(tester, dot);
+
+      final TestGesture g = await tester.startGesture(
+        dot,
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveTo(centerOf(h, a));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(doc.edges, isEmpty);
+    });
+
+    testWidgets('没悬停就没有圆点可拖，按在卡片边上是拖动', (WidgetTester tester) async {
+      final CanvasDocument doc = twoCards();
+      final Harness h = await pumpBoard(tester, document: doc);
+      final CanvasNode a = doc.nodeById('a')!;
+
+      final Offset dot = anchorOf(
+        h.state.viewport.rectToScreen(a.rect),
+        CanvasSide.right,
+      );
+      // 往卡片里挪 6px 再按：卡片边界上本来就不算「在卡片里」。
+      final TestGesture g = await tester.startGesture(
+        dot - const Offset(6, 0),
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveTo(const Offset(60, 60));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(doc.edges, isEmpty);
+      expect(a.x, isNot(0), reason: '这一下应该是拖动卡片');
+    });
+
+    testWidgets('单击连线选中它', (WidgetTester tester) async {
+      final CanvasDocument doc = twoCards(fromSide: 'right');
+      final Harness h = await pumpBoard(tester, document: doc);
+      final CanvasNode a = doc.nodeById('a')!;
+      final CanvasNode b = doc.nodeById('b')!;
+
+      final CanvasEdgeGeometry g = edgeGeometry(
+        fromRect: h.state.viewport.rectToScreen(a.rect),
+        toRect: h.state.viewport.rectToScreen(b.rect),
+        fromSide: CanvasSide.right,
+      );
+      await tester.tapAt(g.pointAt(0.5));
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(h.state.debugSelection, <String>{'e1'});
+    });
+
+    testWidgets('双击连线编辑标签，Esc 收下', (WidgetTester tester) async {
+      final CanvasDocument doc = twoCards(fromSide: 'right');
+      final Harness h = await pumpBoard(tester, document: doc);
+      final CanvasNode a = doc.nodeById('a')!;
+      final CanvasNode b = doc.nodeById('b')!;
+
+      final CanvasEdgeGeometry g = edgeGeometry(
+        fromRect: h.state.viewport.rectToScreen(a.rect),
+        toRect: h.state.viewport.rectToScreen(b.rect),
+        fromSide: CanvasSide.right,
+      );
+      final Offset mid = g.pointAt(0.5);
+
+      await tester.tapAt(mid);
+      await tester.pump(const Duration(milliseconds: 40));
+      await tester.tapAt(mid);
+      await tester.pump();
+
+      expect(h.state.debugEditingEdge, 'e1');
+
+      await tester.enterText(find.byType(TextField), '依赖');
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.escape);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+
+      expect(h.state.debugEditingEdge, isNull);
+      expect(doc.edges.single.label, '依赖');
+    });
+
+    testWidgets('标签留空就存 null，不是空字符串', (WidgetTester tester) async {
+      final CanvasDocument doc = twoCards(fromSide: 'right');
+      doc.edges.single.label = '旧标签';
+      final Harness h = await pumpBoard(tester, document: doc);
+      final CanvasNode a = doc.nodeById('a')!;
+      final CanvasNode b = doc.nodeById('b')!;
+
+      final CanvasEdgeGeometry g = edgeGeometry(
+        fromRect: h.state.viewport.rectToScreen(a.rect),
+        toRect: h.state.viewport.rectToScreen(b.rect),
+        fromSide: CanvasSide.right,
+      );
+      final Offset mid = g.pointAt(0.5);
+      await tester.tapAt(mid);
+      await tester.pump(const Duration(milliseconds: 40));
+      await tester.tapAt(mid);
+      await tester.pump();
+
+      await tester.enterText(find.byType(TextField), '   ');
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.escape);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+
+      expect(doc.edges.single.label, isNull);
+    });
+
+    testWidgets('选中连线按 Delete 只删线，不删卡片', (WidgetTester tester) async {
+      final CanvasDocument doc = twoCards(fromSide: 'right');
+      final Harness h = await pumpBoard(tester, document: doc);
+      final CanvasNode a = doc.nodeById('a')!;
+      final CanvasNode b = doc.nodeById('b')!;
+
+      final CanvasEdgeGeometry g = edgeGeometry(
+        fromRect: h.state.viewport.rectToScreen(a.rect),
+        toRect: h.state.viewport.rectToScreen(b.rect),
+        fromSide: CanvasSide.right,
+      );
+      await tester.tapAt(g.pointAt(0.5));
+      await tester.pump(const Duration(milliseconds: 400));
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.delete);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.delete);
+      await tester.pump();
+
+      expect(doc.edges, isEmpty);
+      expect(doc.nodes.length, 2);
     });
   });
 
