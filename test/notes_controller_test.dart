@@ -1129,6 +1129,35 @@ void main() {
       expect(notes.allNotes.single.id, plan.id);
     });
 
+    test('白板挡住文件夹删除时，提示里说清楚有几块', () async {
+      final Note plan = _note('计划', body: '正文', folderPath: '项目');
+      final _MemoryStore store = _MemoryStore(<Note>[plan]);
+      await store.createFolder('项目');
+      store.foreignFiles.add('项目/草图.nrs');
+      final NotesController notes = await _open(store);
+      notes.canvasCountOf = (String folder) async => folder == '项目' ? 1 : 0;
+
+      final FolderDeleteOutcome outcome = await notes.deleteFolder('项目');
+
+      expect(outcome.blocked, '文件夹里还有 1 块白板');
+      expect(outcome.removed, isFalse);
+      expect(store.trash, isEmpty);
+    });
+
+    test('数不清白板时退回泛化提示，而不是把异常抛给界面', () async {
+      final Note plan = _note('计划', body: '正文', folderPath: '项目');
+      final _MemoryStore store = _MemoryStore(<Note>[plan]);
+      await store.createFolder('项目');
+      store.foreignFiles.add('项目/附件.png');
+      final NotesController notes = await _open(store);
+      notes.canvasCountOf = (String folder) async => throw StateError('磁盘掉了');
+
+      final FolderDeleteOutcome outcome = await notes.deleteFolder('项目');
+
+      expect(outcome.blocked, contains('不是笔记'));
+      expect(outcome.removed, isFalse);
+    });
+
     test('a note that cannot be trashed keeps the folder and the other notes',
         () async {
       final Note first = _note('一', folderPath: '项目');

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -7,8 +9,8 @@ import '../../core/app_enums.dart';
 import '../../core/platform/vault_sync.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
-import '../../core/utils/canvas_document.dart';
 import '../../core/utils/external_link.dart';
+import '../../data/storage/canvas_store_factory.dart';
 import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/markdown_outline.dart';
 import '../../core/utils/note_image.dart';
@@ -24,7 +26,9 @@ import '../../templates/template_service.dart';
 import '../common/app_widgets.dart';
 import '../common/delete_dialog.dart';
 import '../common/notices.dart';
+import '../../state/canvas_controller.dart';
 import '../canvas/canvas_board.dart';
+import '../canvas/canvas_open_picker.dart';
 import '../editor/editor_pane.dart';
 import '../editor/image_panel.dart';
 import '../editor/outline_panel.dart';
@@ -83,14 +87,6 @@ class _AppShellState extends State<AppShell> {
 
   /// 白板被打开过一次，理由同 [_graphOpened]。
   bool _canvasOpened = false;
-
-  /// 一期只有一块白板，而且**还没落盘**（P6 才接 `CanvasStore`）。
-  ///
-  /// 现在它是一个空文档，只是为了把主区、网格、平移缩放先接通。
-  final CanvasDocument _canvasDocument = CanvasDocument(
-    nodes: <CanvasNode>[],
-    edges: <CanvasEdge>[],
-  );
 
   int _cursorLine = 0;
   VoidCallback? _stopVaultSync;
@@ -163,6 +159,12 @@ class _AppShellState extends State<AppShell> {
   /// 切主区。图谱与正文共用同一块地方，所以这是「换一屏」而不是「开一个窗口」。
   void _selectMainView(MainView view) {
     if (_mainView == view) return;
+    // 白板是一份文件，没有「空白的白板」这种状态：点进来之前得先有一份。
+    // 这里只做「还没打开过就打开」，已经打开过就直接切过去。
+    if (view == MainView.canvas && !context.read<CanvasController>().hasDocument) {
+      unawaited(_openCanvas());
+      return;
+    }
     final SettingsController settings = context.read<SettingsController>();
     setState(() {
       _mainView = view;
@@ -186,10 +188,48 @@ class _AppShellState extends State<AppShell> {
     }
   }
 
-  /// 功能栏 / `Ctrl+Shift+B`：打开白板。
+  /// 功能栏 / `Ctrl+Shift+B` / 页签：打开白板。
   ///
-  /// 一期没有「打开哪一块」的选择器（P6 才有），所以就是切到那一块。
-  void _openCanvas() => _selectMainView(MainView.canvas);
+  /// 已经打开着就直接切过去；否则列出 vault 里的 `.nrs` 让用户挑，
+  /// 一块都没有就直接新建——「点白板按钮 → 再点一次新建」是多余的一步。
+  Future<void> _openCanvas() async {
+    final CanvasController canvas = context.read<CanvasController>();
+    if (!canvas.hasDocument) {
+      final List<CanvasRef> refs = await canvas.list();
+      if (!mounted) return;
+      if (refs.isEmpty) {
+        await _newCanvas(canvas);
+      } else {
+        final CanvasPickerResult? choice = await showCanvasPicker(
+          context,
+          canvases: refs,
+        );
+        if (!mounted || choice == null) return;
+        switch (choice) {
+          case OpenCanvas(:final String relativePath):
+            if (!await canvas.open(relativePath)) {
+              if (mounted && canvas.error != null) {
+                _toast('白板打不开', kind: NoticeKind.error, detail: canvas.error);
+              }
+              return;
+            }
+          case NewCanvas():
+            await _newCanvas(canvas);
+        }
+      }
+      if (!mounted) return;
+    }
+    _selectMainView(MainView.canvas);
+  }
+
+  /// 在当前笔记所在的文件夹里新建一块白板（没有当前笔记就落根目录）。
+  Future<void> _newCanvas(CanvasController canvas) async {
+    final Note? open = _notes.draft ?? _notes.selectedNote;
+    if (!await canvas.createNew(open?.folderPath ?? '')) {
+      if (!mounted) return;
+      _toast('新建白板失败', kind: NoticeKind.error, detail: canvas.error);
+    }
+  }
 
   /// 白板上双击一张文件卡片：打开那篇笔记并切回正文。
   ///
@@ -835,7 +875,12 @@ class _AppShellState extends State<AppShell> {
                                             _mainView != MainView.canvas,
                                         child: CanvasBoard(
                                           key: _canvasKey,
-                                          document: _canvasDocument,
+                                          document: context
+                                              .watch<CanvasController>()
+                                              .document,
+                                          onChanged: context
+                                              .read<CanvasController>()
+                                              .markDirty,
                                           files: <({String path, String title})>[
                                             for (final Note note in context
                                                 .watch<NotesController>()

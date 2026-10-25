@@ -3,15 +3,22 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'core/theme/app_theme.dart';
+import 'state/canvas_controller.dart';
 import 'state/notes_controller.dart';
 import 'state/settings_controller.dart';
 import 'ui/shell/app_shell.dart';
 
 class NrsApp extends StatelessWidget {
-  const NrsApp({super.key, required this.settings, required this.notes});
+  const NrsApp({
+    super.key,
+    required this.settings,
+    required this.notes,
+    required this.canvas,
+  });
 
   final SettingsController settings;
   final NotesController notes;
+  final CanvasController canvas;
 
   @override
   Widget build(BuildContext context) {
@@ -19,6 +26,7 @@ class NrsApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider<SettingsController>.value(value: settings),
         ChangeNotifierProvider<NotesController>.value(value: notes),
+        ChangeNotifierProvider<CanvasController>.value(value: canvas),
       ],
       child: Consumer<SettingsController>(
         builder: (BuildContext context, SettingsController s, Widget? _) {

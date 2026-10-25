@@ -37,6 +37,10 @@ class WebNoteStore with NoteStoreSupport implements NoteStore {
   @override
   bool get supportsNativeFiles => false;
 
+  /// 浏览器里没有文件系统，白板也走 localStorage。
+  @override
+  String? get vaultPath => null;
+
   @override
   bool get supportsTrash => true;
 

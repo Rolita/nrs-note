@@ -55,6 +55,9 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
   bool get supportsNativeFiles => true;
 
   @override
+  String? get vaultPath => _vault?.path;
+
+  @override
   bool get supportsTrash => true;
 
   @override

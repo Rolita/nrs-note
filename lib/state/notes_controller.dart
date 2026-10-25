@@ -115,6 +115,15 @@ class NotesController extends ChangeNotifier {
   /// is the safe way to do that.
   Future<void> Function(Note note)? onBlankNoteCreated;
 
+  /// How many canvases live in [folder], subfolders included.
+  ///
+  /// [deleteFolder] needs it for the message it shows when the folder is not
+  /// clean. Without it the user reads "还有不是笔记的文件" and has no idea what
+  /// that file is — usually a `.nrs` board, which is exactly what stopped the
+  /// delete. Canvases are never trashed together with the folder, so they have
+  /// to be named instead.
+  Future<int> Function(String folder)? canvasCountOf;
+
   /// Every edit is written to disk on its own; this only collapses a *burst* of
   /// keystrokes into one write.
   ///
@@ -161,6 +170,9 @@ class NotesController extends ChangeNotifier {
   String? get error => _error;
   String get vaultLocation => _store.location;
   bool get supportsNativeFiles => _store.supportsNativeFiles;
+
+  /// vault 的真实路径（浏览器端为 null）。
+  String? get vaultPath => _store.vaultPath;
   bool get supportsTrash => _store.supportsTrash;
   bool get supportsHistory => _store.supportsHistory;
   List<Note> get allNotes => List<Note>.unmodifiable(_ordered);
@@ -1132,6 +1144,18 @@ class NotesController extends ChangeNotifier {
   /// refused while it is still whole. Otherwise the notes are trashed
   /// recursively and only the empty directories are removed — a partial delete
   /// leaves the notes that failed exactly where they were.
+  /// Boards directly in [folder] or below it. Never throws: a listing failure
+  /// only costs a less specific message.
+  Future<int> _canvasCountIn(String folder) async {
+    final Future<int> Function(String folder)? count = canvasCountOf;
+    if (count == null) return 0;
+    try {
+      return await count(folder);
+    } catch (_) {
+      return 0;
+    }
+  }
+
   Future<FolderDeleteOutcome> deleteFolder(String folderPath) async {
     final String folder = Note.normalizeFolderPath(folderPath);
     if (folder.isEmpty) {
@@ -1166,12 +1190,13 @@ class NotesController extends ChangeNotifier {
       );
     }
     if (!clean) {
+      final int boards = await _canvasCountIn(folder);
       return (
         receipts: const <TrashEntry>[],
         deleted: 0,
         failed: 0,
         removed: false,
-        blocked: '文件夹里还有不是笔记的文件',
+        blocked: boards > 0 ? '文件夹里还有 $boards 块白板' : '文件夹里还有不是笔记的文件',
       );
     }
 

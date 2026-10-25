@@ -102,6 +102,12 @@ abstract class NoteStore {
   /// manager. False for the in-browser fallback.
   bool get supportsNativeFiles;
 
+  /// vault 在磁盘上的真实路径。浏览器端没有文件系统，返回 null。
+  ///
+  /// 白板存储要拿它来定位同一棵树：白板是 vault 里的普通文件，必须和笔记
+  /// 待在同一个目录，否则用户在文件管理器里看到的是两棵互不相干的树。
+  String? get vaultPath => null;
+
   /// Reads every note in the vault, newest first.
   Future<List<Note>> loadAll();
 
