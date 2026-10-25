@@ -493,6 +493,7 @@ tasks.md
 | `test/note_graph_test.dart` | 21 | 抽边 13（含围栏代码块、嵌入、死链、自环、重复、大小写）+ 度数 2 + 邻域/子图 6 |
 | `test/graph_physics_test.dart` | 13 | 收敛 5 + 可复现 2 + 边界 3 + 半径/帧数 3 |
 | `test/graph_view_test.dart` | 15 | 打开即有图 3 + 单击/双击 3 + 局部深度 3 + 筛选 4 + 视图操作 2 |
+| `test/graph_style_test.dart` | 8 | 色名分配稳定性 3 + 深浅两套配色各自在画布上的对比度 2 + 画布亮度 1 + 描边不出白边 1 + 浅色不是深色那套 1 |
 
 ### 13.3 实施中踩到并修掉的坑
 
@@ -513,6 +514,14 @@ tasks.md
 8. **「有笔记但一条边都没有」没有提示**：原来只有 0 节点才显示空态，
    2 篇无链接笔记时画布上是两个散点，看着像坏了。补一条底部居中的提示条
    （`_hintPill`），不挡节点。
+9. **浅色主题下分组色糊在画布上**（真缺陷）：`assignFolderColors` 直接返回
+   `table_colors.dart` 的 `_darkInks`——那是给深色画布提亮过的一组值。浅色主题的
+   画布是 `#F4F4F2`，灰 `#C2C5CC` 压上去对比度只有 ~1.5，基本看不见。
+   改法：`groupPalette(List<Color>)` → `groupTokens(List<CellColorToken>)`，
+   `assignFolderTokens` 返回**色名**，新增 `groupColor(palette, token)` 走
+   `tableInkColor`（深色给 `_darkInks`，浅色给 `textSecondary/warning/success/
+   #2F6690/#6B4E8E/danger`）。建图在 `initState`、那时读不到 `Theme`，所以状态里
+   只存色名，颜色在 `build` 里解析——图例、节点、气泡点共用同一份。
 
 ### 13.4 相对方案的偏差
 
