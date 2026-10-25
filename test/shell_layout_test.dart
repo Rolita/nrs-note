@@ -341,7 +341,7 @@ void main() {
     final ({SettingsController settings, NotesController notes}) app =
         await pumpShell(tester);
     expect(app.settings.listWidth, AppLayout.listDefaultWidth);
-    expect(app.settings.outlineWidth, AppLayout.outlineWidth);
+    expect(app.settings.rightPanelWidth, AppLayout.rightPanelWidth);
 
     await tester.drag(
       find.byType(ResizeHandle).first,
@@ -359,7 +359,7 @@ void main() {
       warnIfMissed: false,
     );
     await tester.pumpAndSettle();
-    expect(app.settings.outlineWidth, lessThan(AppLayout.outlineWidth));
+    expect(app.settings.rightPanelWidth, lessThan(AppLayout.rightPanelWidth));
   });
 
   testWidgets('the rail switches the sidebar between files, search and tags', (
@@ -868,6 +868,48 @@ void main() {
     expect(find.byType(TablePanel), findsNothing);
     expect(find.byType(OutlinePanel), findsNothing);
     expect(find.byType(ImagePanel), findsNothing);
+  });
+
+  testWidgets('大纲 / 表格 / 图片三块面板共用同一列宽', (WidgetTester tester) async {
+    final ({SettingsController settings, NotesController notes}) app =
+        await pumpShell(tester);
+
+    final double outline = tester.getRect(find.byType(OutlinePanel)).width;
+    expect(outline, AppLayout.rightPanelWidth);
+
+    await tester.tap(find.byTooltip('表格'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.getRect(find.byType(TablePanel)).width,
+      outline,
+      reason: '换一块面板不该让这一列跳宽窄',
+    );
+
+    await tester.tap(find.byTooltip('图片'));
+    await tester.pumpAndSettle();
+    expect(tester.getRect(find.byType(ImagePanel)).width, outline);
+
+    // 宽度只有一份：拖大纲的把手，表格面板换上来也是这个宽度。
+    // 大纲按钮的提示里还带着快捷键，所以用前缀匹配。
+    await tester.tap(find.byTooltip(RegExp('^大纲')));
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byType(ResizeHandle).last,
+      const Offset(60, 0),
+      warnIfMissed: false,
+    );
+    await tester.pumpAndSettle();
+    final double narrowed = app.settings.rightPanelWidth;
+    expect(narrowed, lessThan(AppLayout.rightPanelWidth));
+    expect(tester.getRect(find.byType(OutlinePanel)).width, narrowed);
+
+    await tester.tap(find.byTooltip('表格'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.getRect(find.byType(TablePanel)).width,
+      narrowed,
+      reason: '三块面板共用一份宽度，不是各记各的',
+    );
   });
 
   testWidgets('right-clicking a file in the tree offers delete for that file', (
@@ -1524,7 +1566,7 @@ void main() {
     expect(first.map((Heading h) => h.plainText), <String>['标题']);
 
     // 只改面板宽度：正文对象没变，大纲列表应当是同一个对象。
-    app.settings.outlineWidth = app.settings.outlineWidth + 10;
+    app.settings.rightPanelWidth = app.settings.rightPanelWidth + 10;
     await tester.pump();
     final List<Heading> afterResize = tester
         .widget<OutlinePanel>(find.byType(OutlinePanel))

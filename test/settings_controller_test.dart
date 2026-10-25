@@ -290,10 +290,10 @@ void main() {
   });
 
   group('表格面板', () {
-    test('默认关闭，宽度取面板默认值', () async {
+    test('默认关闭，宽度取最右栏的默认值', () async {
       final (:settings, :prefs) = await load();
       expect(settings.tablePanelVisible, isFalse);
-      expect(settings.tablePanelWidth, AppLayout.tablePanelWidth);
+      expect(settings.rightPanelWidth, AppLayout.rightPanelWidth);
     });
 
     test('开一个就关掉另一个：大纲与表格共用最右栏', () async {
@@ -312,30 +312,13 @@ void main() {
       expect(prefs.getBool('nrs.tablePanelVisible'), isFalse);
     });
 
-    test('宽度夹在 220–420，同值不再通知', () async {
-      final (:settings, :prefs) = await load();
-      int notifications = 0;
-      settings.addListener(() => notifications++);
-
-      settings.tablePanelWidth = 1000;
-      expect(settings.tablePanelWidth, AppLayout.tablePanelMaxWidth);
-      expect(notifications, 1);
-
-      settings.tablePanelWidth = 10;
-      expect(settings.tablePanelWidth, AppLayout.tablePanelMinWidth);
-      expect(notifications, 2);
-
-      settings.tablePanelWidth = AppLayout.tablePanelMinWidth;
-      expect(notifications, 2, reason: '同值不再通知');
-      expect(prefs.containsKey('nrs.tablePanelWidth'), isTrue);
-    });
   });
 
   group('图片面板', () {
-    test('默认关闭，宽度取面板默认值', () async {
+    test('默认关闭，宽度取最右栏的默认值', () async {
       final (:settings, :prefs) = await load();
       expect(settings.imagePanelVisible, isFalse);
-      expect(settings.imagePanelWidth, AppLayout.imagePanelWidth);
+      expect(settings.rightPanelWidth, AppLayout.rightPanelWidth);
     });
 
     test('三个面板共用最右栏：开一个就关掉另外两个', () async {
@@ -362,22 +345,49 @@ void main() {
       expect(prefs.getBool('nrs.imagePanelVisible'), isFalse);
     });
 
-    test('宽度夹在 220–420，同值不再通知', () async {
+  });
+
+  group('最右栏宽度', () {
+    test('三块面板共用一份宽度，拖哪一块都是同一个值', () async {
       final (:settings, :prefs) = await load();
+      expect(settings.rightPanelWidth, AppLayout.rightPanelWidth);
+
       int notifications = 0;
       settings.addListener(() => notifications++);
 
-      settings.imagePanelWidth = 1000;
-      expect(settings.imagePanelWidth, AppLayout.imagePanelMaxWidth);
+      settings.rightPanelWidth = 1000;
+      expect(settings.rightPanelWidth, AppLayout.rightPanelMaxWidth);
       expect(notifications, 1);
 
-      settings.imagePanelWidth = 10;
-      expect(settings.imagePanelWidth, AppLayout.imagePanelMinWidth);
+      settings.rightPanelWidth = 10;
+      expect(settings.rightPanelWidth, AppLayout.rightPanelMinWidth);
       expect(notifications, 2);
 
-      settings.imagePanelWidth = AppLayout.imagePanelMinWidth;
+      settings.rightPanelWidth = AppLayout.rightPanelMinWidth;
       expect(notifications, 2, reason: '同值不再通知');
-      expect(prefs.containsKey('nrs.imagePanelWidth'), isTrue);
+      expect(
+        prefs.getDouble('nrs.rightPanelWidth'),
+        AppLayout.rightPanelMinWidth,
+      );
+      // 只有一条记录：不再按面板各存一份。
+      expect(prefs.containsKey('nrs.outlineWidth'), isFalse);
+      expect(prefs.containsKey('nrs.tablePanelWidth'), isFalse);
+      expect(prefs.containsKey('nrs.imagePanelWidth'), isFalse);
+    });
+
+    test('第一次读取时把旧的三条宽度捡回来', () async {
+      // 升级前用户把大纲拖到 300：合并之后那一列不该跳回默认值。
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'nrs.outlineWidth': 300.0,
+        'nrs.tablePanelWidth': 260.0,
+      });
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      final SettingsController settings = SettingsController(prefs);
+      expect(settings.rightPanelWidth, 300);
+
+      // 写过一次之后就以新键为准，旧键不再参与。
+      settings.rightPanelWidth = 240;
+      expect(settings.rightPanelWidth, 240);
     });
   });
 }

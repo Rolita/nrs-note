@@ -160,23 +160,17 @@ abstract final class AppLayout {
   static const double listDefaultWidth = 288;
   static const double listMaxWidth = 420;
 
-  /// Far-right document outline.
-  static const double outlineWidth = 232;
-  static const double outlineMinWidth = 200;
-  static const double outlineMaxWidth = 420;
-
-  /// Far-right table tools panel. Slightly wider than the outline because its
-  /// commands sit four to a row and a 56px button has to hold a 17px glyph.
-  static const double tablePanelWidth = 252;
-  static const double tablePanelMinWidth = 220;
-  static const double tablePanelMaxWidth = 420;
-
-  /// Far-right image list panel. Same width as the table panel: a 44px
-  /// thumbnail plus two lines of caption need the room, and the three panels
-  /// sharing this column should not change width when you switch between them.
-  static const double imagePanelWidth = 252;
-  static const double imagePanelMinWidth = 220;
-  static const double imagePanelMaxWidth = 420;
+  /// Far-right panel column: the outline, the table tools and the image list
+  /// take turns living in it.
+  ///
+  /// **One** width for all three, not three widths that happen to look alike:
+  /// switching panels must not move the column's edge. 252 is what the widest
+  /// tenant needs (the table commands sit four to a row, and the image list is
+  /// a 44px thumbnail plus two lines of caption), so the outline lives with it
+  /// rather than being 20px narrower.
+  static const double rightPanelWidth = 252;
+  static const double rightPanelMinWidth = 220;
+  static const double rightPanelMaxWidth = 420;
 
   /// 图谱左上角的浮动设置面板。比侧栏窄：它盖在画布上，每一像素都是从图上
   /// 抢来的，而里面的内容只有一行字 + 一个开关。

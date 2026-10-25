@@ -28,9 +28,16 @@ class SettingsController extends ChangeNotifier {
   static const String _kTablePanel = 'nrs.tablePanelVisible';
   static const String _kImagePanel = 'nrs.imagePanelVisible';
   static const String _kListWidth = 'nrs.listWidth';
-  static const String _kOutlineWidth = 'nrs.outlineWidth';
-  static const String _kTablePanelWidth = 'nrs.tablePanelWidth';
-  static const String _kImagePanelWidth = 'nrs.imagePanelWidth';
+  static const String _kRightPanelWidth = 'nrs.rightPanelWidth';
+
+  /// 最右栏曾经按面板各存一条宽度（大纲 / 表格 / 图片）。三块面板本来就是
+  /// 同一列轮流住，宽度却各记一份，切换面板时列边缘会跳一下。合并之后第一次
+  /// 读取时把旧值捡回来——用户拖过的那一列不该在升级后跳回默认值。
+  static const List<String> _kLegacyPanelWidths = <String>[
+    'nrs.outlineWidth',
+    'nrs.tablePanelWidth',
+    'nrs.imagePanelWidth',
+  ];
   static const String _kProseSize = 'nrs.proseSize';
   static const String _kFocus = 'nrs.focusMode';
   static const String _kSessionTabs = 'nrs.sessionTabs';
@@ -295,45 +302,30 @@ class SettingsController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Width of the document outline column, dragged by its own handle.
-  double get outlineWidth =>
-      _prefs.getDouble(_kOutlineWidth) ?? AppLayout.outlineWidth;
-
-  set outlineWidth(double value) {
-    final double clamped = value.clamp(
-      AppLayout.outlineMinWidth,
-      AppLayout.outlineMaxWidth,
+  /// 最右栏的宽度，大纲 / 表格 / 图片三块面板共用。
+  ///
+  /// 三块面板轮流住在同一列里，宽度只有**一份**：拖任何一块的把手改的都是
+  /// 这个值，切换面板时列边缘不会动。
+  double get rightPanelWidth {
+    final double saved =
+        _prefs.getDouble(_kRightPanelWidth) ??
+        _kLegacyPanelWidths
+            .map(_prefs.getDouble)
+            .firstWhere((double? v) => v != null, orElse: () => null) ??
+        AppLayout.rightPanelWidth;
+    return saved.clamp(
+      AppLayout.rightPanelMinWidth,
+      AppLayout.rightPanelMaxWidth,
     );
-    if ((outlineWidth - clamped).abs() < 0.5) return;
-    _prefs.setDouble(_kOutlineWidth, clamped);
-    notifyListeners();
   }
 
-  /// Width of the table tools column, dragged by its own handle.
-  double get tablePanelWidth =>
-      _prefs.getDouble(_kTablePanelWidth) ?? AppLayout.tablePanelWidth;
-
-  set tablePanelWidth(double value) {
+  set rightPanelWidth(double value) {
     final double clamped = value.clamp(
-      AppLayout.tablePanelMinWidth,
-      AppLayout.tablePanelMaxWidth,
+      AppLayout.rightPanelMinWidth,
+      AppLayout.rightPanelMaxWidth,
     );
-    if ((tablePanelWidth - clamped).abs() < 0.5) return;
-    _prefs.setDouble(_kTablePanelWidth, clamped);
-    notifyListeners();
-  }
-
-  /// Width of the image list column, dragged by its own handle.
-  double get imagePanelWidth =>
-      _prefs.getDouble(_kImagePanelWidth) ?? AppLayout.imagePanelWidth;
-
-  set imagePanelWidth(double value) {
-    final double clamped = value.clamp(
-      AppLayout.imagePanelMinWidth,
-      AppLayout.imagePanelMaxWidth,
-    );
-    if ((imagePanelWidth - clamped).abs() < 0.5) return;
-    _prefs.setDouble(_kImagePanelWidth, clamped);
+    if ((rightPanelWidth - clamped).abs() < 0.5) return;
+    _prefs.setDouble(_kRightPanelWidth, clamped);
     notifyListeners();
   }
 

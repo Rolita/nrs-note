@@ -18,7 +18,7 @@ class ImagePanel extends StatelessWidget {
     required this.images,
     required this.onSelect,
     required this.providerFor,
-    this.width = AppLayout.imagePanelWidth,
+    this.width = AppLayout.rightPanelWidth,
   });
 
   final List<NoteImage> images;

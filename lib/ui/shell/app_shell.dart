@@ -756,11 +756,10 @@ class _AppShellState extends State<AppShell> {
                                     AppLayout.resizeHandleWidth);
                 // The toggle pair aligns with the *panel*, not with the drag
                 // handle in front of it, so the handle's width is not counted.
-                final double rightInset = showOutline
-                    ? settings.outlineWidth
-                    : (showTable
-                          ? settings.tablePanelWidth
-                          : (showImages ? settings.imagePanelWidth : 0));
+                // 三块面板共用同一列、同一个宽度，所以这里不需要分支。
+                final double rightInset = showOutline || showTable || showImages
+                    ? settings.rightPanelWidth
+                    : 0;
                 return Column(
                   children: <Widget>[
                     // The app's own caption: drag to move, double-click to
@@ -906,12 +905,13 @@ class _AppShellState extends State<AppShell> {
                                 // rightwards narrows the column.
                                 ResizeHandle(
                                   background: p.surface,
-                                  onDelta: (double d) => settings.outlineWidth =
-                                      settings.outlineWidth - d,
+                                  onDelta: (double d) =>
+                                      settings.rightPanelWidth =
+                                          settings.rightPanelWidth - d,
                                 ),
                                 _OutlineRegion(
                                   currentLine: _cursorLine,
-                                  width: settings.outlineWidth,
+                                  width: settings.rightPanelWidth,
                                   onSelect: (int line) => _editorKey
                                       .currentState
                                       ?.goToHeading(line),
@@ -921,11 +921,11 @@ class _AppShellState extends State<AppShell> {
                                 ResizeHandle(
                                   background: p.surface,
                                   onDelta: (double d) =>
-                                      settings.tablePanelWidth =
-                                          settings.tablePanelWidth - d,
+                                      settings.rightPanelWidth =
+                                          settings.rightPanelWidth - d,
                                 ),
                                 TablePanel(
-                                  width: settings.tablePanelWidth,
+                                  width: settings.rightPanelWidth,
                                   value: _bodyValue,
                                   onApply: (MarkdownEditFn fn) =>
                                       _editorKey.currentState?.applyEdit(fn),
@@ -939,11 +939,11 @@ class _AppShellState extends State<AppShell> {
                                 ResizeHandle(
                                   background: p.surface,
                                   onDelta: (double d) =>
-                                      settings.imagePanelWidth =
-                                          settings.imagePanelWidth - d,
+                                      settings.rightPanelWidth =
+                                          settings.rightPanelWidth - d,
                                 ),
                                 _ImageRegion(
-                                  width: settings.imagePanelWidth,
+                                  width: settings.rightPanelWidth,
                                   onSelect: (int offset) => _editorKey
                                       .currentState
                                       ?.goToOffset(offset),
