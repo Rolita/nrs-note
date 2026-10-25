@@ -489,6 +489,35 @@ void main() {
     expect(ed.controller.text, text, reason: '点一下不该改文档');
   });
 
+  testWidgets('点图片本体拖不动：搬图只能从右上角的按钮开始', (
+    WidgetTester tester,
+  ) async {
+    final ui.Image image = await makeImage(tester, 400, 200);
+    final _Editor ed = await pumpEditor(tester, image: image);
+    final Rect bounds = ed.field().imageBlocks().single.chromeImageBounds();
+
+    // 从图片正中间按下去，拖到正文下方。
+    final TestGesture drag = await tester.startGesture(
+      bounds.center,
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump();
+    await drag.moveBy(const Offset(0, 40));
+    await tester.pump();
+    await drag.moveTo(Offset(bounds.center.dx, bounds.bottom + 60));
+    await tester.pump();
+    await drag.up();
+    await tester.pumpAndSettle();
+
+    expect(
+      ed.controller.text,
+      text,
+      reason: '图片是正文里最大的一块，随手一拖就搬走比拖不动难受得多',
+    );
+    // 这一下仍然算「点中它」：边框该在，按钮该出来。
+    expect(ed.field().imageBlocks().single.chromeSelected, isTrue);
+  });
+
   testWidgets('点中之后两个按钮固定显示，点别处收起', (WidgetTester tester) async {
     final ui.Image image = await makeImage(tester, 400, 200);
     final _Editor ed = await pumpEditor(tester, image: image);
@@ -604,18 +633,25 @@ void main() {
   }
 
   /// 从图片中间按住往外拖，落到 [target]。
+  /// 把图片搬到 [target]。
+  ///
+  /// ⛔ 起点是右上角那颗「移动」按钮，不是图片本身：点图片本体只选中、不搬，
+  /// 这是刻意的（图片是正文里最大的一块，随手一拖就把它挪走比「拖不动」难受）。
   Future<void> dragImage(
     WidgetTester tester,
     _Editor ed,
     Offset target,
   ) async {
     final Rect bounds = ed.field().imageBlocks().single.chromeImageBounds();
+    // 按钮悬停才出来，先把指针挪到图上。
+    final TestPointer mouse = TestPointer(1, PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(mouse.hover(bounds.center));
+    await tester.pumpAndSettle();
+
     final TestGesture drag = await tester.startGesture(
-      bounds.center,
+      tester.getCenter(find.byTooltip('移动')),
       kind: PointerDeviceKind.mouse,
     );
-    await tester.pump();
-    await drag.moveBy(const Offset(0, 24)); // 越过 kTouchSlop，进入「搬走」
     await tester.pump();
     await drag.moveTo(target);
     await tester.pump();
@@ -755,8 +791,13 @@ void main() {
     final Rect bounds = ed.field().imageBlocks().single.chromeImageBounds();
     final List<String> changes = <String>[];
 
+    // 从右上角的按钮起拖——点图片本体不搬。
+    final TestPointer mouse = TestPointer(1, PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(mouse.hover(bounds.center));
+    await tester.pumpAndSettle();
+
     final TestGesture drag = await tester.startGesture(
-      bounds.center,
+      tester.getCenter(find.byTooltip('移动')),
       kind: PointerDeviceKind.mouse,
     );
     await tester.pump();

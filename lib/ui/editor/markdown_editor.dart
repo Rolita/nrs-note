@@ -3143,6 +3143,10 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     }
     // 点图片本体：不落光标（图片行是自绘的，光标进去看不见也没意义），只把
     // 它选中——边框加上，右上角的两个按钮固定显示。
+    //
+    // ⛔ 这里**不建拖动候选**。搬图只有右上角那颗按钮一条路：图片是正文里
+    //    最大的一块，随手一拖就把它挪走，比「拖不动」难受得多。想搬就点按钮，
+    //    那个动作是明确的。
     final int? imageLine = _imageLineAt(event.position);
     if (imageLine != null) {
       _selectImage(imageLine);
@@ -3150,12 +3154,6 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
         _rangeBeforeChromeTap = null;
         _downPosition = event.position;
         _gestureMoved = false;
-        // 按住不动是「选中这张图」，按住往外拖是「把它搬走」——差别在指针
-        // 走没走过拖拽阈值，所以按下的这一刻只能先把候选记下来。
-        _imageMove = _ImageMove(
-          lineStart: imageLine,
-          origin: event.position,
-        )..size = _imageSizeAt(imageLine);
         // 命中被 `_ChromeShield` 挡下了，字段收不到这一下，它的「点空白处
         // 失焦」却照样在事件末尾生效。不补回来，选中图片后按 Backspace
         // 删图会一点反应都没有——键盘事件全落在一个没有焦点的字段上。
@@ -3620,16 +3618,12 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// 那个按钮存在的意义就是拖动，所以不等拖拽阈值：按下去就已经在搬了。
   /// 指针后续的移动 / 抬起由那颗按钮自己的 [Listener] 直接送进来——它压在
   /// 字段上面，字段收不到这些事件。
+  ///
+  /// 这也是**唯一**的搬图入口。点图片本体只选中，不搬。
   void _beginImageMoveFromHandle(int line) {
     setState(() {
       _selectedImageLine = line;
-      _imageMove = _ImageMove(
-        lineStart: line,
-        origin: Offset.zero,
-        fromHandle: true,
-      )
-        ..active = true
-        ..size = _imageSizeAt(line);
+      _imageMove = _ImageMove(lineStart: line)..size = _imageSizeAt(line);
     });
     _applyImageSelection();
     _setCursor(SystemMouseCursors.grabbing);
@@ -3641,13 +3635,6 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// 否则每移动一像素就是一步撤销，光标还会在搬来搬去的行里乱跳。
   void _dragImageMove(Offset position) {
     final _ImageMove move = _imageMove!;
-    if (!move.active) {
-      if ((position - move.origin).distance <= kTouchSlop) return;
-      // 指针离开了按下点：这一下是「搬走」，不再是「点选」。
-      move.active = true;
-      _gestureMoved = true;
-      _setCursor(SystemMouseCursors.grabbing);
-    }
     final RenderLineEditable? field = _editable();
     final RenderObject? root = context.findRenderObject();
     if (field == null || root is! RenderBox || !root.hasSize) return;
@@ -3708,21 +3695,16 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   }
 
   /// 松手：把这一整行搬到落点，并按落点写好贴哪一边。
-  ///
-  /// 没真的拖起来就什么都不做——那一下是「点选这张图」，`_onPointerDown` 已经
-  /// 把边框和按钮处理过了。
   void _finishImageMove(Offset position) {
     final _ImageMove move = _imageMove!;
     final int? target = move.target;
     final ImageAlign? align = move.align;
-    final bool active = move.active;
     _imageMove = null;
     _downPosition = null;
     _gestureMoved = false;
     _setCursor(_cursorAt(position));
     // 插入线与预览框都是画出来的，状态一清就得重画一遍。
     setState(() {});
-    if (!active) return;
 
     final ({int from, int to, String text})? line = _sourceLineAt(
       move.lineStart,
@@ -5589,25 +5571,16 @@ class _ImageEdit {
 /// 落点还决定**贴哪一边**——拖到正文左侧三分之一就贴左、右侧三分之一就贴右，
 /// 中间则是独占一行。贴边之后后面几行正文会在另一侧绕排，这就是「左文字右
 /// 图片」的来源。
+/// 一次「把图片搬到别处」的拖动。
+///
+/// 只能从右上角的移动按钮发起（见 `_beginImageMoveFromHandle`）。点图片本体
+/// 只选中，不建这个对象——图片是正文里最大的一块，随手一拖就把它挪走，比
+/// 「拖不动」难受得多。
 class _ImageMove {
-  _ImageMove({
-    required this.lineStart,
-    required this.origin,
-    this.fromHandle = false,
-  });
+  _ImageMove({required this.lineStart});
 
   /// 被搬的那一行（行首偏移）。
   final int lineStart;
-
-  /// 按下时的指针位置。超过拖拽阈值才算真的拖起来——否则那一下是「点选」。
-  ///
-  /// 从右上角的移动按钮按下的（[fromHandle]）不必等阈值：那个按钮存在的意义
-  /// 就是拖动，点它一下本来也没有别的意思。
-  final Offset origin;
-
-  final bool fromHandle;
-
-  bool active = false;
 
   /// 落点：文档偏移，一定是某一行的行首。`null` 表示落在自己身上（不搬）。
   int? target;
