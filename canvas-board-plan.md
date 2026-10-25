@@ -639,7 +639,7 @@ flutter test --exclude-tags perf          # 全量回归
 | 笔记改名后文件卡片失效 | 一期：打开时统计失效卡片并在工具条上标一个警告点；二期做按标题重解析 |
 | 撤销栈吃内存 | 存字符串 + 上限 50 步；白板典型 < 100KB，50 步 < 5MB |
 | 自动保存和撤销打架 | 只在 `mutate()` 之后保存，撤销/重做本身也是一次 `mutate()` |
-| **删文件夹被白板挡住** | `NoteStoreIo._holdsOnlyKnownNotes` 把「不是已知笔记的文件」当成不可删的未知文件，`.nrs` 会命中这条，导致「文件夹里还有别的文件，不能删」。P6 要把 `.nrs` 一并纳入 `known` 集合（或在提示里写明「还有 N 块白板」），否则用户会觉得删不掉文件夹 |
+| **删文件夹被白板挡住** | `NoteStoreIo._holdsOnlyKnownNotes` 把「不是已知笔记的文件」当成不可删的未知文件，`.nrs` 会命中这条，导致「文件夹里还有别的文件，不能删」。P6 要把 `.nrs` 一并纳入 `known` 集合（或在提示里写明「还有 N 块白板」），否则用户会觉得删不掉文件夹 **→ 已做后者**：`NotesController.canvasCountOf` 注入 `CanvasController.list()` 的过滤结果，提示语变成「文件夹里还有 N 块白板」。不做前者：白板没有回收站，跟着文件夹一起删就找不回来了 |
 | Web 端持久化容量 | 沿用 `NoteStoreWeb` 的配额错误处理（已有实现） |
 
 ---
@@ -670,3 +670,70 @@ flutter test --exclude-tags perf          # 全量回归
 - [ ] 拿一个 Obsidian 里做的 `.canvas`，把后缀改成 `.nrs` 放进来，能正确显示
 - [ ] 浅色 / 深色主题下都读得清（卡片底色、连线、网格）
 - [ ] 空白板、单卡片、200 卡片三种极端输入都不卡不崩
+
+---
+
+## 15. 实施记录
+
+### 15.1 落地文件
+
+| 层 | 文件 | 内容 |
+|---|---|---|
+| 数据 | `lib/core/utils/canvas_document.dart` | 节点/边的模型、`parseCanvas` / `encodeCanvas`、`newCanvasId` |
+| 几何 | `lib/core/utils/canvas_geometry.dart` | `CanvasViewport`、八向手柄、贝塞尔控制点、吸附、`hitsRect` / `resizeRect` |
+| 存储 | `lib/data/storage/canvas_store.dart` | `CanvasRef`、`CanvasStore` 抽象、`canvasFileName` / `canvasTitleOf` / `isSafeCanvasPath` |
+| 存储 | `lib/data/storage/canvas_store_io.dart` | 真 `.nrs` 文件，原子写，`list()` 跳过 `.nrs-trash` / `.nrs-history` |
+| 存储 | `lib/data/storage/canvas_store_web.dart` | `localStorage`，前缀 `nrs/v1/canvas/` |
+| 存储 | `lib/data/storage/canvas_store_factory.dart` | 条件导出 |
+| 状态 | `lib/state/canvas_controller.dart` | 打开 / 新建 / 防抖自动保存 / `flush` / `close` |
+| 渲染 | `lib/ui/canvas/canvas_style.dart` | 配色令牌、预设色映射、点阵步长与淡出 |
+| 渲染 | `lib/ui/canvas/canvas_grid_painter.dart` | 点阵 + 框选虚线 |
+| 渲染 | `lib/ui/canvas/canvas_card.dart` | 卡片 Widget + 八向手柄画笔 |
+| 渲染 | `lib/ui/canvas/canvas_edge_painter.dart` | 贝塞尔边、箭头、标签描边、连线圆点、命中测试 |
+| 渲染 | `lib/ui/canvas/canvas_toolbar.dart` | 工具条、缩放读数、新建位 |
+| 交互 | `lib/ui/canvas/canvas_board.dart` | 状态机、命中顺序、拖动 / 缩放 / 连线 / 框选 / 编辑 / 剪贴板 / 撤销 |
+| 交互 | `lib/ui/canvas/canvas_history.dart` | 50 步字符串快照栈 |
+| 交互 | `lib/ui/canvas/canvas_pickers.dart` | 文件选择器、链接对话框、URL 归一化 |
+| 交互 | `lib/ui/canvas/canvas_open_picker.dart` | 「打开哪块白板」 |
+| 外壳 | `lib/ui/shell/app_shell.dart` 等 5 处 | `MainView.canvas`、页签条白板位、`Ctrl+Shift+B`、打开/新建链路 |
+
+### 15.2 提交
+
+| 提交 | 阶段 | 回归 |
+|---|---|---|
+| `42b74ff` | P1 点阵 + 平移缩放 + 主区接线 | 1356 |
+| `da60f69` | P2 卡片 | 1390 |
+| `651198d` | P3 连线 | 1410 |
+| `555f9c0` | P4 文件卡 / 链接卡 / 分组 | 1425 |
+| `3fa4522` | P5 撤销重做 / 框选 / 剪贴板 / 微调 / 裁剪 | 1444 |
+| `c92d73f` | P6 落盘 + 自动保存 + 选择器 | 1470 |
+
+每个阶段 `flutter analyze lib test` 均 `No issues found!`。
+
+### 15.3 测试
+
+| 文件 | 条数 | 覆盖 |
+|---|---|---|
+| `test/canvas_document_test.dart` | 32 | 解析 / 编码 / round-trip / 坏数据 / 未知字段保留 |
+| `test/canvas_geometry_test.dart` | 39 | 坐标换算、手柄、吸附、贝塞尔、命中 |
+| `test/canvas_board_test.dart` | 76 | 交互全链路（含探针断言） |
+| `test/canvas_card_test.dart` | 14 | 卡片渲染、四种节点体、手柄画笔 |
+| `test/canvas_edge_test.dart` | 12 | 边视觉、标签、圆点、预览 |
+| `test/canvas_pickers_test.dart` | 9 | 文件/链接选择、URL 归一化 |
+| `test/canvas_history_test.dart` | 6 | 撤销栈边界 |
+| `test/canvas_controller_test.dart` | 11 | 打开 / 新建 / 防抖 / 写失败回滚 / 坏 JSON |
+| `test/canvas_store_test.dart` | 13 | 文件名、路径安全、真文件读写 |
+
+### 15.4 踩过的坑（写下来免得下次再踩）
+
+1. **`ResizeHandle` 撞名**：`lib/ui/common/app_widgets.dart` 里已有面板拖拽手柄，16 个 `ambiguous_import` → 白板的改名 `CanvasResizeHandle`。
+2. **`DateTime.now()` 不随 `pump` 前进**：双击判定改用手写的 `Timer(kDoubleTapTimeout)`，走假时钟；也不用 `DoubleTapGestureRecognizer`（留 40ms 挂起计时器 + 抢手势）。
+3. **`zoom * (1 / zoom)` 给 `0.9999999999999999`**：缩放读数显示 99% → `withZoomAt` 直接构造 `CanvasViewport`，不走乘法。
+4. **缩放手柄拖不动**：`_resizeTo` 用 `_dragFromScreen` 算增量，但按下手柄时没设它 → `resizing` 分支补一句。
+5. **连线圆点点不到**：圆点摆在卡片边界上，而 `Rect.contains` 不含右/下边界 → `_nodeAt` 加 `tolerance`，悬停时传 `1 / zoom`。
+6. **`id` / `fromNode` / `toNode` 都是 `final`**：粘贴换 id 只能在 JSON 层做 —— `toJson → 改 → parseCanvas`。
+7. **撤销后手上那批节点对象作废**：`_restore` 会换一批新对象，测试只能看 `h.nodes.first`。
+8. **点阵必须在屏幕坐标里算**：`startX = offset.dx % screenStep`。换成世界坐标，缩到 0.1 时要点几十万个。
+9. **`CanvasViewport` 要值相等**：画笔 `shouldRepaint` 拿它比，没有 `==` 就每帧都判「变了」。
+10. **条件导出在测试里解析不到**：`test/canvas_store_test.dart` 直接 import `canvas_store_io.dart`，别走 factory（`flutter test` 能跑，`flutter analyze` 报 `undefined_class`）。
+
