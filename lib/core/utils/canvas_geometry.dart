@@ -299,9 +299,9 @@ bool hitsRect(Rect rect, Offset world, {double tolerance = 0}) {
 /// 框选：矩形相交即命中。
 bool rectsIntersect(Rect a, Rect b) => a.overlaps(b);
 
-/// 八个缩放手柄的位置（四角 + 四边中点），顺序固定，`ResizeHandle` 的
+/// 八个缩放手柄的位置（四角 + 四边中点），顺序固定，`CanvasResizeHandle` 的
 /// 下标就是它的序号。
-enum ResizeHandle {
+enum CanvasResizeHandle {
   topLeft,
   topCenter,
   topRight,
@@ -312,36 +312,36 @@ enum ResizeHandle {
   centerLeft;
 
   Offset at(Rect r) => switch (this) {
-    ResizeHandle.topLeft => r.topLeft,
-    ResizeHandle.topCenter => r.topCenter,
-    ResizeHandle.topRight => r.topRight,
-    ResizeHandle.centerRight => r.centerRight,
-    ResizeHandle.bottomRight => r.bottomRight,
-    ResizeHandle.bottomCenter => r.bottomCenter,
-    ResizeHandle.bottomLeft => r.bottomLeft,
-    ResizeHandle.centerLeft => r.centerLeft,
+    CanvasResizeHandle.topLeft => r.topLeft,
+    CanvasResizeHandle.topCenter => r.topCenter,
+    CanvasResizeHandle.topRight => r.topRight,
+    CanvasResizeHandle.centerRight => r.centerRight,
+    CanvasResizeHandle.bottomRight => r.bottomRight,
+    CanvasResizeHandle.bottomCenter => r.bottomCenter,
+    CanvasResizeHandle.bottomLeft => r.bottomLeft,
+    CanvasResizeHandle.centerLeft => r.centerLeft,
   };
 
   /// 这个手柄牵动哪几条边。
   bool get movesLeft =>
-      this == ResizeHandle.topLeft ||
-      this == ResizeHandle.centerLeft ||
-      this == ResizeHandle.bottomLeft;
+      this == CanvasResizeHandle.topLeft ||
+      this == CanvasResizeHandle.centerLeft ||
+      this == CanvasResizeHandle.bottomLeft;
 
   bool get movesRight =>
-      this == ResizeHandle.topRight ||
-      this == ResizeHandle.centerRight ||
-      this == ResizeHandle.bottomRight;
+      this == CanvasResizeHandle.topRight ||
+      this == CanvasResizeHandle.centerRight ||
+      this == CanvasResizeHandle.bottomRight;
 
   bool get movesTop =>
-      this == ResizeHandle.topLeft ||
-      this == ResizeHandle.topCenter ||
-      this == ResizeHandle.topRight;
+      this == CanvasResizeHandle.topLeft ||
+      this == CanvasResizeHandle.topCenter ||
+      this == CanvasResizeHandle.topRight;
 
   bool get movesBottom =>
-      this == ResizeHandle.bottomLeft ||
-      this == ResizeHandle.bottomCenter ||
-      this == ResizeHandle.bottomRight;
+      this == CanvasResizeHandle.bottomLeft ||
+      this == CanvasResizeHandle.bottomCenter ||
+      this == CanvasResizeHandle.bottomRight;
 }
 
 /// 拖动某个手柄之后的新矩形。
@@ -350,7 +350,7 @@ enum ResizeHandle {
 /// 卡片是「贴住」原来那条边，而不是整体漂移。
 Rect resizeRect(
   Rect start,
-  ResizeHandle handle,
+  CanvasResizeHandle handle,
   Offset delta, {
   required double minSize,
 }) {

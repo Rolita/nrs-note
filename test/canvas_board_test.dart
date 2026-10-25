@@ -9,6 +9,7 @@ import 'package:nrs/core/theme/app_theme.dart';
 import 'package:nrs/core/utils/canvas_document.dart';
 import 'package:nrs/core/utils/canvas_geometry.dart';
 import 'package:nrs/ui/canvas/canvas_board.dart';
+import 'package:nrs/ui/canvas/canvas_card.dart';
 import 'package:nrs/ui/canvas/canvas_style.dart';
 
 TextNode textNode(
@@ -18,6 +19,7 @@ TextNode textNode(
   double width = 250,
   double height = 120,
   String text = '卡片',
+  String? color,
 }) => TextNode(
   id: id,
   x: x,
@@ -25,25 +27,30 @@ TextNode textNode(
   width: width,
   height: height,
   text: text,
+  color: color,
 );
 
 CanvasDocument docWith(List<CanvasNode> nodes) =>
     CanvasDocument(nodes: nodes, edges: <CanvasEdge>[]);
 
 class Harness {
-  Harness(this.state, this.created);
+  Harness(this.state, this.doc);
 
   final CanvasBoardState state;
-  final List<int> created;
+
+  /// 板子改的那份文档。测试直接看它，比看界面稳。
+  final CanvasDocument? doc;
 
   double get zoom => state.debugZoom;
   Offset get offset => state.debugOffset;
+
+  List<CanvasNode> get nodes => doc?.nodes ?? const <CanvasNode>[];
 }
 
 Future<Harness> pumpBoard(
   WidgetTester tester, {
   CanvasDocument? document,
-  bool canCreate = true,
+  bool readOnly = false,
   Size size = const Size(1000, 700),
 }) async {
   tester.view.physicalSize = size;
@@ -51,22 +58,18 @@ Future<Harness> pumpBoard(
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
 
-  final List<int> created = <int>[];
+  final CanvasDocument? doc = readOnly
+      ? null
+      : (document ?? docWith(<CanvasNode>[]));
   final GlobalKey<CanvasBoardState> key = GlobalKey<CanvasBoardState>();
   await tester.pumpWidget(
     MaterialApp(
       theme: AppTheme.build(AppPalette.dark),
-      home: Scaffold(
-        body: CanvasBoard(
-          key: key,
-          document: document ?? docWith(<CanvasNode>[]),
-          onCreateCard: canCreate ? () => created.add(1) : null,
-        ),
-      ),
+      home: Scaffold(body: CanvasBoard(key: key, document: doc)),
     ),
   );
   await tester.pumpAndSettle();
-  return Harness(key.currentState!, created);
+  return Harness(key.currentState!, doc);
 }
 
 /// 滚一下。`ctrl` 为真时按住 Ctrl（= 缩放）。
@@ -87,6 +90,37 @@ Future<void> scroll(
   if (ctrl) await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
 }
 
+/// 世界坐标 → 屏幕坐标。测试里不手算，一律问视口。
+Offset screenOf(Harness h, Offset world) => h.state.viewport.toScreen(world);
+
+Offset centerOf(Harness h, CanvasNode node) => screenOf(h, node.rect.center);
+
+/// 一张左上角在原点的卡片。
+TextNode cardAtOrigin({String id = 'a'}) => textNode(id, x: 0, y: 0);
+
+/// 点一下卡片，然后把双击窗口走完（不留挂起的计时器）。
+Future<void> tapCard(
+  WidgetTester tester,
+  Harness h,
+  CanvasNode node,
+) async {
+  await tester.tapAt(centerOf(h, node));
+  await tester.pump(const Duration(milliseconds: 400));
+}
+
+/// 双击卡片。两次点击必须落在双击窗口（300ms）之内，所以中间只推 40ms。
+Future<void> doubleTapCard(
+  WidgetTester tester,
+  Harness h,
+  CanvasNode node,
+) async {
+  final Offset at = centerOf(h, node);
+  await tester.tapAt(at);
+  await tester.pump(const Duration(milliseconds: 40));
+  await tester.tapAt(at);
+  await tester.pump();
+}
+
 void main() {
   group('空板', () {
     testWidgets('给一句提示，工具条显示 100%', (WidgetTester tester) async {
@@ -104,8 +138,8 @@ void main() {
       expect(h.offset, const Offset(500, 350));
     });
 
-    testWidgets('还不能建卡片时，提示不说「双击新建」', (WidgetTester tester) async {
-      await pumpBoard(tester, canCreate: false);
+    testWidgets('只读空板不说「双击新建」', (WidgetTester tester) async {
+      await pumpBoard(tester, readOnly: true);
 
       expect(find.textContaining('双击'), findsNothing);
       expect(find.textContaining('滚轮平移'), findsOneWidget);
@@ -354,7 +388,7 @@ void main() {
       await tester.tapAt(const Offset(302, 251));
       await tester.pump();
 
-      expect(h.created.length, 1);
+      expect(h.nodes.length, 1);
     });
 
     testWidgets('隔太久的两次单击不算双击', (WidgetTester tester) async {
@@ -365,7 +399,7 @@ void main() {
       await tester.tapAt(const Offset(300, 250));
       await tester.pump();
 
-      expect(h.created, isEmpty);
+      expect(h.nodes, isEmpty);
     });
 
     testWidgets('同一处连点三下只建一张', (WidgetTester tester) async {
@@ -378,7 +412,397 @@ void main() {
       await tester.tapAt(const Offset(300, 250));
       await tester.pump();
 
-      expect(h.created.length, 1);
+      expect(h.nodes.length, 1);
+    });
+  });
+
+  group('选中', () {
+    testWidgets('单击卡片选中它', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[cardAtOrigin()]),
+      );
+
+      await tapCard(tester, h, h.nodes.first);
+
+      expect(h.state.debugSelection, <String>{'a'});
+    });
+
+    testWidgets('单击空白清掉选择', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[cardAtOrigin()]),
+      );
+      await tapCard(tester, h, h.nodes.first);
+      expect(h.state.debugSelection, isNotEmpty);
+
+      await tester.tapAt(const Offset(30, 30));
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(h.state.debugSelection, isEmpty);
+    });
+
+    testWidgets('Ctrl + 单击加选，再点一次减选', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[
+          cardAtOrigin(id: 'a'),
+          textNode('b', x: 400, y: 400),
+        ]),
+      );
+      final CanvasNode a = h.doc!.nodeById('a')!;
+      final CanvasNode b = h.doc!.nodeById('b')!;
+
+      await tapCard(tester, h, a);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tapCard(tester, h, b);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+
+      expect(h.state.debugSelection, <String>{'a', 'b'});
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tapCard(tester, h, b);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+
+      expect(h.state.debugSelection, <String>{'a'});
+    });
+
+    testWidgets('拖动时整组跟着走', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[
+          cardAtOrigin(id: 'a'),
+          textNode('b', x: 400, y: 400),
+        ]),
+      );
+      final CanvasNode a = h.doc!.nodeById('a')!;
+      final CanvasNode b = h.doc!.nodeById('b')!;
+
+      await tapCard(tester, h, a);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tapCard(tester, h, b);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+
+      final double d = 20 * h.zoom;
+      final TestGesture g = await tester.startGesture(
+        centerOf(h, a),
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveBy(Offset(d, d));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(a.x, closeTo(20, 1e-6));
+      expect(a.y, closeTo(20, 1e-6));
+      expect(b.x, closeTo(420, 1e-6), reason: '整组一起走');
+      expect(b.y, closeTo(420, 1e-6));
+    });
+  });
+
+  group('拖动卡片', () {
+    testWidgets('跟着指针走，松手吸附网格', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[cardAtOrigin()]),
+      );
+      final CanvasNode a = h.nodes.first;
+      final double d = 20 * h.zoom;
+
+      final TestGesture g = await tester.startGesture(
+        centerOf(h, a),
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveBy(Offset(d, d));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(a.x, closeTo(20, 1e-6));
+      expect(a.y, closeTo(20, 1e-6));
+    });
+
+    testWidgets('按下去不动，卡片一点也不挪', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[cardAtOrigin()]),
+      );
+      final CanvasNode a = h.nodes.first;
+
+      final TestGesture g = await tester.startGesture(
+        centerOf(h, a),
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveBy(const Offset(2, 2));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(a.x, 0);
+      expect(a.y, 0);
+    });
+
+    testWidgets('拖到半个格子上，松手吸附到最近的格点', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[cardAtOrigin()]),
+      );
+      final CanvasNode a = h.nodes.first;
+      // 世界坐标 +16：离格点 20 只有 4，在吸附容差（6）之内。
+      final double d = 16 * h.zoom;
+
+      final TestGesture g = await tester.startGesture(
+        centerOf(h, a),
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveBy(Offset(d, d));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(a.x, 20);
+      expect(a.y, 20);
+    });
+
+    testWidgets('拖动只动位置，不动尺寸', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[cardAtOrigin()]),
+      );
+      final CanvasNode a = h.nodes.first;
+
+      final TestGesture g = await tester.startGesture(
+        centerOf(h, a),
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveBy(Offset(20 * h.zoom, 20 * h.zoom));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(a.width, 250);
+      expect(a.height, 120);
+    });
+  });
+
+  group('缩放手柄', () {
+    testWidgets('拖右下角把卡片拉大', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[cardAtOrigin()]),
+      );
+      final CanvasNode a = h.nodes.first;
+      await tapCard(tester, h, a);
+
+      final Rect screen = h.state.viewport.rectToScreen(a.rect);
+      final double d = 20 * h.zoom;
+      final TestGesture g = await tester.startGesture(
+        screen.bottomRight,
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveBy(Offset(d, d));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(a.width, closeTo(270, 1e-6));
+      expect(a.height, closeTo(140, 1e-6));
+    });
+
+    testWidgets('拖左上角往右下，撞到最小尺寸就停', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[cardAtOrigin()]),
+      );
+      final CanvasNode a = h.nodes.first;
+      await tapCard(tester, h, a);
+
+      final Rect screen = h.state.viewport.rectToScreen(a.rect);
+      final TestGesture g = await tester.startGesture(
+        screen.topLeft,
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveBy(const Offset(9999, 9999));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(a.width, canvasCardMinSide);
+      expect(a.height, canvasCardMinSide);
+    });
+
+    testWidgets('没选中时不出手柄，按在卡片角上是拖动', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[cardAtOrigin()]),
+      );
+      final CanvasNode a = h.nodes.first;
+      final Rect screen = h.state.viewport.rectToScreen(a.rect);
+
+      final TestGesture g = await tester.startGesture(
+        screen.topLeft,
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveBy(const Offset(30, 30));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(a.width, 250, reason: '手柄只在选中时存在');
+    });
+  });
+
+  group('删除', () {
+    testWidgets('Delete 删掉选中的卡片，连带删掉它的边', (WidgetTester tester) async {
+      final CanvasDocument doc = CanvasDocument(
+        nodes: <CanvasNode>[
+          cardAtOrigin(id: 'a'),
+          textNode('b', x: 400, y: 0),
+        ],
+        edges: <CanvasEdge>[CanvasEdge(id: 'e1', fromNode: 'a', toNode: 'b')],
+      );
+      final Harness h = await pumpBoard(tester, document: doc);
+      await tapCard(tester, h, doc.nodeById('a')!);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.delete);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.delete);
+      await tester.pump();
+
+      expect(doc.nodes.map((CanvasNode n) => n.id), <String>['b']);
+      expect(doc.edges, isEmpty);
+      expect(h.state.debugSelection, isEmpty);
+    });
+
+    testWidgets('没有选中时 Delete 什么也不做', (WidgetTester tester) async {
+      final CanvasDocument doc = docWith(<CanvasNode>[cardAtOrigin()]);
+      await pumpBoard(tester, document: doc);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.delete);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.delete);
+      await tester.pump();
+
+      expect(doc.nodes.length, 1);
+    });
+  });
+
+  group('编辑', () {
+    testWidgets('双击卡片进编辑，打字写回节点', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[cardAtOrigin()]),
+      );
+      final CanvasNode a = h.nodes.first;
+
+      await doubleTapCard(tester, h, a);
+      expect(h.state.debugEditing, 'a');
+
+      await tester.enterText(find.byType(TextField), '写点东西');
+      await tester.pump();
+
+      expect((a as TextNode).text, '写点东西');
+    });
+
+    testWidgets('点空白处退出编辑', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[cardAtOrigin()]),
+      );
+      final CanvasNode a = h.nodes.first;
+
+      await doubleTapCard(tester, h, a);
+      await tester.enterText(find.byType(TextField), '收工');
+      await tester.pump();
+
+      await tester.tapAt(const Offset(30, 30));
+      await tester.pump();
+
+      expect(h.state.debugEditing, isNull);
+      expect((a as TextNode).text, '收工');
+      expect(find.byType(TextField), findsNothing);
+    });
+
+    testWidgets('Esc 退出编辑', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[cardAtOrigin()]),
+      );
+      final CanvasNode a = h.nodes.first;
+
+      await doubleTapCard(tester, h, a);
+      await tester.enterText(find.byType(TextField), '半句话');
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.escape);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+
+      expect(h.state.debugEditing, isNull);
+      expect((a as TextNode).text, '半句话');
+    });
+  });
+
+  group('新建', () {
+    testWidgets('工具条上的加号建一张卡片，直接进编辑', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(tester);
+
+      await tester.tap(find.byIcon(LucideIcons.squarePlus));
+      await tester.pump();
+
+      expect(h.nodes.length, 1);
+      expect(h.state.debugEditing, h.nodes.first.id);
+      expect(h.state.debugSelection, <String>{h.nodes.first.id});
+    });
+
+    testWidgets('只读板没有新建按钮', (WidgetTester tester) async {
+      await pumpBoard(tester, readOnly: true);
+
+      expect(find.byIcon(LucideIcons.squarePlus), findsNothing);
+    });
+  });
+
+  group('换色', () {
+    testWidgets('右键卡片选红色，存的是规范值 1', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[cardAtOrigin()]),
+      );
+      final CanvasNode a = h.nodes.first;
+
+      final TestGesture g = await tester.startGesture(
+        centerOf(h, a),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await g.up();
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('红色'));
+      await tester.pumpAndSettle();
+
+      expect(h.state.debugColorOf('a'), '1');
+    });
+
+    testWidgets('选「无颜色」把颜色清掉', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[
+          textNode('a', x: 0, y: 0, color: '4'),
+        ]),
+      );
+      final CanvasNode a = h.nodes.first;
+
+      final TestGesture g = await tester.startGesture(
+        centerOf(h, a),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await g.up();
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('无颜色'));
+      await tester.pumpAndSettle();
+
+      expect(h.state.debugColorOf('a'), isNull);
     });
   });
 

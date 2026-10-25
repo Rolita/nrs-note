@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../core/theme/app_palette.dart';
+import '../../core/theme/table_colors.dart';
+import '../../core/utils/table_model.dart' show CellColor, CellColorToken;
 
 /// 白板的配色。
 ///
@@ -105,7 +107,6 @@ class CanvasStyle {
 
 /// 点阵网格的间距（世界坐标）。
 const double canvasGridSize = 20;
-
 /// 缩到多小就彻底不画网格。
 ///
 /// 0.35 对应屏幕上 7px 一格：再密下去就是一片灰雾，除了拖慢重绘没有用处。
@@ -133,3 +134,70 @@ double canvasGridOpacity(double zoom) {
 /// 网格的职责只是「让你看得出在拖多远」，不是刻度尺。
 double canvasGridStep(double zoom) =>
     zoom >= canvasGridCoarsen ? canvasGridSize * 2 : canvasGridSize;
+
+// ------------------------------------------------------------------ 卡片配色
+
+/// JSON Canvas 的预设色 → 项目色名。
+///
+/// 规范**故意不定义**这六个值具体是什么色，只规定了编号；所以这张表是
+/// 我们自己定的。`"3"` 是黄、`"5"` 是青，这两条最容易记错。
+///
+/// `"2"`（橙）和 `"3"`（黄）都落到 `amber`：项目只有六个色名，没有独立的
+/// 橙和黄。**存的是规范值**，所以读回来还是原来那个，信息没丢。
+const Map<String, CellColorToken> _presetTokens = <String, CellColorToken>{
+  '1': CellColorToken.red,
+  '2': CellColorToken.amber,
+  '3': CellColorToken.amber,
+  '4': CellColorToken.green,
+  '5': CellColorToken.blue,
+  '6': CellColorToken.purple,
+};
+
+/// 换色菜单里的六颗色。第一颗是「不设色」。
+///
+/// 故意不放 `"3"`：它和 `"2"` 在界面上是同一个色，摆两个一模一样的圆点
+/// 只会让人以为点错了。别人文件里写的 `"3"` 照样能读、能显示、能存回去。
+const List<String?> canvasColorChoices = <String?>[
+  null,
+  '1',
+  '2',
+  '4',
+  '5',
+  '6',
+];
+
+/// 把节点上的 `color` 字段解析成可以画的颜色。
+///
+/// 认两种写法：`"1"`–`"6"` 的预设编号，和 `#RRGGBB` / `#RRGGBBAA` 的字面值。
+/// 认不出来就返回 null（= 默认色），不让一个手滑的颜色把整张卡片画没。
+CellColor? canvasCellColor(String? raw) {
+  if (raw == null || raw.isEmpty) return null;
+  if (!raw.startsWith('#')) {
+    final CellColorToken? token = _presetTokens[raw];
+    return token == null ? null : CellColor.token(token);
+  }
+  final String hex = raw.substring(1);
+  if (hex.length != 6 && hex.length != 8) return null;
+  final int? value = int.tryParse(hex, radix: 16);
+  if (value == null) return null;
+  // 规范写的是 #RRGGBBAA，Flutter 要的是 0xAARRGGBB：把尾巴挪到头上。
+  final int argb = hex.length == 6
+      ? 0xFF000000 | value
+      : ((value & 0xFF) << 24) | (value >> 8);
+  return CellColor.custom(argb);
+}
+
+/// 卡片底色：设了色就用那个色，没设就是浮起来的那一层。
+Color canvasCardFill(AppPalette p, CellColor? color) =>
+    color == null ? p.surfaceRaised : tableFillColor(p, color);
+
+/// 卡片文字色：设了色就用那个色的墨，没设就是正文色。
+Color canvasCardInk(AppPalette p, CellColor? color) =>
+    color == null ? p.textPrimary : tableInkColor(p, color);
+
+/// 卡片描边：设了色就用那个色的墨压到 45%，没设就是普通的分隔线。
+///
+/// 深色主题下是深底亮边、浅色主题下是浅底深边，两套主题不用各写一份。
+Color canvasCardBorder(AppPalette p, CellColor? color) => color == null
+    ? p.outline
+    : tableInkColor(p, color).withValues(alpha: 0.45);

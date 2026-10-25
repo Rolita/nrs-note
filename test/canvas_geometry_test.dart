@@ -298,7 +298,7 @@ void main() {
     test('右下角：右下两条边跟着走', () {
       final Rect r = resizeRect(
         start,
-        ResizeHandle.bottomRight,
+        CanvasResizeHandle.bottomRight,
         const Offset(50, 30),
         minSize: 40,
       );
@@ -309,7 +309,7 @@ void main() {
     test('左上角：左上两条边跟着走', () {
       final Rect r = resizeRect(
         start,
-        ResizeHandle.topLeft,
+        CanvasResizeHandle.topLeft,
         const Offset(-20, -10),
         minSize: 40,
       );
@@ -320,7 +320,7 @@ void main() {
     test('右边中点只动右边', () {
       final Rect r = resizeRect(
         start,
-        ResizeHandle.centerRight,
+        CanvasResizeHandle.centerRight,
         const Offset(40, 999),
         minSize: 40,
       );
@@ -331,7 +331,7 @@ void main() {
     test('撞到最小尺寸时，对面的边不动', () {
       final Rect r = resizeRect(
         start,
-        ResizeHandle.topLeft,
+        CanvasResizeHandle.topLeft,
         const Offset(9999, 9999),
         minSize: 40,
       );
@@ -345,7 +345,7 @@ void main() {
     test('往回拖过头也不会出现负宽高', () {
       final Rect r = resizeRect(
         start,
-        ResizeHandle.bottomRight,
+        CanvasResizeHandle.bottomRight,
         const Offset(-9999, -9999),
         minSize: 40,
       );
@@ -355,7 +355,7 @@ void main() {
     });
 
     test('八个手柄的位置都落在矩形边界上', () {
-      for (final ResizeHandle h in ResizeHandle.values) {
+      for (final CanvasResizeHandle h in CanvasResizeHandle.values) {
         final Offset p = h.at(start);
         final bool onEdge =
             (p.dx - start.left).abs() < 1e-9 ||
@@ -368,13 +368,13 @@ void main() {
     });
 
     test('四个角牵动两条边，四条边中点只牵动一条', () {
-      const Set<ResizeHandle> corners = <ResizeHandle>{
-        ResizeHandle.topLeft,
-        ResizeHandle.topRight,
-        ResizeHandle.bottomRight,
-        ResizeHandle.bottomLeft,
+      const Set<CanvasResizeHandle> corners = <CanvasResizeHandle>{
+        CanvasResizeHandle.topLeft,
+        CanvasResizeHandle.topRight,
+        CanvasResizeHandle.bottomRight,
+        CanvasResizeHandle.bottomLeft,
       };
-      for (final ResizeHandle h in ResizeHandle.values) {
+      for (final CanvasResizeHandle h in CanvasResizeHandle.values) {
         final int moved = <bool>[
           h.movesLeft,
           h.movesRight,
@@ -386,7 +386,7 @@ void main() {
     });
 
     test('没有任何手柄同时牵动一对相反的边', () {
-      for (final ResizeHandle h in ResizeHandle.values) {
+      for (final CanvasResizeHandle h in CanvasResizeHandle.values) {
         expect(h.movesLeft && h.movesRight, isFalse, reason: '$h 左右都动');
         expect(h.movesTop && h.movesBottom, isFalse, reason: '$h 上下都动');
       }
