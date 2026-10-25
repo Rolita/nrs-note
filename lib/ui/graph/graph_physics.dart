@@ -10,45 +10,42 @@ import '../../core/utils/note_graph.dart';
 /// 49 条边的小图验算出来的：包围盒约 440×533，圆间最小间隙 43.5px（无重叠），
 /// 800 帧后漂移 4.1（已收敛），无 NaN。
 abstract final class GraphPhysics {
-  /// 斥力强度，与距离平方成反比（库仑）。
-  static const double repulsion = 1500;
+  /// 下面这一组照 `design/graph-obsidian-clone.html` 的 `PHYS` 抄，
+  /// 是照 Obsidian 的手感调的：链接更长更紧、斥力更弱（簇更收）、
+  /// 阻尼更大（不会晃）。
+  static const double repulsion = 8000;
 
   /// 边上弹簧的系数。
-  static const double spring = 0.021;
+  static const double spring = 0.055;
 
   /// 弹簧自然长度。
-  static const double restLength = 40;
+  static const double restLength = 190;
 
   /// 向心引力。没有它，斥力会让整张图无限扩散。
-  static const double gravity = 0.0125;
+  static const double gravity = 0.008;
 
-  /// 横向斥力权重。
+  /// 硬碰撞时两个圆之间额外留的缝。
   ///
-  /// x 方向推得更狠，图才会长成**横的椭圆**。各向同性的斥力 + 向心只能
-  /// 排出一根竖条——四个文件夹会排成一条线，画布左右全空。
-  /// 这是「星群 / 光带」那版设计稿里验过的：改在物理层，不是画的时候硬拉伸
-  /// （硬拉伸会把圆拉成椭圆，而且物理一跑就弹回去）。
-  static const double wide = 1.4;
+  /// 只有斥力的话，两个点会一直挤到「斥力 = 弹簧」为止，中间并没有一条
+  /// 硬约束——度数高的节点旁边就会糊上几个几乎重叠的点。碰撞是最低保证。
+  static const double collide = 7;
 
-  /// 横向向心权重，配合 [wide] 一起用。
-  static const double stretch = 0.52;
+  /// 速度衰减。0.62 对应 Obsidian 的 `velocityDecay ≈ 0.38`。
+  static const double damping = 0.62;
 
-  /// 速度衰减。0.80 比 0.9 收敛快，比 0.6 不抖。
-  static const double damping = 0.80;
-
-  /// 单帧位移上限。初始撒点是随机的，偶尔两个点会重合，不封顶会直接飞出去。
-  static const double maxSpeed = 14;
+  /// 单帧位移上限。开场是从中心炸开的，不封顶会直接飞出去。
+  static const double maxSpeed = 32;
 
   /// 静止阈值。低于它就把 Ticker 停掉——静止的图谱不该烧电。
   static const double restingAlpha = 0.005;
 }
 
-/// 节点半径：`3.4 + √度 × 1.85`。
+/// 节点半径：`3 + √度 × 1.9`。
 ///
-/// 开平方是为了压住差异：度 0 是 3.4，度 9 才 8.9。线性的话一个中心节点会
+/// 开平方是为了压住差异：度 0 是 3，度 9 才 8.7。线性的话一个中心节点会
 /// 变成一颗球，把周围的字全盖住。
 double graphNodeRadius(int degree, {double scale = 1}) =>
-    (4.6 + math.sqrt(degree) * 2.4) * scale;
+    (3 + math.sqrt(degree) * 1.9) * scale;
 
 /// 一帧一帧推进的布局状态。
 ///
@@ -101,10 +98,13 @@ class GraphLayout {
   void seed(NoteGraph graph, {int seed = 1}) {
     final math.Random random = math.Random(seed);
     final int n = length;
-    final double r = 140 + math.sqrt(n) * 14;
+    // 全部挤在中心附近，让力把它们炸开——这是 Obsidian 打开时那个动作。
+    // 半径按 √n 走：面积正比于节点数，半径才正比于 √n。按 n 线性撒的话，
+    // 一千篇会撒在半径几千的圈上，首屏那几百帧根本收不回来。
+    final double r = 20 + math.sqrt(n) * 6;
     for (int i = 0; i < n; i++) {
       final double angle = (i / math.max(n, 1)) * math.pi * 2 + random.nextDouble() * .4;
-      final double spread = r * (0.55 + random.nextDouble() * 0.45);
+      final double spread = r * (0.35 + random.nextDouble() * 0.65);
       x[i] = math.cos(angle) * spread;
       y[i] = math.sin(angle) * spread;
       vx[i] = 0;
@@ -144,11 +144,22 @@ class GraphLayout {
         final double f = GraphPhysics.repulsion / d2 * alpha;
         final double ux = dx / d;
         final double uy = dy / d;
-        // 横向乘一个权重：见 [GraphPhysics.wide]。
-        vx[i] -= ux * f * GraphPhysics.wide;
+        vx[i] -= ux * f;
         vy[i] -= uy * f;
-        vx[j] += ux * f * GraphPhysics.wide;
+        vx[j] += ux * f;
         vy[j] += uy * f;
+
+        // 硬碰撞：挤得比「两个半径 + 缝」还近就推开。斥力在近距离虽然也
+        // 很猛，但它是和弹簧、向心一起求平衡的，没有「绝不允许重叠」这条
+        // 硬线——高节点的周围就会糊上一圈几乎重合的点。
+        final double min = radius[i] + radius[j] + GraphPhysics.collide;
+        if (d < min) {
+          final double push = (min - d) * 0.5;
+          vx[i] -= ux * push;
+          vy[i] -= uy * push;
+          vx[j] += ux * push;
+          vy[j] += uy * push;
+        }
       }
     }
 
@@ -169,7 +180,7 @@ class GraphLayout {
 
     // 3. 向心引力 + 积分
     for (int i = 0; i < n; i++) {
-      vx[i] -= x[i] * GraphPhysics.gravity * GraphPhysics.stretch * alpha;
+      vx[i] -= x[i] * GraphPhysics.gravity * alpha;
       vy[i] -= y[i] * GraphPhysics.gravity * alpha;
       vx[i] *= GraphPhysics.damping;
       vy[i] *= GraphPhysics.damping;

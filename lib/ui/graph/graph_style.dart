@@ -9,55 +9,37 @@ import '../../core/utils/table_model.dart' show CellColor, CellColorToken;
 /// painter 只吃这个对象，不碰 `BuildContext`：单测可以直接构造一份断言，
 /// 也不用担心画的时候 palette 变了。
 ///
-/// 色相**不新增**：分组色就是表格高亮那六个色名，深色主题解析成 `_darkInks`
-/// 那组提亮值，浅色主题解析成 `tableInkColor` 的浅色分支。图谱和表格因此用的是
-/// 同一套颜色语言——不是「只在深色下碰巧一致」。
+/// 配色照 `design/graph-obsidian-clone.html`：**只有一个底色、一种节点灰、
+/// 一种线色**。图谱是结构视图，颜色一多，读者就开始猜「这个黄是什么意思」，
+/// 而它什么也不表示。
 class GraphStyle {
   GraphStyle.from(AppPalette palette)
-    : canvasTop = palette.isDark
-          ? const Color(0xFF1D1D20)
+    : canvas = palette.isDark
+          ? const Color(0xFF1E1E1E)
           : const Color(0xFFF4F4F2),
-      canvasBottom = palette.isDark
-          ? const Color(0xFF101012)
-          : const Color(0xFFEAEAE7),
-      edge = palette.textPrimary.withValues(
-        alpha: palette.isDark ? 0.085 : 0.16,
-      ),
-      edgeDim = palette.textPrimary.withValues(
-        alpha: palette.isDark ? 0.014 : 0.03,
-      ),
+      node = palette.isDark ? const Color(0xFF9D9D9D) : const Color(0xFF7A7A7A),
+      edgeTint = palette.isDark
+          ? const Color(0xFFFFFFFF)
+          : const Color(0xFF1E1E1E),
       ring = palette.accent,
-      label = palette.textSecondary,
+      label = palette.isDark ? const Color(0xFFDADADA) : palette.textPrimary,
       labelFocus = palette.isDark ? const Color(0xFFFFFFFF) : palette.textPrimary,
       labelHalo = palette.isDark
-          ? const Color(0xFF101012)
-          : const Color(0xFFEFEFEC),
-      node = palette.textSecondary,
-      // 数值照抄设计稿：常态边的底是 10%，光带把它拆成
-      // 「源 13.5% → 靶 4%」。比原来的单色 8.5% 更淡，但一头亮一头暗，
-      // 方向就写在亮度里了。
-      beamFrom = palette.isDark ? 0.135 : 0.20,
-      beamTo = palette.isDark ? 0.040 : 0.065,
-      beamGlow = palette.accent.withValues(
-        alpha: palette.isDark ? 0.10 : 0.14,
-      ),
-      mistAlpha = palette.isDark ? 0.045 : 0.055,
-      chip = (palette.isDark ? const Color(0xFF1B1B1E) : const Color(0xFFF7F7F4))
-          .withValues(alpha: palette.isDark ? 0.82 : 0.88);
+          ? const Color(0xFF1E1E1E)
+          : const Color(0xFFF4F4F2);
 
-  /// 画布渐变的两端。比 `surface` 更深：正文是亮起的纸，图谱是凹陷的画布，
-  /// 一眼就能分清「在看内容」和「在看结构」。
-  final Color canvasTop;
-  final Color canvasBottom;
+  /// 画布底色。**纯色，没有渐变**：Obsidian 的图谱就是主题底色，
+  /// 加一层径向渐变只会让画布看起来像个装饰品。
+  final Color canvas;
 
-  /// 被筛掉的连线，以及边太多、退回单色画法时用的那一档。
-  ///
-  /// 常态/邻居/焦点三档不再存颜色：它们由 [beamFrom] / [beamTo] 乘以
-  /// 节点自己的分组色算出来，一条边一个渐变——见 `GraphPainter._paintEdges`。
-  final Color edge;
-  final Color edgeDim;
+  /// 节点色。没开「按文件夹着色」时全图一个灰。
+  final Color node;
 
-  /// 当前笔记与选中节点的环。
+  /// 连线色。深色主题下是白，浅色主题下反相成近黑——
+  /// 连线永远靠「比底色亮/暗一点」表达，不靠彩度。
+  final Color edgeTint;
+
+  /// 选中节点的环，以及选中节点的填充色。
   final Color ring;
 
   final Color label;
@@ -65,28 +47,18 @@ class GraphStyle {
   /// 焦点节点的标签——纯白，压过周围所有字。
   final Color labelFocus;
 
-  /// 标签的描边色（画布底色），压在连线上也能读清。
+  /// 标签的投影色（画布底色）。压在连线上也能读清。
   final Color labelHalo;
 
-  /// 没有分组时的节点色。
-  final Color node;
-
-  /// 光带的两端透明度：起点亮、终点暗。
+  /// 连线的五档亮度，照设计稿 `edgeAlpha()`。
   ///
-  /// 方向**写在线里**，不靠箭头解释——一眼就能看出谁引用了谁，
-  /// 而不是只看到「这两个有关系」。
-  final double beamFrom;
-  final double beamTo;
-
-  /// 焦点边垫在下面的那层柔光，像通了电。
-  final Color beamGlow;
-
-  /// 每个文件夹一团底雾的透明度。按分组色铺，把簇托出来。
-  final double mistAlpha;
-
-  /// 簇名胶囊的底色。描边不在这里——它取的是**那个簇自己的分组色**，
-  /// 见 `GraphPainter._paintClusterChips`。
-  final Color chip;
+  /// 档位之间差得很大是**故意**的：0.62 对 0.11 是五倍多，焦点那几条线
+  /// 才像「通了电」。差得小的话，整张图会糊成一张均匀的网。
+  static const double edgeBase = 0.11;
+  static const double edgeFocus = 0.62;
+  static const double edgeNear = 0.16;
+  static const double edgeFar = 0.045;
+  static const double edgeDim = 0.035;
 
   /// 分组调色板：表格高亮那六个色名，顺序固定，前六个文件夹各得一色。
   ///

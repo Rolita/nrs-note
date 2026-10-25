@@ -5,7 +5,6 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/core/utils/table_model.dart' show CellColorToken;
-import 'package:nrs/ui/graph/graph_painter.dart' show GraphPainter;
 import 'package:nrs/ui/graph/graph_style.dart';
 
 /// WCAG 相对亮度。
@@ -65,18 +64,11 @@ void main() {
       expect(AppPalette.light.isDark, isFalse);
 
       for (final CellColorToken token in GraphStyle.groupTokens) {
-        final Color ink = groupColor(AppPalette.light, token);
-        // 画布渐变的两端都试一遍：节点可能落在任何位置。
-        for (final Color canvas in <Color>[
-          style.canvasTop,
-          style.canvasBottom,
-        ]) {
-          expect(
-            _contrast(ink, canvas),
-            greaterThan(2.4),
-            reason: '$token 在 $canvas 上太淡了',
-          );
-        }
+        expect(
+          _contrast(groupColor(AppPalette.light, token), style.canvas),
+          greaterThan(2.4),
+          reason: '$token 在浅色画布上太淡了',
+        );
       }
     });
 
@@ -84,17 +76,11 @@ void main() {
       final GraphStyle style = GraphStyle.from(AppPalette.dark);
 
       for (final CellColorToken token in GraphStyle.groupTokens) {
-        final Color ink = groupColor(AppPalette.dark, token);
-        for (final Color canvas in <Color>[
-          style.canvasTop,
-          style.canvasBottom,
-        ]) {
-          expect(
-            _contrast(ink, canvas),
-            greaterThan(2.4),
-            reason: '$token 在 $canvas 上太淡了',
-          );
-        }
+        expect(
+          _contrast(groupColor(AppPalette.dark, token), style.canvas),
+          greaterThan(2.4),
+          reason: '$token 在深色画布上太淡了',
+        );
       }
     });
 
@@ -104,77 +90,47 @@ void main() {
         isNot(groupColor(AppPalette.dark, CellColorToken.gray)),
       );
     });
+  });
 
+  group('图谱就是一张灰度结构图', () {
     test('画布在浅色主题下是浅的，在深色主题下是深的', () {
       final GraphStyle light = GraphStyle.from(AppPalette.light);
       final GraphStyle dark = GraphStyle.from(AppPalette.dark);
 
+      expect(_luminance(light.canvas), greaterThan(_luminance(dark.canvas)));
+      expect(_luminance(light.canvas), greaterThan(0.8));
+      expect(_luminance(dark.canvas), lessThan(0.05));
+    });
+
+    test('默认的节点灰在画布上看得见，但不刺眼', () {
+      for (final AppPalette p in <AppPalette>[AppPalette.light, AppPalette.dark]) {
+        final GraphStyle s = GraphStyle.from(p);
+        final double c = _contrast(s.node, s.canvas);
+        expect(c, greaterThan(3.5), reason: '${p.isDark}: 太淡就看不出是颗点');
+        expect(c, lessThan(9), reason: '${p.isDark}: 太白就变成一片灯泡');
+      }
+    });
+
+    test('连线五档逐级递减，焦点那档明显跳出来', () {
       expect(
-        _luminance(light.canvasTop),
-        greaterThan(_luminance(dark.canvasTop)),
+        GraphStyle.edgeFocus,
+        greaterThan(GraphStyle.edgeBase * 3),
+        reason: '焦点边要比常态亮好几倍，否则「通了电」看不出来',
       );
-      expect(_luminance(light.canvasTop), greaterThan(0.8));
-      expect(_luminance(dark.canvasTop), lessThan(0.05));
+      // 邻居那档比常态亮：悬停一个节点时，它邻居之间的连线也该跟着亮一点，
+      // 否则「这一圈是它的邻居」只在节点上看得到，连线还是灰的。
+      expect(GraphStyle.edgeNear, greaterThan(GraphStyle.edgeBase));
+      expect(GraphStyle.edgeBase, greaterThan(GraphStyle.edgeFar));
+      expect(GraphStyle.edgeFar, greaterThan(GraphStyle.edgeDim));
+      expect(GraphStyle.edgeFocus, lessThan(1));
     });
 
-    test('光带起点比终点亮：方向写在线里', () {
-      for (final AppPalette p in <AppPalette>[AppPalette.light, AppPalette.dark]) {
-        final GraphStyle s = GraphStyle.from(p);
-        expect(s.beamFrom, greaterThan(s.beamTo), reason: '${p.isDark}');
-        // 但两头都得看得见：终点太淡就成了一根「半截线」
-        expect(s.beamTo, greaterThan(0.03), reason: '${p.isDark}');
-        expect(s.beamFrom, lessThan(0.6), reason: '${p.isDark}');
-      }
-    });
-
-    test('焦点边是常态边的 6 倍亮度，照设计稿 EDGE.beam', () {
-      // 三档只差一个倍数：档位表在 GraphPainter，亮度在 GraphStyle，
-      // 两边任一处走偏，焦点边就不再是「通了电」的那一条。
-      expect(
-        GraphPainter.edgeFocus / GraphPainter.edgeBase,
-        closeTo(6, 1e-9),
-      );
-      expect(GraphPainter.edgeNear / GraphPainter.edgeBase, closeTo(1.5, 1e-9));
-      expect(GraphPainter.edgeDimmed, lessThan(GraphPainter.edgeBase));
-
-      for (final AppPalette p in <AppPalette>[AppPalette.light, AppPalette.dark]) {
-        final GraphStyle s = GraphStyle.from(p);
-        // 两头都得看得见：起点接近满、终点还留一档，否则焦点边会变成
-        // 一根只有头的「半截线」。
-        expect(
-          s.beamFrom * GraphPainter.edgeFocus / GraphPainter.edgeBase,
-          greaterThan(0.6),
-          reason: '${p.isDark}',
-        );
-        expect(
-          s.beamTo * GraphPainter.edgeFocus / GraphPainter.edgeBase,
-          greaterThan(0.15),
-          reason: '${p.isDark}',
-        );
-      }
-    });
-
-    test('簇的底雾很淡，不能盖住连线', () {
-      for (final AppPalette p in <AppPalette>[AppPalette.light, AppPalette.dark]) {
-        final GraphStyle s = GraphStyle.from(p);
-        expect(s.mistAlpha, lessThan(0.08), reason: '${p.isDark}');
-        expect(s.mistAlpha, greaterThan(0.02), reason: '${p.isDark}');
-      }
-    });
-
-    test('簇名胶囊的底和画布区分得开，但不是一个色块', () {
-      for (final AppPalette p in <AppPalette>[AppPalette.light, AppPalette.dark]) {
-        final GraphStyle s = GraphStyle.from(p);
-        expect(_contrast(s.chip, s.canvasTop), lessThan(1.8), reason: '${p.isDark}');
-      }
-    });
-
-    test('标签描边和画布同一档亮度，不会出现刺眼白边', () {
+    test('标签投影和画布同一档亮度，不会出现刺眼白边', () {
       final GraphStyle light = GraphStyle.from(AppPalette.light);
       final GraphStyle dark = GraphStyle.from(AppPalette.dark);
 
-      expect(_contrast(light.labelHalo, light.canvasTop), lessThan(1.3));
-      expect(_contrast(dark.labelHalo, dark.canvasTop), lessThan(1.6));
+      expect(_contrast(light.labelHalo, light.canvas), lessThan(1.3));
+      expect(_contrast(dark.labelHalo, dark.canvas), lessThan(1.6));
     });
   });
 }

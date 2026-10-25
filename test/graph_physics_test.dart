@@ -85,17 +85,16 @@ void main() {
       expect(minGap(l), greaterThan(0));
     });
 
-    test('布局是横的：包围盒明显宽于高', () {
-      // 各向同性的斥力 + 向心只能排出一根竖条，四个文件夹会排成一条线，
-      // 画布左右全空。横向权重（wide / stretch）就是为了这个。
+    test('布局是一团圆的，不是一根竖条', () {
+      // 早先为了让四个文件夹不排成一条线，给斥力和向心各加过一个横向
+      // 权重，图因此被拉成扁椭圆。照 Obsidian 那版复刻之后不再需要：
+      // 硬碰撞把点撑开、向心把图收成球，各向同性反而是对的。
       for (final NoteGraph g in <NoteGraph>[star(), ring()]) {
         final GraphLayout l = GraphLayout.of(g)..settle(g, 800);
         final b = l.bounds();
-        expect(
-          b.width / b.height,
-          greaterThan(1.25),
-          reason: '${g.nodes.length} 个节点的图被排成了竖条',
-        );
+        final double ratio = b.width / b.height;
+        expect(ratio, greaterThan(0.6), reason: '${g.nodes.length} 个节点被排成了竖条');
+        expect(ratio, lessThan(1.7), reason: '${g.nodes.length} 个节点被排成了横条');
       }
     });
 
@@ -180,10 +179,10 @@ void main() {
 
   group('半径与帧数', () {
     test('半径按度数开平方，压住差异', () {
-      expect(graphNodeRadius(0), closeTo(4.6, 1e-9));
-      expect(graphNodeRadius(9), closeTo(4.6 + 3 * 2.4, 1e-9));
-      // 度 0 → 9 只大 7px 出头，不会变成一颗球
-      expect(graphNodeRadius(9) - graphNodeRadius(0), lessThan(8));
+      expect(graphNodeRadius(0), closeTo(3, 1e-9));
+      expect(graphNodeRadius(9), closeTo(3 + 3 * 1.9, 1e-9));
+      // 度 0 → 9 只大不到 6px，不会变成一颗球
+      expect(graphNodeRadius(9) - graphNodeRadius(0), lessThan(6));
       expect(graphNodeRadius(4, scale: 2), closeTo(graphNodeRadius(4) * 2, 1e-9));
     });
 

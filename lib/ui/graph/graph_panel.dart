@@ -27,6 +27,7 @@ class GraphSettings {
     this.query = '',
     this.showOrphans = true,
     this.showArrows = false,
+    this.useFolderColors = false,
     this.nodeScale = 1,
     this.linkScale = 1,
     this.folder,
@@ -43,6 +44,10 @@ class GraphSettings {
   final bool showOrphans;
   final bool showArrows;
 
+  /// 按文件夹着色。默认关：图谱默认是一张灰度的结构图，
+  /// 颜色留给用户主动打开——不打开的时候，颜色不该暗示任何东西。
+  final bool useFolderColors;
+
   /// 节点大小 / 连线距离，0.6–1.6。
   final double nodeScale;
   final double linkScale;
@@ -56,6 +61,7 @@ class GraphSettings {
     String? query,
     bool? showOrphans,
     bool? showArrows,
+    bool? useFolderColors,
     double? nodeScale,
     double? linkScale,
     Object? folder = _keep,
@@ -66,6 +72,7 @@ class GraphSettings {
       query: query ?? this.query,
       showOrphans: showOrphans ?? this.showOrphans,
       showArrows: showArrows ?? this.showArrows,
+      useFolderColors: useFolderColors ?? this.useFolderColors,
       nodeScale: nodeScale ?? this.nodeScale,
       linkScale: linkScale ?? this.linkScale,
       // 用哨兵而不是 `??`：`null` 本身是「不筛分组」这个有意义的值。
@@ -83,6 +90,7 @@ class GraphSettings {
       other.query == query &&
       other.showOrphans == showOrphans &&
       other.showArrows == showArrows &&
+      other.useFolderColors == useFolderColors &&
       other.nodeScale == nodeScale &&
       other.linkScale == linkScale &&
       other.folder == folder;
@@ -94,6 +102,7 @@ class GraphSettings {
     query,
     showOrphans,
     showArrows,
+    useFolderColors,
     nodeScale,
     linkScale,
     folder,
@@ -219,6 +228,13 @@ class GraphPanel extends StatelessWidget {
                           value: settings.showArrows,
                           onChanged: (bool v) =>
                               onChanged(settings.copyWith(showArrows: v)),
+                        ),
+                        _SwitchRow(
+                          label: '按文件夹着色',
+                          value: settings.useFolderColors,
+                          onChanged: (bool v) => onChanged(
+                            settings.copyWith(useFolderColors: v),
+                          ),
                         ),
                       ],
                     ),
