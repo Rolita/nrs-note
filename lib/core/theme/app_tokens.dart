@@ -171,6 +171,13 @@ abstract final class AppLayout {
   static const double tablePanelMinWidth = 220;
   static const double tablePanelMaxWidth = 420;
 
+  /// Far-right image list panel. Same width as the table panel: a 44px
+  /// thumbnail plus two lines of caption need the room, and the three panels
+  /// sharing this column should not change width when you switch between them.
+  static const double imagePanelWidth = 252;
+  static const double imagePanelMinWidth = 220;
+  static const double imagePanelMaxWidth = 420;
+
   /// Below this width the outline yields to the editor.
   static const double outlineMinShellWidth = 980;
 

@@ -10,6 +10,9 @@ class LiveImageBlocks {
     required this.palette,
     required this.text,
     required this.selection,
+    this.selectedLine,
+    this.editingLine,
+    this.sourceFontSize = 15.5,
     required this.imageProviderFor,
     required this.onLineInvalidated,
   });
@@ -22,6 +25,18 @@ class LiveImageBlocks {
   /// 当前的揭示选区（拖动期间可能是冻结的那一份）。
   final TextSelection? Function() selection;
 
+  /// 被点中的那一行（行首偏移）；新建的块要按它决定自己画不画边框。
+  final int? Function()? selectedLine;
+
+  /// 正在编辑源码的那一行（行首偏移）。
+  ///
+  /// 有它，这一行就为源码**让出一行高度**，图片整体下移——源码是这一行的一部分，
+  /// 不是浮在图上的一块面板。
+  final int? Function()? editingLine;
+
+  /// 正文的字号，只用来估源码行要占多高。
+  final double sourceFontSize;
+
   /// 把图片引用解析成可绘制的图片；null 表示这一行画不出来。
   final ImageProvider? Function(String source)? imageProviderFor;
 
@@ -31,33 +46,52 @@ class LiveImageBlocks {
   /// 源码行首偏移 → 这一行的图片块。行被复用时不重建，图片流也就不用重挂。
   final Map<int, ImageLineBlock> _blocks = <int, ImageLineBlock>{};
 
+  /// 每个块最后一次被要回去的序号，只用来淘汰已经不在文档里的旧块。
+  ///
+  /// 键是行首偏移，在图片上方插一行它就变了——旧键再也对不上，不解码完的
+  /// `ui.Image` 就白攒着了。
+  final Map<int, int> _lastUsed = <int, int>{};
+  int _tick = 0;
+
+  /// 留够一屏能放下的块。淘汰只发生在明显攒多了的时候——一次排版里，后面的
+  /// 行还没轮到自己，这时候把它们刚建好的块丢掉是白费功夫。
+  static const int _keepBlocks = 24;
+
   /// 拖拽中的预览宽度，不写源码。
   final Map<int, double> previewWidths = <int, double>{};
 
   LineBlockView? blockFor(SourceLine line, LineBlockContext context) {
     if (line.kind != LineBlockKind.paragraph) {
       _blocks.remove(line.start)?.dispose();
+      _lastUsed.remove(line.start);
       return null;
     }
 
     final ImageMarkup? markup = ImageMarkup.parseLine(line.text);
     if (markup == null) {
       _blocks.remove(line.start)?.dispose();
+      _lastUsed.remove(line.start);
       return null;
     }
 
     final TextSelection? sel = selection();
+    // 光标停在图片行上**不**退回源码：点一下图片是为了看它，不是为了改它。
+    // 只有真的在选字（选区非空、且和这一行有交集）才摊开源码——那是要复制
+    // 或删除整行，看不见就没法判断自己选中了什么。
+    //
+    // 改源码走图片右下角的「编辑这个区块」浮层，那边图片照样留在原地。
     final bool revealed =
         sel != null &&
         sel.isValid &&
-        sel.start <= line.end &&
-        sel.end >= line.start;
+        !sel.isCollapsed &&
+        sel.start < line.end &&
+        sel.end > line.start;
 
     ImageLineBlock? block = _blocks[line.start];
-    // 同一行换了内容（宽度、alt、引用）就换一个块：图片流要跟着新引用走。
+    // 同一行换了内容（宽度、alt、缩进、列表编号）：只更新，不重建——引用没变
+    // 就不该把解码结果丢掉重来一遍，那几帧占位看起来就是「图片黑了一下」。
     if (block != null && block.lineText != line.text) {
-      block.dispose();
-      block = null;
+      block.updateLine(lineText: line.text, next: markup);
     }
     if (block == null) {
       block = ImageLineBlock(
@@ -69,6 +103,7 @@ class LiveImageBlocks {
         contentWidth: context.contentWidth,
         textScaler: context.textScaler,
         previewWidth: previewWidths[line.start],
+        sourceFontSize: sourceFontSize,
         imageProviderFor: imageProviderFor,
         onLineInvalidated: onLineInvalidated,
       );
@@ -82,10 +117,32 @@ class LiveImageBlocks {
           contentWidth: context.contentWidth,
           textScaler: context.textScaler,
           previewWidth: previewWidths[line.start],
+          sourceFontSize: sourceFontSize,
         );
     }
+    // 块会被复用、也会新建：选中态与「正在改源码」一律以编辑器为准。
+    block.selected = selectedLine?.call() == line.start;
+    block.showSource = editingLine?.call() == line.start;
+    _lastUsed[line.start] = ++_tick;
+    _trim();
 
-    return revealed ? null : block;
+    return revealed && !block.showSource ? null : block;
+  }
+
+  /// 只留最近还在用的那些块。图片上方插一行，行首偏移就变了，旧键再也对不上
+  /// ——不淘汰的话每编辑一次就白留一张解码好的图。
+  void _trim() {
+    if (_blocks.length <= _keepBlocks) return;
+    final List<int> keys = _blocks.keys.toList()
+      ..sort(
+        (int a, int b) =>
+            (_lastUsed[a] ?? 0).compareTo(_lastUsed[b] ?? 0),
+      );
+    for (final int key in keys) {
+      if (_blocks.length <= _keepBlocks) break;
+      _blocks.remove(key)?.dispose();
+      _lastUsed.remove(key);
+    }
   }
 
   /// 拖拽预览：只覆盖显示宽度，源码保持不动。
@@ -104,6 +161,7 @@ class LiveImageBlocks {
       block.dispose();
     }
     _blocks.clear();
+    _lastUsed.clear();
     previewWidths.clear();
   }
 }
@@ -122,6 +180,7 @@ class ImageLineBlock implements LineBlockView, ImageBlockChrome {
     required this.contentWidth,
     required this.textScaler,
     required this.previewWidth,
+    required this.sourceFontSize,
     required this.imageProviderFor,
     required this.onLineInvalidated,
   }) {
@@ -129,7 +188,8 @@ class ImageLineBlock implements LineBlockView, ImageBlockChrome {
     _computeSize();
   }
 
-  final ImageMarkup markup;
+  ImageMarkup markup;
+
   final ImageProvider? Function(String source)? imageProviderFor;
   final ValueChanged<int> onLineInvalidated;
 
@@ -137,12 +197,15 @@ class ImageLineBlock implements LineBlockView, ImageBlockChrome {
   int lineEnd;
 
   /// 建块时的源码行；只有内容变了才需要重新解析与重新挂图片流。
-  final String lineText;
+  String lineText;
 
   AppPalette palette;
   double contentWidth;
   TextScaler textScaler;
   double? previewWidth;
+
+  /// 正文的字号，只用来估源码行要占多高。
+  double sourceFontSize;
 
   ImageStream? _stream;
   ImageStreamListener? _listener;
@@ -151,11 +214,57 @@ class ImageLineBlock implements LineBlockView, ImageBlockChrome {
   bool _disposed = false;
   bool _invalidateScheduled = false;
 
+  /// 被点中的那张图画一圈边框：图片是自绘的，没有别的办法告诉用户「就是它」。
+  bool selected = false;
+
+  /// 正在改这一行的源码：整行**长高一行**，图片整体下移，源码就写在让出来的
+  /// 那一行里。不是浮在图上的一块面板。
+  bool get showSource => _showSource;
+  bool _showSource = false;
+  set showSource(bool value) {
+    if (value == _showSource) return;
+    _showSource = value;
+    _computeSize();
+  }
+
   double _naturalWidth = 0;
   double _aspect = 1;
+
+  /// 图片自己的尺寸。
+  double _imageWidth = 0;
+  double _imageHeight = 0;
+
+  /// 让给源码的那一行有多高（不编辑时是 0）。
+  double _sourceHeight = 0;
+
+  /// 源码行浮层的宽度（不编辑时是 0）。
+  double _sourceWidth = 0;
+
+  /// 图片相对于行顶的偏移。
+  ///
+  /// 恒为 0：源码行不再把图片顶下去，它浮在图片上面。
+  double _imageTop = 0;
+
   double _width = 0;
   double _height = 0;
   Offset _chromeOrigin = Offset.zero;
+
+  /// 浮动时图片与正文之间的间距。
+  static const double _floatGap = 18;
+
+  /// 图片横向占住的总宽度（含间距）；不浮动时为 0。
+  @override
+  double get chromeFloatWidth =>
+      markup.align == null ? 0 : _imageWidth + _floatGap;
+
+  /// 靠边浮动时贴哪一边；改源码时也照旧浮动。
+  @override
+  ImageAlign? get chromeAlign => markup.align;
+
+  /// 浮动时整块相对行左边缘的横向偏移：贴右边就整块右移，贴左边不动。
+  double get _floatDx => markup.align == ImageAlign.right
+      ? math.max(0.0, contentWidth - _imageWidth)
+      : 0;
 
   @override
   double get width => _width;
@@ -174,17 +283,47 @@ class ImageLineBlock implements LineBlockView, ImageBlockChrome {
     required double contentWidth,
     required TextScaler textScaler,
     required double? previewWidth,
+    required double sourceFontSize,
   }) {
     final bool changed =
         palette != this.palette ||
         contentWidth != this.contentWidth ||
         this.textScaler != textScaler ||
-        this.previewWidth != previewWidth;
+        this.previewWidth != previewWidth ||
+        sourceFontSize != this.sourceFontSize;
     this.palette = palette;
     this.contentWidth = contentWidth;
     this.textScaler = textScaler;
     this.previewWidth = previewWidth;
+    this.sourceFontSize = sourceFontSize;
+    // 自愈：块被复用而解码结果不知怎么丢了（流被拆过、上一次回调没赶上），
+    // 下一次排版就把图片重新挂上，不必等用户去点一下那一行。
+    if (_info == null && _stream == null && !_failed) _resolve();
     if (changed) _computeSize();
+  }
+
+  /// 同一行换了内容（宽度、alt、缩进）。
+  ///
+  /// 引用没变就**不重挂图片流**：回车把这一行的缩进或列表编号改掉、或者用户只
+  /// 改了 `width=`，重挂等于把解码结果丢掉重来一遍，中间那几帧就是一张占位
+  /// ——看起来就是「图片黑了一下」。只有换了图才真的重建。
+  void updateLine({
+    required String lineText,
+    required ImageMarkup next,
+  }) {
+    this.lineText = lineText;
+    final bool newSource = next.source != markup.source;
+    markup = next;
+    if (newSource) {
+      _detachStream();
+      _info?.dispose();
+      _info = null;
+      _naturalWidth = 0;
+      _aspect = 1;
+      _failed = false;
+      _resolve();
+    }
+    _computeSize();
   }
 
   void _resolve() {
@@ -203,12 +342,21 @@ class ImageLineBlock implements LineBlockView, ImageBlockChrome {
     }
   }
 
+  void _detachStream() {
+    final ImageStreamListener? listener = _listener;
+    if (listener != null) _stream?.removeListener(listener);
+    _listener = null;
+    _stream = null;
+  }
+
   void _onImage(ImageInfo info, bool synchronousCall) {
     if (_disposed) {
       info.dispose();
       return;
     }
     final ImageInfo? previous = _info;
+    // 同一个实例：既不能 dispose 它（那正是我们在用的那一份），也不必换。
+    if (identical(info, previous)) return;
     if (previous != null && info.isCloneOf(previous)) {
       info.dispose();
       return;
@@ -249,25 +397,56 @@ class ImageLineBlock implements LineBlockView, ImageBlockChrome {
 
   void _computeSize() {
     final double room = contentWidth > 0 ? contentWidth : 0;
-    if (_info == null) {
-      _width = math.min(360.0, room);
-      _height = 120;
-      return;
-    }
-
-    final double? declared = previewWidth ?? markup.width;
+    // 浮动图片不能把整行吃光：旁边还得留得下正文，否则「左文字右图片」就成
+    // 了一句空话。上限取正文列的 62%。
+    final double roomCap = markup.align == null
+        ? room
+        : math.max(96.0, room * 0.62);
     double w;
-    if (declared != null) {
-      w = declared.clamp(96.0, math.max(96.0, room));
+    double h;
+    if (_info == null) {
+      w = math.min(360.0, roomCap);
+      h = 120;
     } else {
-      w = math.min(_naturalWidth, room);
-      if (_aspect > 0 && w / _aspect > 640) {
-        w = 640 * _aspect;
+      final double? declared = previewWidth ?? markup.width;
+      if (declared != null) {
+        w = declared.clamp(96.0, math.max(96.0, roomCap));
+      } else {
+        w = math.min(_naturalWidth, roomCap);
+        if (_aspect > 0 && w / _aspect > 640) {
+          w = 640 * _aspect;
+        }
       }
+      if (!w.isFinite || w <= 0) w = math.min(360.0, roomCap);
+      h = _aspect > 0 ? w / _aspect : 120;
     }
-    if (!w.isFinite || w <= 0) w = math.min(360.0, room);
+    _imageWidth = w;
+    _imageHeight = h;
+
+    // 编辑源码时那一行**浮在图片上**，一个像素都不占布局：图片的位置、大小、
+    // 贴哪一边全都不动。以前是让出一行高度、图片整体下移，代价是点一下
+    // 「编辑这个区块」整个版面就跳一次——浮动图片更糟，贴边会被临时取消，
+    // 旁边的正文跟着重排。改源码是「看这一行字」，不该顺手重排整篇。
+    if (_showSource) {
+      final double fontSize = textScaler.scale(sourceFontSize);
+      // 至少 360 宽：一行 `<img src="…" width="…">` 挤在 200px 里要折四行。
+      _sourceWidth = math.max(240.0, math.min(room - 24, math.max(w - 24, 360)));
+      final int lines = math
+          .max(
+            1,
+            (lineText.length * fontSize * 0.58 / math.max(1.0, _sourceWidth - 20))
+                .ceil(),
+          )
+          .clamp(1, 6);
+      _sourceHeight = lines * fontSize * 1.5 + 12;
+    } else {
+      _sourceWidth = 0;
+      _sourceHeight = 0;
+    }
+    _imageTop = 0;
+
     _width = w;
-    _height = _aspect > 0 ? w / _aspect : 120;
+    _height = h;
   }
 
   @override
@@ -280,8 +459,32 @@ class ImageLineBlock implements LineBlockView, ImageBlockChrome {
   set chromeOrigin(Offset value) => _chromeOrigin = value;
 
   @override
-  Rect chromeImageBounds() =>
-      Rect.fromLTWH(_chromeOrigin.dx, _chromeOrigin.dy, _width, _height);
+  Rect chromeImageBounds() => Rect.fromLTWH(
+    _chromeOrigin.dx + _floatDx,
+    _chromeOrigin.dy + _imageTop,
+    _imageWidth,
+    _imageHeight,
+  );
+
+  /// 源码浮窗该摆在哪：图片**左上角内侧**，浮在图上。
+  ///
+  /// 不再「让出一行」——那会让整篇跳一下。图片太窄时往右借地方，但绝不伸出
+  /// 正文列；贴右边时同样夹回来，窗口不会跑出可编辑区。
+  @override
+  Rect chromeSourceBounds() {
+    if (_sourceHeight <= 0 || _sourceWidth <= 0) return Rect.zero;
+    const double inset = 12;
+    final double left = math.min(
+      _floatDx + inset,
+      math.max(0.0, contentWidth - _sourceWidth - 4),
+    );
+    return Rect.fromLTWH(
+      _chromeOrigin.dx + math.max(0.0, left),
+      _chromeOrigin.dy + inset,
+      _sourceWidth,
+      _sourceHeight,
+    );
+  }
 
   @override
   ImageResizeHandle? chromeResizeHandle() {
@@ -297,9 +500,20 @@ class ImageLineBlock implements LineBlockView, ImageBlockChrome {
   }
 
   @override
+  set chromeSelected(bool value) => selected = value;
+
+  @override
+  bool get chromeSelected => selected;
+
+  @override
   void paint(Canvas canvas, Offset origin, Offset globalOrigin) {
     _chromeOrigin = globalOrigin;
-    final Rect rect = Rect.fromLTWH(origin.dx, origin.dy, _width, _height);
+    final Rect rect = Rect.fromLTWH(
+      origin.dx + _floatDx,
+      origin.dy + _imageTop,
+      _imageWidth,
+      _imageHeight,
+    );
     final RRect rounded = RRect.fromRectAndRadius(
       rect,
       const Radius.circular(4),
@@ -333,6 +547,23 @@ class ImageLineBlock implements LineBlockView, ImageBlockChrome {
         ..strokeWidth = 1
         ..color = palette.outlineSoft,
     );
+
+    // 选中：再描一圈强调色。往里收 1px，压在细描边上而不是盖到图片外面去。
+    if (selected) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect.deflate(1), const Radius.circular(4)),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..color = palette.accent,
+      );
+    }
+
+    // 正在改这一行的源码：整张图压暗一点。源码行浮在它上沿，图片仍是原尺寸
+    // 原位置——压暗只是告诉人「现在动的是这张图的源码」，不是要重排。
+    if (_showSource) {
+      canvas.drawRRect(rounded, Paint()..color = const Color(0x33000000));
+    }
   }
 
   void _paintFailure(Canvas canvas, Rect rect) {
@@ -390,29 +621,48 @@ class ImageLineBlock implements LineBlockView, ImageBlockChrome {
   }
 
   @override
-  int offsetAt(Offset local) => local.dx < _width / 2 ? lineStart : lineEnd;
+  int offsetAt(Offset local) {
+    // 整块按左右半边给行首/行尾。源码行让出来之后只是块的上半截变成了字，
+    // 规矩不变——按图的一半分，不按行宽分，图缩得比行窄时才对得上眼睛。
+    return local.dx < _imageWidth / 2 ? lineStart : lineEnd;
+  }
 
   @override
   Rect caretRectAt(int offset) {
-    final double x = offset >= lineEnd ? math.max(0, _width - 2) : 0;
-    return Rect.fromLTWH(x, 0, 2, _height);
+    final double x = offset >= lineEnd ? math.max(0, _imageWidth - 2) : 0;
+    return Rect.fromLTWH(
+      x + _floatDx,
+      0,
+      2,
+      math.max(_imageHeight, 1),
+    );
   }
 
   @override
   List<Rect> highlightRects(int from, int to) {
     if (to <= from || to < lineStart || from > lineEnd) return const <Rect>[];
-    return <Rect>[Rect.fromLTWH(0, 0, _width, _height)];
+    // 整行都被选中：源码行（如果有）和图片一起盖住，不然选中的那一行中间会
+    // 留出一条没染色的缝。
+    return <Rect>[Rect.fromLTWH(_floatDx, 0, _width, _height)];
   }
 
   @override
   void dispose() {
     if (_disposed) return;
     _disposed = true;
-    final ImageStreamListener? listener = _listener;
-    if (listener != null) _stream?.removeListener(listener);
-    _listener = null;
-    _stream = null;
-    _info?.dispose();
-    _info = null;
+    _detachStream();
+    // **不要在这里立刻释放解码结果**：换行、重排、行复用都会丢块，而行布局可能
+    // 还拿着这一块画最后一帧——`ui.Image` 一没，`drawImageRect` 照样画，画出来
+    // 就是一整块纯黑。推到下一帧末尾，那时已经没有任何人指着它了。
+    final ImageInfo? orphan = _info;
+    if (orphan == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!identical(_info, orphan)) return;
+      _info = null;
+      // 万一这一帧之后还有人在画它，至少落回一小块占位，而不是一张大黑图。
+      _computeSize();
+      orphan.dispose();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 }

@@ -1312,6 +1312,57 @@ class NotesController extends ChangeNotifier {
     return false;
   }
 
+  /// Writes `.md` files dropped onto the note list into the vault.
+  ///
+  /// A file dragged in from the desktop is not a vault file: it is read, then
+  /// written as a **new** note under its own name. A name already taken gets
+  /// the same ` 2` rule every other new file gets, so a drop can never
+  /// overwrite what is already there.
+  ///
+  /// Everything else is refused and counted: a folder, a PDF, a picture. The
+  /// list is notes, and a note is a `.md`.
+  ///
+  /// Files land in [activeFolder] — the folder the user is standing in — the
+  /// same place 新建笔记 would put them.
+  ///
+  /// The last file imported is opened — with several files in one drop, that is
+  /// the one the user was aiming at.
+  Future<({int imported, int refused})> importMarkdownFiles(
+    List<String> paths,
+  ) async {
+    int imported = 0;
+    int refused = 0;
+    String? lastId;
+    for (final String path in paths) {
+      final String name = _fileNameOfPath(path);
+      if (!name.toLowerCase().endsWith('.md')) {
+        refused++;
+        continue;
+      }
+      final String? raw = await _store.readMarkdownFile(path);
+      if (raw == null) {
+        refused++;
+        continue;
+      }
+      try {
+        final Note note = await _store.writeNewMarkdown(
+          raw,
+          name,
+          folderPath: _activeFolder,
+        );
+        lastId = note.id;
+        imported++;
+      } catch (_) {
+        refused++;
+      }
+    }
+    if (imported > 0) {
+      await refresh(keepSelection: false);
+      if (lastId != null) select(lastId);
+    }
+    return (imported: imported, refused: refused);
+  }
+
   // ------------------------------------------------------------------- trash
 
   /// Everything waiting in the vault's trash, newest deletion first.
@@ -2121,4 +2172,13 @@ class NotesController extends ChangeNotifier {
     _savedIndicatorTimer?.cancel();
     super.dispose();
   }
+}
+
+/// The file name at the end of [path], whichever separator the platform used.
+///
+/// A path dragged in from Explorer is `…\笔记.md` and one from Finder is
+/// `…/笔记.md`; the vault only ever wants the last segment.
+String _fileNameOfPath(String path) {
+  final int cut = path.lastIndexOf(RegExp(r'[\\/]'));
+  return cut < 0 ? path : path.substring(cut + 1);
 }

@@ -26,9 +26,11 @@ class SettingsController extends ChangeNotifier {
   static const String _kSidebar = 'nrs.sidebarCollapsed';
   static const String _kOutline = 'nrs.outlineVisible';
   static const String _kTablePanel = 'nrs.tablePanelVisible';
+  static const String _kImagePanel = 'nrs.imagePanelVisible';
   static const String _kListWidth = 'nrs.listWidth';
   static const String _kOutlineWidth = 'nrs.outlineWidth';
   static const String _kTablePanelWidth = 'nrs.tablePanelWidth';
+  static const String _kImagePanelWidth = 'nrs.imagePanelWidth';
   static const String _kProseSize = 'nrs.proseSize';
   static const String _kFocus = 'nrs.focusMode';
   static const String _kSessionTabs = 'nrs.sessionTabs';
@@ -242,12 +244,17 @@ class SettingsController extends ChangeNotifier {
 
   bool get outlineVisible => _prefs.getBool(_kOutline) ?? true;
 
-  /// The outline and the table tools share the far-right column, so at most one
-  /// of them is open. Turning one on closes the other in the same write.
+  /// The outline, the table tools and the image list share the far-right
+  /// column, so at most one of them is open. Turning one on closes the others
+  /// in the same write — the shell can then read the three flags without
+  /// cross-checking them.
   set outlineVisible(bool value) {
     if (outlineVisible == value) return;
     _prefs.setBool(_kOutline, value);
-    if (value) _prefs.setBool(_kTablePanel, false);
+    if (value) {
+      _prefs.setBool(_kTablePanel, false);
+      _prefs.setBool(_kImagePanel, false);
+    }
     notifyListeners();
   }
 
@@ -256,7 +263,22 @@ class SettingsController extends ChangeNotifier {
   set tablePanelVisible(bool value) {
     if (tablePanelVisible == value) return;
     _prefs.setBool(_kTablePanel, value);
-    if (value) _prefs.setBool(_kOutline, false);
+    if (value) {
+      _prefs.setBool(_kOutline, false);
+      _prefs.setBool(_kImagePanel, false);
+    }
+    notifyListeners();
+  }
+
+  bool get imagePanelVisible => _prefs.getBool(_kImagePanel) ?? false;
+
+  set imagePanelVisible(bool value) {
+    if (imagePanelVisible == value) return;
+    _prefs.setBool(_kImagePanel, value);
+    if (value) {
+      _prefs.setBool(_kOutline, false);
+      _prefs.setBool(_kTablePanel, false);
+    }
     notifyListeners();
   }
 
@@ -298,6 +320,20 @@ class SettingsController extends ChangeNotifier {
     );
     if ((tablePanelWidth - clamped).abs() < 0.5) return;
     _prefs.setDouble(_kTablePanelWidth, clamped);
+    notifyListeners();
+  }
+
+  /// Width of the image list column, dragged by its own handle.
+  double get imagePanelWidth =>
+      _prefs.getDouble(_kImagePanelWidth) ?? AppLayout.imagePanelWidth;
+
+  set imagePanelWidth(double value) {
+    final double clamped = value.clamp(
+      AppLayout.imagePanelMinWidth,
+      AppLayout.imagePanelMaxWidth,
+    );
+    if ((imagePanelWidth - clamped).abs() < 0.5) return;
+    _prefs.setDouble(_kImagePanelWidth, clamped);
     notifyListeners();
   }
 

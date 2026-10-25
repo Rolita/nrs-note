@@ -330,4 +330,54 @@ void main() {
       expect(prefs.containsKey('nrs.tablePanelWidth'), isTrue);
     });
   });
+
+  group('图片面板', () {
+    test('默认关闭，宽度取面板默认值', () async {
+      final (:settings, :prefs) = await load();
+      expect(settings.imagePanelVisible, isFalse);
+      expect(settings.imagePanelWidth, AppLayout.imagePanelWidth);
+    });
+
+    test('三个面板共用最右栏：开一个就关掉另外两个', () async {
+      final (:settings, :prefs) = await load();
+      expect(settings.outlineVisible, isTrue);
+
+      settings.imagePanelVisible = true;
+      expect(settings.imagePanelVisible, isTrue);
+      expect(settings.outlineVisible, isFalse);
+      expect(settings.tablePanelVisible, isFalse);
+
+      settings.tablePanelVisible = true;
+      expect(settings.tablePanelVisible, isTrue);
+      expect(settings.imagePanelVisible, isFalse);
+      expect(prefs.getBool('nrs.imagePanelVisible'), isFalse);
+
+      settings.imagePanelVisible = true;
+      expect(settings.imagePanelVisible, isTrue);
+      expect(settings.tablePanelVisible, isFalse);
+
+      settings.outlineVisible = true;
+      expect(settings.outlineVisible, isTrue);
+      expect(settings.imagePanelVisible, isFalse);
+      expect(prefs.getBool('nrs.imagePanelVisible'), isFalse);
+    });
+
+    test('宽度夹在 220–420，同值不再通知', () async {
+      final (:settings, :prefs) = await load();
+      int notifications = 0;
+      settings.addListener(() => notifications++);
+
+      settings.imagePanelWidth = 1000;
+      expect(settings.imagePanelWidth, AppLayout.imagePanelMaxWidth);
+      expect(notifications, 1);
+
+      settings.imagePanelWidth = 10;
+      expect(settings.imagePanelWidth, AppLayout.imagePanelMinWidth);
+      expect(notifications, 2);
+
+      settings.imagePanelWidth = AppLayout.imagePanelMinWidth;
+      expect(notifications, 2, reason: '同值不再通知');
+      expect(prefs.containsKey('nrs.imagePanelWidth'), isTrue);
+    });
+  });
 }

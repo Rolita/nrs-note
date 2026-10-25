@@ -451,6 +451,48 @@ class RenderLineEditable extends RenderEditable {
   /// `TextPainter`，列表续行会算回行首。
   LineDocumentLayout? get lineLayout => _lineLayout;
 
+  /// 拖着一整行找落点：把全局坐标 [globalPosition] 的 y 吸附到最近的行边界，
+  /// 返回那条**插入线**的全局矩形，以及落点对应的文档偏移（某一行的行首）。
+  ///
+  /// 拖动的是「整行」，所以落点只能落在行与行之间——按光标位置算会落在行中间，
+  /// 插进去就把一段话劈成两半。指针在行的上半部分就插到这一行之前，下半部分
+  /// 插到它之后；文末那一行之后也算一个合法边界。
+  ({Rect line, int offset})? dropTargetAt(Offset globalPosition) {
+    final LineDocumentLayout? layout = _lineLayout;
+    if (layout == null || layout.laidOut.isEmpty) return null;
+    final Offset local = globalToLocal(globalPosition) - _linePaintOffset;
+    final String plain = text?.toPlainText() ?? '';
+    final double left = _globalOriginOf(Offset.zero).dx;
+
+    LaidOutLine? hit;
+    for (final LaidOutLine line in layout.laidOut) {
+      if (line.hidden || line.height <= 0) continue;
+      if (local.dy < line.top + line.height) {
+        hit = line;
+        break;
+      }
+    }
+    // 指针在正文下方：插到最后一行之后。
+    if (hit == null) {
+      final LaidOutLine last = layout.laidOut.lastWhere(
+        (LaidOutLine l) => !l.hidden && l.height > 0,
+        orElse: () => layout.laidOut.last,
+      );
+      return (
+        line: Rect.fromLTWH(left, _globalOriginOf(Offset(0, last.top + last.height)).dy - 1, layout.width, 2),
+        offset: math.min(last.source.end + 1, plain.length),
+      );
+    }
+    final bool before = local.dy < hit.top + hit.height / 2;
+    final double y = before ? hit.top : hit.top + hit.height;
+    return (
+      line: Rect.fromLTWH(left, _globalOriginOf(Offset(0, y)).dy - 1, layout.width, 2),
+      offset: before
+          ? hit.source.start
+          : math.min(hit.source.end + 1, plain.length),
+    );
+  }
+
   /// 编辑增量成功的次数，供测试确认普通输入没有退回全量。
   @visibleForTesting
   int debugEditRelayouts = 0;
@@ -1092,7 +1134,12 @@ class RenderLineEditable extends RenderEditable {
     for (int i = range.from; i < range.to; i++) {
       final LaidOutLine line = layout.laidOut[i];
       final LineBlockView? block = line.block;
-      if (block == null || line.height <= 0) continue;
+      if (block == null) continue;
+      // 浮动图片那一行高度是 0——它和下面的正文共用同一段纵向空间——但图片
+      // 本身照样要画。
+      final bool floats =
+          block is ImageBlockChrome && (block as ImageBlockChrome).chromeAlign != null;
+      if (line.height <= 0 && !floats) continue;
       final Offset local = _lineOrigin(line);
       // 行可能被整对象复用，而块里的源码偏移是建块时记的：每帧按当前行
       // 回写一次，指针落点与揭示判定不会落在位移前的旧偏移上。
@@ -1199,8 +1246,14 @@ class RenderLineEditable extends RenderEditable {
     final List<ImageBlockChrome> result = <ImageBlockChrome>[];
     for (int i = 0; i < blocks.length; i++) {
       final LaidOutLine line = lines[i];
-      if (line.top + line.height < visible.top ||
-          line.top > visible.bottom) {
+      // 浮动图片的行高是 0，图片却从那一行往下铺：按块自己的高度判可见，
+      // 否则滚到图片中间时整张图会突然不见。
+      final ImageBlockChrome chrome = blocks[i];
+      final double blockHeight = chrome is LineBlockView
+          ? (chrome as LineBlockView).height
+          : 0;
+      final double bottom = line.top + math.max(line.height, blockHeight);
+      if (bottom < visible.top || line.top > visible.bottom) {
         continue;
       }
       final Offset local = _lineOrigin(line);

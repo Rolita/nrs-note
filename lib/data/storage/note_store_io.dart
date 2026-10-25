@@ -721,6 +721,22 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
   }
 
   @override
+  Future<String?> readMarkdownFile(String path) async {
+    try {
+      final File file = File(path);
+      if (!await file.exists()) return null;
+      final String raw = await file.readAsString();
+      // Notepad on Windows writes a BOM; it is not part of the note.
+      return raw.startsWith('\uFEFF') ? raw.substring(1) : raw;
+    } on FileSystemException {
+      return null;
+    } on FormatException {
+      // Not UTF-8: refuse rather than import a page of U+FFFD.
+      return null;
+    }
+  }
+
+  @override
   Future<Note> writeNewMarkdown(
     String raw,
     String fileName, {

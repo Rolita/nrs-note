@@ -1,3 +1,18 @@
+/// 图片靠哪一边浮动，正文从另一侧绕排。
+///
+/// `null`（不是这个枚举）才是「独占一行」：图片默认把下面所有文字顶开，
+/// 只有明确写了 `align="left|right"` 才让正文挤到旁边去。
+enum ImageAlign {
+  left,
+  right;
+
+  static ImageAlign? parse(String? raw) => switch (raw?.trim().toLowerCase()) {
+    'left' => ImageAlign.left,
+    'right' => ImageAlign.right,
+    _ => null,
+  };
+}
+
 /// A line that consists of exactly one image, either Markdown
 /// `![alt](source)` or a single `<img …>` tag.
 ///
@@ -5,7 +20,12 @@
 /// should be drawn as a picture, and to rewrite that line when its width is
 /// changed. Anything that is not the *whole* line is ordinary source text.
 class ImageMarkup {
-  const ImageMarkup({required this.source, this.alt, this.width});
+  const ImageMarkup({
+    required this.source,
+    this.alt,
+    this.width,
+    this.align,
+  });
 
   /// `assets/x.png`, `https://…`, `data:…`.
   final String source;
@@ -16,6 +36,12 @@ class ImageMarkup {
   /// Width in logical pixels as written in the source, `null` when the line
   /// does not declare one.
   final double? width;
+
+  /// 靠边浮动；`null` 表示独占一行。
+  ///
+  /// 有它时这一行不再占一整行高度：图片贴在左/右栏，后面几行正文在另一侧
+  /// 绕排，直到文字越过图片底部。这就是「左文字右图片」的排版来源。
+  final ImageAlign? align;
 
   bool get isExternal {
     final String lower = source.toLowerCase();
@@ -38,16 +64,25 @@ class ImageMarkup {
   ///
   /// Without a width this is standard Markdown; with one it is an `<img>` tag
   /// so the width survives in other Markdown tools.
-  String toMarkdown({double? width}) {
+  ///
+  /// [asTag] forces the tag form even when there is no width. The editor uses
+  /// it when **inserting** an image: this app already writes a tag the moment
+  /// the width is dragged, and switching syntax between "just pasted" and
+  /// "resized once" would make the same picture look like two different
+  /// things in the same file.
+  String toMarkdown({double? width, bool asTag = false, ImageAlign? align}) {
     final double? effective = width ?? this.width;
+    final ImageAlign? side = align ?? this.align;
     final String altText = alt ?? '';
     final String escapedAlt = _escapeAlt(altText);
-    if (effective == null) {
+    // 靠边浮动只能写在标签里，`![…](…)` 没有放属性的地方。
+    if (effective == null && !asTag && side == null) {
       final String destination = _needsAngles(source) ? '<$source>' : source;
       return '![$escapedAlt]($destination)';
     }
     final StringBuffer out = StringBuffer('<img src="$source"');
-    out.write(' width="${_formatWidth(effective)}"');
+    if (effective != null) out.write(' width="${_formatWidth(effective)}"');
+    if (side != null) out.write(' align="${side.name}"');
     if (altText.isNotEmpty) out.write(' alt="$escapedAlt"');
     out.write('>');
     return out.toString();
@@ -216,6 +251,9 @@ class ImageMarkup {
       source: source.trim(),
       alt: alt == null || alt.isEmpty ? null : _decodeAlt(alt),
       width: width,
+      // 认不出的对齐值（`center`、`absmiddle`）当作没写：一行 `<img>` 不该
+      // 因为一个不认识的属性就整行退回源码。
+      align: ImageAlign.parse(attributes['align']),
     );
   }
 
@@ -265,8 +303,8 @@ class ImageMarkup {
 ///
 /// At the very end of a document a trailing newline is always added, even when
 /// the caret is already at a line start: the caret has to land on the next
-/// line, otherwise it would sit inside the image line and immediately reveal
-/// the source again.
+/// line, so the first keystroke after the paste starts a paragraph instead of
+/// being appended to the image's own line.
 ({String text, int caret}) insertImageBlock({
   required String text,
   required int at,
@@ -281,5 +319,61 @@ class ImageMarkup {
   return (
     text: next,
     caret: at + prefix.length + imageLine.length + suffix.length,
+  );
+}
+
+/// 把 `[lineStart, lineEnd)` 这一整行搬到 [insertAt]（另一行的行首）。
+///
+/// 搬的是**整行连同它自己的换行**：图片是一整块，搬走不能留下空段落，搬过去
+/// 也得自成一个段落。返回新的正文、搬完后这一行的新行首，以及这次搬动的净位移
+/// （新行首 − 旧行首，编辑器据此把光标和选中态一起挪过去）。
+///
+/// 搬不动时返回 `null`：落点就在这一行自己身上，或者紧挨着它（搬了等于没搬）。
+({String text, int caret, int delta})? moveSourceLine({
+  required String text,
+  required int lineStart,
+  required int lineEnd,
+  required int insertAt,
+}) {
+  if (lineStart < 0 ||
+      lineEnd < lineStart ||
+      lineEnd > text.length ||
+      insertAt < 0 ||
+      insertAt > text.length) {
+    return null;
+  }
+  // 落点就是自己这一行的行首，或者紧跟着自己的下一行行首：原地不动。
+  final int ownEnd = lineEnd < text.length ? lineEnd + 1 : lineEnd;
+  if (insertAt == lineStart || insertAt == ownEnd) return null;
+
+  final String line = text.substring(lineStart, lineEnd);
+  // 这一行有没有自己的换行可带走；没有（文末最后一行）就带走上一行那个。
+  final bool hasNewline = lineEnd < text.length;
+  final int cutFrom = hasNewline
+      ? lineStart
+      : (lineStart > 0 ? lineStart - 1 : lineStart);
+  final int cutTo = hasNewline ? lineEnd + 1 : lineEnd;
+  if (cutTo <= cutFrom) return null;
+  final String rest = text.replaceRange(cutFrom, cutTo, '');
+
+  // 落点在新正文里的偏移：删掉的那一段在它前面，就整体左移。
+  final int removed = cutTo - cutFrom;
+  int at = insertAt >= cutTo ? insertAt - removed : insertAt;
+  at = at.clamp(0, rest.length);
+
+  final String before = rest.substring(0, at);
+  final String after = rest.substring(at);
+  final StringBuffer out = StringBuffer(before);
+  if (before.isNotEmpty && !before.endsWith('\n')) out.write('\n');
+  final int caret = out.length;
+  out.write(line);
+  if (after.isNotEmpty) {
+    out.write('\n');
+    out.write(after);
+  }
+  return (
+    text: out.toString(),
+    caret: caret,
+    delta: caret - lineStart,
   );
 }

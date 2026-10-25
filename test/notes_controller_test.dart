@@ -57,6 +57,13 @@ class _MemoryStore extends NoteStore {
     _versionRaw.putIfAbsent(note.id, () => <String, String>{})[id] = raw;
   }
 
+  /// Files the fake "desktop" can hand over, keyed by path. Anything not in
+  /// here reads as a file that is gone.
+  final Map<String, String> external = <String, String>{};
+
+  @override
+  Future<String?> readMarkdownFile(String path) async => external[path];
+
   @override
   bool get supportsTrash => true;
 
@@ -1384,6 +1391,77 @@ void main() {
       expect(notes.selectedId, first.id);
       expect(notes.openIds, <String>[first.id]);
       expect(notes.tabSessionRestored, isFalse);
+    });
+  });
+
+  group('importMarkdownFiles', () {
+    test('a dropped .md becomes a note under its own name and opens', () async {
+      final _MemoryStore store = _MemoryStore(<Note>[_note('另一篇')]);
+      store.external[r'C:\Users\me\Desktop\周报.md'] = '# 周报\n\n本周进展';
+      final NotesController notes = await _open(store);
+
+      final ({int imported, int refused}) result =
+          await notes.importMarkdownFiles(<String>[
+            r'C:\Users\me\Desktop\周报.md',
+          ]);
+
+      expect(result.imported, 1);
+      expect(result.refused, 0);
+      final Note imported = notes.allNotes.firstWhere(
+        (Note n) => n.title == '周报',
+      );
+      expect(imported.body, contains('本周进展'));
+      expect(imported.fileName, '周报.md');
+      expect(notes.selectedId, imported.id, reason: '导入的那篇应该被打开');
+    });
+
+    test('a name already in the vault gets the 2 rule, not an overwrite', () async {
+      final Note existing = _note('周报', body: '原来的正文');
+      final _MemoryStore store = _MemoryStore(<Note>[existing]);
+      store.external['/tmp/周报.md'] = '# 周报\n\n拖进来的';
+      final NotesController notes = await _open(store);
+
+      await notes.importMarkdownFiles(<String>['/tmp/周报.md']);
+
+      expect(notes.allNotes.length, 2);
+      final Note kept = notes.allNotes.firstWhere(
+        (Note n) => n.fileName == '周报.md',
+      );
+      expect(kept.body, contains('原来的正文'), reason: '同名文件不能被覆盖');
+      final Note added = notes.allNotes.firstWhere(
+        (Note n) => n.fileName == '周报 2.md',
+      );
+      expect(added.body, contains('拖进来的'));
+    });
+
+    test('anything that is not a .md is refused and counted', () async {
+      final _MemoryStore store = _MemoryStore();
+      store.external['/tmp/预算.pdf'] = 'not markdown';
+      store.external['/tmp/笔记.md'] = '# 笔记';
+      final NotesController notes = await _open(store);
+
+      final ({int imported, int refused}) result =
+          await notes.importMarkdownFiles(<String>[
+            '/tmp/预算.pdf',
+            '/tmp/笔记.md',
+          ]);
+
+      expect(result.imported, 1);
+      expect(result.refused, 1);
+      expect(notes.allNotes.length, 1);
+      expect(notes.allNotes.single.title, '笔记');
+    });
+
+    test('a file that cannot be read is refused', () async {
+      final _MemoryStore store = _MemoryStore();
+      final NotesController notes = await _open(store);
+
+      final ({int imported, int refused}) result = await notes
+          .importMarkdownFiles(<String>['/tmp/不见了.md']);
+
+      expect(result.imported, 0);
+      expect(result.refused, 1);
+      expect(notes.allNotes, isEmpty);
     });
   });
 }

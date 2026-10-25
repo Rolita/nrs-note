@@ -4,7 +4,10 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart'
     show
+        GestureBinding,
         PointerDeviceKind,
+        PointerScrollEvent,
+        PointerSignalEvent,
         kDoubleTapTimeout,
         kSecondaryMouseButton,
         kTouchSlop;
@@ -12,6 +15,7 @@ import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart' hide TableCell, TableRow;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 
@@ -20,6 +24,7 @@ import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../core/utils/clipboard_image.dart';
 import '../../core/utils/dropped_link.dart';
+import '../../core/utils/html_source.dart';
 import '../../core/utils/image_markup.dart';
 import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/markdown_outline.dart';
@@ -1212,6 +1217,9 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       palette: palette,
       text: _currentText,
       selection: _revealSelection,
+      selectedLine: () => _selectedImageLine,
+      editingLine: () => _imageSourceLine,
+      sourceFontSize: widget.fontSize,
       imageProviderFor: widget.imageProviderFor,
       onLineInvalidated: _invalidateImageLine,
     );
@@ -1351,6 +1359,9 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       _imageBlocks = null;
       _imageBlocksPalette = null;
       _lineBlocks = null;
+      // 源码行按偏移记着「正在改哪一行」：换文档后那个偏移落在新正文的别的
+      // 地方，会让一张毫不相干的图莫名让出一行。选中态、悬停、全屏看图同理。
+      _dropImageState();
     }
     if (oldWidget.scrollController != widget.scrollController) {
       oldWidget.scrollController.removeListener(_scheduleOverlayRefresh);
@@ -1812,9 +1823,67 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       _cancelImageResize();
       return KeyEventResult.handled;
     }
+    // 拖着图片找落点途中按 Esc：插入线丢掉，图片留在原地。
+    if (key == LogicalKeyboardKey.escape && _imageMove != null) {
+      _cancelImageMove();
+      _setCursor(SystemMouseCursors.basic);
+      return KeyEventResult.handled;
+    }
+    // 图片源码行：Esc 丢掉，源码不动。
+    if (key == LogicalKeyboardKey.escape &&
+        (_imageEdit != null || _imageSourceLine != null)) {
+      _cancelImageEditor();
+      widget.focusNode.requestFocus();
+      return KeyEventResult.handled;
+    }
+    // 全屏看图：Esc 退出来。
+    if (key == LogicalKeyboardKey.escape && _viewImage != null) {
+      _closeImageViewer();
+      widget.focusNode.requestFocus();
+      return KeyEventResult.handled;
+    }
+    // 选中的图片：Esc 收掉边框和按钮。
+    if (key == LogicalKeyboardKey.escape && _selectedImageLine != null) {
+      _selectImage(null);
+      return KeyEventResult.handled;
+    }
+    // 选中的图片：Backspace / Delete 删掉整张图。图片是自绘的一整块，光标根本
+    // 不在它里面；让字段自己去删，删掉的是隔壁那一行的字。
+    if ((key == LogicalKeyboardKey.backspace ||
+            key == LogicalKeyboardKey.delete) &&
+        _imageEdit == null &&
+        _imageSourceLine == null &&
+        _selectedImageLine != null) {
+      _deleteImageLine(_selectedImageLine!);
+      return KeyEventResult.handled;
+    }
     if (!v.selection.isValid ||
         (v.composing.isValid && !v.composing.isCollapsed)) {
       return KeyEventResult.ignored;
+    }
+    // 光标贴着图片删：图片行就是一整块，删它得整行删。
+    //
+    // Backspace 停在行尾（图片右侧）时，字段只会吃掉最后那个 `>`，一行
+    // `<img …>` 变成半截标签；Delete 停在行首时同理，吃掉的是 `<`。两种都让
+    // 图片凭空消失、原地留下一段废源码，所以这里接手。
+    if (_imageEdit == null &&
+        _imageSourceLine == null &&
+        v.selection.isCollapsed &&
+        (key == LogicalKeyboardKey.backspace ||
+            key == LogicalKeyboardKey.delete)) {
+      final int caret = v.selection.start;
+      final int start = lineStartOf(v.text, caret);
+      final int newline = v.text.indexOf('\n', start);
+      final int end = newline < 0 ? v.text.length : newline;
+      final bool isImageLine =
+          end > start && ImageMarkup.parseLine(v.text.substring(start, end)) != null;
+      final bool atEdge = key == LogicalKeyboardKey.backspace
+          ? caret == end
+          : caret == start;
+      if (isImageLine && atEdge) {
+        _deleteImageLine(start);
+        return KeyEventResult.handled;
+      }
     }
     final bool extend = keys.isShiftPressed;
     final TextEditingValue? next;
@@ -2132,6 +2201,10 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   List<TableRowChrome> _tableRows() =>
       _editable()?.tableRows() ?? const <TableRowChrome>[];
 
+  /// 自绘的图片块，按行序。命中、悬停与浮层定位都从这里取几何。
+  List<ImageBlockChrome> _imageChrome() =>
+      _editable()?.imageBlocks() ?? const <ImageBlockChrome>[];
+
   /// The grip, plus button or column divider under [globalPosition], with the
   /// row that painted it.
   ///
@@ -2172,6 +2245,35 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
         startDx: globalPosition.dx,
         maxWidth: field.lineLayout?.width ?? block.chromeImageBounds().width,
       );
+    }
+    return null;
+  }
+
+  /// 图片本体下的那一行（行首偏移）。
+  ///
+  /// 图片是自绘的，字段根本不知道那儿有个东西；按下要挡住字段、悬停要点亮
+  /// 按钮，都得先问出「这一下落在哪张图上」。
+  int? _imageLineAt(Offset globalPosition) {
+    for (final ImageBlockChrome block in _imageChrome()) {
+      if (block.chromeImageBounds().contains(globalPosition)) {
+        return block.imageSourceStart;
+      }
+    }
+    return null;
+  }
+
+  /// 某一张图画出来多大。拖动预览框按它算尺寸。
+  Size _imageSizeAt(int line) {
+    for (final ImageBlockChrome block in _imageChrome()) {
+      if (block.imageSourceStart == line) return block.chromeImageBounds().size;
+    }
+    return Size.zero;
+  }
+
+  /// 某一张图此刻画在哪一块（全局坐标）。
+  Rect? _imageBoundsOf(int line) {
+    for (final ImageBlockChrome block in _imageChrome()) {
+      if (block.imageSourceStart == line) return block.chromeImageBounds();
     }
     return null;
   }
@@ -2330,6 +2432,54 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   ({int lineStart, double startWidth, double startDx, double maxWidth})?
   _imageResize;
 
+  /// 正被拖走的整张图片：按住图片本体、指针移开一段之后才算拖起来。
+  ///
+  /// 图片行是一整块，能「挪」的只有整行——所以落点按行边界吸附，拖到哪儿就
+  /// 把这一行整行搬过去。
+  _ImageMove? _imageMove;
+
+  /// 指针停在哪张图片上（行首偏移），决定右上角那排按钮出不出现。
+  ///
+  /// 只在这一排按钮上画：图片本身是自绘的，没有 `MouseRegion` 可用。
+  int? _hoverImageLine;
+
+  /// 被点中的图片（行首偏移）。
+  ///
+  /// 点一下图片是「我要看这张图」，不是「把光标放进这一行」——图片行是自绘的，
+  /// 光标落进去既看不见也没意义。所以按下只记下这一行：画一圈边框，右上角的
+  /// 两个按钮固定显示。
+  int? _selectedImageLine;
+
+  /// 右上角那排按钮的位置（编辑器自己的坐标）。
+  ///
+  /// 几何必须在**指针事件里**算好：`_editable()` 要遍历子元素，在 build 期间
+  /// 调它会撞上 `visitChildElements() called during build`。
+  Rect? _imageActionsRect;
+
+  /// 正在全屏看的那张图。
+  _ImageView? _viewImage;
+
+  /// 「查看大图」的那一层。
+  ///
+  /// 它挂在**根 Overlay** 上，不是编辑器 Stack 的一个孩子：用户要的是「盖住整个
+  /// 软件」，而编辑器只占窗口中间那一块——挂在 Stack 里的话左边文件列表、右边
+  /// 边栏都还亮着，放大一张图反而更看不清。
+  OverlayEntry? _viewImageEntry;
+
+  /// 最近一帧用的配色。浮层在指针事件里创建，那时没有 build 上下文可取。
+  AppPalette? _palette;
+
+  /// 正在改源码的那一行（行首偏移）。
+  ///
+  /// 有它，图片块就为源码让出一行高度——源码是这一行的一部分，不是浮在图上
+  /// 的一块面板。
+  int? _imageSourceLine;
+
+  /// 打开着的图片源码行。图片本身不消失，只是被源码行推到下面。
+  _ImageEdit? _imageEdit;
+  TextEditingController? _imageText;
+  FocusNode? _imageFocus;
+
   /// The resize divider under the pointer, as `<table>:<row>:<column>`.
   ///
   /// Only hover feedback needs it: crossing a row boundary keeps the cursor on
@@ -2365,6 +2515,8 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     if (_imageHandleAt(position) != null) {
       return SystemMouseCursors.resizeUpLeftDownRight;
     }
+    // 点图片是「选中它」，一次点击，不是落光标。
+    if (_imageLineAt(position) != null) return SystemMouseCursors.click;
     // 折叠箭头是一次点击，不是落光标：悬停时先于页边/缩进的箭头光标判定。
     if (_foldButtonAt(position, visibleOnly: true) != null) {
       return SystemMouseCursors.click;
@@ -2417,6 +2569,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       tablePointerPosition.value = null;
       _clearResizeHover();
       _clearChromeHover();
+      _setHoverImage(null);
       _hoverWikilink = null;
       _setHoverTag(null);
       _setFoldHover();
@@ -2425,6 +2578,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     tablePointerPosition.value = event.position;
     _refreshResizeHover(event.position);
     _refreshChromeHover(event.position);
+    _refreshImageHover(event.position);
     // A drag owns the cursor (and the preview) until release.
     if (_grabbedRow != null || _resize != null || _imageResize != null) return;
     // 一次命中同时决定三件事：光标形状、标签的悬停配色、双链的按下兜底。
@@ -2452,15 +2606,98 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   }
 
   void _onPointerExit(PointerExitEvent event) {
-    if (_grabbedRow != null || _resize != null || _imageResize != null) return;
+    if (_grabbedRow != null ||
+        _resize != null ||
+        _imageResize != null ||
+        _imageMove != null) {
+      return;
+    }
+    // 指针可能是钻进右上角那排按钮了：按钮是 Stack 里压在编辑器之上的兄弟，
+    // 编辑器这边只看见「离开」，可人并没有离开这张图。真收起来的话，指针还
+    // 没落到按钮上按钮就没了，永远点不着。
+    if (_imageActionsRect?.contains(event.localPosition) ?? false) return;
     tablePointerPosition.value = null;
     _clearResizeHover();
     _clearChromeHover();
+    _setHoverImage(null);
     _hoverWikilink = null;
     _hoverLink = null;
     _setCursor(SystemMouseCursors.text);
     _setHoverTag(null);
     _setFoldHover();
+  }
+
+  /// Lights the actions of the image under the pointer.
+  ///
+  /// Keyed by line so sliding across one image is free: the buttons only move
+  /// when the pointer crosses into another picture or leaves them all.
+  void _refreshImageHover(Offset position) => _setHoverImage(
+    _imageLineAt(position),
+  );
+
+  void _setHoverImage(int? line) {
+    if (line == _hoverImageLine) return;
+    setState(() {
+      _hoverImageLine = line;
+      _imageActionsRect = _imageActionsRectFor(line ?? _selectedImageLine);
+    });
+  }
+
+  /// 点中（或取消点中）一张图。
+  void _selectImage(int? line) {
+    if (line == _selectedImageLine) return;
+    setState(() {
+      _selectedImageLine = line;
+      _imageActionsRect = _imageActionsRectFor(_hoverImageLine ?? line);
+    });
+    _applyImageSelection();
+  }
+
+  /// 把选中态写进图片块，再让渲染对象重画一遍——只重画，不重排。
+  void _applyImageSelection() {
+    final RenderLineEditable? field = _editable();
+    if (field == null) return;
+    for (final ImageBlockChrome block in field.imageBlocks()) {
+      block.chromeSelected = block.imageSourceStart == _selectedImageLine;
+    }
+    field.markNeedsPaint();
+  }
+
+  /// 那排按钮的落点：图片右上角内侧。
+  ///
+  /// 缩放手柄压在右下角，两者各管各的；宽度是写死的三颗按钮宽，位置能算准，
+  /// 也就不必等这一帧量完再摆。
+  Rect? _imageActionsRectFor(int? line) {
+    if (line == null) return null;
+    final bool canEdit = !widget.readOnly;
+    final double barWidth = canEdit
+        ? _kImageActionsEditWidth
+        : _kImageActionsWidth;
+    const double barHeight = _kImageActionsHeight;
+    const double inset = 8;
+    ImageBlockChrome? block;
+    for (final ImageBlockChrome candidate in _imageChrome()) {
+      if (candidate.imageSourceStart == line) {
+        block = candidate;
+        break;
+      }
+    }
+    if (block == null) return null;
+    final RenderObject? root = context.findRenderObject();
+    if (root is! RenderBox || !root.hasSize) return null;
+    final Rect bounds = Rect.fromPoints(
+      root.globalToLocal(block.chromeImageBounds().topLeft),
+      root.globalToLocal(block.chromeImageBounds().bottomRight),
+    );
+    final double left = (bounds.right - inset - barWidth).clamp(
+      8.0,
+      math.max(8.0, root.size.width - barWidth - 8),
+    );
+    final double top = (bounds.top + inset).clamp(
+      8.0,
+      math.max(8.0, root.size.height - barHeight - 8),
+    );
+    return Rect.fromLTWH(left, top, barWidth, barHeight);
   }
 
   /// Repaints when the divider under the pointer moves to another row — the
@@ -2871,6 +3108,10 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       return;
     }
     final bool secondary = event.buttons & kSecondaryMouseButton != 0;
+    // 按在别处就把图片的选中态收掉：边框是「我正在看这张图」的记号。
+    if (_selectedImageLine != null && _imageLineAt(event.position) == null) {
+      _selectImage(null);
+    }
     // 图片手柄在选区拖动之前判定：按下只开始改宽，不移动光标、不进入选字。
     // 命中的是 `_ChromeShield`，所以焦点得自己补。
     if (!secondary) {
@@ -2891,6 +3132,43 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
         }
         return;
       }
+    }
+    // 点图片本体：不落光标（图片行是自绘的，光标进去看不见也没意义），只把
+    // 它选中——边框加上，右上角的两个按钮固定显示。
+    final int? imageLine = _imageLineAt(event.position);
+    if (imageLine != null) {
+      _selectImage(imageLine);
+      if (!secondary) {
+        _rangeBeforeChromeTap = null;
+        _downPosition = event.position;
+        _gestureMoved = false;
+        // 按住不动是「选中这张图」，按住往外拖是「把它搬走」——差别在指针
+        // 走没走过拖拽阈值，所以按下的这一刻只能先把候选记下来。
+        _imageMove = _ImageMove(
+          lineStart: imageLine,
+          origin: event.position,
+        )..size = _imageSizeAt(imageLine);
+        // 命中被 `_ChromeShield` 挡下了，字段收不到这一下，它的「点空白处
+        // 失焦」却照样在事件末尾生效。不补回来，选中图片后按 Backspace
+        // 删图会一点反应都没有——键盘事件全落在一个没有焦点的字段上。
+        widget.focusNode.requestFocus();
+        if (widget.focusNode.hasFocus) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || widget.focusNode.hasFocus) return;
+            widget.focusNode.requestFocus();
+          });
+        }
+        return;
+      }
+      // 右键仍然要菜单。图片挡住了字段，菜单不会自己弹，这里照正文那条路由
+      // 补上：先把落点放进这一行，菜单才知道该对哪一行下手。
+      final TextEditingController c = widget.controller;
+      if (c is MarkdownSourceController) {
+        c.disarmClickGuard();
+        _placeCaret(c, event.position, keepSelection: true);
+        _showMenuAt(event.position);
+      }
+      return;
     }
     // 标签胶囊只在按下这一刻还铺着底片：输入框马上会把光标落进标签、退回
     // 源码，等到抬起再命中就找不到它了。悬停命中的区间是同一块胶囊的兜底，
@@ -3177,6 +3455,10 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       _dragImageResize(event.position);
       return;
     }
+    if (_imageMove != null) {
+      _dragImageMove(event.position);
+      return;
+    }
     final TableRowChrome? grabbed = _grabbedRow;
     final TableChromeTarget? target = _grabbed;
     if (grabbed != null && target != null) {
@@ -3325,6 +3607,170 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     widget.onChanged?.call(edited.text);
   }
 
+  /// 从右上角的移动按钮开始拖。
+  ///
+  /// 那个按钮存在的意义就是拖动，所以不等拖拽阈值：按下去就已经在搬了。
+  /// 指针后续的移动 / 抬起由那颗按钮自己的 [Listener] 直接送进来——它压在
+  /// 字段上面，字段收不到这些事件。
+  void _beginImageMoveFromHandle(int line) {
+    setState(() {
+      _selectedImageLine = line;
+      _imageMove = _ImageMove(
+        lineStart: line,
+        origin: Offset.zero,
+        fromHandle: true,
+      )
+        ..active = true
+        ..size = _imageSizeAt(line);
+    });
+    _applyImageSelection();
+    _setCursor(SystemMouseCursors.grabbing);
+  }
+
+  /// 一帧拖动：把指针的 y 吸附到最近的行边界，指针的 x 决定贴哪一边。
+  ///
+  /// 和改宽一样，拖动期间**一个字节都不写**：整行搬移会在松手时一次性落成，
+  /// 否则每移动一像素就是一步撤销，光标还会在搬来搬去的行里乱跳。
+  void _dragImageMove(Offset position) {
+    final _ImageMove move = _imageMove!;
+    if (!move.active) {
+      if ((position - move.origin).distance <= kTouchSlop) return;
+      // 指针离开了按下点：这一下是「搬走」，不再是「点选」。
+      move.active = true;
+      _gestureMoved = true;
+      _setCursor(SystemMouseCursors.grabbing);
+    }
+    final RenderLineEditable? field = _editable();
+    final RenderObject? root = context.findRenderObject();
+    if (field == null || root is! RenderBox || !root.hasSize) return;
+    final ({Rect line, int offset})? target = field.dropTargetAt(position);
+    if (target == null) return;
+
+    // 落在自己身上（自己这一行的行首，或紧跟其后的下一行行首）等于没挪位置，
+    // 但**贴哪一边**仍然可以变：原地往左一拖就是把这张图改成左浮动。
+    //
+    // 浮动图片那一行高度是 0，指针停在图上时按行边界算会落到它下面那一行去；
+    // 所以指针只要还压在图上，就一律当「原地」。
+    final ({int from, int to, String text})? own = _sourceLineAt(move.lineStart);
+    final String text = widget.controller.text;
+    final int ownEnd = own == null
+        ? -1
+        : (own.to < text.length ? own.to + 1 : own.to);
+    final bool onSelf = _imageBoundsOf(move.lineStart)?.contains(position) ?? false;
+    final bool same =
+        onSelf || target.offset == move.lineStart || target.offset == ownEnd;
+
+    // 落点在正文的哪一栏：左三分之一贴左，右三分之一贴右，中间独占一行。
+    final double left = target.line.left;
+    final double width = math.max(1.0, target.line.width);
+    final double x = position.dx - left;
+    final ImageAlign? align = x < width * 0.34
+        ? ImageAlign.left
+        : (x > width * 0.66 ? ImageAlign.right : null);
+
+    final Rect local = Rect.fromPoints(
+      root.globalToLocal(target.line.topLeft),
+      root.globalToLocal(target.line.bottomRight),
+    );
+    // 预览框：贴边时是图片真会占的那块，独占一行时铺满整栏。
+    final double ghostHeight = move.size.height;
+    final double ghostWidth = align == null ? width : move.size.width;
+    final double ghostLeft = align == ImageAlign.right
+        ? left + width - ghostWidth
+        : left;
+    final Rect ghost = Rect.fromPoints(
+      root.globalToLocal(Offset(ghostLeft, target.line.top)),
+      root.globalToLocal(
+        Offset(ghostLeft + ghostWidth, target.line.top + ghostHeight),
+      ),
+    );
+    if (move.target == (same ? null : target.offset) &&
+        move.align == align &&
+        _sameRect(move.ghost, ghost) &&
+        _sameRect(move.dropLine, align == null && !same ? local : null)) {
+      return;
+    }
+    setState(() {
+      move.target = same ? null : target.offset;
+      move.align = align;
+      move.ghost = ghost;
+      // 贴边时预览框已经说明了落点，再画一条插入线只是噪音。
+      move.dropLine = align == null && !same ? local : null;
+    });
+  }
+
+  /// 松手：把这一整行搬到落点，并按落点写好贴哪一边。
+  ///
+  /// 没真的拖起来就什么都不做——那一下是「点选这张图」，`_onPointerDown` 已经
+  /// 把边框和按钮处理过了。
+  void _finishImageMove(Offset position) {
+    final _ImageMove move = _imageMove!;
+    final int? target = move.target;
+    final ImageAlign? align = move.align;
+    final bool active = move.active;
+    _imageMove = null;
+    _downPosition = null;
+    _gestureMoved = false;
+    _setCursor(_cursorAt(position));
+    // 插入线与预览框都是画出来的，状态一清就得重画一遍。
+    setState(() {});
+    if (!active) return;
+
+    final ({int from, int to, String text})? line = _sourceLineAt(
+      move.lineStart,
+    );
+    if (line == null) return;
+    final ImageMarkup? markup = ImageMarkup.parseLine(line.text);
+    if (markup == null) return;
+
+    // 落点的对齐直接定死：`toMarkdown(align: null)` 会退回**原来那个**对齐，
+    // 而这里「没贴边」的意思正是要把原来的浮动取消掉。
+    final String rewritten = ImageMarkup(
+      source: markup.source,
+      alt: markup.alt,
+      width: markup.width,
+      align: align,
+    ).toMarkdown(asTag: align != null);
+    String text = widget.controller.text;
+    int caret = line.from;
+    if (target != null) {
+      final ({String text, int caret, int delta})? moved = moveSourceLine(
+        text: text,
+        lineStart: line.from,
+        lineEnd: line.to,
+        insertAt: target,
+      );
+      if (moved != null) {
+        text = moved.text;
+        caret = moved.caret;
+      }
+    }
+    // 对齐和搬家合成**一次**写入：两步写下去就是两步撤销，人得按两次 Ctrl+Z
+    // 才回到拖动之前。
+    if (rewritten != line.text) {
+      text = text.replaceRange(caret, caret + line.text.length, rewritten);
+    }
+    if (text == widget.controller.text) return;
+    _history.breakMerge();
+    _applyEdit(
+      (TextEditingValue _) => TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: caret),
+      ),
+    );
+    // 搬完仍然选中它：人得看得见自己刚把哪张图挪到了哪儿。
+    _selectImage(caret);
+  }
+
+  /// Esc 或手势被取消：插入线丢掉，文档一个字都不动。
+  void _cancelImageMove() {
+    if (_imageMove == null) return;
+    _imageMove = null;
+    _downPosition = null;
+    _gestureMoved = false;
+    setState(() {});
+  }
+
   /// One frame of an image resize: the preview width changes, the document does
   /// not. Writing the controller on every move would stack up dozens of undo
   /// steps and make the caret jump inside a line whose length keeps changing.
@@ -3455,6 +3901,10 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     }
     if (_imageResize != null) {
       _finishImageResize(event.position);
+      return;
+    }
+    if (_imageMove != null) {
+      _finishImageMove(event.position);
       return;
     }
     final TableRowChrome? grabbed = _grabbedRow;
@@ -3630,6 +4080,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       _editable()?.markNeedsPaint();
     }
     _cancelImageResize();
+    _cancelImageMove();
     if (tableDragPreview.value != null) {
       tableDragPreview.value = null;
       _editable()?.markNeedsPaint();
@@ -3638,6 +4089,30 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     _endGesture();
     _downPosition = null;
     _gestureMoved = false;
+  }
+
+  /// 滚轮落在自绘控件上时，把滚动交还给滚动视图。
+  ///
+  /// [`_ChromeShield`] 命中即 `return true`、不再往下问：光标才不会落进图片那
+  /// 一行、表格抓手上的一下也不会变成落字。代价是它把整棵
+  /// `SingleChildScrollView` 从命中链上剪掉了——滚轮信号（`PointerSignalEvent`
+  /// 只发给命中链上的监听者）到不了 `Scrollable`，指针停在图片或表格上就滚不动。
+  ///
+  /// 这里补一手：注册到 `pointerSignalResolver` 而不是直接滚。正常落在文字上
+  /// 时 `Scrollable` 在链上更深、先注册，我们这份会被忽略——不会滚两下；只有
+  /// 被盾牌剪掉那一种情况才轮到我们。
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    final ScrollController controller = widget.scrollController;
+    if (!controller.hasClients) return;
+    final ScrollPosition position = controller.position;
+    final double delta = event.scrollDelta.dy;
+    if (delta == 0) return;
+    GestureBinding.instance.pointerSignalResolver.register(event, (
+      PointerEvent _,
+    ) {
+      position.pointerScroll(delta);
+    });
   }
 
   /// Hands the reveal back to the live caret and repaints.
@@ -3724,7 +4199,9 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     final String? label = show == null ? null : tableStatsLabel(show);
     if (key == _statsKey &&
         label == _statsLabel &&
-        _sameRect(anchor, _statsAnchor)) {
+        _sameRect(anchor, _statsAnchor) &&
+        !_imageActionsMoved() &&
+        !_imageEditorMoved()) {
       return;
     }
     setState(() {
@@ -3732,6 +4209,26 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       _statsLabel = label;
       _statsAnchor = anchor;
     });
+  }
+
+  /// 滚动会把图片挪走，右上角那排按钮得跟着。返回是否真的动了，好让
+  /// `_refreshOverlays` 决定要不要 `setState`。
+  bool _imageActionsMoved() {
+    final int? line = _hoverImageLine ?? _selectedImageLine;
+    final Rect? next = _imageActionsRectFor(line);
+    if (_sameRect(next, _imageActionsRect)) return false;
+    _imageActionsRect = next;
+    return true;
+  }
+
+  /// 图片上方的源码行也得跟着滚动走，不然图一滚它就悬在半空了。
+  bool _imageEditorMoved() {
+    final _ImageEdit? edit = _imageEdit;
+    if (edit == null) return false;
+    final Rect? next = _imagePanelRect(edit.lineStart);
+    if (_sameRect(next, edit.panel) || next == null) return false;
+    edit.panel = next;
+    return true;
   }
 
   static bool _sameRect(Rect? a, Rect? b) {
@@ -3846,6 +4343,316 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     widget.focusNode.requestFocus();
   }
 
+  // --------------------------------------------------------------- 图片区块
+
+  /// 某一图片行的原文，以及它在文档里的范围。
+  ({int from, int to, String text})? _sourceLineAt(int lineStart) {
+    final String doc = widget.controller.text;
+    if (lineStart < 0 || lineStart > doc.length) return null;
+    final int newline = doc.indexOf('\n', lineStart);
+    final int to = newline < 0 ? doc.length : newline;
+    return (from: lineStart, to: to, text: doc.substring(lineStart, to));
+  }
+
+  /// 打开图片行的源码编辑。
+  ///
+  /// 输入框**浮在图片上沿**，一个像素都不占布局：图片的位置、大小、贴哪一边
+  /// 全都不动。改源码是「看这一行字」，不该顺手重排整篇——以前让它占一行高，
+  /// 点一下「编辑这个区块」整个版面就跳一次，浮动图片更糟，贴边会被临时取消。
+  void _openImageEditor(int lineStart) {
+    if (widget.readOnly || _imageEdit != null) return;
+    final ({int from, int to, String text})? line = _sourceLineAt(lineStart);
+    if (line == null) return;
+    final AppPalette palette = _palette ?? AppPalette.light;
+
+    // 先让这一行把浮层的位置算出来（块自己知道输入框该摆在哪），下一帧再摆。
+    setState(() {
+      _imageSourceLine = lineStart;
+      // 按钮自己压着源码行，先收起来；关掉时再按选中态补回来。
+      _hoverImageLine = null;
+      _imageActionsRect = null;
+    });
+    _invalidateImageLine(lineStart);
+
+    _mountImageEditor(lineStart, line.text, palette, tries: 0);
+  }
+
+  /// 等这一行把浮窗位置算出来，再把输入框挂上去。
+  ///
+  /// 块要等一次排版才知道浮窗摆在哪，所以必须等下一帧。但「等不到就算了」是
+  /// 不行的：滚动、图片刚解码完、增量重排被交回全量，都可能让这一帧拿不到矩形
+  /// ——用户看到的就是「点了一下，什么都没发生」，还得再点一次才灵。所以拿不
+  /// 到就再等一帧；真的等不到，就按图片本体的位置兜一个底。**点了一定要开**，
+  /// 位置差一点也比没反应强。
+  void _mountImageEditor(
+    int lineStart,
+    String text,
+    AppPalette palette, {
+    required int tries,
+  }) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _imageSourceLine != lineStart || _imageEdit != null) return;
+      Rect? panel = _imagePanelRect(lineStart);
+      if (panel == null) {
+        if (tries < 4) {
+          // 再排一帧：`_invalidateImageLine` 可能把重排推到了下一帧。
+          // 没有这一句，空闲时压根不会有下一帧，回调就永远不来了。
+          WidgetsBinding.instance.ensureVisualUpdate();
+          _mountImageEditor(lineStart, text, palette, tries: tries + 1);
+          return;
+        }
+        panel = _fallbackImagePanel(lineStart);
+      }
+      // 这一行是 HTML，不是散文：着色交给控制器，输入框本身只管编辑。
+      final TextEditingController controller = _HtmlSourceController(
+        text: text,
+        palette: palette,
+      );
+      final FocusNode focus = FocusNode(debugLabel: 'nrs-image-editor');
+      setState(() {
+        _imageEdit = _ImageEdit(lineStart: lineStart, panel: panel!);
+        _imageText = controller;
+        _imageFocus = focus;
+      });
+      focus.requestFocus();
+      // 光标落在行尾，**不要全选**：整行被选区染色，看上去就是一根紫条，
+      // 又像一块面板了。Obsidian 那边也是一行字加一个光标。
+      controller.selection = TextSelection.collapsed(
+        offset: controller.text.length,
+      );
+    });
+  }
+
+  /// 浮窗位置的兜底：块自己报不出矩形时，按图片本体摆一块。
+  ///
+  /// 只在「点了编辑却一直拿不到几何」时用得上——那正是最不能没反应的时候。
+  Rect _fallbackImagePanel(int lineStart) {
+    final RenderObject? root = context.findRenderObject();
+    final bool sized = root is RenderBox && root.hasSize;
+    final Size size = sized ? root.size : const Size(760, 600);
+    Rect image = _imageBoundsOf(lineStart) ?? Rect.zero;
+    if (sized && !image.isEmpty) {
+      image = Rect.fromPoints(
+        root.globalToLocal(image.topLeft),
+        root.globalToLocal(image.bottomRight),
+      );
+    } else {
+      image = Rect.fromLTWH(0, 0, size.width, 200);
+    }
+    final double width = math.max(240.0, math.min(size.width - 32, 380));
+    final double left = image.left + 12;
+    final double top = image.top + 12;
+    return Rect.fromLTWH(
+      left.clamp(8.0, math.max(8.0, size.width - width - 8)),
+      top.clamp(8.0, math.max(8.0, size.height - 120)),
+      width,
+      math.max(52.0, math.min(120.0, size.height - top - 8)),
+    );
+  }
+
+  /// 源码行占的那块地方——浮在图片上沿，这里只是把全局坐标换成编辑器坐标。
+  Rect? _imagePanelRect(int lineStart) {
+    final RenderObject? root = context.findRenderObject();
+    if (root is! RenderBox || !root.hasSize) return null;
+    for (final ImageBlockChrome block in _imageChrome()) {
+      if (block.imageSourceStart != lineStart) continue;
+      final Rect global = block.chromeSourceBounds();
+      if (global.isEmpty) return null;
+      return Rect.fromPoints(
+        root.globalToLocal(global.topLeft),
+        root.globalToLocal(global.bottomRight),
+      );
+    }
+    return null;
+  }
+
+  /// 全屏看这张图。
+  ///
+  /// 图片行里的宽度是源码里的 `w=`，一张长截图缩在正文列里看不清细节；「查看
+  /// 大图」只做一件事——把它铺满**整个窗口**，点哪儿都退出来。
+  void _openImageViewer(int lineStart) {
+    final ({int from, int to, String text})? line = _sourceLineAt(lineStart);
+    if (line == null) return;
+    final ImageMarkup? markup = ImageMarkup.parseLine(line.text);
+    if (markup == null) return;
+    final ImageProvider? provider = widget.imageProviderFor?.call(markup.source);
+    if (provider == null) return;
+    final AppPalette? palette = _palette;
+    if (palette == null) return;
+
+    final _ImageView image = _ImageView(
+      source: markup.source,
+      alt: markup.alt,
+      provider: provider,
+    );
+    _viewImageEntry?.remove();
+    final OverlayEntry entry = OverlayEntry(
+      builder: (BuildContext context) =>
+          _ImageViewer(image: image, palette: palette, onClose: _closeImageViewer),
+    );
+    _viewImageEntry = entry;
+    setState(() => _viewImage = image);
+    Overlay.of(context, rootOverlay: true).insert(entry);
+  }
+
+  void _closeImageViewer() {
+    final OverlayEntry? entry = _viewImageEntry;
+    if (entry == null) return;
+    _viewImageEntry = null;
+    entry.remove();
+    if (!mounted) return;
+    setState(() => _viewImage = null);
+    widget.focusNode.requestFocus();
+  }
+
+  /// 把这一行的源码写回文档。清空等于删掉这个图片区块。
+  void _commitImageEditor() {
+    final _ImageEdit? edit = _imageEdit;
+    final TextEditingController? controller = _imageText;
+    if (edit == null || controller == null) return;
+    final String next = controller.text.trim();
+    final int lineStart = edit.lineStart;
+    final String text = widget.controller.text;
+    // 先收起来：块要把让出来的那一行还回去，行高得在改字之前恢复。
+    _closeImageEditor();
+    final ({int from, int to, String text})? line = _sourceLineAt(lineStart);
+    if (line == null) return;
+    if (next == line.text) return;
+
+    // 整行清空时把换行一起带走，否则会留下一个空段落。
+    final int from = line.from;
+    final int to = next.isEmpty && line.to < text.length ? line.to + 1 : line.to;
+    final String updated = text.replaceRange(from, to, next);
+    final int caret = (from + next.length).clamp(0, updated.length);
+    widget.controller.value = TextEditingValue(
+      text: updated,
+      selection: TextSelection.collapsed(offset: caret),
+    );
+    widget.onChanged?.call(updated);
+    widget.focusNode.requestFocus();
+  }
+
+  void _cancelImageEditor() => _closeImageEditor();
+
+  /// 删掉一整个图片区块：整行连同它自己的那个换行。
+  ///
+  /// 图片是一整块，没有「删一个字符」这回事。只删行内字符的后果有两种：留下
+  /// 一个空段落，或者把 `<img …>` 削成半截标签——图片没了，源码却还在原地。
+  void _deleteImageLine(int lineStart) {
+    final ({int from, int to, String text})? line = _sourceLineAt(lineStart);
+    if (line == null) return;
+    final String text = widget.controller.text;
+    int from = line.from;
+    int to = line.to;
+    if (to < text.length) {
+      // 行尾那个换行属于这一行：一起删掉，下一行顶上来。
+      to += 1;
+    } else if (from > 0) {
+      // 最后一行没有换行可吃，就吃上一行末尾那个，免得留下一个空段落。
+      from -= 1;
+    }
+    final String updated = text.replaceRange(from, to, '');
+    final int caret = from.clamp(0, updated.length);
+    _history.breakMerge();
+    setState(() {
+      _hoverImageLine = null;
+      _selectedImageLine = null;
+      _imageActionsRect = null;
+    });
+    _applyEdit(
+      (TextEditingValue _) => TextEditingValue(
+        text: updated,
+        selection: TextSelection.collapsed(offset: caret),
+      ),
+    );
+  }
+
+  /// 换文档时把图片相关的状态一次清干净。
+  ///
+  /// 这里不走 `_closeImageEditor()`：正在 `didUpdateWidget` 里，`setState` 是多余
+  /// 的，而且旧的那行输入框这一帧还挂着，控制器得等它摘掉再销毁。
+  void _dropImageState() {
+    final TextEditingController? text = _imageText;
+    final FocusNode? focus = _imageFocus;
+    _imageEdit = null;
+    _imageText = null;
+    _imageFocus = null;
+    _imageSourceLine = null;
+    _selectedImageLine = null;
+    _hoverImageLine = null;
+    _imageActionsRect = null;
+    _imageMove = null;
+    final OverlayEntry? viewer = _viewImageEntry;
+    _viewImageEntry = null;
+    _viewImage = null;
+    viewer?.remove();
+    if (text != null || focus != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        text?.dispose();
+        focus?.dispose();
+      });
+    }
+  }
+
+  void _closeImageEditor() {
+    final _ImageEdit? edit = _imageEdit;
+    final int? line = edit?.lineStart ?? _imageSourceLine;
+    if (line == null) return;
+    final TextEditingController? text = _imageText;
+    final FocusNode? focus = _imageFocus;
+    setState(() {
+      _imageEdit = null;
+      _imageText = null;
+      _imageFocus = null;
+      // 块据此把浮层收起来——图片从头到尾没挪过，所以这里只重画不重排。
+      _imageSourceLine = null;
+      // 那排按钮要跟着回来。点「编辑」时按钮被主动收掉了，这里必须补回来，
+      // 否则关掉之后按钮凭空消失：指针明明还停在图上，也不会自己回来——看
+      // 起来就是「再想点一次，打不开了」。没选中过任何图时按刚关掉的那一行
+      // 补，因为指针就在那儿。
+      _hoverImageLine ??= _selectedImageLine == null ? line : null;
+      _imageActionsRect = _imageActionsRectFor(_selectedImageLine ?? line);
+    });
+    _invalidateImageLine(line);
+    // 与单元格浮层同一条规矩：等这一帧把字段摘掉再销毁控制器。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      text?.dispose();
+      focus?.dispose();
+    });
+  }
+
+  /// 图片右上角那排按钮，位置由 [_imageActionsRect] 现成给出。
+  ///
+  /// 悬停出现、离开消失；点中一张图之后固定显示——那时指针可能已经跑远了，
+  /// 但人还在看这张图，按钮不该跟着没。
+  ///
+  /// 这里不碰 `_editable()`：build 期间遍历子元素会抛异常，几何在指针事件和
+  /// 滚动回调里算。
+  Widget? _imageActions(AppPalette p) {
+    final Rect? rect = _imageActionsRect;
+    final int? line = _hoverImageLine ?? _selectedImageLine;
+    if (rect == null || line == null || _imageEdit != null) return null;
+    return Positioned.fromRect(
+      rect: rect,
+      child: _ImageActions(
+        palette: p,
+        canEdit: !widget.readOnly,
+        onView: () => _openImageViewer(line),
+        onEdit: () => _openImageEditor(line),
+        onMoveDown: (PointerDownEvent event) => _beginImageMoveFromHandle(line),
+        onMove: (PointerMoveEvent event) => _dragImageMove(event.position),
+        onMoveUp: (PointerUpEvent event) => _finishImageMove(event.position),
+        onMoveCancel: _cancelImageMove,
+        onExit: (PointerExitEvent event) {
+          // 按钮是压在编辑器之上的兄弟：指针从这里回到图上时，编辑器那边
+          // 的悬停会接手；真走了才收。
+          if (_imageLineAt(event.position) != null) return;
+          _setHoverImage(null);
+        },
+      ),
+    );
+  }
+
   /// Ctrl+V: read the clipboard and insert it through [pasteValue], so the
   /// table padding rule reaches the keyboard exactly as it reaches the menu.
   ///
@@ -3892,17 +4699,19 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     return isTableLine(line);
   }
 
-  /// 拖进来的东西：一条网页链接写成 `[标题](地址)`，其它文字按纯文本落到落点。
+  /// 拖进来的东西：一张网页图片写成 `<img src="…">`，一条网页链接写成
+  /// `[标题](地址)`，其它文字按纯文本落到落点。
   ///
-  /// 链接优先（判定在 [parseDroppedLink] 里），认不出链接才落到文字——拖一段
-  /// 网页上选中的文字过来，里面顺手带了个网址，那也是这段文字的一部分。
-  /// 文字走 [pasteValue]，和 Ctrl+V 是同一条路：表格里粘表格的规矩、单元格里
-  /// 换行变 `<br>`，拖进来也一模一样。
+  /// 图片先判（判定在 [parseDroppedImage] 里）：拖一张图时浏览器同时给了图片
+  /// 地址和一条 URL，先问链接的话，一张图会变成正文里一行 `[图](地址)`。
+  /// 链接次之（[parseDroppedLink]），认不出链接才落到文字——拖一段网页上选中
+  /// 的文字过来，里面顺手带了个网址，那也是这段文字的一部分。文字走
+  /// [pasteValue]，和 Ctrl+V 是同一条路：表格里粘表格的规矩、单元格里换行变
+  /// `<br>`，拖进来也一模一样。
   Future<void> _onDrop(PerformDropEvent event) async {
     if (widget.readOnly) return;
-    final ({DroppedLink? link, String? text})? dropped = await _readDropped(
-      event,
-    );
+    final ({DroppedImage? image, DroppedLink? link, String? text})? dropped =
+        await _readDropped(event);
     if (dropped == null || !mounted) return;
     final RenderLineEditable? field = _editable();
     final TextEditingValue current = widget.controller.value;
@@ -3915,6 +4724,32 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     );
     // 拖放自成一步：不能让 Ctrl+Z 把刚才打的字一起撤掉。
     _history.breakMerge();
+
+    final DroppedImage? image = dropped.image;
+    if (image != null) {
+      // 落点是拖放的位置，不是当前光标：拒绝与否按落点判。
+      final TextEditingValue probe = current.copyWith(
+        selection: TextSelection.collapsed(offset: at),
+      );
+      if (_imagePasteRefused(probe)) {
+        showSplitNotice(context, '表格或代码块里不能插入图片', kind: NoticeKind.error);
+        return;
+      }
+      final String imageLine = markdownImageFor(image);
+      _applyEdit((TextEditingValue v) {
+        final ({String text, int caret}) inserted = insertImageBlock(
+          text: v.text,
+          at: at.clamp(0, v.text.length),
+          end: at.clamp(0, v.text.length),
+          imageLine: imageLine,
+        );
+        return TextEditingValue(
+          text: inserted.text,
+          selection: TextSelection.collapsed(offset: inserted.caret),
+        );
+      });
+      return;
+    }
 
     final DroppedLink? link = dropped.link;
     if (link != null) {
@@ -3942,14 +4777,17 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     );
   }
 
-  /// 读一次拖放的载荷，决定它是链接还是文字；两样都读不出时返回 `null`。
+  /// 读一次拖放的载荷，决定它是图片、链接还是文字；三样都读不出时返回 `null`。
   ///
-  /// 三种载荷都要试：系统 URL（浏览器最准的那份）、浏览器附带的
-  /// `<a href=…>标题</a>`（标题从这里来）、纯文本。某个格式不支持时读出来
-  /// 就是 `null`，缺一项不影响其余两项。文件拖放（`file://`）不当作文字。
-  Future<({DroppedLink? link, String? text})?> _readDropped(
-    PerformDropEvent event,
-  ) async {
+  /// 四种载荷都要试：系统 URL（浏览器最准的那份）、浏览器附带的
+  /// `<a href=…>标题</a>` 或 `<img src=…>`（标题与图片地址从这里来）、纯文本。
+  /// 某个格式不支持时读出来就是 `null`，缺一项不影响其余几项。文件拖放
+  /// （`file://`）不当作文字。
+  ///
+  /// **图片先判**：拖一张图时浏览器同时给了图片地址和一条 `text/uri-list`，
+  /// 先问链接的话，一张图会变成一行 `[图](地址)`——图片没进去，正文多一条链接。
+  Future<({DroppedImage? image, DroppedLink? link, String? text})?>
+  _readDropped(PerformDropEvent event) async {
     for (final DropItem item in event.session.items) {
       // `DataReader` 只在 super_clipboard 里导出，这里按推断拿，不为了一个
       // 类型名多引一整个包。
@@ -3977,30 +4815,37 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       final NamedUri? uri = await read<NamedUri>(Formats.uri);
       final String? html = await read<String>(Formats.htmlText);
       final String? text = await read<String>(Formats.plainText);
-      // 拖进来认错标题时，这里能直接看到浏览器到底给了什么（仅 debug 构建）。
+      final DroppedImage? image = parseDroppedImage(
+        uri: uri?.uri.toString(),
+        html: html,
+        plainText: text,
+      );
+      // 拖进来认错时，这里能直接看到浏览器到底给了什么（仅 debug 构建）。
       // HTML 先还原成能读的样子再打：原始载荷是「UTF-8 被当 UTF-16 解」的
       // 满屏乱码，打出来只会吓人，正文其实是对的。
       assert(() {
         debugPrint(
           'NRS drop: file=$file uri=$uri\n'
+          'NRS drop: image=$image\n'
           'NRS drop: html=${describeDroppedHtml(html ?? '')}\n'
           'NRS drop: text=${clipForLog(text ?? '')}',
         );
         return true;
       }());
+      if (image != null) return (image: image, link: null, text: null);
       final DroppedLink? link = parseDroppedLink(
         uri: uri?.uri.toString(),
         name: uri?.name,
         html: html,
         plainText: text,
       );
-      if (link != null) return (link: link, text: null);
+      if (link != null) return (image: null, link: link, text: null);
       final String? plain = parseDroppedText(
         html: html,
         plainText: text,
         file: file,
       );
-      if (plain != null) return (link: null, text: plain);
+      if (plain != null) return (image: null, link: null, text: plain);
     }
     return null;
   }
@@ -4059,8 +4904,13 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       return false;
     }
 
-    final String imageLine = ImageMarkup(source: relative, alt: '图片')
-        .toMarkdown();
+    // 用 `<img …>` 写：这一行一旦被拖过宽度就会变成标签，插入时写另一种
+    // 语法会让同一张图在同一份文件里长成两副样子。没拖过就不写宽度，图仍然
+    // 按正文列自适应。
+    final String imageLine = ImageMarkup(
+      source: relative,
+      alt: '图片',
+    ).toMarkdown(asTag: true);
     // A paste is a step of its own: the image must not be folded into the
     // typing block that happened to precede it, or one Ctrl+Z erases both.
     _history.breakMerge();
@@ -4092,8 +4942,13 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     widget.scrollController.removeListener(_reportTopLine);
     widget.onLineTopProbe?.call(null);
     widget.onJumpSettled?.call(null);
+    // 放大层挂在根 Overlay 上，不随这棵子树一起拆：编辑器被换掉时得自己收。
+    _viewImageEntry?.remove();
+    _viewImageEntry = null;
     _cellText?.dispose();
     _cellFocus?.dispose();
+    _imageText?.dispose();
+    _imageFocus?.dispose();
     _layoutPool.dispose();
     _imageBlocks?.dispose();
     _imageBlocks = null;
@@ -4123,6 +4978,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       listen: false,
     );
     final AppPalette p = settings?.paletteFor(themed.brightness) ?? themed;
+    _palette = p;
     final TextStyle style = editorProseStyle(p, widget.fontSize);
     // 按行排版：每行按源码种类取样式与行高，列表标记由渲染层画。
     final LiveLineStyle lineStyle = _resolveLineStyle(style, p);
@@ -4333,12 +5189,16 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
         onPointerMove: _onPointerMove,
         onPointerUp: _onPointerUp,
         onPointerCancel: _onPointerCancel,
+        onPointerSignal: _onPointerSignal,
         child: _ChromeShield(
+          // 图片本体也算「自绘控件」：字段不知道那儿画着一张图，放它过去就会
+          // 把光标落进图片行——那行字是看不见的，光标落进去等于凭空消失。
           blocks: (Offset position) =>
               !_overHeader(position) &&
               (_chromeAt(position) != null ||
                   _foldButtonAt(position, visibleOnly: true) != null ||
-                  _imageHandleAt(position) != null),
+                  _imageHandleAt(position) != null ||
+                  _imageLineAt(position) != null),
           child: SingleChildScrollView(
             controller: widget.scrollController,
             padding: widget.padding,
@@ -4488,6 +5348,10 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     // TextField (Ctrl+C, arrows, Enter) belong to *that* field and are not
     // intercepted by the table actions.
     final _CellEdit? cell = _cellEdit;
+    final _ImageEdit? imageEdit = _imageEdit;
+    final TextEditingController? imageText = _imageText;
+    final FocusNode? imageFocus = _imageFocus;
+    final Widget? imageActions = _imageActions(p);
     return Stack(
       children: <Widget>[
         // A fenced block is one rounded slab, painted here because a
@@ -4597,6 +5461,44 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
               child: _TableStatsChip(label: _statsLabel!, palette: p),
             ),
           ),
+        // 图片右上角的「查看大图」+「编辑这个区块」：悬停出现，选中后固定。
+        ?imageActions,
+        // 拖动图片时的插入线：落点只能是行与行之间。
+        if (_imageMove?.dropLine != null)
+          Positioned.fromRect(
+            rect: _imageMove!.dropLine!,
+            child: IgnorePointer(child: _ImageDropLine(palette: p)),
+          ),
+        // 拖动图片时的落位预览：贴边浮动时它就是图片真会占的那一块。
+        if (_imageMove?.ghost != null)
+          Positioned.fromRect(
+            rect: _imageMove!.ghost!,
+            child: IgnorePointer(
+              child: _ImageDropGhost(
+                palette: p,
+                floating: _imageMove!.align != null,
+              ),
+            ),
+          ),
+        if (imageEdit != null && imageText != null && imageFocus != null) ...<Widget>[
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _commitImageEditor,
+            ),
+          ),
+          Positioned.fromRect(
+            rect: imageEdit.panel,
+            child: _ImageSourceLine(
+              palette: p,
+              style: style,
+              controller: imageText,
+              focusNode: imageFocus,
+              onCommit: _commitImageEditor,
+              onCancel: _cancelImageEditor,
+            ),
+          ),
+        ],
         if (cell != null &&
             _cellText != null &&
             _cellFocus != null) ...<Widget>[
@@ -4631,9 +5533,593 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 /// would start swallowing clicks on the text beside it.
 const double _kCheckboxTouchSlop = 4;
 
+/// One open image source editor: which line, and where the panel sits.
+class _ImageEdit {
+  _ImageEdit({required this.lineStart, required this.panel});
+
+  final int lineStart;
+
+  /// 源码行占的那块矩形，编辑器坐标。滚动会重算——块自己已经让出了这一行，
+  /// 这里只是把它报出来的位置换算过来。
+  Rect panel;
+}
+
+/// 一次「把整张图搬到别处」的拖动。
+///
+/// 图片行是一整块，能挪的只有整行：落点吸附到行与行之间，松手时整行搬过去。
+/// 落点还决定**贴哪一边**——拖到正文左侧三分之一就贴左、右侧三分之一就贴右，
+/// 中间则是独占一行。贴边之后后面几行正文会在另一侧绕排，这就是「左文字右
+/// 图片」的来源。
+class _ImageMove {
+  _ImageMove({
+    required this.lineStart,
+    required this.origin,
+    this.fromHandle = false,
+  });
+
+  /// 被搬的那一行（行首偏移）。
+  final int lineStart;
+
+  /// 按下时的指针位置。超过拖拽阈值才算真的拖起来——否则那一下是「点选」。
+  ///
+  /// 从右上角的移动按钮按下的（[fromHandle]）不必等阈值：那个按钮存在的意义
+  /// 就是拖动，点它一下本来也没有别的意思。
+  final Offset origin;
+
+  final bool fromHandle;
+
+  bool active = false;
+
+  /// 落点：文档偏移，一定是某一行的行首。`null` 表示落在自己身上（不搬）。
+  int? target;
+
+  /// 插入线在编辑器坐标里的矩形；`null` 时不画。
+  Rect? dropLine;
+
+  /// 落点要写成哪种对齐；`null` 表示独占一行。
+  ImageAlign? align;
+
+  /// 预览框在编辑器坐标里的矩形：松手之后图片大概会占这一块。
+  Rect? ghost;
+
+  /// 被搬的那张图画出来多大，预览框按它算。
+  Size size = Size.zero;
+}
+
+/// 拖动图片时那条插入线。
+///
+/// 只画一条实心细线，不做箭头、不做虚框：它要回答的只有一件事——「松手之后
+/// 这张图会插在哪两行之间」。
+class _ImageDropLine extends StatelessWidget {
+  const _ImageDropLine({required this.palette});
+
+  final AppPalette palette;
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      color: palette.accent,
+      borderRadius: BorderRadius.circular(1),
+    ),
+  );
+}
+
+/// 拖动图片时那个落位预览框。
+///
+/// 不画真图（那要再走一遍解码与自绘），只画一块半透明底色加一圈强调色边框：
+/// 它要回答的是「松手之后这块地方归它」，不是「它长什么样」——图片本身就在
+/// 原地，眼睛一直在看着它。
+class _ImageDropGhost extends StatelessWidget {
+  const _ImageDropGhost({required this.palette, required this.floating});
+
+  final AppPalette palette;
+
+  /// 贴边浮动：框是图片的宽度；独占一行时框铺满整栏。
+  final bool floating;
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      color: palette.accent.withValues(alpha: floating ? 0.10 : 0.06),
+      borderRadius: BorderRadius.circular(6),
+      border: Border.all(
+        color: palette.accent.withValues(alpha: 0.75),
+        width: 1.5,
+      ),
+    ),
+  );
+}
+
+/// 图片右上角那排按钮的尺寸。写死是为了让位置能先算出来再摆——量完再挪会
+/// 看见它跳一下。
+///
+/// 只有图标：按钮压在图片上，字越多挡掉的画面越多，名字交给 Tooltip。
+const double _kImageActionButtonWidth = 28;
+const double _kImageActionsGap = 6;
+
+/// 只读时只有「查看大图」。
+const double _kImageActionsWidth = _kImageActionButtonWidth;
+
+/// 可编辑时是「查看大图」「移动」「编辑这个区块」三颗。
+const double _kImageActionsEditWidth =
+    _kImageActionButtonWidth * 3 + _kImageActionsGap * 2;
+const double _kImageActionsHeight = 24;
+
+/// 正在全屏查看的那张图。
+class _ImageView {
+  const _ImageView({
+    required this.source,
+    required this.alt,
+    required this.provider,
+  });
+
+  final String source;
+  final String? alt;
+  final ImageProvider provider;
+}
+
+/// 图片右上角那排按钮：「查看大图」「移动」「编辑这个区块」。
+///
+/// 它悬在图片上，所以底色要压得住图片：浅色底 + 一圈描边，不用半透明——半透明
+/// 压在一张白底截图上等于没有。
+class _ImageActions extends StatelessWidget {
+  const _ImageActions({
+    required this.palette,
+    required this.canEdit,
+    required this.onView,
+    required this.onEdit,
+    required this.onMoveDown,
+    required this.onMove,
+    required this.onMoveUp,
+    required this.onMoveCancel,
+    required this.onExit,
+  });
+
+  final AppPalette palette;
+
+  /// 只读时只剩「查看大图」：看图不是编辑。
+  final bool canEdit;
+  final VoidCallback onView;
+  final VoidCallback onEdit;
+
+  /// 「移动」是一颗能拖的按钮：按下就开始搬，不必等指针走出阈值。
+  final void Function(PointerDownEvent event) onMoveDown;
+  final void Function(PointerMoveEvent event) onMove;
+  final void Function(PointerUpEvent event) onMoveUp;
+  final VoidCallback onMoveCancel;
+
+  final void Function(PointerExitEvent event) onExit;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      onExit: onExit,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          SizedBox(
+            width: _kImageActionButtonWidth,
+            child: _ImageActionButton(
+              palette: palette,
+              icon: LucideIcons.maximize2,
+              tip: '查看大图',
+              onTap: onView,
+            ),
+          ),
+          if (canEdit) ...<Widget>[
+            const SizedBox(width: _kImageActionsGap),
+            SizedBox(
+              width: _kImageActionButtonWidth,
+              child: _ImageDragButton(
+                palette: palette,
+                onDown: onMoveDown,
+                onMove: onMove,
+                onUp: onMoveUp,
+                onCancel: onMoveCancel,
+              ),
+            ),
+            const SizedBox(width: _kImageActionsGap),
+            SizedBox(
+              width: _kImageActionButtonWidth,
+              child: _ImageActionButton(
+                palette: palette,
+                icon: LucideIcons.squarePen,
+                tip: '编辑这个区块',
+                onTap: onEdit,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// 「移动」那颗按钮：长得和别的按钮一样，但它不是点击，是拖。
+///
+/// 用 [Listener] 而不是 `GestureDetector`：拖动要跨过整个正文，落点由编辑器
+/// 按指针位置算；走手势竞技场的话，字段自己的选区拖动会来抢这一下。
+class _ImageDragButton extends StatefulWidget {
+  const _ImageDragButton({
+    required this.palette,
+    required this.onDown,
+    required this.onMove,
+    required this.onUp,
+    required this.onCancel,
+  });
+
+  final AppPalette palette;
+  final void Function(PointerDownEvent event) onDown;
+  final void Function(PointerMoveEvent event) onMove;
+  final void Function(PointerUpEvent event) onUp;
+  final VoidCallback onCancel;
+
+  @override
+  State<_ImageDragButton> createState() => _ImageDragButtonState();
+}
+
+class _ImageDragButtonState extends State<_ImageDragButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = widget.palette;
+    final Color ink = _hovered ? p.accent : p.textSecondary;
+    return Tooltip(
+      message: '移动',
+      waitDuration: const Duration(milliseconds: 350),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.grab,
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: Listener(
+          behavior: HitTestBehavior.opaque,
+          onPointerDown: widget.onDown,
+          onPointerMove: widget.onMove,
+          onPointerUp: widget.onUp,
+          onPointerCancel: (_) => widget.onCancel(),
+          child: AnimatedContainer(
+            duration: AppMotion.fast,
+            height: _kImageActionsHeight,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: _hovered ? p.accentSoft : p.surfaceRaised,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                color: _hovered ? p.accent.withValues(alpha: 0.45) : p.outline,
+              ),
+              boxShadow: <BoxShadow>[
+                BoxShadow(
+                  color: p.shadow,
+                  blurRadius: 10,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            child: Icon(LucideIcons.move, size: 13, color: ink),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 图片源码行的控制器：把那一行按 HTML 词法着色。
+///
+/// 这一行是 `<img src="…" width="677" alt="图片">`，不是散文，也不是链接。
+/// 整行染成一个颜色（链接色）会让人以为点它能跳转；这里按标签名 / 属性名 /
+/// 属性值 / 标点分色，和代码编辑器里看到的一样。
+///
+/// 着色只发生在**渲染**这一层：`text` 仍然是那一行原文，写回文档、撤销、
+/// 光标偏移全都不受影响。
+class _HtmlSourceController extends TextEditingController {
+  _HtmlSourceController({super.text, required this.palette});
+
+  final AppPalette palette;
+
+  @override
+  TextSpan buildTextSpan({
+    required BuildContext context,
+    TextStyle? style,
+    required bool withComposing,
+  }) {
+    // 输入法正在拼字：交给默认实现。组合区间的下划线、`composing` 的范围
+    // 都不该由这里代劳，拼字期间颜色统一退回正文色也正好。
+    if (withComposing && value.isComposingRangeValid) {
+      return super.buildTextSpan(
+        context: context,
+        style: style,
+        withComposing: withComposing,
+      );
+    }
+    return htmlSourceSpan(text, style ?? const TextStyle(), palette);
+  }
+}
+
+/// 图片上方那一行源码。
+///
+/// 刻意长得不像面板：没有底色、没有圆角卡片、没有标题栏和快捷键提示，字体就是
+/// 正文那一套。用户点「编辑这个区块」是**回到那一行**去改字，不是打开一个对话框
+/// ——弹窗会把图和它自己的源码隔成两件事。
+class _ImageSourceLine extends StatelessWidget {
+  const _ImageSourceLine({
+    required this.palette,
+    required this.style,
+    required this.controller,
+    required this.focusNode,
+    required this.onCommit,
+    required this.onCancel,
+  });
+
+  final AppPalette palette;
+
+  /// 正文的排版样式：源码行和上下文字号一致，换行宽度才对得上。
+  final TextStyle style;
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final VoidCallback onCommit;
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = palette;
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.escape): onCancel,
+        const SingleActivator(LogicalKeyboardKey.enter): onCommit,
+        const SingleActivator(LogicalKeyboardKey.numpadEnter): onCommit,
+      },
+      child: Container(
+        // 一块**浮在图片上**的小窗：不占布局，图片一个像素都不动。
+        // 底色必须压得住图片（浅色底 + 一圈描边 + 一层阴影），半透明等于没有。
+        decoration: BoxDecoration(
+          color: p.surfaceRaised,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: p.outline),
+          boxShadow: <BoxShadow>[
+            BoxShadow(
+              color: p.shadow,
+              blurRadius: 18,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.fromLTRB(10, 5, 10, 5),
+        child: TextField(
+          controller: controller,
+          focusNode: focusNode,
+          autofocus: true,
+          expands: true,
+          maxLines: null,
+          minLines: null,
+          textAlignVertical: TextAlignVertical.top,
+          keyboardType: TextInputType.multiline,
+          textInputAction: TextInputAction.newline,
+          // 底色是正文色，具体每个词的颜色由 [_HtmlSourceController] 按 HTML
+          // 词法给：这一行是标签，不是链接，也不是普通段落。
+          style: style.copyWith(color: p.textPrimary),
+          cursorColor: p.accent,
+          cursorWidth: 1.6,
+          // 主题里那套 InputDecorationTheme 会**盖过** `border: none`：它显式
+          // 配了 `focusedBorder`，而解析顺序是 `focusedBorder ?? border`。所以
+          // 焦点框必须逐个状态关掉，否则一进来就套着一个圆角紫框，看着又像
+          // 弹窗了。`filled` 同理——不关掉会在纸色上再铺一层白。
+          decoration: const InputDecoration(
+            isDense: true,
+            filled: false,
+            border: InputBorder.none,
+            enabledBorder: InputBorder.none,
+            focusedBorder: InputBorder.none,
+            disabledBorder: InputBorder.none,
+            errorBorder: InputBorder.none,
+            focusedErrorBorder: InputBorder.none,
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 一颗只有图标的按钮。名字挂在 [Tooltip] 上——压在图片上的按钮不该写满字。
+class _ImageActionButton extends StatefulWidget {
+  const _ImageActionButton({
+    required this.palette,
+    required this.icon,
+    required this.tip,
+    required this.onTap,
+  });
+
+  final AppPalette palette;
+  final IconData icon;
+  final String tip;
+  final VoidCallback onTap;
+
+  @override
+  State<_ImageActionButton> createState() => _ImageActionButtonState();
+}
+
+class _ImageActionButtonState extends State<_ImageActionButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = widget.palette;
+    final Color ink = _hovered ? p.accent : p.textSecondary;
+    return Tooltip(
+      message: widget.tip,
+      waitDuration: const Duration(milliseconds: 350),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: AppMotion.fast,
+            height: _kImageActionsHeight,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: _hovered ? p.accentSoft : p.surfaceRaised,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                color: _hovered ? p.accent.withValues(alpha: 0.45) : p.outline,
+              ),
+              boxShadow: <BoxShadow>[
+                BoxShadow(
+                  color: p.shadow,
+                  blurRadius: 10,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            child: Icon(widget.icon, size: 13, color: ink),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 全屏看一张图：压一层暗色，图按原比例铺满，点哪儿都退出来。
+///
+/// 挂在根 Overlay 上，所以它盖住的是整个窗口——左侧文件列表、右侧边栏一起压
+/// 下去。放在编辑器 Stack 里只能盖住正文那一块，放大一张图反而更看不清。
+class _ImageViewer extends StatelessWidget {
+  const _ImageViewer({
+    required this.image,
+    required this.palette,
+    required this.onClose,
+  });
+
+  final _ImageView image;
+  final AppPalette palette;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      autofocus: true,
+      onKeyEvent: (FocusNode node, KeyEvent event) {
+        if (event is KeyDownEvent &&
+            event.logicalKey == LogicalKeyboardKey.escape) {
+          onClose();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      // Overlay 的直系孩子没有 Material 祖先，文字会掉进 WidgetsApp 那条
+      // 黄色双下划线的兜底样式里。
+      child: Material(
+        type: MaterialType.transparency,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onClose,
+          child: ColoredBox(
+            color: const Color(0xE6000000),
+            child: Stack(
+              children: <Widget>[
+                Positioned.fill(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(40, 48, 40, 40),
+                    child: Center(
+                      child: GestureDetector(
+                        // 点图本身不关：手指落下去是想看细节，不是想退出。
+                        onTap: () {},
+                        child: Image(
+                          image: image.provider,
+                          fit: BoxFit.contain,
+                          errorBuilder: (BuildContext context, Object _, _) =>
+                              Text(
+                                image.alt ?? '图片打不开',
+                                style: TextStyle(
+                                  fontSize: AppText.body,
+                                  color: palette.textTertiary,
+                                ),
+                              ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  top: 12,
+                  left: 40,
+                  right: 16,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: <Widget>[
+                      Flexible(
+                        child: Text(
+                          image.alt ?? _fileNameOf(image.source),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: AppText.caption,
+                            color: const Color(0xB3FFFFFF),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      _ViewerCloseButton(palette: palette, onTap: onClose),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ViewerCloseButton extends StatefulWidget {
+  const _ViewerCloseButton({required this.palette, required this.onTap});
+
+  final AppPalette palette;
+  final VoidCallback onTap;
+
+  @override
+  State<_ViewerCloseButton> createState() => _ViewerCloseButtonState();
+}
+
+class _ViewerCloseButtonState extends State<_ViewerCloseButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: Container(
+          width: 28,
+          height: 28,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: _hovered ? const Color(0x33FFFFFF) : const Color(0x1AFFFFFF),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: const Icon(LucideIcons.x, size: 16, color: Color(0xFFFFFFFF)),
+        ),
+      ),
+    );
+  }
+}
+
+/// 路径里最后一段，用来给没有 alt 的图片当名字。
+String _fileNameOf(String source) {
+  final String tail = source.split(RegExp(r'[/\\]')).last;
+  return tail.isEmpty ? source : tail;
+}
+
 /// One open floating cell editor.
-class _CellEdit {
-  const _CellEdit({
+class _CellEdit {  const _CellEdit({
     required this.tableStart,
     required this.row,
     required this.column,

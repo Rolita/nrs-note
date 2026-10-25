@@ -47,3 +47,9 @@ app.*.map.json
 # WorkBuddy agent workspace (memory / tool state)
 .workbuddy/
 .workbuddy-ai/
+
+# 临时截图（调试用，不是设计稿）
+.tmp_*
+
+# 设计稿预览页的打包产物（design/*.html 才是源）
+.trae-html-share-packages/

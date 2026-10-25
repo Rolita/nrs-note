@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>表格侧边栏 · 信息架构：现状 / 收紧 / 收敛</title>
+<style>
+  :root{
+    --canvas:#F7F7F5; --sidebar:#F1F1EF; --surface:#FCFCFB; --raised:#FFFFFF;
+    --sunken:#EFEFED; --outline:#DCDCD9; --outline-soft:#E9E9E6; --rule:#D5D5D1;
+    --t1:#1B1B1A; --t2:#5C5C59; --t3:#8C8C88;
+    --accent:#2A2A28; --accent-soft:#E9E9E6; --danger:#C0392B; --danger-soft:#FAE7E4;
+    --success:#2E8B62; --success-soft:#E3F0E8; --warning:#B06B1B; --warning-soft:#F7EADA;
+    --mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
+    --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:28px 32px 60px; background:var(--canvas); color:var(--t1);
+    font:14px/1.6 var(--ui); -webkit-font-smoothing:antialiased;
+  }
+  h1{font-size:19px; margin:0 0 6px; letter-spacing:-.01em}
+  .lede{color:var(--t2); margin:0 0 8px; max-width:80ch}
+  .lede b{color:var(--t1); font-weight:600}
+  .lede code, .note code{font-family:var(--mono); font-size:12px; background:var(--sunken); padding:1px 5px; border-radius:4px}
+  .prev{font-size:12px; color:var(--t3); margin:0 0 20px}
+  .prev a{color:var(--t3)}
+
+  .stats{display:flex; gap:14px; flex-wrap:wrap; margin:0 0 24px}
+  .stat{background:var(--surface); border:1px solid var(--outline); border-radius:9px; padding:9px 13px; min-width:132px}
+  .stat .n{font-size:19px; font-weight:600; letter-spacing:-.02em}
+  .stat .l{font-size:11px; color:var(--t3)}
+  .stat.good .n{color:var(--success)}
+
+  .stage{display:flex; gap:34px; align-items:flex-start; flex-wrap:wrap}
+  .col{display:flex; flex-direction:column; gap:10px}
+  .col > h2{
+    font-size:12px; font-weight:600; letter-spacing:.4px; color:var(--t3);
+    margin:0; text-transform:uppercase;
+  }
+  .meta{font-size:12px; color:var(--t3); min-height:18px; max-width:290px}
+  .meta b{color:var(--t2)}
+
+  /* ---------------- panel ---------------- */
+  .panel{
+    width:252px; background:var(--sidebar); border:1px solid var(--outline);
+    border-radius:10px; overflow:hidden; display:flex; flex-direction:column;
+    box-shadow:0 1px 2px rgba(0,0,0,.04);
+  }
+  .p-head{
+    height:32px; display:flex; align-items:center; gap:6px; padding:0 10px 0 12px;
+    font-size:11px; font-weight:600; letter-spacing:.4px; color:var(--t3);
+    border-bottom:1px solid var(--outline-soft);
+  }
+  .p-head .glyph{font-size:12px; opacity:.75}
+  .p-head .where{
+    margin-left:auto; font-family:var(--mono); font-size:11px; font-weight:400;
+    letter-spacing:0; color:var(--t3);
+  }
+  .p-body{padding:8px 10px 14px; display:flex; flex-direction:column; gap:2px}
+  .group{padding-bottom:8px}
+  .g-label{
+    height:24px; display:flex; align-items:center; gap:8px; padding:0 2px;
+    font-size:11px; font-weight:600; letter-spacing:.2px; color:var(--t2);
+  }
+  .g-label .rule{flex:1; height:1px; background:var(--outline-soft)}
+  .g-label .hint{font-weight:400; letter-spacing:0; color:var(--t3); font-size:10.5px}
+  .grid{display:grid; gap:3px; padding-top:4px}
+  .grid.c4{grid-template-columns:repeat(4,1fr)}
+  .grid.c5{grid-template-columns:repeat(5,1fr)}
+  .grid.c6{grid-template-columns:repeat(6,1fr)}
+  .btn{
+    height:32px; display:flex; align-items:center; justify-content:center;
+    border-radius:6px; color:var(--t2); font-size:15px; line-height:1;
+    background:transparent; cursor:default; position:relative;
+    border:1px solid transparent; user-select:none;
+  }
+  .btn:hover{background:var(--raised); border-color:var(--outline-soft)}
+  .btn.on{background:var(--accent-soft); color:var(--t1); border-color:var(--outline)}
+  .btn.danger:hover{background:var(--danger-soft); color:var(--danger); border-color:#F0CFC9}
+  .btn .swatch{
+    position:absolute; left:50%; transform:translateX(-50%); bottom:5px;
+    width:16px; height:2px; border-radius:1px;
+  }
+  .btn.wide{grid-column:span 2}
+  .btn .caret{font-size:9px; margin-left:2px; opacity:.6}
+  .btn.dup::after{
+    content:""; position:absolute; inset:2px; border-radius:5px;
+    border:1px dashed var(--warning); opacity:.5;
+  }
+  .btn.dup:hover::after{opacity:.9}
+
+  .legend{display:flex; flex-direction:column; gap:5px; font-size:11.5px; color:var(--t3); max-width:290px}
+  .legend i{display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:6px; vertical-align:-1px}
+
+  /* ---------------- tabs ---------------- */
+  .tabs{display:flex; gap:6px}
+  .tab{
+    font:12px/1 var(--ui); padding:6px 10px; border-radius:6px; cursor:pointer;
+    border:1px solid var(--outline); background:var(--surface); color:var(--t2);
+  }
+  .tab[aria-selected="true"]{background:var(--accent); color:#fff; border-color:var(--accent)}
+
+  .ctx-tabs{display:flex; gap:4px; margin:0 0 8px}
+  .ctx{
+    flex:1; font:11.5px/1 var(--ui); padding:6px 4px; border-radius:5px; cursor:pointer;
+    border:1px solid var(--outline); background:var(--surface); color:var(--t2); text-align:center;
+  }
+  .ctx[aria-selected="true"]{background:var(--raised); color:var(--t1); border-color:var(--rule); font-weight:600}
+
+  .hidden{display:none !important}
+
+  .notes{
+    margin-top:36px; display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+    max-width:1080px;
+  }
+  .note{background:var(--surface); border:1px solid var(--outline); border-radius:10px; padding:14px 16px}
+  .note h3{margin:0 0 8px; font-size:13px}
+  .note ul{margin:0; padding-left:18px; color:var(--t2); font-size:12.5px}
+  .note li{margin:3px 0}
+  .kbd{
+    font-family:var(--mono); font-size:11px; border:1px solid var(--outline); border-bottom-width:2px;
+    border-radius:4px; padding:0 4px; background:var(--raised);
+  }
+</style>
+</head>
+<body>
+
+<h1>表格侧边栏 · 同一屏要不要放全部命令</h1>
+<p class="lede">
+  现行面板是 <b>8 组 / 37 个图标按钮</b>，硬性每行 4 格，整栏约 <b>700px</b> 高。命令全部同时在场、同权平铺，
+  图标是唯一辨认线索——<code>⧉</code>、<code>⌫</code>、<code>⇤↓</code> 各被用在三处不同作用域上。
+  下面左边是原样复刻的现状，右边是两个改法。
+</p>
+<div class="note" style="margin:14px 0 0;padding:10px 14px;border-radius:8px;border:1px solid #cfe6c8;background:#eef7ea;color:#2c4a22;font-size:13px;line-height:1.7">
+  <b>已落地：方案 B。</b>2026-10-25 按右栏「方案 B」改完 <code>lib/ui/editor/table_panel.dart</code>——
+  选区开关（单元格 / 整行 / 整列 / 整表）+ 常驻「格式」组 + 汇总收成一个带名字的菜单 + 整表态补上列宽步进。
+  与本稿的差异只有一处：列宽用 −/＋ 步进而不是滑块，因为 <code>w=</code> 是设计像素，面板拿不到画布的比例尺；
+  旁边另加一个「恢复自适应」，把 <code>w=</code> 整个摘掉——拖拽原本没有回头路。
+</div>
+<p class="prev">
+  前面几稿定的是「怎么分组」（v3）、「外观组怎么长」（v4）；这一稿只讨论<b>信息架构</b>：命令该不该全都在场。
+</p>
+
+<div class="stats">
+  <div class="stat"><div class="n">37</div><div class="l">同时可见的按钮</div></div>
+  <div class="stat"><div class="n">~700<span style="font-size:13px">px</span></div><div class="l">面板内容高度</div></div>
+  <div class="stat"><div class="n">3</div><div class="l">一个图标对应 3 个作用域</div></div>
+  <div class="stat good"><div class="n">12–16</div><div class="l">按选区收敛后可见</div></div>
+</div>
+
+<div class="stage">
+
+  <!-- ============ 现状 ============ -->
+  <section class="col">
+    <h2>现状</h2>
+    <div class="meta">8 组 · 37 键 · 虚线框 = 同一图标在不同组里干不同的事</div>
+    <div class="panel">
+      <div class="p-head"><span class="glyph">▦</span>表格<span class="where">B3</span></div>
+      <div class="p-body">
+        <div style="font-size:11.5px;color:var(--t3);padding:0 2px 6px">4 列 × 6 行 · 12 个数字单元格</div>
+
+        <div class="group">
+          <div class="g-label">选择<span class="rule"></span></div>
+          <div class="grid c4">
+            <div class="btn" title="选中整行">☰</div>
+            <div class="btn" title="选中整列">▥</div>
+            <div class="btn" title="选中整张表">▦</div>
+            <div style="height:32px"></div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="g-label">行<span class="rule"></span></div>
+          <div class="grid c4">
+            <div class="btn" title="在上方插入行">⇤↑</div>
+            <div class="btn" title="在下方插入行">⇤↓</div>
+            <div class="btn" title="上移本行">↑</div>
+            <div class="btn" title="下移本行">↓</div>
+            <div class="btn dup" title="复制本行">⧉</div>
+            <div class="btn dup" title="删除本行">⌫</div>
+            <div style="height:32px"></div>
+            <div style="height:32px"></div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="g-label">列<span class="rule"></span></div>
+          <div class="grid c4">
+            <div class="btn" title="在左侧插入列">⇤←</div>
+            <div class="btn" title="在右侧插入列">⇤→</div>
+            <div class="btn" title="左移本列">←</div>
+            <div class="btn" title="右移本列">→</div>
+            <div class="btn dup" title="复制本列">⧉</div>
+            <div class="btn dup" title="删除本列">⌫</div>
+            <div style="height:32px"></div>
+            <div style="height:32px"></div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="g-label">对齐<span class="rule"></span></div>
+          <div class="grid c4">
+            <div class="btn" title="左对齐">⬅</div>
+            <div class="btn on" title="居中对齐">↔</div>
+            <div class="btn" title="右对齐">➡</div>
+            <div class="btn" title="自动对齐（数字贴右）">⌐</div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="g-label">外观<span class="rule"></span></div>
+          <div class="grid c4">
+            <div class="btn on" title="合并居中">⊞</div>
+            <div class="btn" title="拆分单元格">⊟</div>
+            <div class="btn" title="填充颜色"><span>▨</span><span class="swatch" style="background:#F7EADA"></span></div>
+            <div class="btn" title="文字颜色"><span>A</span><span class="swatch" style="background:#C0392B"></span></div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="g-label">数据<span class="rule"></span></div>
+          <div class="grid c4">
+            <div class="btn" title="按本列升序">↑ₙ</div>
+            <div class="btn" title="按本列降序">↓ₙ</div>
+            <div class="btn" title="按本列去重">≢</div>
+            <div class="btn dup" title="向下填充">⇤↓</div>
+            <div class="btn" title="向右填充">⇤→</div>
+            <div style="height:32px"></div>
+            <div style="height:32px"></div>
+            <div style="height:32px"></div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="g-label">汇总<span class="rule"></span></div>
+          <div class="grid c4">
+            <div class="btn" title="追加合计行">Σ</div>
+            <div class="btn" title="追加平均行">x̄</div>
+            <div class="btn" title="追加计数行">#</div>
+            <div class="btn" title="追加最小值行">↓</div>
+            <div class="btn" title="追加最大值行">↑</div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="g-label">表格<span class="rule"></span></div>
+          <div class="grid c4">
+            <div class="btn on" title="设为表头">▤</div>
+            <div class="btn" title="转置表格">⤢</div>
+            <div class="btn" title="清空所选单元格">⌫</div>
+            <div class="btn dup danger" title="删除整张表格">⌫</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--warning-soft);border:1px dashed var(--warning)"></i>同一图标 · 三种作用域</span>
+      <span><i style="background:var(--accent-soft);border:1px solid var(--outline)"></i>当前状态（对齐 / 表头 / 合并）</span>
+    </div>
+  </section>
+
+  <!-- ============ 改法 ============ -->
+  <section class="col">
+    <h2>改法</h2>
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" aria-selected="true" data-plan="A">A · 收紧栅格</button>
+      <button class="tab" role="tab" aria-selected="false" data-plan="B">B · 按选区收敛</button>
+    </div>
+    <div class="meta" id="metaA"><b>只改排版，不改结构</b>：5 列栅格 + 汇总收成菜单 → 37 键 / 700px 变成 30 键 / 约 520px</div>
+    <div class="meta hidden" id="metaB"><b>按当前选区只显示相关组</b>：表格级 6 键常驻，其余随「单格 / 整行 / 整列 / 整表」换 → 12–16 键 / 300–380px</div>
+
+    <!-- ---------- 方案 A ---------- -->
+    <div class="panel" id="planA">
+      <div class="p-head"><span class="glyph">▦</span>表格<span class="where">B3</span></div>
+      <div class="p-body">
+        <div style="font-size:11.5px;color:var(--t3);padding:0 2px 6px">4 列 × 6 行 · 12 个数字单元格</div>
+
+        <div class="group">
+          <div class="g-label">选择<span class="rule"></span></div>
+          <div class="grid c5">
+            <div class="btn" title="选中整行">☰</div>
+            <div class="btn" title="选中整列">▥</div>
+            <div class="btn" title="选中整张表">▦</div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="g-label">行<span class="rule"></span><span class="hint">插入 / 移动 / 复制 / 删除</span></div>
+          <div class="grid c5">
+            <div class="btn" title="在上方插入行">⇤↑</div>
+            <div class="btn" title="在下方插入行">⇤↓</div>
+            <div class="btn" title="上移本行">↑</div>
+            <div class="btn" title="下移本行">↓</div>
+            <div class="btn" title="复制本行">⧉</div>
+            <div class="btn danger" title="删除本行">⌫</div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="g-label">列<span class="rule"></span><span class="hint">插入 / 移动 / 复制 / 删除</span></div>
+          <div class="grid c5">
+            <div class="btn" title="在左侧插入列">⇤←</div>
+            <div class="btn" title="在右侧插入列">⇤→</div>
+            <div class="btn" title="左移本列">←</div>
+            <div class="btn" title="右移本列">→</div>
+            <div class="btn" title="复制本列">⧉</div>
+            <div class="btn danger" title="删除本列">⌫</div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="g-label">对齐<span class="rule"></span></div>
+          <div class="grid c5">
+            <div class="btn" title="左对齐">⬅</div>
+            <div class="btn on" title="居中对齐">↔</div>
+            <div class="btn" title="右对齐">➡</div>
+            <div class="btn" title="自动对齐（数字贴右）">⌐</div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="g-label">外观<span class="rule"></span></div>
+          <div class="grid c5">
+            <div class="btn on" title="合并居中">⊞</div>
+            <div class="btn" title="拆分单元格">⊟</div>
+            <div class="btn" title="填充颜色"><span>▨</span><span class="swatch" style="background:#F7EADA"></span></div>
+            <div class="btn" title="文字颜色"><span>A</span><span class="swatch" style="background:#C0392B"></span></div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="g-label">数据<span class="rule"></span></div>
+          <div class="grid c5">
+            <div class="btn" title="按本列升序">↑ₙ</div>
+            <div class="btn" title="按本列降序">↓ₙ</div>
+            <div class="btn" title="按本列去重">≢</div>
+            <div class="btn" title="向下填充">⇤↓</div>
+            <div class="btn" title="向右填充">⇤→</div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="g-label">汇总<span class="rule"></span><span class="hint">五种聚合收进一个菜单</span></div>
+          <div class="grid c5">
+            <div class="btn wide" title="追加汇总行 ▾">Σ<span class="caret">▾</span></div>
+            <div class="btn" title="设为表头">▤</div>
+            <div class="btn" title="转置表格">⤢</div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="g-label">表格<span class="rule"></span></div>
+          <div class="grid c5">
+            <div class="btn" title="清空所选单元格">⌫</div>
+            <div class="btn danger" title="删除整张表格">🗑</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- 方案 B ---------- -->
+    <div class="panel hidden" id="planB">
+      <div class="p-head"><span class="glyph">▦</span>表格<span class="where">B3</span></div>
+      <div class="p-body">
+        <div class="ctx-tabs">
+          <button class="ctx" data-ctx="cell" aria-selected="true">单格</button>
+          <button class="ctx" data-ctx="row" aria-selected="false">整行</button>
+          <button class="ctx" data-ctx="col" aria-selected="false">整列</button>
+          <button class="ctx" data-ctx="all" aria-selected="false">整表</button>
+        </div>
+
+        <div class="group">
+          <div class="g-label">表格<span class="rule"></span><span class="hint">常驻</span></div>
+          <div class="grid c6">
+            <div class="btn on" title="表头">▤</div>
+            <div class="btn" title="合并居中">⊞</div>
+            <div class="btn" title="拆分">⊟</div>
+            <div class="btn" title="填充颜色"><span>▨</span><span class="swatch" style="background:#F7EADA"></span></div>
+            <div class="btn" title="文字颜色"><span>A</span><span class="swatch" style="background:#C0392B"></span></div>
+            <div class="btn" title="更多：转置 / 去重 / 汇总 / 删除">⋯</div>
+          </div>
+        </div>
+
+        <div class="group ctx-body" data-for="cell">
+          <div class="g-label">插入<span class="rule"></span><span class="hint">以当前格为准</span></div>
+          <div class="grid c5">
+            <div class="btn" title="在上方插入行">⇤↑</div>
+            <div class="btn" title="在下方插入行">⇤↓</div>
+            <div class="btn" title="在左侧插入列">⇤←</div>
+            <div class="btn" title="在右侧插入列">⇤→</div>
+            <div class="btn danger" title="删除本行">⌫</div>
+          </div>
+          <div class="g-label" style="margin-top:8px">对齐<span class="rule"></span></div>
+          <div class="grid c5">
+            <div class="btn" title="左对齐">⬅</div>
+            <div class="btn on" title="居中对齐">↔</div>
+            <div class="btn" title="右对齐">➡</div>
+            <div class="btn" title="自动对齐（数字贴右）">⌐</div>
+          </div>
+          <div class="g-label" style="margin-top:8px">填充<span class="rule"></span><span class="hint">Ctrl+D / Ctrl+R</span></div>
+          <div class="grid c5">
+            <div class="btn" title="向下填充">⇤↓</div>
+            <div class="btn" title="向右填充">⇤→</div>
+            <div class="btn" title="清空单元格">⌫</div>
+          </div>
+        </div>
+
+        <div class="group ctx-body hidden" data-for="row">
+          <div class="g-label">整行<span class="rule"></span><span class="hint">已选中 1 行</span></div>
+          <div class="grid c5">
+            <div class="btn" title="在上方插入行">⇤↑</div>
+            <div class="btn" title="在下方插入行">⇤↓</div>
+            <div class="btn" title="上移本行">↑</div>
+            <div class="btn" title="下移本行">↓</div>
+            <div class="btn" title="复制本行">⧉</div>
+            <div class="btn danger" title="删除本行">⌫</div>
+          </div>
+        </div>
+
+        <div class="group ctx-body hidden" data-for="col">
+          <div class="g-label">整列<span class="rule"></span><span class="hint">已选中 1 列 · 12 个数字</span></div>
+          <div class="grid c5">
+            <div class="btn" title="在左侧插入列">⇤←</div>
+            <div class="btn" title="在右侧插入列">⇤→</div>
+            <div class="btn" title="左移本列">←</div>
+            <div class="btn" title="右移本列">→</div>
+            <div class="btn" title="复制本列">⧉</div>
+            <div class="btn danger" title="删除本列">⌫</div>
+          </div>
+          <div class="g-label" style="margin-top:8px">数据<span class="rule"></span></div>
+          <div class="grid c5">
+            <div class="btn" title="按本列升序">↑ₙ</div>
+            <div class="btn" title="按本列降序">↓ₙ</div>
+            <div class="btn" title="按本列去重">≢</div>
+            <div class="btn wide" title="在表尾追加汇总行 ▾">Σ<span class="caret">▾</span></div>
+          </div>
+        </div>
+
+        <div class="group ctx-body hidden" data-for="all">
+          <div class="g-label">整表<span class="rule"></span><span class="hint">4 列 × 6 行</span></div>
+          <div class="grid c5">
+            <div class="btn" title="转置表格">⤢</div>
+            <div class="btn wide" title="追加汇总行 ▾">Σ<span class="caret">▾</span></div>
+            <div class="btn danger" title="删除整张表格">🗑</div>
+          </div>
+          <div class="g-label" style="margin-top:8px">列宽<span class="rule"></span><span class="hint">也能直接拖表格里的竖线</span></div>
+          <div style="padding:2px 2px 0">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:11px;color:var(--t3);width:34px">第 2 列</span>
+              <input type="range" min="64" max="320" value="168" style="flex:1;accent-color:var(--accent)">
+              <span style="font-family:var(--mono);font-size:11px;color:var(--t2);width:34px;text-align:right">168</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="legend">
+      <span>常驻 6 键 = 与选区无关的表格级命令</span>
+      <span>其余随选区形态换组；同一个图标只在一个作用域里出现</span>
+    </div>
+  </section>
+</div>
+
+<div class="notes">
+  <div class="note">
+    <h3>问题清单（都能在左边的复刻里对上）</h3>
+    <ul>
+      <li><b>37 个按钮全靠 tooltip</b>：<code>⇤↑ / ⇤↓ / ↑ / ↓</code> 在 17px 里几乎同形，用户靠「位置记忆」。</li>
+      <li><b>同形不同义</b>：<code>⧉</code> 复制行 / 复制列，<code>⌫</code> 删行 / 删列 / 删表 / 清空，<code>⇤↓</code> 下方插行 / 向下填充。</li>
+      <li><b>汇总摊成 5 格</b>：求和 / 平均 / 计数 / 最小 / 最大本该是一个下拉，占掉一行半。</li>
+      <li><b>硬性 4 格</b>：5 个命令的组必然留 3 个空格，6 个命令的组又挤成两行，视觉参差。</li>
+      <li><b>列宽没有入口</b>：刚做的拖拽只能靠鼠标找那条竖线，面板里看不到当前列宽。</li>
+      <li><b>没有表格时整栏换身份</b>：同一个 252px 宽的栏在「工具」和「表格清单」之间切换，用户要重新理解一次。</li>
+    </ul>
+  </div>
+  <div class="note">
+    <h3>方案 A · 收紧栅格（改动最小）</h3>
+    <ul>
+      <li>4 列 → <b>5 列</b>（55px → 44px，32px 按钮仍够点），高度立刻降 20%。</li>
+      <li>汇总 5 键 → <b>1 键 + 菜单</b>（<code>Σ ▾</code>：求和 / 平均 / 计数 / 最小 / 最大）。</li>
+      <li>「表格」组只留清空 / 删除；表头与转置并到汇总那一行。</li>
+      <li>删除类统一 <code>danger</code> 色，红只属于这一类。</li>
+      <li>结果：<b>30 键 / 约 520px</b>。不动信息架构，风险最低，一天能做完。</li>
+    </ul>
+  </div>
+  <div class="note">
+    <h3>方案 B · 按选区收敛（推荐）</h3>
+    <ul>
+      <li>常驻 6 键：表头、合并、拆分、填充色、文字色、<code>⋯</code>（转置 / 去重 / 汇总 / 删表）。</li>
+      <li>下半栏随选区换：<b>单格</b> 12 键、<b>整行</b> 6 键、<b>整列</b> 10 键、<b>整表</b> 6 键 + 列宽滑块。</li>
+      <li>同一个图标只在一个作用域里出现，<code>⌫</code> 不再有三种含义。</li>
+      <li>列宽滑块与画布拖拽双向同步（同一个 <code>w=</code> 值），顺带补上刚做的拖拽在面板里的入口。</li>
+      <li>结果：<b>12–16 键 / 300–380px</b>，常规窗口不用滚动。</li>
+      <li>代价：命令位置会「动」。缓解办法是组标签常驻、只换内容；或者记住上一次停在哪个上下文。</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+  const tabs = document.querySelectorAll('.tab');
+  const metaA = document.getElementById('metaA');
+  const metaB = document.getElementById('metaB');
+  tabs.forEach(t => t.addEventListener('click', () => {
+    tabs.forEach(x => x.setAttribute('aria-selected', String(x === t)));
+    const plan = t.dataset.plan;
+    document.getElementById('planA').classList.toggle('hidden', plan !== 'A');
+    document.getElementById('planB').classList.toggle('hidden', plan !== 'B');
+    metaA.classList.toggle('hidden', plan !== 'A');
+    metaB.classList.toggle('hidden', plan !== 'B');
+  }));
+
+  const ctxs = document.querySelectorAll('.ctx');
+  ctxs.forEach(c => c.addEventListener('click', () => {
+    ctxs.forEach(x => x.setAttribute('aria-selected', String(x === c)));
+    document.querySelectorAll('.ctx-body').forEach(b => {
+      b.classList.toggle('hidden', b.dataset.for !== c.dataset.ctx);
+    });
+  }));
+</script>
+</body>
+</html>

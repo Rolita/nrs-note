@@ -25,6 +25,14 @@ const double _kLeadingCollapsedWidth = 44;
 
 const double _kBarButtonSize = 32;
 
+/// 右侧那三颗面板开关（大纲 / 表格 / 图片）的尺寸。
+///
+/// 比左侧的按钮小一号：它们三个要挤在「面板左缘 → 窗口按钮」之间那一段里，
+/// 三个 32 加两道 4px 缝是 104，而大纲栏最窄时那一段只有 100——差 4px 就会被
+/// 夹得往左偏出面板，看起来就是「按钮没和面板对齐」。
+const double _kPanelToggleSize = 28;
+const double _kPanelToggleGap = 2;
+
 /// Everything inside the title bar except the OS caption buttons.
 ///
 /// Three regions, and the two inner edges are *aligned with the panes below*:
@@ -123,16 +131,26 @@ class TitleBarLayout extends StatelessWidget {
       icon: LucideIcons.listTree,
       tooltip: '大纲',
       shortcut: 'Ctrl+Shift+O',
+      size: _kPanelToggleSize,
       selected: settings.outlineVisible,
       onPressed: () => settings.outlineVisible = !settings.outlineVisible,
     );
 
-    // 大纲与表格共用右侧那一栏，互斥关系由 SettingsController 保证。
+    // 大纲、表格、图片共用右侧那一栏，互斥关系由 SettingsController 保证。
     final Widget tableButton = _BarButton(
       icon: LucideIcons.table,
       tooltip: '表格',
+      size: _kPanelToggleSize,
       selected: settings.tablePanelVisible,
       onPressed: () => settings.tablePanelVisible = !settings.tablePanelVisible,
+    );
+
+    final Widget imageButton = _BarButton(
+      icon: LucideIcons.image,
+      tooltip: '图片',
+      size: _kPanelToggleSize,
+      selected: settings.imagePanelVisible,
+      onPressed: () => settings.imagePanelVisible = !settings.imagePanelVisible,
     );
 
     return LayoutBuilder(
@@ -144,9 +162,10 @@ class TitleBarLayout extends StatelessWidget {
           leftInset,
           collapsed ? _kLeadingCollapsedWidth : _kLeadingWidth,
         );
-        // Two toggles, one seam: they sit on the left edge of whichever panel is
-        // open, so the pair lines up with the panel below instead of drifting.
-        final double pairWidth = _kBarButtonSize * 2 + AppSpace.xs;
+        // Three toggles, one seam: they sit on the left edge of whichever panel
+        // is open, so the row lines up with the panel below instead of drifting.
+        final double pairWidth =
+            _kPanelToggleSize * 3 + _kPanelToggleGap * 2;
         final double pairLeft = math
             .min(width - rightInset, width - captionWidth - pairWidth)
             .clamp(0.0, math.max(0.0, width - captionWidth - pairWidth));
@@ -174,8 +193,10 @@ class TitleBarLayout extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
                     outlineButton,
-                    const SizedBox(width: AppSpace.xs),
+                    const SizedBox(width: _kPanelToggleGap),
                     tableButton,
+                    const SizedBox(width: _kPanelToggleGap),
+                    imageButton,
                   ],
                 ),
               ),
@@ -224,7 +245,8 @@ class TitleBarLayout extends StatelessWidget {
   }
 }
 
-/// A 32×32 icon button, sized for the 40px strip.
+/// A 32×32 icon button, sized for the 40px strip. The panel toggles ask for the
+/// smaller [_kPanelToggleSize] so three of them still line up with the panel.
 class _BarButton extends StatefulWidget {
   const _BarButton({
     required this.icon,
@@ -232,6 +254,7 @@ class _BarButton extends StatefulWidget {
     required this.onPressed,
     this.selected = false,
     this.shortcut,
+    this.size = _kBarButtonSize,
   });
 
   final IconData icon;
@@ -239,6 +262,7 @@ class _BarButton extends StatefulWidget {
   final VoidCallback onPressed;
   final bool selected;
   final String? shortcut;
+  final double size;
 
   @override
   State<_BarButton> createState() => _BarButtonState();
@@ -271,8 +295,8 @@ class _BarButtonState extends State<_BarButton> {
           behavior: HitTestBehavior.opaque,
           child: AnimatedContainer(
             duration: AppMotion.fast,
-            width: _kBarButtonSize,
-            height: _kBarButtonSize,
+            width: widget.size,
+            height: widget.size,
             decoration: BoxDecoration(
               color: background,
               borderRadius: AppRadius.mdAll,

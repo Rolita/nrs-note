@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:flutter/services.dart';
 
+import 'image_markup.dart';
+
 /// 从一次拖放里认出来的一条网页链接。
 ///
 /// 拖进来的东西五花八门：浏览器给的是 `UniformResourceLocator`（Windows）或
@@ -87,6 +89,76 @@ String markdownLinkFor(DroppedLink link) {
       : (_hostLabel(link.url) ?? link.url);
   return '[${_escapeLabel(label)}](${_escapeUrl(link.url)})';
 }
+
+// ------------------------------------------------------------------ 图片
+
+/// 从一次拖放里认出来的一张**网页图片**。
+///
+/// 和 [DroppedLink] 是同一个载荷的两种归宿：拖一张图写 `<img>`，拖一条链接写
+/// `[标题](地址)`。认错一边都很难受——把图写成链接，正文里多一行看不懂的网址；
+/// 把链接写成图，一行 `<img src=网页地址>` 加载不出来，只剩一块破图。
+class DroppedImage {
+  const DroppedImage({required this.url, this.alt});
+
+  /// 已经规范成 `http`/`https` 的图片地址。
+  final String url;
+
+  /// 页面上那张图的 `alt`；没有、或者看着像个地址时是 `null`。
+  final String? alt;
+
+  @override
+  bool operator ==(Object other) =>
+      other is DroppedImage && other.url == url && other.alt == alt;
+
+  @override
+  int get hashCode => Object.hash(url, alt);
+
+  @override
+  String toString() => 'DroppedImage($url, alt: $alt)';
+}
+
+/// 把一次拖放的载荷认成一张图片；不是图片时返回 `null`。
+///
+/// 判据按可靠程度排：
+/// 1. **HTML 里有 `<img src>`**——浏览器拖图片元素时给的就是这个，最准。`src`
+///    是相对地址时按系统 URL 补全（很多站点写 `/img/a.png`）。
+/// 2. **地址本身就是一张图**（`.jpg` / `.png` 之类），而且 HTML 里没有指向同一
+///    处的锚点——拖一个指向图片的链接、或从图片站点的地址栏拖下来都算。
+/// 3. 其余交给 [parseDroppedLink]：认不出图就还是链接。
+///
+/// 只有「能写进 `<img src>` 的地址」才算图：`data:`、`blob:` 这两种拖出来的是
+/// 一段内存里的数据，写进笔记也加载不出来，宁可退回链接让用户自己决定。
+DroppedImage? parseDroppedImage({
+  String? uri,
+  String? html,
+  String? plainText,
+}) {
+  final String? markup = html == null ? null : _repairPackedUtf8(html);
+
+  final DroppedImage? inline = _imageFromHtml(markup, uri);
+  if (inline != null) return inline;
+
+  // HTML 里没有图，就看地址本身像不像一张图。纯文本超过一行是「一段文字」，
+  // 不是链接也不是图——和 [parseDroppedLink] 同一条规矩。
+  final List<String> lines = _lines(plainText).toList();
+  String? candidate = _cleanUrl(uri);
+  if (candidate == null && lines.length <= 1) {
+    candidate = lines.isEmpty ? null : _cleanUrl(lines.first);
+  }
+  if (candidate == null || !_looksLikeImageUrl(candidate)) return null;
+  // 同一个地址在 HTML 里是个锚点：拖的是链接，不是图。
+  if (_anchorHrefMatches(markup, candidate)) return null;
+  return DroppedImage(url: candidate);
+}
+
+/// 写进正文的那一行：`<img src="…">`（带 `alt` 时一起写）。
+///
+/// 和粘贴图片走同一种写法——同一份文件里，一张图不该有两种长相。宽度不写：
+/// 网页图片的原始尺寸千奇百怪，让正文列去约束它，比抄一个 `width=` 稳。
+String markdownImageFor(DroppedImage image) => ImageMarkup(
+  source: image.url,
+  alt: image.alt,
+).toMarkdown(asTag: true);
 
 /// 把一次拖放的载荷读成一段可以直接写进正文的纯文本；没有文字时返回 `null`。
 ///
@@ -308,6 +380,136 @@ String _escapeUrl(String url) => url
     .replaceAll(' ', '%20')
     .replaceAll('(', '%28')
     .replaceAll(')', '%29');
+
+// ------------------------------------------------------------- 图片的判据
+
+final RegExp _imgRe = RegExp(
+  r'<img\b[^>]*>',
+  caseSensitive: false,
+  dotAll: true,
+);
+
+/// HTML 里第一张**能拿出可用地址**的 `<img>`。
+///
+/// 一个 `<img>` 上的候选地址要按顺序试：`src` 最正，但懒加载的站点把真地址放
+/// 在 `data-src` / `data-original`，`src` 只是一张 `data:` 占位图；`srcset` 里
+/// 则是「地址 2x, 地址 3x」。某一个候选是 `data:` 不代表这张图不能用，所以
+/// 逐个解析，第一个解得出的才算数。
+DroppedImage? _imageFromHtml(String? html, String? base) {
+  if (html == null || html.isEmpty) return null;
+  for (final RegExpMatch m in _imgRe.allMatches(html)) {
+    final String tag = m.group(0)!;
+    final String? alt = _cleanTitle(_attr(tag, 'alt'));
+    final List<String?> candidates = <String?>[
+      _attr(tag, 'src'),
+      _attr(tag, 'data-src'),
+      _attr(tag, 'data-original'),
+      _firstSrcset(_attr(tag, 'srcset')),
+    ];
+    for (final String? candidate in candidates) {
+      if (candidate == null) continue;
+      final String? url = _resolveImageUrl(candidate, base);
+      if (url != null) return DroppedImage(url: url, alt: alt);
+    }
+  }
+  return null;
+}
+
+/// 取一个标签里某个属性的值，解掉实体；没有这个属性返回 `null`。
+///
+/// 名字前面只认空白，不认 `\b`：`\bsrc` 会把 `data-src` 也一起匹配上，懒加载
+/// 的站点于是拿到的是一张占位图。
+String? _attr(String tag, String name) {
+  final RegExp re = RegExp(
+    r'(?:^|\s)' + RegExp.escape(name) + r'''\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))''',
+    caseSensitive: false,
+  );
+  final RegExpMatch? m = re.firstMatch(tag);
+  if (m == null) return null;
+  return _unescapeEntities(m.group(1) ?? m.group(2) ?? m.group(3) ?? '');
+}
+
+/// `srcset` 里第一个候选地址：`a.png 1x, b.png 2x` 取 `a.png`。
+String? _firstSrcset(String? srcset) {
+  if (srcset == null || srcset.trim().isEmpty) return null;
+  final String first = srcset.split(',').first.trim();
+  if (first.isEmpty) return null;
+  return first.split(RegExp(r'\s+')).first;
+}
+
+/// 把 `<img src>` 变成能写进笔记的绝对地址。
+///
+/// 绝对地址直接用；相对的按这次拖放的系统 URL 补全（浏览器给的 `src` 常常是
+/// `/img/a.png`）；`data:` / `blob:` 是一段内存里的数据，写进笔记加载不出来，
+/// 当作没有地址。
+String? _resolveImageUrl(String src, String? base) {
+  final String raw = src.trim();
+  if (raw.isEmpty) return null;
+  final String lower = raw.toLowerCase();
+  if (lower.startsWith('data:') || lower.startsWith('blob:')) return null;
+  final String? direct = _cleanUrl(raw);
+  if (direct != null) return direct;
+  final String? origin = _cleanUrl(base);
+  if (origin == null) return null;
+  try {
+    final Uri? resolved = Uri.tryParse(origin)?.resolve(raw);
+    return resolved == null ? null : _cleanUrl(resolved.toString());
+  } on FormatException {
+    return null;
+  }
+}
+
+const List<String> _imageExtensions = <String>[
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.jfif',
+  '.gif',
+  '.webp',
+  '.bmp',
+  '.svg',
+  '.avif',
+  '.ico',
+  '.tif',
+  '.tiff',
+];
+
+/// 地址本身是不是一张图：看路径扩展名，其次看查询参数里有没有 `format=webp`
+/// 这种图床写法。
+bool _looksLikeImageUrl(String url) {
+  final Uri? parsed = Uri.tryParse(url);
+  if (parsed == null) return false;
+  final String path = parsed.path.toLowerCase();
+  for (final String ext in _imageExtensions) {
+    if (path.endsWith(ext)) return true;
+  }
+  final String query = parsed.query.toLowerCase();
+  return RegExp(
+    r'(?:^|&)(?:format|fm|type|ext)=(?:png|jpe?g|gif|webp|avif|bmp|svg)',
+  ).hasMatch(query);
+}
+
+/// HTML 里有没有指向 [url] 的锚点。
+///
+/// 有，说明这次拖的是**链接**：`<a href="https://x/a.jpg">看图</a>` 拖出来也是
+/// 一条 `.jpg` 地址，但用户要的是链接，不是把这张图贴进正文。
+bool _anchorHrefMatches(String? html, String url) {
+  if (html == null || html.isEmpty) return false;
+  final Uri? base = Uri.tryParse(url);
+  if (base == null) return false;
+  for (final RegExpMatch m in _anchorRe.allMatches(html)) {
+    final String href = (m.group(1) ?? m.group(2) ?? m.group(3) ?? '').trim();
+    if (href.isEmpty) continue;
+    final Uri? resolved;
+    try {
+      resolved = base.resolve(href);
+    } on FormatException {
+      continue;
+    }
+    if (_samePath(resolved.toString(), url)) return true;
+  }
+  return false;
+}
 
 bool _samePath(String a, String b) => _trimSlash(a) == _trimSlash(b);
 

@@ -22,7 +22,9 @@ import 'package:nrs/ui/editor/editor_pane.dart';
 import 'package:nrs/ui/editor/line_layout/line_editable_text.dart';
 import 'package:nrs/ui/editor/line_layout/render_line_editable.dart';
 import 'package:nrs/ui/editor/markdown_editor.dart';
+import 'package:nrs/ui/editor/image_panel.dart';
 import 'package:nrs/ui/editor/outline_panel.dart';
+import 'package:nrs/ui/editor/table_panel.dart';
 import 'package:nrs/ui/shell/app_shell.dart';
 import 'package:nrs/ui/shell/function_rail.dart';
 import 'package:nrs/ui/shell/note_list_panel.dart';
@@ -825,6 +827,47 @@ void main() {
       expect(outlineButton.left, outline.left);
     },
   );
+
+  testWidgets('图片面板与大纲、表格共用最右一栏，列出当前文件的图片', (
+    WidgetTester tester,
+  ) async {
+    final Note withImages = Note(
+      id: 'img',
+      title: '带图的笔记',
+      body:
+          '# 带图\n\n'
+          '![一只猫](assets/a.png)\n\n'
+          '字\n'
+          '<img src="assets/b.png" width="320">\n',
+      createdAt: DateTime(2026, 1, 1),
+      updatedAt: DateTime(2026, 3, 1),
+    );
+    await pumpShell(tester, vault: <Note>[withImages]);
+
+    expect(find.byType(OutlinePanel), findsOneWidget, reason: '默认是大纲');
+    await tester.tap(find.byTooltip('图片'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ImagePanel), findsOneWidget);
+    expect(find.byType(OutlinePanel), findsNothing, reason: '同一栏，互斥');
+    expect(find.text('一只猫'), findsOneWidget);
+    expect(find.text('第 3 行 · 原尺寸'), findsOneWidget);
+    expect(find.text('b.png'), findsOneWidget);
+    expect(find.text('第 6 行 · 宽 320'), findsOneWidget);
+
+    // 换成表格：图片面板让位，不是叠在一起。
+    await tester.tap(find.byTooltip('表格'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TablePanel), findsOneWidget);
+    expect(find.byType(ImagePanel), findsNothing);
+
+    // 再点一次表格按钮 = 收起这一栏，大纲不会自己回来。
+    await tester.tap(find.byTooltip('表格'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TablePanel), findsNothing);
+    expect(find.byType(OutlinePanel), findsNothing);
+    expect(find.byType(ImagePanel), findsNothing);
+  });
 
   testWidgets('right-clicking a file in the tree offers delete for that file', (
     WidgetTester tester,

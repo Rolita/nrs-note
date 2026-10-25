@@ -17,6 +17,7 @@ import 'package:flutter/foundation.dart'
     show listEquals, visibleForTesting;
 import 'package:flutter/painting.dart';
 
+import '../../../core/utils/image_markup.dart' show ImageAlign;
 import 'line_block_view.dart';
 import 'line_layout_model.dart';
 
@@ -264,6 +265,22 @@ class LineDocumentLayout {
   /// 被藏起来的行号 → 折叠它的可见祖先行号。
   final Map<int, int> _hiddenUnder;
 
+  /// 有没有靠边浮动的图片。
+  ///
+  /// 有浮动时**不能**走增量重排：某一行的宽度取决于它上面那张图片贴在哪一侧、
+  /// 还有多高，而这些都不是这一行自己的属性。改一个字就可能让后面整段重新绕排，
+  /// 增量只按「行高」平移，绕排会错位。
+  bool get hasFloats {
+    for (final LaidOutLine line in laidOut) {
+      final LineBlockView? block = line.block;
+      if (block is ImageBlockChrome &&
+          (block as ImageBlockChrome).chromeAlign != null) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// [blockRect] 的结果按 `(start, end)` 备忘：代码块卡片每帧都会问同一批块。
   final Map<(int, int), Rect?> _blockRects = <(int, int), Rect?>{};
 
@@ -280,6 +297,21 @@ class LineDocumentLayout {
   ({int from, int to}) lineRangeBetween(double top, double bottom) {
     if (laidOut.isEmpty || bottom < top) return (from: 0, to: 0);
     int from = _lineIndexAtOrBefore(top);
+    // 浮动图片那一行高度是 0，图片却从那里往下铺了很远。滚动到图片中间时
+    // 那一行早就在视口上方了，不往回捞一把，画面上就只剩半张图的下半截
+    // 突然消失。只往回找一段有限距离：图片再长也不会超过它自己的高度。
+    for (int j = from - 1; j >= 0; j--) {
+      final LaidOutLine candidate = laidOut[j];
+      if (candidate.top < top - 8000) break;
+      final LineBlockView? block = candidate.block;
+      if (block == null) continue;
+      if (block is ImageBlockChrome &&
+          (block as ImageBlockChrome).chromeAlign != null &&
+          candidate.top + block.height > top) {
+        from = j;
+        break;
+      }
+    }
     int to = from;
     while (to < laidOut.length && laidOut[to].top <= bottom) {
       to++;
@@ -835,6 +867,10 @@ LineDocumentLayout layoutLines({
   );
   double top = 0;
 
+  // 一段浮动图片：它贴住一侧，后面的正文在另一侧绕排，直到文字越过它的底部。
+  // 图片那一行因此高度为 0——它和下面的正文共用同一段纵向空间。
+  _FloatRun? float;
+
   // 每一级最近一个列表项的标记中心，供下一层导轨对齐。空行不清栈，这样
   // 松散列表（条目之间隔一行）的竖线仍是连贯的一根。
   final List<double?> railCentres = List<double?>.filled(6, null);
@@ -847,6 +883,13 @@ LineDocumentLayout layoutLines({
       out.add(_hiddenLine(source, top, baseStyle, textScaler, textDirection));
       continue;
     }
+
+    if (float != null && top >= float.bottom) float = null;
+    final EdgeInsets floatInset = float == null
+        ? EdgeInsets.zero
+        : (float.left
+              ? EdgeInsets.only(left: float.width)
+              : EdgeInsets.only(right: float.width));
 
     final TextStyle style = styleFor?.call(source) ?? baseStyle;
     final MarkerSlot bare = _slotOf(
@@ -889,6 +932,7 @@ LineDocumentLayout layoutLines({
       style: style,
       slot: slot,
       contentWidth: contentWidth,
+      extraInsets: floatInset,
       textScaler: textScaler,
       textDirection: textDirection,
       blockContext: blockContext,
@@ -903,11 +947,29 @@ LineDocumentLayout layoutLines({
       stats: stats,
     );
 
+    // 浮动图片：这一行不再占高，改成给后面几行让出一侧的宽度。
+    double height = measured.height;
+    final ImageAlign? side = measured.block is ImageBlockChrome
+        ? (measured.block! as ImageBlockChrome).chromeAlign
+        : null;
+    if (float == null && side != null && height > 0) {
+      final double reserved = (measured.block! as ImageBlockChrome)
+          .chromeFloatWidth;
+      if (reserved > 0) {
+        float = _FloatRun(
+          left: side == ImageAlign.left,
+          width: reserved,
+          bottom: top + height,
+        );
+        height = 0;
+      }
+    }
+
     out.add(
       LaidOutLine(
         source: source,
         top: top,
-        height: measured.height,
+        height: height,
         slot: slot,
         insets: measured.insets,
         painter: measured.painter,
@@ -921,20 +983,41 @@ LineDocumentLayout layoutLines({
       ),
     );
     stats?.rebuiltLines++;
-    top += measured.height;
+    top += height;
   }
 
   cache?._end();
+
+  // 最后一张浮动图片可能比正文还长（贴在文末的那一张）：它的高度也算进整篇，
+  // 否则图片会被裁掉下半截。
+  final double height = math.max(top, float?.bottom ?? 0);
 
   return LineDocumentLayout._(
     text: text,
     lines: sources,
     laidOut: out,
     width: contentWidth,
-    height: top,
+    height: height,
     metrics: metrics,
     hiddenUnder: hiddenUnder,
   );
+}
+
+/// 一段正在生效的浮动图片：贴哪一侧、占多宽、到哪一行为止。
+class _FloatRun {
+  const _FloatRun({
+    required this.left,
+    required this.width,
+    required this.bottom,
+  });
+
+  final bool left;
+
+  /// 图片宽度加上与正文之间的间距。
+  final double width;
+
+  /// 图片底部的文档 y。正文越过这里就不再绕排。
+  final double bottom;
 }
 
 /// 一行的测量产物。全量与局部重排共用 [_measureOneLine] 的返回值。
@@ -964,6 +1047,7 @@ _LineMeasured _measureOneLine({
   required TextStyle style,
   required MarkerSlot slot,
   required double contentWidth,
+  EdgeInsets extraInsets = EdgeInsets.zero,
   required TextScaler textScaler,
   required TextDirection textDirection,
   required LineBlockContext blockContext,
@@ -979,9 +1063,18 @@ _LineMeasured _measureOneLine({
 }) {
   final LineBlockView? block = blockFor?.call(source, blockContext);
   stats?.blockResolves++;
-  final EdgeInsets insets = block == null
+  final EdgeInsets own = block == null
       ? (insetFor?.call(source) ?? EdgeInsets.zero)
       : EdgeInsets.zero;
+  // 旁边贴着浮动图片的行：另一侧让出图片的宽度，正文就在剩下的那一栏里排。
+  final EdgeInsets insets = extraInsets == EdgeInsets.zero
+      ? own
+      : EdgeInsets.fromLTRB(
+          own.left + extraInsets.left,
+          own.top + extraInsets.top,
+          own.right + extraInsets.right,
+          own.bottom + extraInsets.bottom,
+        );
   final double maxWidth = math.max(
     1.0,
     contentWidth - insets.horizontal - slot.width,
@@ -1100,7 +1193,12 @@ LineDocumentLayout relayoutLines({
 }) {
   if (previous.text != text ||
       previous.width != contentWidth ||
-      previous.metrics != metrics) {
+      previous.metrics != metrics ||
+      previous.hasFloats ||
+      // 新文本里出现「靠边浮动」的图片时也只能全量：某一行有多宽取决于它上面
+      // 那张图贴在哪一侧、还有多高，增量重排只按行高平移，绕排会错位。
+      // 认字面量而不是解析图片行：认错了只是多排一次全量，排错了就是错版。
+      text.toLowerCase().contains('align')) {
     return layoutLines(
       text: text,
       baseStyle: baseStyle,
@@ -1235,6 +1333,9 @@ LineDocumentLayout? relayoutOnEdit({
   LineLayoutStats? stats,
 }) {
   if (previous.width != contentWidth || previous.metrics != metrics) return null;
+  // 浮动图片让「这一行有多宽」取决于它上面那张图贴在哪一侧、还有多高。增量
+  // 重排只按行高平移，绕排会错位，所以有浮动时一律交回全量。
+  if (previous.hasFloats || text.toLowerCase().contains('align')) return null;
   if (editStart < 0 || removedLength < 0 || insertedLength < 0) return null;
 
   final int oldLength = previous.text.length;
@@ -1919,11 +2020,13 @@ List<double> _railsFor(
     final int level = source.nestLevel;
     return <double>[
       for (int k = 0; k < level; k++) centres[k] ?? fallback(k),
-      // 同级自己这一列：有同级项时接住条目之间的空档；有子项时从本项
-      // 一直连到子项（长条目折行时第二行也要有线）。顶层的同级之间不画，
-      // 免得整份文档在根层拖出一条长线。
-      if ((level > 0 && _hasSiblingAtLevel(sources, index, level, centres)) ||
-          _hasChildAtLevel(sources, index, level))
+      // 同级自己这一列**只为本项的子项而画**：竖线的作用是「这些行属于上面
+      // 那一项」，所以只有真挂着子项的那一项才需要往下引一条。
+      //
+      // 曾经这里还有一条「有同级项就画」的分支，本意是接住条目之间的空档，
+      // 结果连续几个没有子项的兄弟（3. 4. 5. 6.）每一个都画了一小截，连起来
+      // 就是一条竖线从它们中间穿过去——看起来像它们自己也被框进了一个块。
+      if (_hasChildAtLevel(sources, index, level))
         _markerCentre(source, slot, metrics),
     ];
   }
@@ -1986,31 +2089,6 @@ double _markerCentre(
                 (digit > 0 ? digit : (slot.marker - metrics.taskWidth) / 2),
     _ => slot.indent + metrics.markerCentre,
   };
-}
-
-/// 同一层是否还有别的列表项：前面已经记过同级中心，或后面还能遇到同级项。
-///
-/// 往下扫时跳过空行和带缩进的续行；遇到更深的层继续找（子项后面可能
-/// 还有同级的 `2.`），遇到更浅的层或顶格的非列表行就说明这一组结束了。
-bool _hasSiblingAtLevel(
-  List<SourceLine> sources,
-  int index,
-  int level,
-  List<double?> centres,
-) {
-  if (centres[level] != null) return true;
-  for (int i = index + 1; i < sources.length; i++) {
-    final SourceLine line = sources[i];
-    if (line.text.trim().isEmpty) continue;
-    if (line.isList) {
-      if (line.nestLevel < level) return false;
-      if (line.nestLevel == level) return true;
-      continue;
-    }
-    if (line.text.startsWith(RegExp(r'\s'))) continue;
-    return false;
-  }
-  return false;
 }
 
 /// 本项下面是否挂着子项：往下扫到的第一个列表行比它更深。

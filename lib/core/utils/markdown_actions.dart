@@ -676,9 +676,73 @@ TextEditingValue? resizeTableColumns(
         : '${directive.substring(0, directive.length - 3)} ${extras.join(' ')}-->';
   }
   if (from == to && replacement.isEmpty) return null;
-  final String next = raw.text.replaceRange(from, to, replacement);
-  if (next == raw.text) return null;
+  final TextEditingValue out = _replaceDirective(
+    raw,
+    from: from,
+    to: to,
+    replacement: replacement,
+  );
+  return out.text == raw.text ? null : out;
+}
 
+/// Drops the `w=` list from the table's first cell, handing the columns back to
+/// the renderer's own sizing.
+///
+/// A drag has no way back: widths are one directive, so removing it is the only
+/// road to auto. Everything else the directive carries — spans, colors, keys
+/// this app does not own — is rebuilt unchanged, and a directive left empty is
+/// removed whole so the cell keeps no orphan `<!--nrs -->`.
+TextEditingValue? clearTableColumnWidths(
+  TextEditingValue raw, {
+  required int tableId,
+}) {
+  final TableBlock? block = TableBlock.parse(
+    raw.text,
+    tableId.clamp(0, raw.text.length),
+  );
+  if (block == null || block.start != tableId) return null;
+  if (block.columnWidths == null) return null;
+  final List<TableRow> body = block.bodyRows;
+  if (body.isEmpty || body.first.cells.isEmpty) return null;
+  final TableCell cell = body.first.cells.first;
+  final (int, int)? range = tableDirectiveRange(cell.raw);
+  if (range == null) return null;
+
+  final Set<String> known = <String>{'c', 'r', 'bg', 'fg', 'w'};
+  final List<String> extras = <String>[
+    for (final (String key, String value) in tableDirectivePairs(cell.raw))
+      if (!known.contains(key)) '$key=$value',
+  ];
+  final String core = cell.style.directiveFor();
+  final String replacement;
+  if (core.isEmpty) {
+    replacement = extras.isEmpty ? '' : '<!--nrs ${extras.join(' ')}-->';
+  } else if (extras.isEmpty) {
+    replacement = core;
+  } else {
+    replacement = '${core.substring(0, core.length - 3)} '
+        '${extras.join(' ')}-->';
+  }
+
+  final TextEditingValue out = _replaceDirective(
+    raw,
+    from: cell.start + range.$1,
+    to: cell.start + range.$2,
+    replacement: replacement,
+  );
+  return out.text == raw.text ? null : out;
+}
+
+/// Swaps one slice of [raw] for [replacement] and maps the selection across the
+/// length change. The two width commands touch nothing else, so the rest of the
+/// document stays byte-identical.
+TextEditingValue _replaceDirective(
+  TextEditingValue raw, {
+  required int from,
+  required int to,
+  required String replacement,
+}) {
+  final String next = raw.text.replaceRange(from, to, replacement);
   final int delta = replacement.length - (to - from);
   int map(int offset) {
     if (offset < 0) return offset;

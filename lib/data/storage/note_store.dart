@@ -218,6 +218,13 @@ abstract class NoteStore {
     String folderPath = '',
   }) async => null;
 
+  /// Reads a `.md` file from anywhere on disk — the source side of a drop.
+  ///
+  /// `null` when the path is missing, is not a file, or cannot be read. The
+  /// vault writes and reads UTF-8, so a file in another encoding is refused
+  /// rather than imported as a page of replacement characters.
+  Future<String?> readMarkdownFile(String path) async => null;
+
   /// Persists an arbitrary raw `.md` string under a new file name.
   Future<Note> writeNewMarkdown(
     String raw,

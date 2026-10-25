@@ -1,14 +1,19 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 
 import '../../core/app_enums.dart';
+import '../../core/platform/drop_support.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../data/models/note.dart';
 import '../../state/notes_controller.dart';
 import '../../state/settings_controller.dart';
 import '../common/app_widgets.dart';
+import '../common/notices.dart';
 import 'vault_tree.dart';
 
 /// The switchable middle sidebar.
@@ -57,6 +62,10 @@ class NoteListPanelState extends State<NoteListPanel> {
   /// by default — a result you have to open is a result you did not find.
   final Set<String> _collapsedResults = <String>{};
 
+  /// True while a file is being dragged over the list, so the panel can show
+  /// where it will land before the user lets go.
+  bool _dropping = false;
+
   @override
   void initState() {
     super.initState();
@@ -103,6 +112,98 @@ class NoteListPanelState extends State<NoteListPanel> {
   void revealFolder(String folderPath) =>
       _treeKey.currentState?.revealFolder(folderPath);
 
+  // -------------------------------------------------------------------- drop
+
+  void _setDropping(bool value) {
+    if (!mounted || _dropping == value) return;
+    setState(() => _dropping = value);
+  }
+
+  /// Turns the `.md` files in a drop into notes.
+  ///
+  /// The files are read outside the vault and written back in as new notes, so
+  /// nothing that is already there can be replaced — a name in the way gets the
+  /// ` 2` rule. Anything that is not a `.md` is skipped and counted.
+  Future<void> _onDropFiles(PerformDropEvent event) async {
+    final List<String> paths = <String>[];
+    for (final DropItem item in event.session.items) {
+      final reader = item.dataReader;
+      if (reader == null || !reader.canProvide(Formats.fileUri)) continue;
+      // 拖放期间不能 await 平台通道，读取只能是回调式的；包一层 Completer
+      // 才能按顺序把一份拖放的几个文件都读完。
+      final Completer<String?> done = Completer<String?>();
+      reader.getValue<Uri>(
+        Formats.fileUri,
+        (Uri? uri) {
+          if (done.isCompleted) return;
+          if (uri == null || uri.scheme != 'file') {
+            done.complete(null);
+            return;
+          }
+          try {
+            done.complete(uri.toFilePath());
+          } on UnsupportedError {
+            done.complete(null);
+          }
+        },
+        onError: (Object error) {
+          if (!done.isCompleted) done.complete(null);
+        },
+      );
+      final String? path = await done.future;
+      if (path != null) paths.add(path);
+    }
+    _setDropping(false);
+    if (!mounted || paths.isEmpty) return;
+
+    final NotesController notes = context.read<NotesController>();
+    final ({int imported, int refused}) result = await notes.importMarkdownFiles(
+      paths,
+    );
+    if (!mounted) return;
+
+    final int skipped = result.refused;
+    NoticeScope.maybeOf(context)?.show(
+      NoticeData(
+        message: result.imported == 0
+            ? '没有可导入的文件'
+            : '已导入 ${result.imported} 篇笔记',
+        detail: result.imported == 0
+            ? '只能拖入 .md 笔记文件'
+            : (skipped == 0 ? null : '$skipped 个文件不是 .md，已跳过'),
+        kind: result.imported == 0 ? NoticeKind.info : NoticeKind.success,
+      ),
+    );
+  }
+
+  /// The list, made droppable.
+  ///
+  /// Only `file://` is claimed here: text and links dragged over the sidebar
+  /// belong to the editor, and a region that accepted everything would swallow
+  /// them on the way past.
+  Widget _dropTarget(AppPalette p, Widget child) {
+    final Widget stack = Stack(
+      fit: StackFit.expand,
+      children: <Widget>[
+        child,
+        if (_dropping) IgnorePointer(child: _DropHighlight(palette: p)),
+      ],
+    );
+    // `flutter test` has no native drag layer; building the region there
+    // throws asynchronously, so it is simply not built.
+    if (!systemDragAndDropAvailable) return stack;
+    return DropRegion(
+      formats: const <DataFormat>[Formats.fileUri],
+      hitTestBehavior: HitTestBehavior.translucent,
+      onDropOver: (DropOverEvent event) => DropOperation.copy,
+      onDropEnter: (_) => _setDropping(true),
+      onDropLeave: (_) => _setDropping(false),
+      onDropEnded: (_) => _setDropping(false),
+      onPerformDrop: _onDropFiles,
+      child: stack,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
@@ -147,16 +248,19 @@ class NoteListPanelState extends State<NoteListPanel> {
             _fileHeader(p, notes, settings),
             Divider(height: 1, color: p.outlineSoft),
             Expanded(
-              child: VaultTree(
-                key: _treeKey,
-                notes: notes,
-                onOpenNote: (Note note) => notes.select(note.id),
-                onDeleteNotes: widget.onDeleteNotes,
-                onDeleteFolder: widget.onDeleteFolder,
-                onAllExpandedChanged: (bool all) {
-                  if (!mounted || all == _allExpanded) return;
-                  setState(() => _allExpanded = all);
-                },
+              child: _dropTarget(
+                p,
+                VaultTree(
+                  key: _treeKey,
+                  notes: notes,
+                  onOpenNote: (Note note) => notes.select(note.id),
+                  onDeleteNotes: widget.onDeleteNotes,
+                  onDeleteFolder: widget.onDeleteFolder,
+                  onAllExpandedChanged: (bool all) {
+                    if (!mounted || all == _allExpanded) return;
+                    setState(() => _allExpanded = all);
+                  },
+                ),
               ),
             ),
           ] else if (widget.view == SidebarView.search) ...<Widget>[
@@ -183,11 +287,11 @@ class NoteListPanelState extends State<NoteListPanel> {
                   ],
                 ),
               ),
-            Expanded(child: _searchResults(p, notes)),
+            Expanded(child: _dropTarget(p, _searchResults(p, notes))),
           ] else ...<Widget>[
             _panelHeader(p, '标签', notes, count: '${notes.tags.length}'),
             Divider(height: 1, color: p.outlineSoft),
-            Expanded(child: _tags(p, notes)),
+            Expanded(child: _dropTarget(p, _tags(p, notes))),
           ],
           // The search panel is just a field and its answers — no counts bar,
           // the way the rest of the panel stays out of the way too.
@@ -956,6 +1060,68 @@ class _SortTriggerState extends State<_SortTrigger> {
                 ],
               )
             : Icon(LucideIcons.arrowUpDown, size: AppIconSize.sm - 2, color: foreground),
+      ),
+    );
+  }
+}
+
+/// What the list looks like while a `.md` is being dragged over it.
+///
+/// The whole column is tinted rather than one row, because a drop lands in the
+/// folder you are standing in, not at the pointer: promising a position the drop
+/// will not honour is worse than promising none.
+class _DropHighlight extends StatelessWidget {
+  const _DropHighlight({required this.palette});
+
+  final AppPalette palette;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.all(6),
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: palette.accent.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: palette.accent.withValues(alpha: 0.45),
+          width: 1.5,
+        ),
+      ),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 11),
+        decoration: BoxDecoration(
+          color: palette.surfaceRaised,
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: palette.outline),
+          boxShadow: <BoxShadow>[
+            BoxShadow(
+              color: palette.shadow,
+              blurRadius: 14,
+              offset: const Offset(0, 5),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(LucideIcons.fileDown, size: 18, color: palette.accent),
+            const SizedBox(height: 6),
+            Text(
+              '松手导入',
+              style: TextStyle(
+                fontSize: AppText.caption,
+                fontWeight: FontWeight.w600,
+                color: palette.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              '只收 .md · 同名自动编号',
+              style: TextStyle(fontSize: 10, color: palette.textTertiary),
+            ),
+          ],
+        ),
       ),
     );
   }

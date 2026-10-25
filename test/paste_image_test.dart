@@ -166,8 +166,8 @@ void main() {
     expect(received, png);
     expect(
       controller.text,
-      '正文\n![图片](assets/image_20261024_120000.png)\n',
-      reason: '图片必须独占一段，前后都要换行',
+      '正文\n<img src="assets/image_20261024_120000.png" alt="图片">\n',
+      reason: '图片必须独占一段，前后都要换行；写法是标签，和拖过宽度的那些一致',
     );
     expect(notices.current, isNull, reason: '成功粘贴不提示');
 

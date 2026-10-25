@@ -6,8 +6,8 @@ import 'package:nrs/core/utils/markdown_actions.dart';
 import 'package:nrs/ui/editor/table_panel.dart';
 import 'package:nrs/ui/theme/app_color_picker.dart';
 
-/// The table tools column: an empty state outside a table, and inside one the
-/// same commands the right-click menu offers, in eight titled rows.
+/// The table tools column: an empty state outside a table, and inside one a
+/// scope switch plus the commands that scope can actually run.
 void main() {
   const String table =
       '| 名称 | 数量 |\n'
@@ -94,7 +94,7 @@ void main() {
 
     expect(find.text('没有表格'), findsOneWidget);
     expect(find.byType(Tooltip), findsNothing);
-    expect(find.text('选择'), findsNothing);
+    expect(find.text('格式'), findsNothing);
   });
 
   testWidgets('outside a table it shows each table as a real mini grid', (
@@ -142,33 +142,138 @@ void main() {
     expect(find.text('2 × 2 · L15'), findsOneWidget);
   });
 
-  testWidgets('inside a table every command is one glyph with a full name', (
+  testWidgets('a caret in a cell offers only the cell commands', (
     WidgetTester tester,
   ) async {
     await pump(tester, table, table.indexOf('苹果'));
 
-    for (final String label in <String>[
-      '选择',
-      '行',
-      '列',
-      '对齐',
-      '外观',
-      '数据',
-      '汇总',
-    ]) {
+    // The scope switch names what every destructive command below it acts on.
+    for (final String label in <String>['单元格', '整行', '整列', '整表']) {
       expect(find.text(label), findsOneWidget, reason: label);
     }
-    // The last group is named after the panel itself, so the title and the
-    // group head both read 「表格」.
-    expect(find.text('表格'), findsNWidgets(2));
-    // 3 + 6 + 6 + 4 + 4 + 5 + 5 + 4
-    expect(find.byType(Tooltip), findsNWidgets(37));
-    expect(find.byTooltip('选中整行'), findsOneWidget);
-    expect(find.byTooltip('删除本列'), findsOneWidget);
+    // 格式 is the one group that never goes away; the rest follow the scope.
+    expect(find.text('格式'), findsOneWidget);
+    expect(find.text('对齐'), findsOneWidget);
+    expect(find.text('数据'), findsOneWidget);
+    expect(find.text('汇总行'), findsOneWidget);
+
+    // Rows, columns and table-wide tools are one tap away, not on screen.
+    expect(find.text('行'), findsNothing);
+    expect(find.text('列'), findsNothing);
+    expect(find.byTooltip('选中整行'), findsNothing);
+    expect(find.byTooltip('删除本列'), findsNothing);
+    expect(find.byTooltip('删除整张表格'), findsNothing);
+
+    // 4 (格式) + 4 (对齐) + 5 (数据)
+    expect(find.byType(Tooltip), findsNWidgets(13));
+    expect(find.byTooltip('合并居中'), findsOneWidget);
+    expect(find.byTooltip('填充颜色'), findsOneWidget);
+    expect(find.byTooltip('按本列升序'), findsOneWidget);
 
     // The header names the cell under the caret and the table the tools act on.
     expect(find.text('A2'), findsOneWidget);
     expect(find.text('第 1 张表 · 3 × 2 · 「名称」列'), findsOneWidget);
+  });
+
+  testWidgets('the scope switch retargets the panel and the selection', (
+    WidgetTester tester,
+  ) async {
+    final state = await pump(tester, table, table.indexOf('苹果'));
+
+    await tester.tap(find.text('整行'));
+    await tester.pumpAndSettle();
+    TextEditingValue out = await runLast(tester, state);
+    expect(
+      out.text.substring(out.selection.start, out.selection.end),
+      '| 苹果 | 10 |\n',
+    );
+    // 格式 + 行
+    expect(find.text('行'), findsOneWidget);
+    expect(find.byTooltip('删除本行'), findsOneWidget);
+    expect(find.text('数据'), findsNothing);
+    expect(find.byType(Tooltip), findsNWidgets(10));
+
+    await tester.tap(find.text('整列'));
+    await tester.pumpAndSettle();
+    out = await runLast(tester, state);
+    expect(out.selection.start, isNot(out.selection.end));
+    expect(find.text('列'), findsOneWidget);
+    expect(find.byTooltip('删除本列'), findsOneWidget);
+    expect(find.text('对齐'), findsOneWidget);
+    // 格式 + 列 + 对齐
+    expect(find.byType(Tooltip), findsNWidgets(14));
+
+    await tester.tap(find.text('整表'));
+    await tester.pumpAndSettle();
+    await runLast(tester, state);
+    // The title and the group head both read 「表格」 in this scope.
+    expect(find.text('表格'), findsNWidgets(2));
+    expect(find.byTooltip('删除整张表格'), findsOneWidget);
+    // No explicit widths yet, so the width row only points at the canvas.
+    expect(find.textContaining('列宽'), findsOneWidget);
+    expect(find.text('拖表格竖线'), findsOneWidget);
+    // 格式 + 表格
+    expect(find.byType(Tooltip), findsNWidgets(8));
+
+    await tester.tap(find.text('单元格'));
+    await tester.pumpAndSettle();
+    out = await runLast(tester, state);
+    expect(out.selection.isCollapsed, isTrue, reason: '回到单格');
+    expect(find.text('对齐'), findsOneWidget);
+    expect(find.text('数据'), findsOneWidget);
+  });
+
+  testWidgets('the width row steps the caret column once widths exist', (
+    WidgetTester tester,
+  ) async {
+    const String sized =
+        '| <!--nrs w=96,120-->甲 | 乙 |\n'
+        '| --- | --- |\n'
+        '| a | b |';
+    final state = await pump(tester, sized, sized.indexOf('a'));
+
+    // The row belongs to 整表: a cell caret never sees it.
+    expect(find.textContaining('列宽'), findsNothing);
+
+    await tester.tap(find.text('整表'));
+    await tester.pumpAndSettle();
+    await runLast(tester, state);
+
+    expect(find.text('A 列宽'), findsOneWidget);
+    expect(find.text('96'), findsOneWidget);
+    await tester.tap(find.byTooltip('加宽本列'));
+    await tester.pumpAndSettle();
+    TextEditingValue out = await runLast(tester, state);
+    expect(out.text, contains('w=104,120'), reason: out.text);
+
+    // The drag has no other way back to auto sizing.
+    await tester.tap(find.byTooltip('恢复自适应'));
+    await tester.pumpAndSettle();
+    out = await runLast(tester, state);
+    expect(out.text, isNot(contains('w=')), reason: out.text);
+    expect(find.text('拖表格竖线'), findsOneWidget);
+  });
+
+  testWidgets('the summary button opens one named list, not five glyphs', (
+    WidgetTester tester,
+  ) async {
+    // 数量 holds numbers, so 合计 and the rest of the arithmetic rows are live.
+    final state = await pump(tester, table, table.indexOf('10'));
+
+    await tester.tap(find.text('汇总行'));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey<String>('table-menu-popover')),
+      findsOneWidget,
+    );
+    for (final String label in <String>['合计', '平均', '计数', '最小值', '最大值']) {
+      expect(find.text(label), findsOneWidget, reason: label);
+    }
+
+    await tester.tap(find.text('合计'));
+    await tester.pumpAndSettle();
+    final TextEditingValue out = await runLast(tester, state);
+    expect(out.text, contains('合计'), reason: out.text);
   });
 
   testWidgets('merge waits for a rectangle, split waits for a merge', (
@@ -394,7 +499,7 @@ void main() {
   ) async {
     final state = await pump(tester, table, table.indexOf('苹果'));
 
-    await tester.tap(find.byTooltip('选中整行'));
+    await tester.tap(find.text('整行'));
     await tester.pumpAndSettle();
 
     expect(state.applied, hasLength(1));
@@ -409,7 +514,7 @@ void main() {
     WidgetTester tester,
   ) async {
     final state = await pump(tester, table, table.indexOf('苹果'));
-    expect(find.byType(Tooltip), findsNWidgets(37));
+    expect(find.byType(Tooltip), findsNWidgets(13));
 
     state.value.value = const TextEditingValue(
       text: '正文',

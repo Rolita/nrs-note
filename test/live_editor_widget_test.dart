@@ -2636,7 +2636,7 @@ void main() {
     expect(boxes[2].left - boxes[1].left, 26);
   });
 
-  testWidgets('the rail is painted, and only from the first child down', (
+  testWidgets('the rail spans the child block and never runs between siblings', (
     WidgetTester tester,
   ) async {
     // The complaint was that there is no line at all, so this one checks the
@@ -2732,16 +2732,19 @@ void main() {
       return best;
     }
 
-    // 父级那一列在行首 +9.5（复选框中心），同级自己那一列是一级缩进后的
-    // 复选框中心（26 + 9.5）。
+    // 父级那一列在行首 +9.5（复选框中心）。同级自己那一列（26 + 9.5）在
+    // 这里**不该出现**：乙和丙都没有子项，连续两个兄弟之间不穿线。
     final (int parentTop, int parentRun, int parentX) = columnNear(left + 9.5);
     final (int ownTop, int ownRun, int ownX) = columnNear(left + 35.5);
     expect(parentRun, greaterThan(40), reason: '父级竖线要跨过整段子级（x=$parentX）');
-    // 同级那一列会在标记字形处断开，只剩条目之间的几段，但两行之间是连着的。
-    expect(ownRun, greaterThan(12), reason: '缩进一级就要有同级自己那一列（x=$ownX）');
-    // …and both start on the *second* line, not on the parent's.
+    expect(
+      ownRun,
+      lessThanOrEqualTo(6),
+      reason: '连续同级兄弟之间不该再穿一条竖线（x=$ownX）',
+    );
+    // …and the parent's rail starts on the *second* line, not on its own row.
     expect(parentTop, greaterThan(20), reason: '父级自己那一行不该有竖线');
-    expect(ownTop, greaterThan(20), reason: '父级自己那一行不该有竖线');
+    expect(ownTop, greaterThan(20), reason: '同上');
   });
 
   testWidgets('the table starts on the text column and stops at its content', (
@@ -3575,7 +3578,9 @@ void main() {
     expect(blocks.single.chromeResizeHandle(), isNotNull);
   });
 
-  testWidgets('光标回到图片行时退回源码，离开后图片再回来', (WidgetTester tester) async {
+  testWidgets('光标停在图片行上图片还在，真的选字才退回源码', (
+    WidgetTester tester,
+  ) async {
     final ui.Image source = await makeImage(tester, 400, 200);
     final MarkdownSourceController controller = await pump(
       tester,
@@ -3587,7 +3592,14 @@ void main() {
         .first;
     expect(field.lineLayout!.laidOut[0].height, 200);
 
+    // 粘贴完光标就压在这一行上：图片必须照样画着，不能退回源码。
     controller.selection = const TextSelection.collapsed(offset: 0);
+    await tester.pumpAndSettle();
+    expect(field.imageBlocks(), hasLength(1), reason: '光标压在本行，图片仍在');
+    expect(field.lineLayout!.laidOut[0].height, 200);
+
+    // 真的在选这一行的字，才摊开源码——那时要看见自己选了什么。
+    controller.selection = const TextSelection(baseOffset: 0, extentOffset: 6);
     await tester.pumpAndSettle();
     expect(field.imageBlocks(), isEmpty);
     expect(field.lineLayout!.laidOut[0].block, isNull);

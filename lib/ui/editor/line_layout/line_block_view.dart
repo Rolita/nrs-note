@@ -12,6 +12,7 @@ library;
 
 import 'package:flutter/painting.dart';
 
+import '../../../core/utils/image_markup.dart';
 import 'line_layout_model.dart';
 
 /// 一行源码的自绘内容。
@@ -197,6 +198,30 @@ abstract class ImageBlockChrome {
   /// 图片矩形，全局坐标。
   Rect chromeImageBounds();
 
+  /// 编辑时让出来的那一行源码占的矩形，全局坐标；没在编辑时是空矩形。
+  ///
+  /// 源码不是浮在图片上的：这一行会为它长高一行，图片整体下移。外面（编辑器）
+  /// 就靠这个矩形把输入框摆进去——它正好是那一行本该在的位置。
+  Rect chromeSourceBounds();
+
   /// 不可缩放时 null。
   ImageResizeHandle? chromeResizeHandle();
+
+  /// 靠边浮动时贴哪一边；`null` 表示独占一行。
+  ///
+  /// 引擎据此把这一行的高度算成 0，并让后面几行在另一侧绕排——图片不再把
+  /// 下面所有文字顶开，「左文字右图片」就是这么来的。
+  ImageAlign? get chromeAlign;
+
+  /// 浮动时它横向占住的宽度（图片宽 + 与正文的间距）；不浮动为 0。
+  double get chromeFloatWidth;
+
+  /// 选中态：画一圈强调色边框。
+  ///
+  /// 只改绘制、不改排版，所以由编辑器直接写进来再 [RenderObject.markNeedsPaint]
+  /// 即可——选中一张图不该把整篇重新排版一遍。
+  set chromeSelected(bool value);
+
+  /// 此刻是否画着边框。
+  bool get chromeSelected;
 }

@@ -1,5 +1,6 @@
 import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nrs/core/utils/image_markup.dart';
 import 'package:nrs/ui/editor/line_layout/line_layout_engine.dart';
 
 /// 测试字体每个字形都是 [fontSize] 见方，行高 `16 * 1.5 = 24`。
@@ -229,19 +230,57 @@ void main() {
       expect(layout.laidOut[0].slot.railXs, <double>[4.5]);
     });
 
-    test('同级有多个子项时都画同级那一列', () {
+    test('连续同级兄弟不画自己那一列，只有挂着子项的才画', () {
       const String pair =
           '- 父\n'
           '  1. 甲\n'
-          '  2. 乙';
+          '  2. 乙\n'
+          '  3. 丙';
       final LineDocumentLayout layout = _layout(pair, width: 200);
       addTearDown(layout.dispose);
 
-      final double own = 26 + _width('1') / 2;
-      expect(layout.laidOut[1].slot.railXs[0], 4.5);
-      expect(layout.laidOut[1].slot.railXs[1], closeTo(own, 0.01));
-      expect(layout.laidOut[2].slot.railXs[0], 4.5);
-      expect(layout.laidOut[2].slot.railXs[1], closeTo(own, 0.01));
+      // 父项挂着子项：它自己那一列要从它连到子项。
+      expect(layout.laidOut[0].slot.railXs, hasLength(1));
+      // 三个兄弟都没有子项：只留父项那一列。以前每个兄弟都给自己画一小截，
+      // 连起来就是一条竖线从它们中间穿过去。
+      for (int i = 1; i <= 3; i++) {
+        expect(
+          layout.laidOut[i].slot.railXs,
+          <double>[4.5],
+          reason: '第 $i 行不该多出一条自己的竖线',
+        );
+      }
+    });
+
+    test('父项到下一个顶层项之间只有一条竖线，兄弟之间不穿线', () {
+      const String doc =
+          '2. 图片测试\n'
+          '  1. 拖拽\n'
+          '  2. 查看\n'
+          '    1. 甲\n'
+          '    2. 乙\n'
+          '  3. 可以\n'
+          '  4. 可以\n'
+          '3. 检查\n';
+      final LineDocumentLayout layout = _layout(doc, width: 320);
+      addTearDown(layout.dispose);
+
+      final double parent = _width('2') / 2;
+      final double own = 26 + _width('2') / 2;
+
+      expect(layout.laidOut[0].slot.railXs, <double>[parent]);
+      // 1. 拖拽：没有子项，只有父项那一列。
+      expect(layout.laidOut[1].slot.railXs, <double>[parent]);
+      // 2. 查看：挂着 1. 2. 两个子项，它自己那一列要往下引。
+      expect(layout.laidOut[2].slot.railXs, <double>[parent, own]);
+      // 子项继承父项与祖父两列。
+      expect(layout.laidOut[3].slot.railXs, <double>[parent, own]);
+      expect(layout.laidOut[4].slot.railXs, <double>[parent, own]);
+      // 3. 可以 / 4. 可以：连续兄弟，没有子项——不再从它们中间穿一条线。
+      expect(layout.laidOut[5].slot.railXs, <double>[parent]);
+      expect(layout.laidOut[6].slot.railXs, <double>[parent]);
+      // 顶层 3. 检查 没有子项，也没有同级导轨要接。
+      expect(layout.laidOut[7].slot.railXs, isEmpty);
     });
 
     test('二级列表之间隔一个空行，空行仍然延续竖线', () {
@@ -948,4 +987,125 @@ void main() {
       expect(layout.laidOut[3].top, _row * 2);
     });
   });
+
+  group('靠边浮动', () {
+    test('浮动那一行高度为 0，后面几行让出一侧宽度，越过图片底部就恢复', () {
+      final LineDocumentLayout layout = _floatLayout(
+        '正文\n图\n甲\n乙\n丙',
+        ImageAlign.right,
+        height: 60,
+      );
+      addTearDown(layout.dispose);
+
+      expect(layout.laidOut[1].height, 0, reason: '图片和下面的正文共用一段纵向空间');
+      // 每行 24 高、图 60 高：24→84 这一段里的三行都在它旁边。
+      expect(layout.laidOut[2].insets.right, 118);
+      expect(layout.laidOut[3].insets.right, 118);
+      expect(layout.laidOut[4].insets.right, 118);
+      // 正文整体上移：图片那一行不再占位，第二行就顶到 y=24。
+      expect(layout.laidOut[2].top, _row);
+      expect(layout.laidOut[4].top, _row * 3);
+    });
+
+    test('贴左边就让左边，正文从图片右侧起笔', () {
+      final LineDocumentLayout layout = _floatLayout('正文\n图\n甲', ImageAlign.left);
+      addTearDown(layout.dispose);
+
+      expect(layout.laidOut[2].insets.left, 118);
+      expect(layout.laidOut[2].insets.right, 0);
+      expect(layout.laidOut[2].gutter, 118);
+    });
+
+    test('文末那张浮动图片把整篇撑高，不会被裁掉下半截', () {
+      final LineDocumentLayout layout = _floatLayout(
+        '正文\n图',
+        ImageAlign.right,
+        height: 300,
+      );
+      addTearDown(layout.dispose);
+
+      expect(layout.laidOut[1].height, 0);
+      expect(layout.height, _row + 300);
+    });
+
+    test('没有对齐的图片照旧独占一行', () {
+      final LineDocumentLayout layout = _floatLayout('正文\n图\n甲', null);
+      addTearDown(layout.dispose);
+
+      expect(layout.laidOut[1].height, 60);
+      expect(layout.laidOut[2].insets.right, 0);
+      expect(layout.hasFloats, isFalse);
+    });
+  });
+
 }
+
+/// 一张靠边浮动的图片：只回答引擎关心的那几个数。
+class _FloatImage implements LineBlockView, ImageBlockChrome {
+  _FloatImage({required this.height, required this.align});
+
+  @override
+  final double height;
+
+  @override
+  double get width => 100;
+
+  final ImageAlign? align;
+
+  static const double floatWidth = 118;
+
+  @override
+  ImageAlign? get chromeAlign => align;
+
+  @override
+  double get chromeFloatWidth => align == null ? 0 : floatWidth;
+
+  @override
+  int get imageSourceStart => 0;
+
+  @override
+  void chromeSourceRange(int start, int end) {}
+
+  @override
+  set chromeOrigin(Offset value) {}
+
+  @override
+  Rect chromeImageBounds() => Rect.zero;
+
+  @override
+  Rect chromeSourceBounds() => Rect.zero;
+
+  @override
+  ImageResizeHandle? chromeResizeHandle() => null;
+
+  @override
+  bool chromeSelected = false;
+
+  @override
+  void paint(Canvas canvas, Offset origin, Offset globalOrigin) {}
+
+  @override
+  void dispose() {}
+
+  @override
+  int offsetAt(Offset local) => 0;
+
+  @override
+  Rect caretRectAt(int offset) => Rect.zero;
+
+  @override
+  List<Rect> highlightRects(int from, int to) => const <Rect>[];
+}
+
+LineDocumentLayout _floatLayout(
+  String text,
+  ImageAlign? align, {
+  double height = 60,
+}) => layoutLines(
+  text: text,
+  baseStyle: _body,
+  contentWidth: 200,
+  blockFor: (SourceLine line, LineBlockContext context) =>
+      line.index == 1 ? _FloatImage(height: height, align: align) : null,
+);
+

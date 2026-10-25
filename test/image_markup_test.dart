@@ -153,6 +153,61 @@ void main() {
     });
   });
 
+  group('靠边浮动', () {
+    test('align 写在 width 之后、alt 之前', () {
+      const ImageMarkup markup = ImageMarkup(
+        source: 'assets/x.png',
+        alt: '图片',
+        width: 320,
+        align: ImageAlign.right,
+      );
+      expect(
+        markup.toMarkdown(),
+        '<img src="assets/x.png" width="320" align="right" alt="图片">',
+      );
+      // 没有宽度也得是标签：`![…](…)` 没有放属性的地方。
+      expect(
+        const ImageMarkup(source: 'assets/x.png', align: ImageAlign.left)
+            .toMarkdown(),
+        '<img src="assets/x.png" align="left">',
+      );
+    });
+
+    test('解析时认大小写与单引号，认不出的值当没写', () {
+      expect(
+        ImageMarkup.parseLine(
+          '<img src="a.png" ALIGN=\'Left\' alt="图">',
+        )!.align,
+        ImageAlign.left,
+      );
+      expect(
+        ImageMarkup.parseLine('<img src="a.png" align="right">')!.align,
+        ImageAlign.right,
+      );
+      expect(
+        ImageMarkup.parseLine('<img src="a.png" align="center">')!.align,
+        isNull,
+        reason: '一行 <img> 不该因为一个不认识的属性整行退回源码',
+      );
+      expect(ImageMarkup.parseLine('![图](a.png)')!.align, isNull);
+    });
+
+    test('带 align 的行能原样读回来', () {
+      for (final ImageAlign side in ImageAlign.values) {
+        final ImageMarkup markup = ImageMarkup(
+          source: 'assets/x.png',
+          alt: '图',
+          width: 240,
+          align: side,
+        );
+        final ImageMarkup again = ImageMarkup.parseLine(markup.toMarkdown())!;
+        expect(again.align, side);
+        expect(again.width, 240);
+        expect(again.alt, '图');
+      }
+    });
+  });
+
   group('toMarkdown', () {
     test('writes standard Markdown when there is no width', () {
       const ImageMarkup markup = ImageMarkup(source: 'assets/x.png', alt: '图片');
@@ -200,6 +255,31 @@ void main() {
       );
     });
 
+    test('asTag 在没有宽度时也写标签：插入图片走这条路', () {
+      const ImageMarkup markup = ImageMarkup(source: 'assets/x.png', alt: '图片');
+      expect(
+        markup.toMarkdown(asTag: true),
+        '<img src="assets/x.png" alt="图片">',
+        reason: '同一份文件里不该同时出现两种图片语法',
+      );
+      expect(
+        const ImageMarkup(source: 'assets/x.png').toMarkdown(asTag: true),
+        '<img src="assets/x.png">',
+      );
+      // 有宽度时两种调用写出同一行。
+      expect(
+        markup.toMarkdown(width: 320, asTag: true),
+        markup.toMarkdown(width: 320),
+      );
+      // 还是要能读回来。
+      final ImageMarkup again = ImageMarkup.parseLine(
+        markup.toMarkdown(asTag: true),
+      )!;
+      expect(again.source, 'assets/x.png');
+      expect(again.alt, '图片');
+      expect(again.width, isNull);
+    });
+
     test('round-trips both forms', () {
       const List<ImageMarkup> cases = <ImageMarkup>[
         ImageMarkup(source: 'assets/x.png'),
@@ -215,6 +295,84 @@ void main() {
         expect(again.alt, markup.alt, reason: markup.toMarkdown());
         expect(again.width, markup.width, reason: markup.toMarkdown());
       }
+    });
+  });
+
+  group('moveSourceLine', () {
+    test('往下搬：整行连着自己的换行一起走', () {
+      const String text = 'a\nb\nc';
+      final ({String text, int caret, int delta})? moved = moveSourceLine(
+        text: text,
+        lineStart: 0,
+        lineEnd: 1,
+        insertAt: 4,
+      );
+      expect(moved, isNotNull);
+      expect(moved!.text, 'b\na\nc');
+      expect(moved.caret, 2, reason: '光标落在搬完之后这一行的行首');
+      expect(moved.delta, 2);
+    });
+
+    test('往上搬：文末那一行没有自己的换行，就吃掉上一行那个', () {
+      const String text = 'a\nb\nc';
+      final ({String text, int caret, int delta})? moved = moveSourceLine(
+        text: text,
+        lineStart: 4,
+        lineEnd: 5,
+        insertAt: 0,
+      );
+      expect(moved!.text, 'c\na\nb');
+      expect(moved.caret, 0);
+      expect(moved.delta, -4);
+    });
+
+    test('搬到文末：不留下多余的换行', () {
+      const String text = 'a\nb';
+      final ({String text, int caret, int delta})? moved = moveSourceLine(
+        text: text,
+        lineStart: 0,
+        lineEnd: 1,
+        insertAt: 3,
+      );
+      expect(moved!.text, 'b\na');
+      expect(moved.caret, 2);
+    });
+
+    test('落在自己身上或紧挨着自己：搬了等于没搬，返回 null', () {
+      const String text = 'a\nb\nc';
+      for (final int at in <int>[0, 2]) {
+        expect(
+          moveSourceLine(text: text, lineStart: 0, lineEnd: 1, insertAt: at),
+          isNull,
+          reason: 'insertAt=$at',
+        );
+      }
+    });
+
+    test('越界的落点一律不动', () {
+      const String text = 'a\nb';
+      expect(
+        moveSourceLine(text: text, lineStart: 0, lineEnd: 1, insertAt: 99),
+        isNull,
+      );
+      expect(
+        moveSourceLine(text: text, lineStart: 0, lineEnd: 99, insertAt: 0),
+        isNull,
+      );
+    });
+
+    test('图片行搬家后仍然是自成一段的一整行', () {
+      const String img = '<img src="a.png" width="200" alt="图">';
+      final String text = '正文\n$img\n结尾';
+      final int start = text.indexOf(img);
+      final ({String text, int caret, int delta})? moved = moveSourceLine(
+        text: text,
+        lineStart: start,
+        lineEnd: start + img.length,
+        insertAt: text.length,
+      );
+      expect(moved!.text, '正文\n结尾\n$img');
+      expect(ImageMarkup.parseLine(img), isNotNull);
     });
   });
 

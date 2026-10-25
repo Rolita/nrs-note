@@ -436,6 +436,11 @@ class WebNoteStore with NoteStoreSupport implements NoteStore {
     return writeNewMarkdown(raw, preferredName, folderPath: folderPath);
   }
 
+  /// No `file://` on the web: there is no path to read, so a drop there is
+  /// handled by the browser, not by the vault.
+  @override
+  Future<String?> readMarkdownFile(String path) async => null;
+
   @override
   Future<Note> writeNewMarkdown(
     String raw,

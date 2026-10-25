@@ -117,11 +117,12 @@ void main() {
     }
   });
 
-  testWidgets('选区与本行有交集（含边界）时退回源码', (
+  testWidgets('光标停在图片行上仍然显示图片，只有真的选字才退回源码', (
     WidgetTester tester,
   ) async {
-    const String text = '![图](a.png)\n正文';
-    final SourceLine line = scanSourceLines(text).first;
+    // 第一行是正文，好让图片行有一个「上一行」可用来试边界。
+    const String text = '前言\n![图](a.png)\n正文';
+    final SourceLine line = scanSourceLines(text)[1];
     TextSelection selection = const TextSelection.collapsed(offset: -1);
     final LiveImageBlocks live = LiveImageBlocks(
       palette: AppPalette.light,
@@ -134,15 +135,30 @@ void main() {
 
     expect(live.blockFor(line, context(720)), isNotNull);
 
-    selection = TextSelection.collapsed(offset: line.end);
+    // 光标落在这一行的任何位置都不再摊开源码——粘贴完光标就停在行尾。
+    for (final int caret in <int>[line.start, line.start + 2, line.end]) {
+      selection = TextSelection.collapsed(offset: caret);
+      expect(
+        live.blockFor(line, context(720)),
+        isNotNull,
+        reason: '光标在 offset=$caret 时图片应该还在',
+      );
+    }
+
+    // 真的在选这一行的字，才把标记摊开：那时要看见自己选了什么。
+    selection = TextSelection(
+      baseOffset: line.start + 2,
+      extentOffset: line.start + 5,
+    );
+    expect(live.blockFor(line, context(720)), isNull);
+
+    // 只碰到边界不算交集：从上一行一路选到这一行行首，图片不该变成源码。
+    selection = TextSelection(baseOffset: 0, extentOffset: line.start);
     expect(
       live.blockFor(line, context(720)),
-      isNull,
-      reason: '光标压在行尾边界上也算命中本行',
+      isNotNull,
+      reason: '选区停在行首边界上，没有选中本行的字',
     );
-
-    selection = const TextSelection(baseOffset: 2, extentOffset: 5);
-    expect(live.blockFor(line, context(720)), isNull);
 
     selection = TextSelection.collapsed(offset: line.end + 1);
     expect(
@@ -441,15 +457,19 @@ void main() {
     expect(block.highlightRects(line.end + 1, line.end + 5), isEmpty);
   });
 
-  testWidgets('同一行复用同一块，源码换了才换块', (WidgetTester tester) async {
+  testWidgets('同一行复用同一块，只有换了图才换块', (WidgetTester tester) async {
     final ui.Image source = await image(tester, 400, 200);
     final _TestImageProvider provider = _TestImageProvider(source);
+    final List<String> asked = <String>[];
     String text = '![图](a.png)';
     final LiveImageBlocks live = LiveImageBlocks(
       palette: AppPalette.light,
       text: () => text,
       selection: () => const TextSelection.collapsed(offset: -1),
-      imageProviderFor: (_) => provider,
+      imageProviderFor: (String src) {
+        asked.add(src);
+        return provider;
+      },
       onLineInvalidated: (_) {},
     );
     addTearDown(live.dispose);
@@ -464,12 +484,67 @@ void main() {
     );
     expect(identical(first, again), isTrue, reason: '文件流不该每次 build 重挂');
 
+    // 同一张图换个写法：块留着，图片流不用重挂（重挂就会闪一下占位）。
     text = '<img src="a.png" width="200">';
     final LineBlockView? changed = live.blockFor(
       scanSourceLines(text).single,
       context(720),
     );
-    expect(identical(first, changed), isFalse);
+    expect(identical(first, changed), isTrue);
     expect((changed! as ImageLineBlock).width, 200);
+
+    // 真的换了图：块还留着，但图片流必须重新挂一次。
+    expect(asked, <String>['a.png'], reason: '换写法不该重新解析图片');
+    text = '![图](b.png)';
+    final LineBlockView? other = live.blockFor(
+      scanSourceLines(text).single,
+      context(720),
+    );
+    expect((other! as ImageLineBlock).markup.source, 'b.png');
+    expect(asked.last, 'b.png');
+  });
+
+  testWidgets('要改源码时只是浮出一块窗，行高与图片都不动', (WidgetTester tester) async {
+    final ui.Image source = await image(tester, 400, 200);
+    final _TestImageProvider provider = _TestImageProvider(source);
+    const String text = '![图](a.png)';
+    int? editing;
+    final LiveImageBlocks live = LiveImageBlocks(
+      palette: AppPalette.light,
+      text: () => text,
+      selection: () => const TextSelection.collapsed(offset: -1),
+      editingLine: () => editing,
+      sourceFontSize: 15.5,
+      imageProviderFor: (_) => provider,
+      onLineInvalidated: (_) {},
+    );
+    addTearDown(live.dispose);
+
+    final ImageLineBlock block =
+        live.blockFor(scanSourceLines(text).single, context(720))!
+            as ImageLineBlock;
+    expect(block.height, closeTo(200, 1));
+    expect(block.chromeSourceBounds(), Rect.zero, reason: '不编辑时没有浮窗');
+
+    editing = 0;
+    live.blockFor(scanSourceLines(text).single, context(720));
+    final Rect band = block.chromeSourceBounds();
+    expect(band.isEmpty, isFalse, reason: '编辑时浮出一块源码窗');
+    expect(band.height, greaterThan(15));
+    // 浮窗压在图上，不是挤进版面：行高、图片位置、图片大小一个都不变。
+    expect(block.height, closeTo(200, 0.01), reason: '行高不动');
+    expect(
+      block.chromeImageBounds().top,
+      0,
+      reason: '图片不再被源码行顶下去',
+    );
+    expect(block.chromeImageBounds().height, closeTo(200, 0.01));
+    expect(band.top, greaterThanOrEqualTo(0));
+    expect(band.bottom, lessThanOrEqualTo(block.chromeImageBounds().bottom));
+
+    editing = null;
+    live.blockFor(scanSourceLines(text).single, context(720));
+    expect(block.height, closeTo(200, 0.01));
+    expect(block.chromeSourceBounds(), Rect.zero);
   });
 }

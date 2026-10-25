@@ -717,4 +717,53 @@ void main() {
       );
     });
   });
+
+  group('clearTableColumnWidths', () {
+    test('removes the whole directive when w was all it carried', () {
+      const String sized =
+          '| <!--nrs w=180,240-->指标 | 本周 |\n'
+          '| --- | ---: |\n'
+          '| 新增 | 42 |';
+      final TextEditingValue out = clearTableColumnWidths(
+        const TextEditingValue(
+          text: sized,
+          selection: TextSelection.collapsed(offset: 0),
+        ),
+        tableId: 0,
+      )!;
+      expect(out.text.split('\n').first, '| 指标 | 本周 |');
+      expect(out.text, isNot(contains('nrs')));
+    });
+
+    test('keeps spans, colors and keys this app does not own', () {
+      const String formatted =
+          '| <!--nrs c=2 bg=amber foo=1 w=180,240-->标题 |  |\n'
+          '| --- | --- |\n'
+          '| 一 | 二 |';
+      final TextEditingValue out = clearTableColumnWidths(
+        const TextEditingValue(
+          text: formatted,
+          selection: TextSelection.collapsed(offset: 0),
+        ),
+        tableId: 0,
+      )!;
+      expect(
+        out.text.split('\n').first,
+        '| <!--nrs c=2 bg=amber foo=1-->标题 |  |',
+      );
+    });
+
+    test('is a no-op on a table that is already auto-sized', () {
+      expect(
+        clearTableColumnWidths(
+          const TextEditingValue(
+            text: '| 甲 | 乙 |\n| --- | --- |\n| 1 | 2 |',
+            selection: TextSelection.collapsed(offset: 0),
+          ),
+          tableId: 0,
+        ),
+        isNull,
+      );
+    });
+  });
 }

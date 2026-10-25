@@ -9,6 +9,8 @@ import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/markdown_outline.dart';
+import '../../core/utils/note_image.dart';
+import '../../core/utils/note_images.dart';
 import '../../data/models/note.dart';
 import '../../data/storage/note_store.dart';
 import '../../state/notes_controller.dart';
@@ -21,6 +23,7 @@ import '../common/app_widgets.dart';
 import '../common/delete_dialog.dart';
 import '../common/notices.dart';
 import '../editor/editor_pane.dart';
+import '../editor/image_panel.dart';
 import '../editor/outline_panel.dart';
 import '../editor/table_panel.dart';
 import '../templates/template_interaction.dart';
@@ -602,6 +605,11 @@ class _AppShellState extends State<AppShell> {
                     !zen &&
                     settings.tablePanelVisible &&
                     c.maxWidth >= AppLayout.outlineMinShellWidth;
+                // 图片列表是这一栏的第三个住户，互斥同样由设置层保证。
+                final bool showImages =
+                    !zen &&
+                    settings.imagePanelVisible &&
+                    c.maxWidth >= AppLayout.outlineMinShellWidth;
                 final double leftInset = zen
                     ? 0
                     : AppLayout.railWidth +
@@ -613,7 +621,9 @@ class _AppShellState extends State<AppShell> {
                 // handle in front of it, so the handle's width is not counted.
                 final double rightInset = showOutline
                     ? settings.outlineWidth
-                    : (showTable ? settings.tablePanelWidth : 0);
+                    : (showTable
+                          ? settings.tablePanelWidth
+                          : (showImages ? settings.imagePanelWidth : 0));
                 return Column(
                   children: <Widget>[
                     // The app's own caption: drag to move, double-click to
@@ -729,6 +739,20 @@ class _AppShellState extends State<AppShell> {
                                       ),
                                 ),
                               ],
+                              if (showImages) ...<Widget>[
+                                ResizeHandle(
+                                  background: p.surface,
+                                  onDelta: (double d) =>
+                                      settings.imagePanelWidth =
+                                          settings.imagePanelWidth - d,
+                                ),
+                                _ImageRegion(
+                                  width: settings.imagePanelWidth,
+                                  onSelect: (int offset) => _editorKey
+                                      .currentState
+                                      ?.goToOffset(offset),
+                                ),
+                              ],
                             ],
                           ),
                           // The notice lives in the window's top-right corner,
@@ -805,6 +829,59 @@ class _OutlineRegionState extends State<_OutlineRegion> {
       currentLine: widget.currentLine,
       width: widget.width,
       onSelect: widget.onSelect,
+    );
+  }
+}
+
+/// 图片列表只订阅当前草稿，和 [_OutlineRegion] 同一条规矩。
+///
+/// 正文对象没换就复用上一次扫出来的列表——否则主题、保存状态这些通知都会让
+/// 整篇重新逐行扫一遍。缩略图本身由 `ImagePanel` 各自挂着，图片解码结果在
+/// Flutter 的 `ImageCache` 里，切换面板不会重新下载。
+class _ImageRegion extends StatefulWidget {
+  const _ImageRegion({required this.width, required this.onSelect});
+
+  final double width;
+
+  /// 点了某一张：参数是那一行的行首偏移。
+  final ValueChanged<int> onSelect;
+
+  @override
+  State<_ImageRegion> createState() => _ImageRegionState();
+}
+
+class _ImageRegionState extends State<_ImageRegion> {
+  String? _noteId;
+  String? _body;
+  List<NoteImage> _images = const <NoteImage>[];
+
+  @override
+  Widget build(BuildContext context) {
+    final Note? open = context.select<NotesController, Note?>(
+      (NotesController notes) => notes.draft ?? notes.selectedNote,
+    );
+    final List<NoteImage> images;
+    if (open == null) {
+      _noteId = null;
+      _body = null;
+      images = _images = const <NoteImage>[];
+    } else if (_noteId == open.id && identical(_body, open.body)) {
+      images = _images;
+    } else {
+      _noteId = open.id;
+      _body = open.body;
+      images = _images = extractImages(open.body);
+    }
+
+    // `read` 而不是 `watch`：这里只要一个能随时问「这张图在磁盘哪儿」的句柄，
+    // 不需要跟着每一次击键重建面板。
+    final NotesController notes = context.read<NotesController>();
+    return ImagePanel(
+      images: images,
+      width: widget.width,
+      onSelect: widget.onSelect,
+      providerFor: (NoteImage image) =>
+          imageProviderFor(notes.assetPathFor(image.source), image.source),
     );
   }
 }

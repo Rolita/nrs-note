@@ -30,11 +30,14 @@
 | G7 | 未改宽度的图片行保持标准 Markdown `![alt](assets/x.png)`；改过宽度的写成 `<img src="assets/x.png" width="320" alt="…">`，保证其他 Markdown 工具能读到宽度。 |
 | G8 | 粘贴文本的行为与现在**完全一致**（包括表格前后补空行、表格内粘贴拒绝等规则）。 |
 | G9 | 所有失败路径都以错误提示告知；**不新增任何成功提示**（项目硬约束）。 |
+| G10 | 按住图片本体拖动可把它整行搬到别处：拖动期间只画一条插入线、文档一个字都不写；松手一次性落成，只产生**一步**撤销记录；搬完仍然选中它。 |
+| G11 | 悬停图片时右上角多一颗「移动」按钮，按住它就能把图拖到任意位置。落点在正文左/右三分之一时图片**贴边浮动**（`align="left|right"`），后面几行正文在另一侧绕排——「左文字右图片」「左图片右文字」都由此而来；落在中间则独占一行。 |
+| G12 | 从网页里拖一张图片进来，认出它是**图片**，写成 `<img src="…">` 并直接渲染；拖一条**超链接**进来仍然是 `[标题](地址)`。两者判定顺序固定，不会互相抢（§4.z）。 |
+| G13 | 指针停在图片（或表格抓手、折叠箭头）上时，滚轮**照样滚**，且滚的距离与停在文字上一模一样（不会滚两下）。 |
 
 ### 1.2 非目标（明确不做，避免实施者扩张范围）
 
-- ❌ 拖动整块图片在段落间移动（第二阶段）。
-- ❌ 浮动图片、文字环绕。
+- ❌ 图片按像素自由定位（拖到哪儿就停在哪儿）。浮动只有左/右两栏，落点纵向吸附到行边界——源码里必须还是一个能读的 `<img>` 行，否则换个编辑器就散了。
 - ❌ Web 端落盘（Web 存储直接返回不支持，UI 给出错误提示）。
 - ❌ 图片压缩、格式转换（除 DIB → PNG 的必要编码外）。
 - ❌ 删除笔记时清理孤立图片、移动笔记时重写相对链接（记录为已知限制，见 §11）。
@@ -281,6 +284,123 @@ caret = at + prefix.length + imageLine.length + suffix.length
 
 > 说明：在文档末尾粘贴会多出一个空行。这是有意的——否则光标只能停在图片行内，
 > 图片会立刻退回源码，粘贴体验断裂。测试需断言该行为。
+
+`moveSourceLine` 精确规则（拖动整块搬家，纯字符串、无 widget 依赖）：
+
+```dart
+/// 把 [lineStart, lineEnd) 这一整行搬到 [insertAt]。
+/// - 行尾有自己的换行就连着换行一起搬；文末那行没有，就吃掉上一行那个；
+/// - 落点在自己身上（本行行首 / 紧跟其后的下一行行首）返回 null，等于没搬；
+/// - 越界落点一律返回 null。
+({String text, int caret, int delta})? moveSourceLine({
+  required String text,
+  required int lineStart,
+  required int lineEnd,
+  required int insertAt,
+});
+```
+
+拖动交互（`markdown_editor.dart`）：
+
+- 按在图片本体上记一个 `_ImageMove(lineStart, origin)`；指针走过 `kTouchSlop`
+  才算「搬走」，否则松手仍是「点选这张图」。
+- 每一帧只把指针 y 吸附到最近的行边界（`RenderLineEditable.dropTargetAt`），
+  画一条 1px 的 `accent` 插入线；**文档一个字节都不写**。
+- 松手时一次性 `moveSourceLine` 落成，`_history.breakMerge()` 保证只有一步撤销；
+  落点没变就什么都不做。搬完 `_selectImage(caret)`，边框跟着走。
+- `Esc` / 指针取消：丢掉插入线，文档不动。
+
+### 4.x 贴边浮动（`align="left|right"`）
+
+源码写法（`ImageMarkup.align`，属性顺序 `src` → `width` → `align` → `alt`）：
+
+```
+<img src="assets/x.png" width="320" align="right" alt="图片">
+```
+
+- `![…](…)` 没有放属性的地方，所以**一旦贴边就写成标签**；拖回中间时还原成
+  标准 Markdown（没有宽度的话）。
+- 解析认大小写与单双引号；`align="center"` 这种认不出的值当作没写——一行
+  `<img>` 不该因为一个不认识的属性整行退回源码。
+
+排版规则（`layoutLines`）：
+
+- 浮动图片那一行**高度算 0**：它和下面的正文共用同一段纵向空间。
+- 它之后、直到文字越过图片底部的每一行，都在另一侧让出
+  `图片宽 + 18px` 的宽度（`EdgeInsets.left/right`），正文就在剩下的那一栏里排。
+- 贴右边时图片横向贴到正文列右缘（`ImageLineBlock._floatDx`）。
+- 整篇高度取「行累积高度」与「最后一段浮动的底部」的较大者，否则文末那张
+  图会被裁掉下半截。
+- 浮动图片的宽度上限是正文列的 62%：旁边总得留得下字。
+- **有浮动时不做增量重排**（`LineDocumentLayout.hasFloats` /
+  `relayoutOnEdit` 遇到 `align` 一律返回 `null`）：某一行的宽度取决于上文，
+  增量只按行高平移，绕排会错位。
+
+拖动交互补充：
+
+- 悬停图片时右上角是「查看大图 / 移动 / 编辑这个区块」三颗按钮，只读时只剩
+  第一颗。「移动」是一颗**能拖的按钮**（`Listener`，不走手势竞技场，免得和
+  字段的选区拖动抢这一下），按下就开始搬，不必等 `kTouchSlop`。
+- 每一帧同时算两件事：指针 y 吸附到行边界（落点），指针 x 落在正文的左/右
+  三分之一还是中间（贴左 / 贴右 / 独占一行）。
+- 预览是一个半透明的强调色框（`_ImageDropGhost`），尺寸就是图片接下来会占的
+  那一块；只有「独占一行」时才额外画那条插入线。
+- 指针还压在自己这张图上时算「原地」——不搬家，但**可以改贴哪一边**。
+
+### 4.y 改源码：浮窗，不动版面
+
+「编辑这个区块」弹的是**浮在图片左上角内侧的一小块窗**，不占布局：
+
+- 图片的位置、大小、贴哪一边、下面正文的绕排范围，全都不变——行高恒等于图片高，
+  `chromeAlign` / `chromeFloatWidth` 也不再因为「正在编辑」而变。
+- 浮窗宽 `max(图片宽 − 24, 360)`，夹在正文列里（左右各留 12/4 的内边距），
+  高度按源码字数估 1–6 行。底色 `surfaceRaised` + 描边 + 阴影，压得住图片。
+- 块本身在编辑时把整张图压暗 20%（`0x33000000`），只是提示「现在动的是它的源码」。
+- Esc / 点别处关掉；Enter 提交。提交后图片仍在原处——从头到尾就没挪过。
+
+> 历史：早先的做法是「块为源码让出一行、图片整体下移」。它在普通图片上只是跳一下，
+> 到了浮动图片上直接把贴边取消、正文重排，等于点一下「编辑」整篇换了个样。
+
+### 4.z 从网页拖进来：图片还是链接
+
+拖放的载荷是同一个（系统 URL + `text/html` + 纯文本），归宿有三种，**判定顺序
+不能换**：
+
+| 载荷长什么样 | 判成 | 写进正文 |
+|---|---|---|
+| HTML 里有 `<img src>` | 图片 | `<img src="地址">`（有 `alt` 一起写） |
+| 地址本身是张图（`.jpg`/`.png`…），且 HTML 里没有指向它的锚点 | 图片 | 同上 |
+| HTML 里有 `<a href>` / 纯文本是一行地址 | 链接 | `[标题](地址)` |
+| 其余 | 文字 | 原样落字（走 `pasteValue`） |
+
+- **图片先判**：拖一张图时浏览器同时给了图片地址和一条 `text/uri-list`，先问
+  链接的话，一张图会变成正文里一行 `[图](地址)`——图没进去，还多一条链接。
+- 一个 `<img>` 上的候选地址按 `src` → `data-src` → `data-original` → `srcset`
+  顺序试：懒加载站点的 `src` 常常只是一张 `data:` 占位图，不代表这张图不能用。
+- 相对 `src`（`/img/a.png`）按这次拖放的系统 URL 补全成绝对地址。
+- `data:` / `blob:` / `file://` 不当作网页图片：前两种是一段内存里的数据，写进
+  笔记也加载不出来；本地文件要走文件那条路。
+- `alt` 看着像个地址时不当标题用（和 `_cleanTitle` 同一条规矩）。
+- 远程图片走 `NetworkImage` 直接渲染，**不下载、不落盘**（与 §14 一致：粘贴
+  路径才产生本地文件）。站点拒绝外链时这张图会显示失败占位。
+- 落点落在表格行或代码围栏里时拒绝并提示「表格或代码块里不能插入图片」，
+  与粘贴图片同一条规矩。
+
+### 4.w 自绘控件上的滚轮
+
+`_ChromeShield` 命中自绘控件（图片本体、改宽手柄、表格抓手与分隔线、折叠箭头）
+就 `return true`、不再往下问——光标才不会落进图片那一行，表格抓手上的那一下也
+不会变成落字。
+
+代价是它把整棵 `SingleChildScrollView` 从命中链上剪掉了：`PointerSignalEvent`
+只发给命中链上的监听者，滚轮到不了 `Scrollable`，**指针一停在图片上就滚不动**。
+
+补法：编辑器外层那个 `Listener` 加 `onPointerSignal`，注册到
+`GestureBinding.pointerSignalResolver` 而不是直接滚。正常落在文字上时
+`Scrollable` 在链上更深、先注册，我们这份被解析器忽略——不会滚两下；只有被盾牌
+剪掉那一种情况才轮到我们。增量取 `event.scrollDelta.dy`，交给
+`ScrollPosition.pointerScroll`（和 `Scrollable` 自己走的是同一条路，物理、回弹、
+边界夹取全都一致）。
 
 ---
 
@@ -911,3 +1031,6 @@ flutter test --tags perf test/live_markdown_perf_test.dart   # 必须单独跑
 | T5 | 完成 2026-10-24 | 新增 `lib/ui/editor/live_markdown/image_block.dart`：`LiveImageBlocks` 按行首偏移缓存块、`setPreviewWidth` 管理拖拽预览；`blockFor` 只接管 paragraph 且整行单图、选区与本行有交集（含边界）时返回 null 退回源码；`ImageLineBlock` 实现 §10.3 尺寸规则（占位 360×120、自然宽缩进正文列、640 高度软上限、显式宽度夹在 96..列宽且不受高度上限约束）、`drawImageRect` + 圆角描边、失败占位（`imageOff` + 文件名）、光标/选区几何与 `ImageBlockChrome`（右下角 14×14 手柄，失败态仍在）。`line_block_view.dart` 增加两个契约；`render_line_editable.dart` 增加 `invalidateImageLine`（行首偏移→行下标）与按布局缓存、仅视口内的 `imageBlocks()`，池化布局收养与 `_paintBlocks` 时回写块源码范围；`markdown_editor.dart` 用稳定的 `_LineBlockResolver`（tables → images）接线。修复解码完成时只挂 post-frame callback、不请求新帧导致空闲时永远停在占位的问题（补 `ensureVisualUpdate()`）。新增 `test/image_block_test.dart` 12 个用例，`test/live_editor_widget_test.dart` 增 5 个图片用例（含像素探针），该文件 78 个用例全过；`flutter analyze lib test` 无问题。 |
 | T6 | 完成 2026-10-24 | `markdown_editor.dart` 新增 `_imageResize`（行首、起始宽度、按下 x、列宽上限）：`_imageHandleAt` 通过 `imageBlocks()` 的 14×14 手柄命中，悬停给 `resizeUpLeftDownRight`，`_ChromeShield` 同时挡住手柄上的按压，输入框的选区手势收不到；按下只聚焦并进入改宽，不移动光标。拖动仅 `setPreviewWidth` + `invalidateImageLine`，controller 与 `onChanged` 全程不动；松手 `_finishImageResize` 清预览、`breakMerge()`、按 `ImageMarkup.parseLine(...).toMarkdown(width:)` 一次替换整行，选区按长度差平移并夹在新长度内，只发一次 `onChanged`；宽度夹在 96..正文列宽。Esc 与 pointer cancel 丢弃预览、不写源码。新增 `test/image_resize_test.dart` 6 个用例（悬停光标、预览期零写入/零 onChanged、下方行 painter 不变、一次写入、Ctrl+Z 一步回退、96/720 夹取、Esc 取消、失败图片仍可改宽）全过；`image_block_test`、`live_editor_widget_test`、`table_chrome_test`、`paste_image_test` 共 129 个用例全过；`flutter analyze lib test` 无问题。撤销按既有 `_historyCaretOffset` 把光标落在图片行行尾，会揭示源码，测试按此行为断言。 |
 | T7 | 完成（自动化部分）2026-10-25 | `flutter analyze lib test` 无问题；`flutter test --exclude-tags perf` 全量 1075 个用例全绿；perf 单独跑 6 个基准全过（本机满载时两个既有基准曾超 1000ms 阈值，空载重跑恢复，环境噪声非回归）。在 `test/live_markdown_perf_test.dart` 新增 `one-character edits in a 1000-line document with 20 images` 打字基线：1000 行、每 50 行一张图、同步交付的假图片源模拟命中 `ImageCache` 的再解析，本机实测 334.58 ms/build（阈值 <1000ms 与同文件其他基准一致）。对照 §14 无超出范围的行为：T6/T7 只动 §12 范围内的指针层、测试与文档，唯一无关改动是 `test/table_chrome_paint_test.dart` 删除两个未使用 import（analyze 门槛的纯清理）。§13 检查点：粘贴/改宽各一步撤销、光标进出揭示、滚动条优先级均有测试覆盖；表格先于图片的解析顺序由 `_LineBlockResolver` 结构保证。**剩余待用户执行**：§16.4 原生手测（截图/画图/浏览器复制、纯文本与文件复制原行为），须完全退出并重启应用后测；§17 DoD 中真实落盘 `assets/image_*.png`、重启后宽度持久化、外部工具读到 `<img width>` 等手工项。 |
+| T11 | 完成 2026-10-25 | 网页拖放区分「图片 / 超链接」。`dropped_link.dart` 新增 `DroppedImage` + `parseDroppedImage` + `markdownImageFor`：HTML 里找 `<img>`（候选地址按 `src` → `data-src` → `data-original` → `srcset` 逐个试，`data:`/`blob:` 跳过），相对 `src` 按系统 URL 补全；HTML 里没有图时看地址扩展名/图床 `format=` 参数，但同一地址在 HTML 里是个锚点时判回链接；`alt` 沿用 `_cleanTitle`（像地址就不当标题）。属性正则用 `(?:^|\s)` 而不是 `\b`——`\bsrc` 会把 `data-src` 一起匹配上，懒加载站点于是拿到占位图。`markdown_editor.dart` 的 `_readDropped` 返回值扩成 `(image, link, text)`，`_onDrop` 里**图片先判**（拖图时浏览器同时给图片地址和 uri-list，先问链接就会变成一行 `[图](地址)`），图片走 `insertImageBlock` 单独成段、落在表格行/代码围栏里拒绝并提示，`breakMerge()` 保证一步撤销。远程图走 `NetworkImage` 直接渲染，不下载不落盘。新增 `test/dropped_image_test.dart` 16 个用例；`dropped_link` 17 + `dropped_text` 14 全过；`flutter analyze lib test` 无问题。 |
+| T12 | 完成 2026-10-25 | 修「指针停在图片上滚不动」。根因：`_ChromeShield` 命中自绘控件就 `return true`、不再往下问，整棵 `SingleChildScrollView` 被从命中链上剪掉，`PointerSignalEvent` 到不了 `Scrollable`。补法：编辑器外层 `Listener` 加 `onPointerSignal`，用 `GestureBinding.pointerSignalResolver` 注册（正常落在文字上时 `Scrollable` 更深、先注册，我们被忽略，所以不会滚两下），增量取 `scrollDelta.dy` 交给 `ScrollPosition.pointerScroll`。新增 `test/image_scroll_test.dart` 2 条：图上滚得动、图上与字上滚一样远；**去掉修复后两条都失败**（offset 恒 0.0，正文上 120.0），修复后全过。`image_scroll` 2 + `scroll_behavior` 2 + `table_chrome` 32 + `image_resize` 30 共 72 条全过；`flutter analyze lib test` 无问题。 |
+| T13 | 完成 2026-10-25 | 新增「图片」右侧边栏。`lib/core/utils/note_images.dart`：`NoteImage{offset,line,markup}` + `extractImages(body)` 纯函数，逐行用 `ImageMarkup.parseLine` 判定——和渲染层同一个函数，所以「面板列出的」与「正文画成图的」永远同一批（行内混着文字的不算）。`lib/ui/editor/image_panel.dart`：表头「图片 + 张数」、44px 缩略图（加载中/失败都落占位，行高不跳）、两行说明（alt 或文件名 / `第 N 行 · 原尺寸|宽 X [· 网络]`）、点一行 `onSelect(offset)` → `goToOffset`；空态一句话。`SettingsController` 增加 `imagePanelVisible` / `imagePanelWidth`，三个面板开关**在设置层互斥**（开一个同时关掉另外两个），`app_shell` 增加 `showImages` 与 `_ImageRegion`（按 note id + 正文对象身份缓存，正文没换不重扫）、拖拽改宽、`rightInset` 三选一。`title_bar_content` 加第三颗「图片」开关：三颗按钮从 32px 缩到 28px、缝 2px（三个 32 + 两道 4px = 104，而大纲栏最窄时「面板左缘 → 窗口按钮」只有 100，差 4px 就会被夹得偏出面板），`pairWidth` 随之改。新增 `test/note_images_test.dart` 10 条、`test/image_panel_test.dart` 4 条、`settings_controller_test` 3 条、`shell_layout_test` 1 条（面板互斥 + 列出当前文件的图）。 |

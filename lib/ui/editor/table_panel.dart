@@ -126,7 +126,7 @@ class _Header extends StatelessWidget {
   }
 }
 
-class _Body extends StatelessWidget {
+class _Body extends StatefulWidget {
   const _Body({
     required this.value,
     required this.onApply,
@@ -136,6 +136,40 @@ class _Body extends StatelessWidget {
   final TextEditingValue value;
   final ValueChanged<MarkdownEditFn> onApply;
   final ValueChanged<int> onJump;
+
+  @override
+  State<_Body> createState() => _BodyState();
+}
+
+class _BodyState extends State<_Body> {
+  /// The scope the user last asked for, kept only while the selection still
+  /// looks like it.
+  ///
+  /// A one-column sweep of a wider table is geometrically a block of cells —
+  /// nothing in the source says 「column grip」 — so 「整列」 would fall straight
+  /// back to 「单元格」 on the rebuild that follows it. Remembering the request
+  /// is what makes the switch stick.
+  _Scope? _intent;
+
+  TextEditingValue get value => widget.value;
+  ValueChanged<MarkdownEditFn> get onApply => widget.onApply;
+  ValueChanged<int> get onJump => widget.onJump;
+
+  @override
+  void didUpdateWidget(_Body old) {
+    super.didUpdateWidget(old);
+    final _Scope? intent = _intent;
+    if (intent == null) return;
+    // The same selection rebuilt (a colour change, a re-measure) keeps the
+    // intent; anything the user moved away from drops it.
+    if (old.value.selection == widget.value.selection) return;
+    if (!_scopeFits(intent, widget.value)) _intent = null;
+  }
+
+  void _pickScope(_Scope next) {
+    setState(() => _intent = next);
+    onApply((TextEditingValue v) => _selectScope(v, next) ?? v);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -199,12 +233,6 @@ class _Body extends StatelessWidget {
             : null,
       );
     }
-
-    final List<_Cmd> select = <_Cmd>[
-      cmd(LucideIcons.rows3, '选中整行', selectTableRow),
-      cmd(LucideIcons.columns3, '选中整列', selectTableColumn),
-      cmd(LucideIcons.table, '选中整张表', selectTableAll),
-    ];
 
     final List<_Cmd> rows = <_Cmd>[
       cmd(
@@ -376,38 +404,6 @@ class _Body extends StatelessWidget {
       ),
     ];
 
-    final List<_Cmd> summary = <_Cmd>[
-      cmd(
-        LucideIcons.sigma,
-        '在表尾追加合计行',
-        (TextEditingValue v) => summarizeTable(v, TableAggregate.sum),
-        enabled: numeric,
-      ),
-      cmd(
-        LucideIcons.scale,
-        '在表尾追加平均行',
-        (TextEditingValue v) => summarizeTable(v, TableAggregate.average),
-        enabled: numeric,
-      ),
-      cmd(
-        LucideIcons.hash,
-        '在表尾追加计数行',
-        (TextEditingValue v) => summarizeTable(v, TableAggregate.count),
-      ),
-      cmd(
-        LucideIcons.arrowDown,
-        '在表尾追加最小值行',
-        (TextEditingValue v) => summarizeTable(v, TableAggregate.min),
-        enabled: numeric,
-      ),
-      cmd(
-        LucideIcons.arrowUp,
-        '在表尾追加最大值行',
-        (TextEditingValue v) => summarizeTable(v, TableAggregate.max),
-        enabled: numeric,
-      ),
-    ];
-
     final List<_Cmd> tableTools = <_Cmd>[
       cmd(
         LucideIcons.tableProperties,
@@ -420,13 +416,77 @@ class _Body extends StatelessWidget {
       cmd(LucideIcons.trash2, '删除整张表格', deleteTableAt, danger: true),
     ];
 
+    // The scope is read off the selection, so the panel never has to be told
+    // what the next destructive command would act on — it shows it.
+    final _Scope scope = _intent ?? _scopeOf(range, table);
+    final List<int>? widths = table.columnWidths;
+
+    Widget sigmaRow() {
+      _MenuEntry at(
+        IconData icon,
+        String label,
+        TableAggregate aggregate, {
+        bool needsNumbers = true,
+      }) {
+        final bool on = !needsNumbers || numeric;
+        return _MenuEntry(
+          icon: icon,
+          label: label,
+          onTap: on
+              ? () => onApply(
+                  (TextEditingValue v) =>
+                      summarizeTable(v, aggregate) ?? v,
+                )
+              : null,
+        );
+      }
+
+      return _MenuButton(
+        icon: LucideIcons.sigma,
+        label: '汇总行',
+        entries: <_MenuEntry>[
+          at(LucideIcons.sigma, '合计', TableAggregate.sum),
+          at(LucideIcons.scale, '平均', TableAggregate.average),
+          at(LucideIcons.hash, '计数', TableAggregate.count, needsNumbers: false),
+          at(LucideIcons.arrowDown, '最小值', TableAggregate.min),
+          at(LucideIcons.arrowUp, '最大值', TableAggregate.max),
+        ],
+      );
+    }
+
+    Widget widthRow() {
+      return _WidthRow(
+        label: '${_columnName(column)} 列宽',
+        width: widths == null ? null : widths[column],
+        onStep: (int delta) {
+          final List<int>? current = table.columnWidths;
+          if (current == null || column >= current.length) return;
+          final int next = (current[column] + delta).clamp(
+            _kMinColumnWidth,
+            _kMaxColumnWidth,
+          );
+          if (next == current[column]) return;
+          final List<int> out = List<int>.of(current);
+          out[column] = next;
+          onApply(
+            (TextEditingValue v) =>
+                resizeTableColumns(v, tableId: table.start, widths: out) ?? v,
+          );
+        },
+        onReset: () => onApply(
+          (TextEditingValue v) =>
+              clearTableColumnWidths(v, tableId: table.start) ?? v,
+        ),
+      );
+    }
+
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(10, 6, 10, AppSpace.lg),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           Padding(
-            padding: const EdgeInsets.only(left: 2, bottom: AppSpace.sm),
+            padding: const EdgeInsets.only(left: 2, bottom: 6),
             child: Text(
               _summaryLine(table, column),
               maxLines: 1,
@@ -438,14 +498,27 @@ class _Body extends StatelessWidget {
               ),
             ),
           ),
-          _Group(label: '选择', commands: select),
-          _Group(label: '行', commands: rows),
-          _Group(label: '列', commands: columnsList),
-          _Group(label: '对齐', commands: alignment),
-          _Group(label: '外观', commands: appearance),
-          _Group(label: '数据', commands: data),
-          _Group(label: '汇总', commands: summary),
-          _Group(label: '表格', commands: tableTools),
+          _ScopeBar(scope: scope, onPick: _pickScope),
+          const SizedBox(height: AppSpace.sm),
+          // 格式 is the only group that is always there: merge, split and the
+          // two cell colors apply to every shape of selection.
+          _Group(label: '格式', commands: appearance),
+          if (scope == _Scope.row)
+            _Group(label: '行', commands: rows)
+          else if (scope == _Scope.column) ...<Widget>[
+            _Group(label: '列', commands: columnsList),
+            _Group(label: '对齐', commands: alignment),
+            sigmaRow(),
+          ] else if (scope == _Scope.table) ...<Widget>[
+            _Group(label: '表格', commands: tableTools),
+            widthRow(),
+            const SizedBox(height: AppSpace.sm),
+            sigmaRow(),
+          ] else ...<Widget>[
+            _Group(label: '对齐', commands: alignment),
+            _Group(label: '数据', commands: data),
+            sigmaRow(),
+          ],
         ],
       ),
     );
@@ -832,6 +905,594 @@ class _Group extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// What the selection covers, which is what the panel is allowed to offer.
+///
+/// The three shapes come straight from [TableRangeKind] plus the whole-table
+/// case; 「单元格」 is also what a plain caret reports.
+enum _Scope { cell, row, column, table }
+
+/// The narrowest and widest `w=` a column may be stepped to, in the same
+/// design pixels the canvas drag writes. 64 is the renderer's own floor.
+const int _kMinColumnWidth = 64;
+const int _kMaxColumnWidth = 480;
+const int _kColumnWidthStep = 8;
+
+/// Reads the scope off the range the selection paints.
+///
+/// A rows range that covers every row *is* the whole table — that is exactly
+/// what [selectTableAll] hands back — so the two are told apart by extent, not
+/// by a flag. Single-row and single-column tables never report 「整表」 for a
+/// one-row sweep: there would be no way back to the narrower scope.
+_Scope _scopeOf(TableRange? range, TableBlock table) {
+  if (range == null) return _Scope.cell;
+  final int lastRow = table.bodyRows.length - 1;
+  if (range.isRows) {
+    return lastRow > 0 && range.firstRow == 0 && range.lastRow >= lastRow
+        ? _Scope.table
+        : _Scope.row;
+  }
+  if (range.isColumns) {
+    return table.columns > 1 &&
+            range.firstColumn == 0 &&
+            range.lastColumn >= table.columns - 1
+        ? _Scope.table
+        : _Scope.column;
+  }
+  return _Scope.cell;
+}
+
+/// Whether the selection still looks like [scope] — the guard that decides how
+/// long a remembered 「整列」 survives.
+///
+/// 「单元格」 accepts anything that is not a whole-row sweep, because a caret or
+/// a block of cells both read as one cell scope.
+bool _scopeFits(_Scope scope, TextEditingValue v) {
+  final int caret = v.selection.start.clamp(0, v.text.length);
+  final TableBlock? block = TableBlock.parse(v.text, caret);
+  if (block == null) return false;
+  final TableRange? range = tableRangeOf(v);
+  if (range == null) return false;
+  final int lastRow = block.bodyRows.length - 1;
+  final bool everyRow = range.firstRow == 0 && range.lastRow >= lastRow;
+  switch (scope) {
+    case _Scope.row:
+      return range.isRows && !everyRow;
+    case _Scope.column:
+      return range.firstColumn == range.lastColumn && everyRow;
+    case _Scope.table:
+      return everyRow &&
+          range.firstColumn == 0 &&
+          range.lastColumn >= block.columns - 1;
+    case _Scope.cell:
+      return !range.isRows;
+  }
+}
+
+/// Rewrites the selection so it covers [scope], keeping the same active cell.
+///
+/// 「单元格」 has no command of its own because collapsing a range is not an
+/// edit — it is the same rectangle narrowed to the cell the user started from.
+TextEditingValue? _selectScope(TextEditingValue v, _Scope scope) {
+  switch (scope) {
+    case _Scope.row:
+      return selectTableRow(v);
+    case _Scope.column:
+      return selectTableColumn(v);
+    case _Scope.table:
+      return selectTableAll(v);
+    case _Scope.cell:
+      final int caret = v.selection.start.clamp(0, v.text.length);
+      final TableBlock? block = TableBlock.parse(v.text, caret);
+      if (block == null) return null;
+      final TableRange? range = tableRangeOf(v);
+      final (int row, int column) = range != null
+          ? (range.anchorRow, range.anchorColumn)
+          : tableCellAt(block, caret, extent: false);
+      final TableRange cell = TableRange.rect(
+        block,
+        fromRow: row,
+        toRow: row,
+        fromColumn: column,
+        toColumn: column,
+      );
+      return v.copyWith(
+        selection: TextSelection.collapsed(
+          offset: cell.toTextSelection().start.clamp(0, v.text.length),
+        ),
+      );
+  }
+}
+
+/// Four segments that both report and set what the tools act on.
+///
+/// Replacing the old 「选择」 group with a switch does two things the three
+/// buttons could not: the scope is visible while you work, and every
+/// destructive command below it is labelled by what it will remove.
+class _ScopeBar extends StatelessWidget {
+  const _ScopeBar({required this.scope, required this.onPick});
+
+  final _Scope scope;
+  final ValueChanged<_Scope> onPick;
+
+  static const Map<_Scope, String> _labels = <_Scope, String>{
+    _Scope.cell: '单元格',
+    _Scope.row: '整行',
+    _Scope.column: '整列',
+    _Scope.table: '整表',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    return Container(
+      height: 28,
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: p.surfaceSunken,
+        borderRadius: AppRadius.smAll,
+        border: Border.all(color: p.outlineSoft),
+      ),
+      child: Row(
+        children: <Widget>[
+          for (final _Scope s in _Scope.values)
+            Expanded(
+              child: _ScopeSegment(
+                label: _labels[s]!,
+                active: s == scope,
+                onTap: () => onPick(s),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ScopeSegment extends StatelessWidget {
+  const _ScopeSegment({
+    required this.label,
+    required this.active,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    return HoverBuilder(
+      cursor: SystemMouseCursors.click,
+      builder: (BuildContext context, bool hovered) {
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          child: AnimatedContainer(
+            duration: AppMotion.fast,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: active
+                  ? p.surfaceRaised
+                  : (hovered ? p.surface.withValues(alpha: 0.7) : null),
+              borderRadius: BorderRadius.circular(4),
+              border: active ? Border.all(color: p.outline) : null,
+            ),
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                color: active ? p.textPrimary : p.textSecondary,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// One row of a [_MenuButton]'s list. A `null` [onTap] is a greyed row.
+class _MenuEntry {
+  const _MenuEntry({required this.icon, required this.label, this.onTap});
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+}
+
+/// A full-width button that opens a named list instead of running one command.
+///
+/// Five glyphs of σ/scale/hash/↓/↑ could only be told apart by hovering. One
+/// button that says 「汇总行」 and opens five words costs a click and removes
+/// the guessing.
+class _MenuButton extends StatefulWidget {
+  const _MenuButton({
+    required this.icon,
+    required this.label,
+    required this.entries,
+  });
+
+  final IconData icon;
+  final String label;
+  final List<_MenuEntry> entries;
+
+  @override
+  State<_MenuButton> createState() => _MenuButtonState();
+}
+
+class _MenuButtonState extends State<_MenuButton> {
+  static const double _width = 172;
+
+  bool _hovered = false;
+  OverlayEntry? _popover;
+
+  @override
+  void dispose() {
+    _remove();
+    super.dispose();
+  }
+
+  void _remove() {
+    _popover?.remove();
+    _popover = null;
+  }
+
+  void _toggle() {
+    if (_popover != null) {
+      _remove();
+    } else {
+      _open();
+    }
+  }
+
+  void _open() {
+    final RenderObject? box = context.findRenderObject();
+    final OverlayState? overlay = Overlay.maybeOf(context);
+    if (box is! RenderBox || !box.hasSize || overlay == null) return;
+    final RenderObject? frame = overlay.context.findRenderObject();
+    if (frame is! RenderBox) return;
+
+    final Rect button = MatrixUtils.transformRect(
+      box.getTransformTo(frame),
+      Offset.zero & box.size,
+    );
+    const double margin = 10;
+    const double gap = 6;
+    final double estimated = widget.entries.length * 30 + 10;
+    final double left = button.left.clamp(
+      margin,
+      math.max(margin, frame.size.width - _width - margin),
+    );
+    double top = button.bottom + gap;
+    if (top + estimated > frame.size.height - margin) {
+      top = math.max(margin, button.top - estimated - gap);
+    }
+
+    _popover = OverlayEntry(
+      builder: (BuildContext context) {
+        return Stack(
+          children: <Widget>[
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _remove,
+              ),
+            ),
+            Positioned(
+              left: left,
+              top: top,
+              width: _width,
+              child: Material(
+                type: MaterialType.transparency,
+                child: _MenuCard(
+                  entries: widget.entries,
+                  onPick: (VoidCallback action) {
+                    _remove();
+                    action();
+                  },
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    overlay.insert(_popover!);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _toggle,
+        child: AnimatedContainer(
+          duration: AppMotion.fast,
+          height: 32,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(
+            color: _hovered ? p.surfaceRaised : Colors.transparent,
+            borderRadius: AppRadius.smAll,
+            border: Border.all(
+              color: _hovered ? p.outlineSoft : Colors.transparent,
+            ),
+          ),
+          child: Row(
+            children: <Widget>[
+              Icon(widget.icon, size: 15, color: p.textSecondary),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  widget.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: AppText.caption,
+                    color: p.textSecondary,
+                  ),
+                ),
+              ),
+              Icon(
+                LucideIcons.chevronDown,
+                size: 12,
+                color: p.textTertiary,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The dropdown itself: one 30px row per command, greyed where it cannot run.
+class _MenuCard extends StatelessWidget {
+  const _MenuCard({required this.entries, required this.onPick});
+
+  final List<_MenuEntry> entries;
+  final ValueChanged<VoidCallback> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    return Container(
+      key: const ValueKey<String>('table-menu-popover'),
+      padding: const EdgeInsets.all(5),
+      decoration: BoxDecoration(
+        color: p.surfaceRaised,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: p.outline),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: p.shadow,
+            blurRadius: 26,
+            offset: const Offset(0, 10),
+          ),
+          BoxShadow(
+            color: p.shadow,
+            blurRadius: 4,
+            offset: const Offset(0, 1),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          for (final _MenuEntry entry in entries)
+            _MenuRow(entry: entry, onPick: onPick),
+        ],
+      ),
+    );
+  }
+}
+
+class _MenuRow extends StatelessWidget {
+  const _MenuRow({required this.entry, required this.onPick});
+
+  final _MenuEntry entry;
+  final ValueChanged<VoidCallback> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    final VoidCallback? action = entry.onTap;
+    return HoverBuilder(
+      cursor: action == null
+          ? SystemMouseCursors.basic
+          : SystemMouseCursors.click,
+      builder: (BuildContext context, bool hovered) {
+        final bool lit = hovered && action != null;
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: action == null ? null : () => onPick(action),
+          child: AnimatedContainer(
+            duration: AppMotion.fast,
+            height: 30,
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            decoration: BoxDecoration(
+              color: lit ? p.surfaceSunken : Colors.transparent,
+              borderRadius: BorderRadius.circular(5),
+            ),
+            child: Row(
+              children: <Widget>[
+                Icon(
+                  entry.icon,
+                  size: 14,
+                  color: action == null
+                      ? p.textTertiary.withValues(alpha: 0.45)
+                      : (lit ? p.textPrimary : p.textSecondary),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  entry.label,
+                  style: TextStyle(
+                    fontSize: AppText.caption,
+                    color: action == null
+                        ? p.textTertiary.withValues(alpha: 0.6)
+                        : (lit ? p.textPrimary : p.textSecondary),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// The one width control the panel never had: step the caret's column.
+///
+/// It is disabled until the table carries explicit `w=` values, because a
+/// table that has never been dragged has no widths to add to — inventing a
+/// number for the other columns would visibly reflow the table.
+class _WidthRow extends StatelessWidget {
+  const _WidthRow({
+    required this.label,
+    required this.width,
+    required this.onStep,
+    required this.onReset,
+  });
+
+  final String label;
+
+  /// The current column's `w=`, or `null` when the table is auto-sized.
+  final int? width;
+
+  final ValueChanged<int> onStep;
+
+  /// Drops the `w=` list and hands the columns back to the renderer.
+  final VoidCallback onReset;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    final int? width = this.width;
+    return SizedBox(
+      height: 32,
+      child: Row(
+        children: <Widget>[
+          const SizedBox(width: 2),
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: AppText.caption,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.2,
+                color: p.textSecondary,
+              ),
+            ),
+          ),
+          if (width == null)
+            Text(
+              '拖表格竖线',
+              style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
+            )
+          else ...<Widget>[
+            _StepButton(
+              icon: LucideIcons.minus,
+              tooltip: '收窄本列',
+              onTap: width > _kMinColumnWidth
+                  ? () => onStep(-_kColumnWidthStep)
+                  : null,
+            ),
+            SizedBox(
+              width: 34,
+              child: Text(
+                '$width',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontFamily: AppFonts.mono,
+                  fontFamilyFallback: AppFonts.monoFallback,
+                  color: p.textSecondary,
+                ),
+              ),
+            ),
+            _StepButton(
+              icon: LucideIcons.plus,
+              tooltip: '加宽本列',
+              onTap: width < _kMaxColumnWidth
+                  ? () => onStep(_kColumnWidthStep)
+                  : null,
+            ),
+            _StepButton(
+              icon: LucideIcons.rotateCcw,
+              tooltip: '恢复自适应',
+              onTap: onReset,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _StepButton extends StatelessWidget {
+  const _StepButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    return Tooltip(
+      message: tooltip,
+      waitDuration: const Duration(milliseconds: 500),
+      child: HoverBuilder(
+        cursor: onTap == null
+            ? SystemMouseCursors.basic
+            : SystemMouseCursors.click,
+        builder: (BuildContext context, bool hovered) {
+          final bool lit = hovered && onTap != null;
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onTap,
+            child: AnimatedContainer(
+              duration: AppMotion.fast,
+              width: 24,
+              height: 24,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: lit ? p.surfaceRaised : Colors.transparent,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(
+                  color: lit ? p.outlineSoft : Colors.transparent,
+                ),
+              ),
+              child: Icon(
+                icon,
+                size: 13,
+                color: onTap == null
+                    ? p.textTertiary.withValues(alpha: 0.45)
+                    : p.textSecondary,
+              ),
+            ),
+          );
+        },
       ),
     );
   }
