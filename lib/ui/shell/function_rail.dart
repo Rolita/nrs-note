@@ -20,6 +20,7 @@ class AppRail extends StatelessWidget {
     required this.view,
     required this.onSelectView,
     required this.onOpenTemplates,
+    required this.onOpenCanvas,
     required this.onOpenTrash,
     required this.onOpenSettings,
   });
@@ -27,6 +28,7 @@ class AppRail extends StatelessWidget {
   final SidebarView view;
   final ValueChanged<SidebarView> onSelectView;
   final VoidCallback onOpenTemplates;
+  final VoidCallback onOpenCanvas;
   final VoidCallback onOpenTrash;
   final VoidCallback onOpenSettings;
 
@@ -56,6 +58,13 @@ class AppRail extends StatelessWidget {
             tooltip: '插入模板',
             shortcut: 'Ctrl+P',
             onPressed: onOpenTemplates,
+          ),
+          const SizedBox(height: AppSpace.xs),
+          _RailButton(
+            icon: LucideIcons.squareDashed,
+            tooltip: '白板',
+            shortcut: 'Ctrl+Shift+B',
+            onPressed: onOpenCanvas,
           ),
           const Spacer(),
           _RailButton(

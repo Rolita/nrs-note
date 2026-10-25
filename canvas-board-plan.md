@@ -1,7 +1,7 @@
 # 白板（Canvas）· 实施方案
 
-> 状态：**待确认。** 本文只出方案，不动代码。
-> 目标：在 nrs-v5 里复刻 Obsidian 的白板，文件格式与 Obsidian **双向兼容**。
+> 状态：**已确认，开始实施（P0 起）。** 5 个待定项按建议全部通过，见 §13。
+> 目标：在 nrs-v5 里复刻 Obsidian 的白板。文件后缀 **`.nrs`**，内容格式仍是 **JSON Canvas 1.0**。
 > 面向：接手的实施 AI / 工程师。文中路径均对应仓库 `c:\Users\Kotori\Desktop\nrs-v5`。
 
 ---
@@ -9,7 +9,8 @@
 ## 0. 一句话
 
 白板是一块**无限画布**：往上面扔卡片（文字 / 笔记 / 网页链接），用箭头把卡片连起来，
-所有东西存成一个 `.canvas` 文件（JSON Canvas 1.0），Obsidian 能直接打开，反过来也成立。
+所有东西存成一个 `.nrs` 文件。文件**内容**是 JSON Canvas 1.0——不是我们发明的格式，
+但后缀用 `.nrs` 表明「这是 NRS 的白板」。
 
 ---
 
@@ -19,7 +20,7 @@
 
 | # | 行为 |
 |---|------|
-| C1 | 功能栏（最左那条 `AppRail`）多一颗「白板」按钮；点击开白板：有 `.canvas` 就弹出选择器（含「新建」），没有就直接新建一块。 |
+| C1 | 功能栏（最左那条 `AppRail`）多一颗「白板」按钮；点击开白板：有 `.nrs` 就弹出选择器（含「新建」），没有就直接新建一块。 |
 | C2 | 主区多一个「白板」视图，与「图谱」并列在页签条末尾。 |
 | C3 | 画布可以**平移**（拖空白 / 滚轮）和**缩放**（Ctrl+滚轮 / 触控板捏合），缩放以光标为锚点。无限大，没有边界。 |
 | C4 | 背景是点阵网格，随缩放变化疏密；缩得太小时网格淡出，不糊成一片。 |
@@ -171,13 +172,22 @@ JSON Canvas 的 `color` 是 `"1"`–`"6"` 或十六进制，且规范**故意不
 
 ## 4. 数据层 · `lib/core/utils/canvas_document.dart`（新增）
 
-### 4.1 为什么严格照 JSON Canvas 1.0
+### 4.1 后缀 `.nrs`，内容是 JSON Canvas 1.0
 
-Obsidian 的白板文件就是 JSON Canvas，公开规范、字段少、语义清晰。照抄有三个好处：
+**后缀是 `.nrs`**（已确认）：文件一看就是我们自己的，不会和 Obsidian 的 `.canvas` 撞名，
+也不会被别的工具误认。
 
-1. 用户在 Obsidian 里画的白板能直接拖进库里用；
-2. 反过来也能拿去 Obsidian 打开；
-3. 不用自己发明格式，省掉一轮设计评审。
+**内容仍然是 JSON Canvas 1.0**：字段、类型、枚举值、默认值全部照规范。
+理由不是「为了兼容 Obsidian」（后缀不同，Obsidian 不会直接打开），而是：
+
+1. 规范的字段集已经被现实打磨过（group / subpath / fromEnd / 六色预设），
+   自己发明一套大概率会漏；
+2. 白板的结构本来就是这些字段，没有一样是 NRS 特有的；
+3. **想互通只要加一个「导出为 `.canvas`」**——改后缀 + 直接写出去，不用转格式。
+   反过来「导入 `.canvas`」同理。这两件事都是一期之后几行代码的事。
+
+> 这条要说清楚：后缀换了，所以「双向兼容」从**直接**变成了**导出后**。
+> 如果以后你改主意想直接兼容，把 `.nrs` 改回 `.canvas` 即可，代码里只有一处常量。
 
 ### 4.2 结构
 
@@ -276,7 +286,7 @@ abstract class CanvasStore {
   Future<void> init();
   String get location;
 
-  /// vault 里所有 `.canvas` 的相对路径（相对 vault 根，正斜杠）。
+  /// vault 里所有 `.nrs` 的相对路径（相对 vault 根，正斜杠）。
   Future<List<String>> list();
 
   Future<String?> read(String relativePath);
@@ -287,14 +297,14 @@ abstract class CanvasStore {
 }
 ```
 
-- **io 实现**：复用 `NoteStoreIo` 的 `_walk` 思路，但只收 `.canvas`；跳过 `assets`、
+- **io 实现**：复用 `NoteStoreIo` 的 `_walk` 思路，但只收 `.nrs`；跳过 `assets`、
   `.trash`、`.history`（与 `NoteStoreIo` 的 `skipDirectories` 同一批）。
 - **写入**：`AtomicFileWriter.replace(file, json)`——已有实现，先写 `.tmp` 再 rename。
 - **web 实现**：沿用 `NoteStoreWeb` 的存储键前缀（`nrs:file:` 之类），具体键名对齐现有实现。
 
 ### 5.2 文件放哪（**待确认，见 §13.1**）
 
-提案：白板就是普通文件，可以放在 vault 里任何文件夹，扩展名 `.canvas`。
+白板就是普通文件，可以放在 vault 里任何文件夹，扩展名 `.nrs`。
 新建时的默认位置 = **当前笔记所在文件夹**；没有当前笔记 → vault 根目录。
 文件名 = `白板` + 若重名则 `白板 2`、`白板 3`……
 
@@ -467,7 +477,7 @@ class CanvasHistory {
 ```dart
 class CanvasController extends ChangeNotifier {
   CanvasDocument? _doc;
-  String? _path;                 // 相对 vault 的 .canvas 路径
+  String? _path;                 // 相对 vault 的 .nrs 路径
   final Set<String> _selected;   // 选中的 node id + edge id
   final CanvasHistory _history;
   double zoom = 1;
@@ -510,7 +520,7 @@ _RailButton(
 点击行为：
 
 ```
-有 .canvas 文件？
+有 .nrs 文件？
 ├─ 有  → 弹「打开白板」选择器（列表 + 「新建白板」按钮）
 └─ 没有 → 直接在当前笔记的文件夹里新建一块，打开
 ```
@@ -542,7 +552,7 @@ _RailButton(
 | `lib/core/utils/canvas_document.dart` | 新增 | 数据模型 + `parseCanvas` / `encodeCanvas` + 容错 |
 | `lib/core/utils/canvas_geometry.dart` | 新增 | 坐标变换、贝塞尔控制点、命中测试、吸附（纯函数，好测） |
 | `lib/data/storage/canvas_store.dart` | 新增 | 抽象接口 |
-| `lib/data/storage/canvas_store_io.dart` | 新增 | 桌面实现（`.canvas` 枚举 + 原子写） |
+| `lib/data/storage/canvas_store_io.dart` | 新增 | 桌面实现（`.nrs` 枚举 + 原子写） |
 | `lib/data/storage/canvas_store_web.dart` | 新增 | Web 实现 |
 | `lib/state/canvas_controller.dart` | 新增 | 文档 + 选中 + 视口 + 历史 + 自动保存 |
 | `lib/ui/canvas/canvas_board.dart` | 新增 | 主区画布：`Listener` 状态机、层叠、框选 |
@@ -590,7 +600,7 @@ _RailButton(
 
 ### 10.4 `test/canvas_store_test.dart`（约 8 条）
 
-写入→读出、原子写（中途失败不留半个文件）、只枚举 `.canvas`、跳过 `assets` / `.trash`。
+写入→读出、原子写（中途失败不留半个文件）、只枚举 `.nrs`、跳过 `assets` / `.trash`。
 
 ### 10.5 验证命令
 
@@ -607,7 +617,7 @@ flutter test --exclude-tags perf          # 全量回归
 
 | 阶段 | 内容 | 可验证的东西 |
 |---|---|---|
-| **P0** | `canvas_document.dart` + 全部单测 | 纯 Dart，能拿 Obsidian 的真实 `.canvas` 文件做 round-trip |
+| **P0** | `canvas_document.dart` + 全部单测 | 纯 Dart，能拿 Obsidian 的真实 `.canvas` **内容**做夹具（改后缀 `.nrs`）跑 round-trip |
 | **P1** | `canvas_board.dart` + 网格 + 平移缩放 + 工具条 | 能开一块空白板、自由平移缩放 |
 | **P2** | 卡片：新建 / 拖动 / 缩放 / 编辑 / 删除 / 换色 | 能做出一块「有卡片的白板」 |
 | **P3** | 连线：圆点拖出 / 贝塞尔 / 箭头 / 边标签 | 能把卡片连起来 |
@@ -625,40 +635,25 @@ flutter test --exclude-tags perf          # 全量回归
 |---|---|
 | 卡片多了 Widget 树重（>200 张） | P5 加视口裁剪；`zoom < 0.4` 时只画色块 |
 | 手势互相抢（拖卡片时画布跟着动） | 单层 `Listener` + 显式状态机（§7.1），不用嵌套 GestureDetector |
-| 与 Obsidian 互操作出岔子 | P0 用 Obsidian 导出的真实 `.canvas` 做夹具（含 group / 颜色 / 边标签），round-trip 必须全等 |
+| 格式实现与规范不一致 | P0 用 Obsidian 导出的真实 `.canvas` **内容**做夹具（含 group / 颜色 / 边标签 / fromEnd），改后缀为 `.nrs` 后 round-trip 必须全等 |
 | 笔记改名后文件卡片失效 | 一期：打开时统计失效卡片并在工具条上标一个警告点；二期做按标题重解析 |
 | 撤销栈吃内存 | 存字符串 + 上限 50 步；白板典型 < 100KB，50 步 < 5MB |
 | 自动保存和撤销打架 | 只在 `mutate()` 之后保存，撤销/重做本身也是一次 `mutate()` |
+| **删文件夹被白板挡住** | `NoteStoreIo._holdsOnlyKnownNotes` 把「不是已知笔记的文件」当成不可删的未知文件，`.nrs` 会命中这条，导致「文件夹里还有别的文件，不能删」。P6 要把 `.nrs` 一并纳入 `known` 集合（或在提示里写明「还有 N 块白板」），否则用户会觉得删不掉文件夹 |
 | Web 端持久化容量 | 沿用 `NoteStoreWeb` 的配额错误处理（已有实现） |
 
 ---
 
-## 13. 待你确认（5 个问题）
+## 13. 已确认的决策（2026-10-25）
 
-### 13.1 白板文件放哪？
-
-- **A（推荐）**：就是普通文件，能放在 vault 任意文件夹；新建时默认落在**当前笔记的文件夹**。
-- B：统一放 `白板/` 目录。
-
-### 13.2 一期要不要「把笔记拖进白板」？
-
-- **A（推荐）**：要。`type: "file"` 是白板最有价值的玩法（把几篇笔记摆在一起看）。
-- B：一期只做文字卡片，二期再加。
-
-### 13.3 空白处左键拖动 = 框选还是平移？
-
-- **A（推荐）**：框选。平移交给滚轮 / 中键 / 空格。
-- B：平移（更像 Obsidian 的默认手感），框选挂到 `Shift`。
-
-### 13.4 多选后的对齐 / 分布工具，一期做吗？
-
-- A：不做（P5 只做吸附）。
-- **B（推荐）**：不做，二期。白板初期用不上。
-
-### 13.5 是否严格要求 JSON Canvas 兼容？
-
-- **A（推荐）**：是。未知字段原样保留，坏数据不覆盖原文件。
-- B：只要能读能写，不追求逐字节一致。
+| # | 问题 | 决定 |
+|---|---|---|
+| 13.1 | 白板文件放哪 | **普通文件，能放 vault 任意文件夹**；新建时默认落在当前笔记的文件夹，没有当前笔记就落根目录 |
+| 13.2 | 一期要不要「把笔记拖进白板」 | **要**。`type: "file"` 卡片进 P4 |
+| 13.3 | 空白处左键拖动 | **框选**；平移交给滚轮 / 中键 / 空格 |
+| 13.4 | 多选后的对齐 / 分布 | **一期不做**，P5 只做吸附，对齐分布留二期 |
+| 13.5 | 是否严格要求 JSON Canvas 兼容 | **是**。未知字段原样保留，坏数据不覆盖原文件 |
+| 13.6 | 文件后缀 | **`.nrs`**（内容仍是 JSON Canvas 1.0） |
 
 ---
 
@@ -672,6 +667,6 @@ flutter test --exclude-tags perf          # 全量回归
 - [ ] 多选整组拖动；`Ctrl+A` 全选；`Delete` 删除并连带删边
 - [ ] `Ctrl+Z` / `Ctrl+Shift+Z` 能一路退回去再走回来
 - [ ] 关掉白板再打开，坐标、颜色、连线、标签一个不差
-- [ ] 拿一个 Obsidian 里做的 `.canvas` 放进来，能正确显示；改完再拿回 Obsidian 能打开
+- [ ] 拿一个 Obsidian 里做的 `.canvas`，把后缀改成 `.nrs` 放进来，能正确显示
 - [ ] 浅色 / 深色主题下都读得清（卡片底色、连线、网格）
 - [ ] 空白板、单卡片、200 卡片三种极端输入都不卡不崩

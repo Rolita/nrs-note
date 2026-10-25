@@ -7,6 +7,7 @@ import '../../core/app_enums.dart';
 import '../../core/platform/vault_sync.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
+import '../../core/utils/canvas_document.dart';
 import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/markdown_outline.dart';
 import '../../core/utils/note_image.dart';
@@ -22,6 +23,7 @@ import '../../templates/template_service.dart';
 import '../common/app_widgets.dart';
 import '../common/delete_dialog.dart';
 import '../common/notices.dart';
+import '../canvas/canvas_board.dart';
 import '../editor/editor_pane.dart';
 import '../editor/image_panel.dart';
 import '../editor/outline_panel.dart';
@@ -51,6 +53,7 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   final GlobalKey<EditorPaneState> _editorKey = GlobalKey<EditorPaneState>();
+  final GlobalKey<CanvasBoardState> _canvasKey = GlobalKey<CanvasBoardState>();
   final GlobalKey<NoteListPanelState> _listKey =
       GlobalKey<NoteListPanelState>();
   final FocusNode _shellFocus = FocusNode(debugLabel: 'nrs-shell');
@@ -76,6 +79,17 @@ class _AppShellState extends State<AppShell> {
   /// 首屏不建图：一次收敛要几十毫秒，而大多数人启动后是来写字的。等第一次
   /// 点开图谱再建，之后就一直挂在树上（`Offstage`），切来切去不重建。
   bool _graphOpened = false;
+
+  /// 白板被打开过一次，理由同 [_graphOpened]。
+  bool _canvasOpened = false;
+
+  /// 一期只有一块白板，而且**还没落盘**（P6 才接 `CanvasStore`）。
+  ///
+  /// 现在它是一个空文档，只是为了把主区、网格、平移缩放先接通。
+  final CanvasDocument _canvasDocument = CanvasDocument(
+    nodes: <CanvasNode>[],
+    edges: <CanvasEdge>[],
+  );
 
   int _cursorLine = 0;
   VoidCallback? _stopVaultSync;
@@ -152,15 +166,29 @@ class _AppShellState extends State<AppShell> {
     setState(() {
       _mainView = view;
       if (view == MainView.graph) _graphOpened = true;
+      if (view == MainView.canvas) _canvasOpened = true;
     });
-    // 图谱是全宽的：专注模式下面板都藏起来了，图也需要那块地方。
-    if (view == MainView.graph && settings.focusMode) {
+    // 图谱和白板都是全宽的：专注模式下面板都藏起来了，它们也需要那块地方。
+    if (view != MainView.note && settings.focusMode) {
       settings.focusMode = false;
     }
     // 正文被藏起来了但还挂在树上（为了保住撤销栈），焦点必须收回外壳，
     // 否则在图谱界面敲字会写进看不见的编辑器里。
     _shellFocus.requestFocus();
+    // 白板要自己收键盘（空格抓手、Ctrl+0）：`autofocus` 只在挂载那一次
+    // 生效，切回来时不会重来一遍，所以这里显式要一次。等这一帧建完再要，
+    // 否则 `currentState` 还是空的。
+    if (view == MainView.canvas) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _canvasKey.currentState?.requestFocus();
+      });
+    }
   }
+
+  /// 功能栏 / `Ctrl+Shift+B`：打开白板。
+  ///
+  /// 一期没有「打开哪一块」的选择器（P6 才有），所以就是切到那一块。
+  void _openCanvas() => _selectMainView(MainView.canvas);
 
   /// 图谱里双击一个节点：打开那篇笔记并切回正文。
   void _openFromGraph(String noteId) {
@@ -543,6 +571,13 @@ class _AppShellState extends State<AppShell> {
               _selectMainView(
                 _mainView == MainView.graph ? MainView.note : MainView.graph,
               ),
+          const SingleActivator(
+            LogicalKeyboardKey.keyB,
+            control: true,
+            shift: true,
+          ): () => _selectMainView(
+            _mainView == MainView.canvas ? MainView.note : MainView.canvas,
+          ),
           const SingleActivator(LogicalKeyboardKey.backslash, control: true):
               _toggleSidebar,
           const SingleActivator(
@@ -695,6 +730,7 @@ class _AppShellState extends State<AppShell> {
                                   view: _view,
                                   onSelectView: _selectView,
                                   onOpenTemplates: _openTemplatePicker,
+                                  onOpenCanvas: _openCanvas,
                                   onOpenTrash: () => showTrashDialog(context),
                                   onOpenSettings: () =>
                                       showSettingsDialog(context),
@@ -767,6 +803,17 @@ class _AppShellState extends State<AppShell> {
                                               .watch<NotesController>()
                                               .selectedId,
                                           onOpenNote: _openFromGraph,
+                                        ),
+                                      ),
+                                    // 白板同理：懒建 + Offstage。视口和滚动位置
+                                    // 都活在 State 里，摘掉子树会一起丢。
+                                    if (_canvasOpened)
+                                      Offstage(
+                                        offstage:
+                                            _mainView != MainView.canvas,
+                                        child: CanvasBoard(
+                                          key: _canvasKey,
+                                          document: _canvasDocument,
                                         ),
                                       ),
                                   ],

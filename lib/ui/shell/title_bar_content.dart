@@ -255,6 +255,17 @@ class TitleBarLayout extends StatelessWidget {
                                 onTap: () => onSelectMainView(MainView.graph),
                               ),
                             ),
+                            // 白板同样钉在末尾。一期只有一块（单实例视图），
+                            // 所以和「图谱」一样没有 ×。
+                            Flexible(
+                              child: _TitleTab(
+                                key: const ValueKey<String>('__canvas__'),
+                                label: '白板',
+                                icon: LucideIcons.squareDashed,
+                                active: mainView == MainView.canvas,
+                                onTap: () => onSelectMainView(MainView.canvas),
+                              ),
+                            ),
                           ],
                         ),
                       ),
