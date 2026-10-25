@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/core/utils/table_model.dart' show CellColorToken;
+import 'package:nrs/ui/graph/graph_painter.dart' show GraphPainter;
 import 'package:nrs/ui/graph/graph_style.dart';
 
 /// WCAG 相对亮度。
@@ -123,6 +124,33 @@ void main() {
         // 但两头都得看得见：终点太淡就成了一根「半截线」
         expect(s.beamTo, greaterThan(0.03), reason: '${p.isDark}');
         expect(s.beamFrom, lessThan(0.6), reason: '${p.isDark}');
+      }
+    });
+
+    test('焦点边是常态边的 6 倍亮度，照设计稿 EDGE.beam', () {
+      // 三档只差一个倍数：档位表在 GraphPainter，亮度在 GraphStyle，
+      // 两边任一处走偏，焦点边就不再是「通了电」的那一条。
+      expect(
+        GraphPainter.edgeFocus / GraphPainter.edgeBase,
+        closeTo(6, 1e-9),
+      );
+      expect(GraphPainter.edgeNear / GraphPainter.edgeBase, closeTo(1.5, 1e-9));
+      expect(GraphPainter.edgeDimmed, lessThan(GraphPainter.edgeBase));
+
+      for (final AppPalette p in <AppPalette>[AppPalette.light, AppPalette.dark]) {
+        final GraphStyle s = GraphStyle.from(p);
+        // 两头都得看得见：起点接近满、终点还留一档，否则焦点边会变成
+        // 一根只有头的「半截线」。
+        expect(
+          s.beamFrom * GraphPainter.edgeFocus / GraphPainter.edgeBase,
+          greaterThan(0.6),
+          reason: '${p.isDark}',
+        );
+        expect(
+          s.beamTo * GraphPainter.edgeFocus / GraphPainter.edgeBase,
+          greaterThan(0.15),
+          reason: '${p.isDark}',
+        );
       }
     });
 

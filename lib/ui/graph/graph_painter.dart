@@ -21,13 +21,14 @@ class GraphPaintData {
     required this.radii,
     required this.lit,
     required this.focus,
-    required this.currentId,
+    required this.selected,
     required this.showLabels,
     required this.arrows,
     required this.style,
     required this.folderColors,
     required this.scale,
     required this.offset,
+    required this.labelFade,
     required this.textScaler,
   });
 
@@ -43,8 +44,11 @@ class GraphPaintData {
   /// 鼠标悬停或选中的节点；`null` 表示没有焦点。
   final int? focus;
 
-  /// 当前笔记的 id——它常驻一圈淡环。
-  final String? currentId;
+  /// 真正**选中**的节点（点下去的那个）。
+  ///
+  /// 和 [focus] 分开：悬停只是「看」，不该把节点染成强调色；只有点下去
+  /// 才换色。设计稿里 `nodeColor` 也只认 `sel`。
+  final int? selected;
 
   final bool showLabels;
   final bool arrows;
@@ -54,6 +58,14 @@ class GraphPaintData {
   /// 视口变换。
   final double scale;
   final Offset offset;
+
+  /// 标签的缩放淡出系数，0..1，由视图按「当前缩放 ÷ 铺满画布时的缩放」算好。
+  ///
+  /// 不直接拿 [scale] 去算：设计稿的 `view.s` 是相对量（初始就是 1），而
+  /// 我们的 [scale] 是绝对量——世界坐标多大、画布多大都会影响它。同一张图
+  /// 换个窗口尺寸，绝对 scale 就变了，直接拿它当门槛会出现「窗口一小标签
+  /// 全没了」。
+  final double labelFade;
 
   final TextScaler textScaler;
 }
@@ -99,6 +111,24 @@ class GraphPainter extends CustomPainter {
   /// 超过这个边数就不逐条上渐变了。
   static const int beamGradientLimit = 400;
 
+  /// 1 个**屏幕**像素折成世界坐标。
+  ///
+  /// 照设计稿 `1 / s * clamp(s, 0.9, 1.7)`：线宽基本不随缩放变，但放大时
+  /// 会**稍微**粗一点点。完全不变粗的话，高倍下整张图会细得像掉了几根线；
+  /// 按 s 线性变粗又会一放大就糊。
+  double get hairline => _clampD(data.scale, 0.9, 1.7) / math.max(data.scale, 0.01);
+
+  /// 每条边的「基础亮度」。数值照抄设计稿 `EDGE.beam`。
+  ///
+  /// 三档不是三个独立常数：[edgeFocus] / [edgeBase] 就是设计稿里的 6 倍，
+  /// 画的时候统一按这个倍数去乘 [GraphStyle.beamFrom] / [GraphStyle.beamTo]，
+  /// 这样「常态多亮、焦点多亮」只有一处定义，不会两处走偏。
+  static const double edgeBase = 0.100;
+  static const double edgeSame = 0.150;
+  static const double edgeNear = 0.150;
+  static const double edgeFocus = 0.60;
+  static const double edgeDimmed = 0.032;
+
   @override
   void paint(Canvas canvas, Size size) {
     _paintBackground(canvas, size);
@@ -119,20 +149,21 @@ class GraphPainter extends CustomPainter {
 
   void _paintBackground(Canvas canvas, Size size) {
     final Rect rect = Offset.zero & size;
-    // 与设计稿一致：光源在画布上方偏外，中间偏深，四周最深。
-    final Offset center = Offset(size.width * 0.5, -size.height * 0.1);
+    // 照设计稿：光在画布正中偏上一点点，一圈柔和地暗下去。
+    // 原来光源在画布外上方，上半张明显更亮，看着像被台灯照着。
+    final Offset center = Offset(size.width * 0.5, size.height * 0.42);
     canvas.drawRect(
       rect,
       Paint()
         ..shader = ui.Gradient.radial(
           center,
-          math.max(size.width, size.height) * 1.3,
+          math.max(size.width, size.height) * 0.76,
           <Color>[
             data.style.canvasTop,
-            Color.lerp(data.style.canvasTop, data.style.canvasBottom, 0.6)!,
+            Color.lerp(data.style.canvasTop, data.style.canvasBottom, 0.45)!,
             data.style.canvasBottom,
           ],
-          <double>[0, 0.62, 1],
+          <double>[0, 0.55, 1],
         ),
     );
   }
@@ -171,7 +202,7 @@ class GraphPainter extends CustomPainter {
       final _Cluster c = e.value;
       if (c.count < 2) continue;
       final Color base = data.folderColors[e.key] ?? data.style.node;
-      final double r = c.radius + 46;
+      final double r = c.radius + 26;
       if (r <= 1) continue;
       paint.shader = ui.Gradient.radial(
         Offset(c.x, c.y),
@@ -190,18 +221,57 @@ class GraphPainter extends CustomPainter {
 
   // ------------------------------------------------------------------ 连线
 
-  Color _nodeColor(int i) =>
+  /// 光带的颜色：只认文件夹色。选中节点染成强调色，但线不该跟着变紫。
+  Color _beamColor(int i) =>
       data.folderColors[data.graph.nodes[i].folder] ?? data.style.node;
+
+  /// 节点填充色。选中那颗染成强调色，和设计稿一致。
+  Color _nodeColor(int i) =>
+      i == data.selected ? data.style.ring : _beamColor(i);
+
+  /// 画出来的半径：焦点那颗放大 22%（设计稿 `targetR = r * 1.22`）。
+  double _visualRadius(int i) =>
+      data.radii[i] * (i == data.focus ? 1.22 : 1);
+
+  /// 节点浓度，照设计稿 `nodeAlpha()`。
+  ///
+  /// 有焦点时，**不在焦点簇里、也不是邻居**的节点退到 14%。这不是装饰：
+  /// 光带画的是「谁引用谁」，不把无关节点压下去，几十条同亮度的线会互相
+  /// 打平，焦点那几条反而看不出特别。
+  double _nodeAlpha(int i, int? focus, String focusFolder, Set<int> related) {
+    if (!data.lit[i]) return 0.10;
+    if (focus == null) return 1;
+    if (i == focus) return 1;
+    if (data.graph.nodes[i].folder == focusFolder) return 1;
+    return related.contains(i) ? 0.95 : 0.14;
+  }
+
+  /// 一条边的亮度档位，完全照设计稿 `edgeAlpha()` 的分支顺序。
+  ///
+  /// 顺序有意义：**先看焦点边，再看同簇，最后才看邻居**。同簇的边在悬停
+  /// 时整片亮起来，是「簇」这个组织方式唯一能被眼睛直接看到的地方；只按
+  /// 邻接关系算的话，簇里没连线的边会原地不动，簇就散了。
+  double _edgeLevel(GraphEdge e, int? focus, String focusFolder, Set<int> related) {
+    if (focus == null) return edgeBase;
+    if (e.a == focus || e.b == focus) return edgeFocus;
+    final bool aSame = data.graph.nodes[e.a].folder == focusFolder;
+    final bool bSame = data.graph.nodes[e.b].folder == focusFolder;
+    if (aSame && bSame) return edgeSame * 1.1;
+    if (aSame || bSame) return edgeNear;
+    if (related.contains(e.a) || related.contains(e.b)) return edgeNear;
+    return edgeDimmed;
+  }
 
   void _paintEdges(Canvas canvas) {
     final NoteGraph g = data.graph;
     final int? focus = data.focus;
-    final GraphNode? center = focus == null ? null : g.nodes[focus];
+    final String focusFolder = focus == null ? '' : g.nodes[focus].folder;
     final Set<int> related = <int>{
-      if (center != null) ...center.neighbours,
+      if (focus != null) ...g.nodes[focus].neighbours,
     };
 
-    final double width = 1 / math.max(data.scale, 0.35);
+    // 设计稿的常态线宽是 0.9 个屏幕像素，不是 1。
+    final double width = 0.9 * hairline;
     final bool gradient = g.edges.length <= beamGradientLimit;
 
     // 被筛掉的边先画，而且一次画完：它们必须待在亮线**下面**，
@@ -222,7 +292,9 @@ class GraphPainter extends CustomPainter {
     );
 
     final Path flat = Path();
-    final Path arrows = Path();
+    // 箭头按**颜色**分组：设计稿里光带的箭头跟着靶节点走分组色，
+    // 一色一条 Path，四五个文件夹也只多四五次 draw call。
+    final Map<Color, Path> arrows = <Color, Path>{};
 
     final Paint beam = Paint()
       ..style = PaintingStyle.stroke
@@ -232,8 +304,11 @@ class GraphPainter extends CustomPainter {
     final Paint glow = Paint()
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
-      ..strokeWidth = width * 3.4
+      ..strokeWidth = 3.4 * hairline
       ..color = data.style.beamGlow;
+
+    // 箭头大小按屏幕像素定，缩放时不变形（设计稿 `7 / clamp(s, .7, 1.6)`）
+    final double arrowSize = 7 / _clampD(data.scale, 0.7, 1.6);
 
     for (final GraphEdge e in g.edges) {
       if (!data.lit[e.a] || !data.lit[e.b]) continue;
@@ -241,9 +316,8 @@ class GraphPainter extends CustomPainter {
       final Offset pa = Offset(data.layout.x[e.a], data.layout.y[e.a]);
       final Offset pb = Offset(data.layout.x[e.b], data.layout.y[e.b]);
 
-      final bool hot = center != null && (e.a == focus || e.b == focus);
-      final bool near =
-          center != null && (related.contains(e.a) || related.contains(e.b));
+      final double level = _edgeLevel(e, focus, focusFolder, related);
+      final bool hot = level >= edgeFocus;
 
       // 方向：`from` 是正文里写链接的那一头。双向边没有方向，按 a→b 画，
       // 只是不画箭头——两个方向都成立，画哪个都是撒谎。
@@ -253,19 +327,19 @@ class GraphPainter extends CustomPainter {
       final Offset from = forward ? pa : pb;
       final Offset to = forward ? pb : pa;
 
-      final double aFrom = _clamp(
-        hot ? 0.72 : (near ? data.style.beamFrom * 1.5 : data.style.beamFrom),
-      );
-      final double aTo = _clamp(
-        hot ? 0.34 : (near ? data.style.beamTo * 1.6 : data.style.beamTo),
-      );
+      // 设计稿：`from = min(1, a * 1.35)`、`to = min(1, a * 0.40)`。
+      // 档位只改 `a`，两头亮度的比例是固定的——方向感来自这个比例，
+      // 不能随档位变。
+      final double k = level / edgeBase;
+      final double aFrom = _clamp(data.style.beamFrom * k);
+      final double aTo = _clamp(data.style.beamTo * k);
 
       if (hot) canvas.drawLine(from, to, glow);
 
       if (gradient) {
         beam.shader = ui.Gradient.linear(from, to, <Color>[
-          _nodeColor(src).withValues(alpha: aFrom),
-          _nodeColor(dst).withValues(alpha: aTo),
+          _beamColor(src).withValues(alpha: aFrom),
+          _beamColor(dst).withValues(alpha: aTo),
         ]);
         canvas.drawLine(from, to, beam);
       } else {
@@ -274,13 +348,20 @@ class GraphPainter extends CustomPainter {
           ..lineTo(to.dx, to.dy);
       }
 
-      // 箭头只在焦点边上出现。
+      // 箭头常显（用户点名喜欢这个），互相链接的不画——双向的箭头会撒谎。
       //
-      // 「光带」的主张是**方向不用箭头解释**——一头亮一头暗已经说清楚了，
-      // 常显的箭头只会在几十条线上堆成一片三角。悬停时才补上箭头，是给
-      // 「我正在看这一条」加一句确证。
-      if (data.arrows && hot && !e.isBidirectional) {
-        _addArrow(arrows, from, to, data.radii[dst]);
+      // 亮度从 0.22 起底、跟着边往上走：淡边上的箭头如果按边亮度画，
+      // 等于没画；常显的箭头必须有个下限。
+      if (data.arrows && !e.isBidirectional && level > 0.06) {
+        final Color tint = _beamColor(dst)
+            .withValues(alpha: math.min(0.72, 0.22 + level * 1.5));
+        _addArrow(
+          arrows.putIfAbsent(tint, () => Path()),
+          from,
+          to,
+          _visualRadius(dst),
+          arrowSize,
+        );
       }
     }
 
@@ -295,8 +376,8 @@ class GraphPainter extends CustomPainter {
           ..color = data.style.edge,
       );
     }
-    if (data.arrows) {
-      canvas.drawPath(arrows, Paint()..color = data.style.arrow);
+    for (final MapEntry<Color, Path> a in arrows.entries) {
+      canvas.drawPath(a.value, Paint()..color = a.key);
     }
 
     _paintParticles(canvas);
@@ -330,9 +411,11 @@ class GraphPainter extends CustomPainter {
       final Offset at = Offset.lerp(from, to, t)!;
 
       paint.shader = ui.Gradient.radial(at, 5.5, <Color>[
-        data.style.ring,
-        data.style.beamGlow.withValues(alpha: 0.55),
-        data.style.beamGlow.withValues(alpha: 0),
+        // 白心 + 紫晕：设计稿是 `rgba(255,255,255,.95)` → 强调紫 50% → 透明。
+        // 全用强调紫的话，光点在深色画布上会偏灰，不像「光」。
+        const Color(0xFFFFFFFF).withValues(alpha: 0.95),
+        data.style.ring.withValues(alpha: 0.50),
+        data.style.ring.withValues(alpha: 0),
       ], <double>[0, 0.35, 1]);
       canvas.drawCircle(at, 5.5, paint);
     }
@@ -341,8 +424,20 @@ class GraphPainter extends CustomPainter {
 
   static double _clamp(double v) => v < 0 ? 0 : (v > 1 ? 1 : v);
 
-  /// 把箭头三角拼进同一条 Path——一百条边也只多一次 draw call。
-  void _addArrow(Path path, Offset from, Offset to, double r) {
+  static double _clampD(double v, double lo, double hi) =>
+      v < lo ? lo : (v > hi ? hi : v);
+
+  /// 把箭头三角拼进同一条 Path——同色的几十个三角也只多一次 draw call。
+  ///
+  /// [size] 是**世界坐标**下的边长，由调用方按当前缩放折好（设计稿的箭头
+  /// 是屏幕尺寸恒定的，放大不该变成一片大三角）。
+  void _addArrow(
+    Path path,
+    Offset from,
+    Offset to,
+    double r,
+    double size,
+  ) {
     final double dx = to.dx - from.dx;
     final double dy = to.dy - from.dy;
     final double d = math.sqrt(dx * dx + dy * dy);
@@ -351,14 +446,11 @@ class GraphPainter extends CustomPainter {
     final double uy = dy / d;
     final double tipX = to.dx - ux * (r + 2);
     final double tipY = to.dy - uy * (r + 2);
-    const double length = 6;
-    const double half = 2.6;
-    final double baseX = tipX - ux * length;
-    final double baseY = tipY - uy * length;
+    final double half = size * 0.5;
     path
       ..moveTo(tipX, tipY)
-      ..lineTo(baseX - uy * half, baseY + ux * half)
-      ..lineTo(baseX + uy * half, baseY - ux * half)
+      ..lineTo(tipX - ux * size + uy * half, tipY - uy * size - ux * half)
+      ..lineTo(tipX - ux * size - uy * half, tipY - uy * size + ux * half)
       ..close();
   }
 
@@ -367,6 +459,10 @@ class GraphPainter extends CustomPainter {
   void _paintNodes(Canvas canvas) {
     final NoteGraph g = data.graph;
     final int? focus = data.focus;
+    final String focusFolder = focus == null ? '' : g.nodes[focus].folder;
+    final Set<int> related = <int>{
+      if (focus != null) ...g.nodes[focus].neighbours,
+    };
     final Paint fill = Paint();
     final Paint ring = Paint()..style = PaintingStyle.stroke;
 
@@ -374,115 +470,121 @@ class GraphPainter extends CustomPainter {
       final int i = node.index;
       final double x = data.layout.x[i];
       final double y = data.layout.y[i];
-      final double r = data.radii[i];
-      final bool on = data.lit[i];
+      final double r = _visualRadius(i);
+      final double alpha = _nodeAlpha(i, focus, focusFolder, related);
       final bool isFocus = i == focus;
 
-      fill.color = _nodeColor(i).withValues(alpha: on ? 1 : 0.16);
+      fill.color = _nodeColor(i).withValues(alpha: alpha);
       canvas.drawCircle(Offset(x, y), r, fill);
 
-      // 只在「焦点」和「当前笔记」上画环。
+      // 只有**一个**环，套在焦点节点上。
       //
-      // 邻居也画的话，悬停一个枢纽节点会同时亮起五六个圈，整张图变成靶盘——
-      // 设计稿里邻居是靠**变亮**说话的，不是靠加圈。
-      final bool isCurrent = node.id == data.currentId;
-      if (isCurrent || isFocus) {
-        final double alpha = isFocus ? 0.95 : 0.55;
+      // 邻居也画、当前笔记也画，悬停一个枢纽会同时亮起好几个圈，整张图
+      // 变成靶盘。设计稿里邻居是靠**变亮**说话的，不是靠加圈。
+      if (isFocus) {
         ring
-          ..color = data.style.ring.withValues(alpha: alpha)
-          ..strokeWidth = (isFocus ? 1.8 : 1.2) / math.max(data.scale, 0.5);
-        canvas.drawCircle(Offset(x, y), r + 3.5, ring);
+          ..color = data.style.ring.withValues(
+            alpha: i == data.selected ? 0.62 : 0.40,
+          )
+          ..strokeWidth = 1.4 * hairline;
+        // 环离圆边至少 4.5 个**屏幕**像素：缩小时不能缩到贴着圆
+        final double gap = 4.5 * math.max(1, data.scale) / data.scale;
+        canvas.drawCircle(Offset(x, y), r + gap, ring);
       }
     }
   }
 
   // ------------------------------------------------------------------ 标签
 
-  /// 标签的浓度：枢纽写实、叶子写虚。
+  /// 标签的浓度：枢纽写实、叶子写虚，缩得太小就整片收掉。
   ///
   /// 三百篇笔记把标签全写实，整张图会糊成一片字。度数高的节点才是读者
   /// 找路的锚点，先让它们清楚。
+  ///
+  /// 那个 `t` 是设计稿里的**缩放门槛**：`(相对缩放 - 0.55) / 0.40`。缩到
+  /// 铺满画布时的 55% 以下，标签全是不可读的碎点，留着只会把画布压灰；
+  /// 放大到 95% 以上才全亮。没有它，缩略视图就是一层噪声。
   double _labelAlpha(
     GraphNode node, {
     required bool isFocus,
     required bool isNear,
+    required String focusFolder,
   }) {
     if (isFocus) return 1;
 
     final int? focus = data.focus;
     if (focus != null) {
-      if (isNear) return 0.86;
-      // 整簇是亮的，所以同文件夹的也写
-      if (node.folder == data.graph.nodes[focus].folder) return 0.9;
-      return 0;
+      if (node.folder == focusFolder) return 0.92;
+      return isNear ? 0.86 : 0;
     }
 
-    if (node.globalDegree >= 3) return 1;
-    if (node.globalDegree >= 1) return 0.55;
-    return 0.32;
+    final double w = node.globalDegree >= 3
+        ? 1
+        : (node.globalDegree >= 1 ? 0.55 : 0.32);
+    return data.labelFade * w;
   }
 
   void _paintLabels(Canvas canvas) {
     final NoteGraph g = data.graph;
     final int? focus = data.focus;
+    final String focusFolder = focus == null ? '' : g.nodes[focus].folder;
     final Set<int> related = <int>{
       if (focus != null) ...g.nodes[focus].neighbours,
     };
 
     for (final GraphNode node in g.nodes) {
       final int i = node.index;
-      final bool on = data.lit[i];
       final double alpha = _labelAlpha(
         node,
         isFocus: i == focus,
         isNear: related.contains(i),
+        focusFolder: focusFolder,
       );
-      if (alpha <= 0.02) continue;
+      // 节点被压暗时标签跟着压：整簇都退下去了，字还亮着就露馅了。
+      final double va = _nodeAlpha(i, focus, focusFolder, related);
+      final double a = alpha * (va < 0.5 ? va : 1);
+      if (a <= 0.02) continue;
 
       // 标签在节点**下方居中**，和设计稿一致。
       //
       // 挂在右边时，长标题会横着长出去、和邻居的标签接上，整张图变成一行行
       // 字；挂下方居中的话，字始终跟着自己那颗点走，缩小时也不会串行。
-      final TextPainter fill = labels.painter(
+      //
+      // 压住连线靠的是**投影**（设计稿 `shadowBlur = 4`），不是描边：
+      // 描边会在每个字外面套一圈硬边，密起来像贴了一层贴纸。
+      final bool isFocus = i == focus;
+      final TextPainter tp = labels.painter(
         node.title,
-        color: data.style.label.withValues(alpha: on ? alpha : alpha * 0.14),
-        halo: null,
+        color: isFocus ? data.style.labelFocus : data.style.label.withValues(alpha: a),
+        // 投影只在字真能读的时候加。设计稿是无条件 `shadowBlur = 4`，
+        // 但那会让 10% 的淡标签底下垫一块很实的黑影，像一层脏点。
+        shadow: a >= 0.45 ? data.style.labelHalo : null,
         scaler: data.textScaler,
+        fontSize: isFocus ? AppText.ui : AppText.label,
+        weight: isFocus ? FontWeight.w500 : FontWeight.w400,
       );
-      final double x = data.layout.x[i] - fill.width / 2;
-      final double y = data.layout.y[i] + data.radii[i] + 11 - fill.height / 2;
-
-      // 描边那遍先画：压在连线上也读得清。淡掉的标签不描边，否则一圈
-      // 深色描边会让「被筛掉」的字反而更抢眼。
-      if (on) {
-        labels
-            .painter(
-              node.title,
-              color: data.style.label,
-              halo: data.style.labelHalo,
-              scaler: data.textScaler,
-            )
-            .paint(canvas, Offset(x, y));
-      }
-      fill.paint(canvas, Offset(x, y));
+      final double x = data.layout.x[i] - tp.width / 2;
+      final double y = data.layout.y[i] + _visualRadius(i) + 11 - tp.height / 2;
+      tp.paint(canvas, Offset(x, y));
     }
   }
 
   // ------------------------------------------------------------------ 簇名
 
-  /// 簇名挂在**雾的正上方**，做成一个带色点的小胶囊。
+  /// 簇名挂在**雾的正上方**，做成一个带色边的小胶囊。
   ///
   /// 不挂在「簇内最上面那个节点」上：邻簇的节点会把它顶开，名字就飘到
   /// 别人家里去了。胶囊底是必需的——簇名经常压在别人的节点上。
+  ///
+  /// 描边用**这个簇自己的分组色**（30%），所以即使底是画布色，也能一眼
+  /// 看出这行字属于哪个色团。
   void _paintClusterChips(Canvas canvas, Map<String, _Cluster> clusters) {
     if (!data.showLabels) return;
 
     final Paint chip = Paint()..color = data.style.chip;
     final Paint edge = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1 / math.max(data.scale, 0.5)
-      ..color = data.style.chipEdge;
-    final Paint dot = Paint();
+      ..strokeWidth = hairline;
 
     for (final MapEntry<String, _Cluster> e in clusters.entries) {
       final _Cluster c = e.value;
@@ -493,31 +595,24 @@ class GraphPainter extends CustomPainter {
       final TextPainter tp = labels.painter(
         text,
         color: data.style.label.withValues(alpha: 0.82),
-        halo: null,
+        shadow: null,
         scaler: data.textScaler,
         fontSize: AppText.caption - 0.5,
       );
 
-      final double padX = 9;
-      final double gap = 9;
-      final double h = tp.height + 6;
-      final double w = tp.width + padX * 2 + gap;
+      const double padX = 9;
+      final double h = tp.height + 2.5;
+      final double w = tp.width + padX * 2;
       final double top = c.y - c.radius - 14 - h / 2;
       final Rect rect = Rect.fromLTWH(c.x - w / 2, top, w, h);
       final RRect rrect = RRect.fromRectAndRadius(rect, Radius.circular(h / 2));
 
       canvas.drawRRect(rrect, chip);
+      edge.color = (data.folderColors[e.key] ?? data.style.node)
+          .withValues(alpha: 0.30);
       canvas.drawRRect(rrect, edge);
 
-      final Color base = data.folderColors[e.key] ?? data.style.node;
-      dot.color = base.withValues(alpha: 0.95);
-      canvas.drawCircle(
-        Offset(rect.left + padX, rect.center.dy),
-        2.3 / math.max(data.scale, 0.5),
-        dot,
-      );
-
-      tp.paint(canvas, Offset(rect.left + padX + gap, rect.center.dy - tp.height / 2));
+      tp.paint(canvas, Offset(rect.left + padX, rect.center.dy - tp.height / 2));
     }
   }
 
@@ -538,38 +633,38 @@ class GraphLabelCache {
 
   void clear() => _painters.clear();
 
-  /// 取一段文字的 [TextPainter]。[halo] 非空时返回带描边的那一份
-  /// （先画描边、再画填充，压在连线上也读得清）。
+  /// 取一段文字的 [TextPainter]。
+  ///
+  /// [shadow] 非空时给它加一层投影（画布底色、模糊 4）——设计稿用的是
+  /// `ctx.shadowBlur = 4`，不是描边：描边会在每个字外面套一圈硬边。
   TextPainter painter(
     String text, {
     required Color color,
-    required Color? halo,
+    required Color? shadow,
     required TextScaler scaler,
     double fontSize = AppText.caption,
+    FontWeight weight = FontWeight.w400,
   }) {
     if (_scaler != scaler) {
       _scaler = scaler;
       clear();
     }
-    // 颜色和字号都进 key：同一个标题有「亮着」「被筛掉」两种颜色，
-    // 簇名又比节点标签小一号，都不能共用一份。
-    final String key = '$text\u0000$color\u0000$halo\u0000$fontSize';
+    // 颜色、字号、字重都进 key：同一个标题有「亮着」「被筛掉」两种颜色，
+    // 焦点那颗又大一号，都不能共用一份。
+    final String key = '$text|$color|$shadow|$fontSize|$weight';
     final TextPainter? hit = _painters[key];
     if (hit != null) return hit;
 
     final TextStyle style = TextStyle(
       fontSize: fontSize,
+      fontWeight: weight,
       fontFamily: AppFonts.ui,
       fontFamilyFallback: AppFonts.uiFallback,
       height: 1.2,
-      color: halo == null ? color : null,
-      foreground: halo == null
+      color: color,
+      shadows: shadow == null
           ? null
-          : (Paint()
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = 2.6
-              ..strokeJoin = StrokeJoin.round
-              ..color = halo),
+          : <Shadow>[Shadow(color: shadow, blurRadius: 4)],
     );
     final TextPainter painter = TextPainter(
       text: TextSpan(text: text, style: style),

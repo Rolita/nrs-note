@@ -26,27 +26,24 @@ class GraphStyle {
       edgeDim = palette.textPrimary.withValues(
         alpha: palette.isDark ? 0.014 : 0.03,
       ),
-      ring = palette.textPrimary,
+      ring = palette.accent,
       label = palette.textSecondary,
+      labelFocus = palette.isDark ? const Color(0xFFFFFFFF) : palette.textPrimary,
       labelHalo = palette.isDark
           ? const Color(0xFF101012)
           : const Color(0xFFEFEFEC),
       node = palette.textSecondary,
-      arrow = palette.textPrimary.withValues(
-        alpha: palette.isDark ? 0.40 : 0.48,
-      ),
       // 数值照抄设计稿：常态边的底是 10%，光带把它拆成
       // 「源 13.5% → 靶 4%」。比原来的单色 8.5% 更淡，但一头亮一头暗，
       // 方向就写在亮度里了。
-      beamFrom = palette.isDark ? 0.15 : 0.20,
-      beamTo = palette.isDark ? 0.045 : 0.07,
+      beamFrom = palette.isDark ? 0.135 : 0.20,
+      beamTo = palette.isDark ? 0.040 : 0.065,
       beamGlow = palette.accent.withValues(
         alpha: palette.isDark ? 0.10 : 0.14,
       ),
       mistAlpha = palette.isDark ? 0.045 : 0.055,
       chip = (palette.isDark ? const Color(0xFF1B1B1E) : const Color(0xFFF7F7F4))
-          .withValues(alpha: palette.isDark ? 0.82 : 0.88),
-      chipEdge = palette.outlineSoft;
+          .withValues(alpha: palette.isDark ? 0.82 : 0.88);
 
   /// 画布渐变的两端。比 `surface` 更深：正文是亮起的纸，图谱是凹陷的画布，
   /// 一眼就能分清「在看内容」和「在看结构」。
@@ -65,13 +62,14 @@ class GraphStyle {
 
   final Color label;
 
+  /// 焦点节点的标签——纯白，压过周围所有字。
+  final Color labelFocus;
+
   /// 标签的描边色（画布底色），压在连线上也能读清。
   final Color labelHalo;
 
   /// 没有分组时的节点色。
   final Color node;
-
-  final Color arrow;
 
   /// 光带的两端透明度：起点亮、终点暗。
   ///
@@ -86,9 +84,9 @@ class GraphStyle {
   /// 每个文件夹一团底雾的透明度。按分组色铺，把簇托出来。
   final double mistAlpha;
 
-  /// 簇名胶囊的底色与描边。
+  /// 簇名胶囊的底色。描边不在这里——它取的是**那个簇自己的分组色**，
+  /// 见 `GraphPainter._paintClusterChips`。
   final Color chip;
-  final Color chipEdge;
 
   /// 分组调色板：表格高亮那六个色名，顺序固定，前六个文件夹各得一色。
   ///

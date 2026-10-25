@@ -100,6 +100,10 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   int? _selected;
 
   double _scale = 1;
+
+  /// 「铺满画布」时的缩放。标签淡出按 [_scale] / [_fitScale] 算相对量，
+  /// 不然窗口大小一变，同一个缩放值的含义就变了。
+  double _fitScale = 1;
   Offset _offset = Offset.zero;
   Size _stageSize = Size.zero;
 
@@ -275,6 +279,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     if (size.isEmpty) return;
     if (_view.isEmpty) {
       _scale = 1;
+      _fitScale = 1;
       _offset = Offset(size.width / 2, size.height / 2);
       return;
     }
@@ -285,6 +290,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       (size.height - pad * 2) / math.max(b.height, 1),
     );
     _scale = fit.clamp(0.2, 1.5);
+    _fitScale = _scale;
     _offset = Offset(
       size.width / 2 - b.center.dx * _scale,
       size.height / 2 - b.center.dy * _scale,
@@ -550,13 +556,15 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       radii: _radii,
       lit: _lit,
       focus: focus,
-      currentId: widget.currentId,
+      selected: _selected,
       showLabels: _settings.showLabels,
       arrows: _settings.showArrows,
       style: style,
       folderColors: folderColors,
       scale: _scale,
       offset: _offset,
+      labelFade: ((_scale / math.max(_fitScale, 1e-6) - 0.55) / 0.40)
+          .clamp(0.0, 1.0),
       textScaler: MediaQuery.textScalerOf(context),
     );
 
