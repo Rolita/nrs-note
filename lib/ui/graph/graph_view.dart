@@ -9,6 +9,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../core/utils/note_graph.dart';
+import '../../core/utils/table_model.dart' show CellColorToken;
 import '../../data/models/note.dart';
 import '../common/app_widgets.dart';
 import 'graph_legend.dart';
@@ -71,8 +72,12 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   /// 每个节点是否通过筛选（没通过就淡到 16%，不删）。
   List<bool> _lit = <bool>[];
 
-  Map<String, Color> _folderColors = <String, Color>{};
-  List<GraphGroup> _groups = <GraphGroup>[];
+  /// 文件夹 → 色名。存色名不存色值：建图在 `initState` 里发生，那时读不到
+  /// `Theme`，而浅色/深色主题要解析成两组不同的色值。
+  Map<String, CellColorToken> _folderTokens = <String, CellColorToken>{};
+
+  /// 全库每个文件夹的篇数（图例用，不受筛选影响）。
+  Map<String, int> _folderCounts = <String, int>{};
 
   GraphSettings _settings = const GraphSettings();
   bool _panelCollapsed = false;
@@ -142,7 +147,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
 
   void _rebuildAll() {
     _graph = buildNoteGraph(widget.notes);
-    _folderColors = assignFolderColors(
+    _folderTokens = assignFolderTokens(
       _graph.nodes.map((GraphNode n) => n.folder),
     );
     _rebuildView();
@@ -187,22 +192,34 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     _radii = _layout.scaledRadii(_settings.nodeScale);
   }
 
+  /// 数一遍每个文件夹有几篇，给图例用。颜色留到 `build` 里解析。
   void _updateGroups() {
     final Map<String, int> counts = <String, int>{};
     for (final GraphNode n in _graph.nodes) {
       counts[n.folder] = (counts[n.folder] ?? 0) + 1;
     }
-    final List<String> folders = counts.keys.toList()..sort();
-    _groups = <GraphGroup>[
-      for (final String folder in folders)
-        GraphGroup(
-          folder: folder,
-          label: folder.isEmpty ? '根目录' : folder,
-          color: _folderColors[folder] ?? const Color(0xFFC2C5CC),
-          count: counts[folder]!,
-        ),
-    ];
+    _folderCounts = <String, int>{
+      for (final String folder in counts.keys.toList()..sort())
+        folder: counts[folder]!,
+    };
   }
+
+  /// 把色名解析成当前主题下的颜色（图例、节点、气泡点共用这一份）。
+  Map<String, Color> _resolveFolderColors(AppPalette p) => <String, Color>{
+    for (final MapEntry<String, CellColorToken> e in _folderTokens.entries)
+      e.key: groupColor(p, e.value),
+  };
+
+  List<GraphGroup> _groupsOf(AppPalette p, Map<String, Color> colors) =>
+      <GraphGroup>[
+        for (final MapEntry<String, int> e in _folderCounts.entries)
+          GraphGroup(
+            folder: e.key,
+            label: e.key.isEmpty ? '根目录' : e.key,
+            color: colors[e.key] ?? p.textSecondary,
+            count: e.value,
+          ),
+      ];
 
   // ------------------------------------------------------------------ 筛选
 
@@ -343,6 +360,8 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     final AppPalette p = context.palette;
     final GraphStyle style = GraphStyle.from(p);
     final int? focus = _hover ?? _selected;
+    // 色名 → 颜色只在这里解析一次：主题一换，`build` 重跑，颜色跟着换。
+    final Map<String, Color> folderColors = _resolveFolderColors(p);
 
     return ColoredBox(
       color: p.surface,
@@ -361,7 +380,15 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
                     setState(_fitToStage);
                   });
                 }
-                return _stage(context, p, style, focus, size);
+                return _stage(
+                  context,
+                  p,
+                  style,
+                  focus,
+                  size,
+                  folderColors,
+                  _groupsOf(p, folderColors),
+                );
               },
             ),
           ),
@@ -481,6 +508,8 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     GraphStyle style,
     int? focus,
     Size size,
+    Map<String, Color> folderColors,
+    List<GraphGroup> groups,
   ) {
     final GraphPaintData data = GraphPaintData(
       graph: _view,
@@ -492,7 +521,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       showLabels: _settings.showLabels,
       arrows: _settings.showArrows,
       style: style,
-      folderColors: _folderColors,
+      folderColors: folderColors,
       scale: _scale,
       offset: _offset,
       textScaler: MediaQuery.textScalerOf(context),
@@ -557,7 +586,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
             left: AppSpace.md,
             bottom: AppSpace.md,
             child: GraphLegend(
-              groups: _groups,
+              groups: groups,
               selected: _settings.folder,
               onSelect: (String? f) =>
                   _onSettings(_settings.copyWith(folder: f)),
@@ -565,7 +594,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
           ),
         Positioned(right: AppSpace.md, bottom: AppSpace.md, child: _hud(p)),
         if (_hover != null && _dragging == null)
-          _tooltip(p, _view.nodes[_hover!]),
+          _tooltip(p, _view.nodes[_hover!], folderColors),
       ],
     );
   }
@@ -694,7 +723,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     );
   }
 
-  Widget _tooltip(AppPalette p, GraphNode node) {
+  Widget _tooltip(AppPalette p, GraphNode node, Map<String, Color> colors) {
     const double w = 216;
     final double left = (_pointer.dx + 16).clamp(
       8.0,
@@ -704,7 +733,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       8.0,
       math.max(8.0, _stageSize.height - 84),
     );
-    final Color dot = _folderColors[node.folder] ?? p.textSecondary;
+    final Color dot = colors[node.folder] ?? p.textSecondary;
 
     return Positioned(
       left: left,
