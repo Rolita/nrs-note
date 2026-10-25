@@ -12,6 +12,7 @@ import 'dart:math' as math;
 import 'package:flutter/painting.dart';
 
 import '../../../core/theme/app_palette.dart';
+import '../../../core/utils/inline_syntax.dart';
 import '../../preview/syntax_highlighter.dart';
 import '../live_markdown.dart';
 import 'line_layout_engine.dart';
@@ -325,9 +326,7 @@ class LiveLineStyle implements LineStyleKeyed {
     final int at = inline ? line.markerStart : line.paintStart;
     final String body = line.text.substring(at - line.start);
     return <({int start, int end, String target})>[
-      for (final ({int start, int end, String target}) run in wikilinkRuns(
-        body,
-      ))
+      for (final run in wikilinkRuns(body))
         (start: at + run.start, end: at + run.end, target: run.target),
     ];
   }

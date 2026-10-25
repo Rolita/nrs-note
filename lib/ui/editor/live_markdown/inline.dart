@@ -33,19 +33,6 @@ List<InlineSpan> codeHighlightSpans(List<CodeToken> tokens, bool isDark) {
 
 // ---------------------------------------------------------------- inline scan
 
-/// Inline syntax, scanned left to right. Order matters: the longer, more
-/// specific constructs must win the tie at the same start offset.
-final RegExp _inlineRe = RegExp(
-  r'!?\[\[[^\]\n]+\]\]'
-  r'|!?\[[^\]\n]{0,200}\]\([^)\n]{0,500}\)'
-  r'|`[^`\n]*`'
-  r'|\*\*[^*\n]+\*\*|__[^_\n]+__'
-  r'|~~[^~\n]+~~'
-  r'|==[^=\n]+=='
-  r'|\*[^*\n]+\*|(?<![A-Za-z0-9_])_[^_\n]+_(?![A-Za-z0-9_])'
-  r'|#[A-Za-z0-9_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff\-/\.]*',
-);
-
 /// A `#tag` only counts when it starts a word — `C#`, `issue#1` and `#1` do not.
 bool _isTagStart(String text, int index) {
   if (index <= 0) return true;
@@ -70,40 +57,11 @@ bool _tagLooksValid(String token) {
 /// 个扫描器，两边不会各说各话。
 int? leadingTagEnd(String text) {
   if (!text.startsWith('#')) return null;
-  final RegExpMatch? m = _inlineRe.firstMatch(text);
+  final RegExpMatch? m = markdownInlinePattern.firstMatch(text);
   if (m == null || m.start != 0) return null;
   final String token = m.group(0)!;
   if (!token.startsWith('#') || !_tagLooksValid(token)) return null;
   return m.end;
-}
-
-/// `[[目标]]` / `![[目标]]` 里的链接目标；不是双链或目标为空时返回 `null`。
-///
-/// 渲染、点击命中和跳转都经过这一个入口，三方对「什么才算双链」不会各说各话。
-String? wikilinkTarget(String token) {
-  if (!token.startsWith('[[') && !token.startsWith('![[')) return null;
-  final int open = token.startsWith('!') ? 3 : 2;
-  if (token.length < open + 2) return null;
-  final String inner = token.substring(open, token.length - 2);
-  return inner.trim().isEmpty ? null : inner;
-}
-
-/// 一段文本里的双链：行内区间（含方括号）与链接目标。
-///
-/// 与 [buildLiveInlineSpan] 共用 [_inlineRe]，所以反引号里的 `[[...]]` 不算
-/// 链接——扫描器从头扫，先吃掉了整个代码 span。
-List<({int start, int end, String target})> wikilinkRuns(String text) {
-  if (!text.contains('[[')) {
-    return const <({int start, int end, String target})>[];
-  }
-  final List<({int start, int end, String target})> runs =
-      <({int start, int end, String target})>[];
-  for (final RegExpMatch m in _inlineRe.allMatches(text)) {
-    final String token = m.group(0)!;
-    final String? target = wikilinkTarget(token);
-    if (target != null) runs.add((start: m.start, end: m.end, target: target));
-  }
-  return runs;
 }
 
 /// `[标签](地址)` 里的外链地址；不是能交给浏览器的链接时返回 `null`。
@@ -123,7 +81,7 @@ String? linkUrl(String token) {
 
 /// 一段文本里的外链：行内区间（含方括号与地址）与外链地址。
 ///
-/// 和 [wikilinkRuns] 一样共用 [_inlineRe]，所以反引号里的 `[标签](地址)`
+/// 和 [wikilinkRuns] 一样共用 [markdownInlinePattern]，所以反引号里的 `[标签](地址)`
 /// 只是代码，不是链接。
 List<({int start, int end, String url})> linkRuns(String text) {
   if (!text.contains('](')) {
@@ -131,7 +89,7 @@ List<({int start, int end, String url})> linkRuns(String text) {
   }
   final List<({int start, int end, String url})> runs =
       <({int start, int end, String url})>[];
-  for (final RegExpMatch m in _inlineRe.allMatches(text)) {
+  for (final RegExpMatch m in markdownInlinePattern.allMatches(text)) {
     final String token = m.group(0)!;
     final String? url = linkUrl(token);
     if (url != null) runs.add((start: m.start, end: m.end, url: url));
@@ -153,7 +111,7 @@ List<InlineSpan> _inline(
   final List<InlineSpan> spans = <InlineSpan>[];
   int cursor = 0;
 
-  for (final RegExpMatch m in _inlineRe.allMatches(text)) {
+  for (final RegExpMatch m in markdownInlinePattern.allMatches(text)) {
     final String token = m.group(0)!;
     if (token.startsWith('#')) {
       if (!_isTagStart(text, m.start) || !_tagLooksValid(token)) continue;

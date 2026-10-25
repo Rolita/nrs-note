@@ -178,6 +178,10 @@ abstract final class AppLayout {
   static const double imagePanelMinWidth = 220;
   static const double imagePanelMaxWidth = 420;
 
+  /// 图谱左上角的浮动设置面板。比侧栏窄：它盖在画布上，每一像素都是从图上
+  /// 抢来的，而里面的内容只有一行字 + 一个开关。
+  static const double graphPanelWidth = 212;
+
   /// Below this width the outline yields to the editor.
   static const double outlineMinShellWidth = 980;
 

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/app_enums.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
+import 'main_view.dart';
 import 'title_bar_content.dart';
 
 /// Browser build: same three regions as the desktop strip — views, tabs,
@@ -15,6 +16,8 @@ class AppTitleBar extends StatelessWidget {
     required this.onSelectView,
     required this.onToggleSidebar,
     required this.onCreateNote,
+    required this.mainView,
+    required this.onSelectMainView,
     required this.leftInset,
     required this.rightInset,
   });
@@ -23,6 +26,8 @@ class AppTitleBar extends StatelessWidget {
   final ValueChanged<SidebarView> onSelectView;
   final VoidCallback onToggleSidebar;
   final VoidCallback onCreateNote;
+  final MainView mainView;
+  final ValueChanged<MainView> onSelectMainView;
   final double leftInset;
   final double rightInset;
 
@@ -40,6 +45,8 @@ class AppTitleBar extends StatelessWidget {
         onSelectView: onSelectView,
         onToggleSidebar: onToggleSidebar,
         onCreateNote: onCreateNote,
+        mainView: mainView,
+        onSelectMainView: onSelectMainView,
         leftInset: leftInset,
         rightInset: rightInset,
         // No window to drag in a tab.

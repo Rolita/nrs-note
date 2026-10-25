@@ -2,12 +2,11 @@ part of '../live_markdown.dart';
 
 // ---------------------------------------------------------------- block kinds
 
-/// 围栏行的语法：缩进、围栏字符与 info string。
-///
 /// 段落级的块判定（`_Kind`、标题/列表/引用/分隔线正则）已随 `buildLiveSpans`
 /// 一起退役；按行排版由 `line_layout` 的扫描器判定块种类。
-final RegExp _fenceRe = RegExp(r'^(\s{0,3})(`{3,}|~{3,})(.*)$');
-
+///
+/// 围栏正则搬到了 `core/utils/inline_syntax.dart` 的 [fenceLinePattern]：
+/// 图谱也要用同一条判定跳过代码块里的 `[[...]]`。
 /// The font size used for punctuation that is hidden. Zero, not "very small":
 /// a proportional font at 0.1px still has a non-zero advance, and those slivers
 /// add up into a visible wobble.
@@ -55,7 +54,7 @@ List<CodeBlockRange> codeBlockRanges(String text) {
   String? label;
   for (int i = 0; i < lines.length; i++) {
     final String line = lines[i];
-    final Match? f = _fenceRe.firstMatch(line);
+    final Match? f = fenceLinePattern.firstMatch(line);
     if (f != null) {
       if (open < 0) {
         open = offset;

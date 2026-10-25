@@ -26,9 +26,11 @@ import '../editor/editor_pane.dart';
 import '../editor/image_panel.dart';
 import '../editor/outline_panel.dart';
 import '../editor/table_panel.dart';
+import '../graph/graph_view.dart';
 import '../templates/template_interaction.dart';
 import '../templates/template_new_note_dialog.dart';
 import '../templates/template_picker.dart';
+import 'main_view.dart';
 import 'data_safety_dialogs.dart';
 import 'function_rail.dart';
 import 'note_list_panel.dart';
@@ -65,6 +67,16 @@ class _AppShellState extends State<AppShell> {
   late final SettingsController _settings;
 
   SidebarView _view = SidebarView.files;
+
+  /// 主区显示笔记还是图谱。会话级，不持久化：重启回到上次的笔记。
+  MainView _mainView = MainView.note;
+
+  /// 图谱被打开过一次。
+  ///
+  /// 首屏不建图：一次收敛要几十毫秒，而大多数人启动后是来写字的。等第一次
+  /// 点开图谱再建，之后就一直挂在树上（`Offstage`），切来切去不重建。
+  bool _graphOpened = false;
+
   int _cursorLine = 0;
   VoidCallback? _stopVaultSync;
 
@@ -131,6 +143,29 @@ class _AppShellState extends State<AppShell> {
     if (settings.sidebarCollapsed) settings.sidebarCollapsed = false;
     // 专注模式把两侧面板都藏起来了，切到某个视图却看不到它等于没切。
     if (settings.focusMode) settings.focusMode = false;
+  }
+
+  /// 切主区。图谱与正文共用同一块地方，所以这是「换一屏」而不是「开一个窗口」。
+  void _selectMainView(MainView view) {
+    if (_mainView == view) return;
+    final SettingsController settings = context.read<SettingsController>();
+    setState(() {
+      _mainView = view;
+      if (view == MainView.graph) _graphOpened = true;
+    });
+    // 图谱是全宽的：专注模式下面板都藏起来了，图也需要那块地方。
+    if (view == MainView.graph && settings.focusMode) {
+      settings.focusMode = false;
+    }
+    // 正文被藏起来了但还挂在树上（为了保住撤销栈），焦点必须收回外壳，
+    // 否则在图谱界面敲字会写进看不见的编辑器里。
+    _shellFocus.requestFocus();
+  }
+
+  /// 图谱里双击一个节点：打开那篇笔记并切回正文。
+  void _openFromGraph(String noteId) {
+    context.read<NotesController>().select(noteId);
+    _selectMainView(MainView.note);
   }
 
   void _toggleSidebar() {
@@ -503,6 +538,11 @@ class _AppShellState extends State<AppShell> {
               _openTemplatePicker,
           const SingleActivator(LogicalKeyboardKey.comma, control: true): () =>
               showSettingsDialog(context),
+          // 图谱与正文共用主区，所以是「换一屏」的快捷键，不是「开窗口」。
+          const SingleActivator(LogicalKeyboardKey.keyG, control: true): () =>
+              _selectMainView(
+                _mainView == MainView.graph ? MainView.note : MainView.graph,
+              ),
           const SingleActivator(LogicalKeyboardKey.backslash, control: true):
               _toggleSidebar,
           const SingleActivator(
@@ -635,6 +675,8 @@ class _AppShellState extends State<AppShell> {
                       onSelectView: _selectView,
                       onToggleSidebar: _toggleSidebar,
                       onCreateNote: _createNote,
+                      mainView: _mainView,
+                      onSelectMainView: _selectMainView,
                       leftInset: leftInset,
                       rightInset: rightInset,
                     ),
@@ -691,18 +733,43 @@ class _AppShellState extends State<AppShell> {
                                 ),
                               ],
                               Expanded(
-                                child: EditorPane(
-                                  key: _editorKey,
-                                  bodyValue: _bodyValue,
-                                  showSearchHighlights:
-                                      _view == SidebarView.search,
-                                  onDelete: _confirmDelete,
-                                  onOpenSearch: () =>
-                                      _selectView(SidebarView.search),
-                                  onCursorLineChanged: (int line) {
-                                    if (line == _cursorLine) return;
-                                    setState(() => _cursorLine = line);
-                                  },
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: <Widget>[
+                                    // 正文用 Offstage 藏起来而不是从树上摘掉：
+                                    // 摘掉会连撤销栈和光标一起丢，去图谱看一眼
+                                    // 回来就 undo 不了了。
+                                    Offstage(
+                                      offstage: _mainView != MainView.note,
+                                      child: EditorPane(
+                                        key: _editorKey,
+                                        bodyValue: _bodyValue,
+                                        showSearchHighlights:
+                                            _view == SidebarView.search,
+                                        onDelete: _confirmDelete,
+                                        onOpenSearch: () =>
+                                            _selectView(SidebarView.search),
+                                        onCursorLineChanged: (int line) {
+                                          if (line == _cursorLine) return;
+                                          setState(() => _cursorLine = line);
+                                        },
+                                      ),
+                                    ),
+                                    if (_graphOpened)
+                                      Offstage(
+                                        offstage:
+                                            _mainView != MainView.graph,
+                                        child: GraphView(
+                                          notes: context
+                                              .watch<NotesController>()
+                                              .allNotes,
+                                          currentId: context
+                                              .watch<NotesController>()
+                                              .selectedId,
+                                          onOpenNote: _openFromGraph,
+                                        ),
+                                      ),
+                                  ],
                                 ),
                               ),
                               if (showOutline) ...<Widget>[

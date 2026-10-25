@@ -42,6 +42,7 @@ import '../../core/theme/app_palette.dart';
 import '../../core/theme/highlight_colors.dart';
 import '../../core/theme/table_colors.dart';
 import '../../core/utils/image_markup.dart';
+import '../../core/utils/inline_syntax.dart';
 import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/markdown_outline.dart';
 import '../../core/utils/table_model.dart'

@@ -302,3 +302,48 @@
 - [x] 测试：`note_images_test` 10 条、`image_panel_test` 4 条、
   `settings_controller_test` +3 条、`shell_layout_test` +1 条（互斥 + 列出图片）。
 - 验证：`flutter analyze lib test` 无问题；全量 `--exclude-tags perf` 全绿。
+
+
+## T14. 关系图谱（主区视图）
+
+- [x] `lib/core/utils/inline_syntax.dart`（新增）
+  - `markdownInlinePattern` / `fenceLinePattern` / `wikilinkTarget` / `wikilinkRuns`
+    从 `ui/editor/live_markdown/inline.dart`、`block_syntax.dart` 抽到 core。
+    渲染、点击命中、图谱抽边从此共用**同一个扫描器**——不会出现「正文里没画成链接，
+    图谱里却有一条边」。
+  - `wikilinkRuns` 返回值带 `embed` 字段：`![[x]]` 是嵌入，不是链接。
+- [x] `lib/core/utils/note_graph.dart`（新增）
+  - `buildNoteGraph(notes)`：逐行扫，`fenced` 状态翻转跳过围栏代码块；
+    死链/自环/嵌入一律丢弃；A→B 与 B→A 只画一条边，出/入度各算各的；
+    同一目标重复出现只算一条边（否则一句话重复五次就把节点撑大）。
+  - `NoteGraph.key` = `trim().toLowerCase()`，`putIfAbsent` 先出现的赢，
+    与 `openOrCreateByTitle` 同一条规则——「这条边」和「点一下跳到哪」永远同一件事。
+  - `neighbourhood(from, depth)` BFS + `subgraph(keep)` 重新编号。
+- [x] `lib/ui/graph/graph_physics.dart`（新增）
+  - 斥力 9200 / 弹簧 0.021 / 静长 74 / 向心 0.0125 / 阻尼 0.80 / 单帧上限 14。
+  - `Float64List` 平铺坐标；两点重合用 `(i - j) * 0.01` 造方向，不摇随机数（测试可复现）。
+  - 首屏 `settle(700)` 再 `fit()`，第一帧就是稳定布局；`alpha < 0.005` 停 Ticker。
+- [x] `lib/ui/graph/graph_style.dart` / `graph_painter.dart` / `graph_panel.dart` /
+  `graph_legend.dart` / `graph_view.dart`（新增）
+  - 画布深色渐变；节点色取 `table_colors.dart` 的 `_darkInks` 六色，按文件夹名排序取色。
+  - 连线按 dim/plain/lit/hot 四态各拼一条 `Path`，四次 `drawPath`，箭头三角拼进同一条。
+  - 面板：全局/局部分段、深度滑块（1–4，仅局部）、搜索、显示标签开关、
+    孤立笔记开关、显示箭头、连线长度/节点大小；自绘 `_MiniSwitch`（26×15），不用 Material `Switch`。
+  - 图例挂 `Positioned` 里宽度无界，外层必须包 `IntrinsicWidth`，否则炸
+    `BoxConstraints forces an infinite width`。
+- [x] `lib/ui/shell/main_view.dart`（新增）+ `app_shell.dart`（改）
+  - `enum MainView { note, graph }` 放主区，**不进** `_openIds`（那个列表每处都假设 id 是笔记）。
+  - 主区 `Stack` + 两个 `Offstage`：编辑器子树不摘掉，撤销栈和光标不丢。
+  - `_graphOpened` 懒建：没点过图谱页签就不构建 `GraphView`，首屏省几十毫秒。
+  - `Ctrl+G` 切换；从图谱双击打开笔记会切回正文；切到图谱时自动关专注模式。
+- [x] `lib/ui/shell/title_bar_content.dart` / `title_bar_io.dart` / `title_bar_web.dart`（改）
+  - `_TitleTab` 改成通用（`label` + 可选 `icon` + 可选 `onClose`），页签条末尾加「图谱」页签。
+- [x] 修掉的坑
+  - 悬浮气泡 `Row` 溢出 17px（`RenderFlex overflowed`）：文件夹名改 `Flexible` + 省略号。
+  - 单击节点整张图抖一下：加 `_dragMoved`，只有真拖过才回弹。
+  - 「有笔记但一条边都没有」原来没有任何提示，画布上是两个散点看着像坏了：
+    补底部居中提示条 `_hintPill`，不挡节点。
+- [x] 测试：`note_graph_test` 21 条、`graph_physics_test` 13 条、`graph_view_test` 15 条，全绿。
+  `graph_view_test` 里点完要 `pump(400ms)` 走完 `DoubleTapGestureRecognizer` 的 40ms
+  判定窗口，否则报 "Pending timers"。
+- 验证：`flutter analyze lib test` 无问题；全量 `--exclude-tags perf` 全绿。

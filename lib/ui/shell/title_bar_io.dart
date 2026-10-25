@@ -4,6 +4,7 @@ import 'package:window_manager/window_manager.dart';
 import '../../core/app_enums.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
+import 'main_view.dart';
 import 'title_bar_content.dart';
 
 /// The application draws its own window chrome.
@@ -24,6 +25,8 @@ class AppTitleBar extends StatefulWidget {
     required this.onSelectView,
     required this.onToggleSidebar,
     required this.onCreateNote,
+    required this.mainView,
+    required this.onSelectMainView,
     required this.leftInset,
     required this.rightInset,
   });
@@ -32,6 +35,10 @@ class AppTitleBar extends StatefulWidget {
   final ValueChanged<SidebarView> onSelectView;
   final VoidCallback onToggleSidebar;
   final VoidCallback onCreateNote;
+
+  /// Whether the pane under the tabs shows a note or the graph.
+  final MainView mainView;
+  final ValueChanged<MainView> onSelectMainView;
 
   /// Distance from the window's left edge to the editor's left edge.
   final double leftInset;
@@ -90,6 +97,8 @@ class _AppTitleBarState extends State<AppTitleBar> with WindowListener {
         onSelectView: widget.onSelectView,
         onToggleSidebar: widget.onToggleSidebar,
         onCreateNote: widget.onCreateNote,
+        mainView: widget.mainView,
+        onSelectMainView: widget.onSelectMainView,
         leftInset: widget.leftInset,
         rightInset: widget.rightInset,
         grip: const DragToMoveArea(child: SizedBox.expand()),

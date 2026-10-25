@@ -10,6 +10,7 @@ import '../../core/theme/app_tokens.dart';
 import '../../data/models/note.dart';
 import '../../state/notes_controller.dart';
 import '../../state/settings_controller.dart';
+import 'main_view.dart';
 
 /// Width of the leading buttons plus their gaps, measured rather than guessed.
 ///
@@ -54,6 +55,8 @@ class TitleBarLayout extends StatelessWidget {
     required this.onSelectView,
     required this.onToggleSidebar,
     required this.onCreateNote,
+    required this.mainView,
+    required this.onSelectMainView,
     required this.grip,
     required this.leftInset,
     required this.rightInset,
@@ -65,6 +68,10 @@ class TitleBarLayout extends StatelessWidget {
   final ValueChanged<SidebarView> onSelectView;
   final VoidCallback onToggleSidebar;
   final VoidCallback onCreateNote;
+
+  /// Whether the pane under the tabs shows a note or the graph.
+  final MainView mainView;
+  final ValueChanged<MainView> onSelectMainView;
 
   /// The window's drag surface. Handed in rather than created here because only
   /// the desktop build may talk to `window_manager`.
@@ -223,12 +230,31 @@ class TitleBarLayout extends StatelessWidget {
                               Flexible(
                                 child: _TitleTab(
                                   key: ValueKey<String>(note.id),
-                                  note: note,
-                                  active: note.id == notes.selectedId,
-                                  onTap: () => notes.select(note.id),
+                                  label: note.title.trim().isEmpty
+                                      ? '未命名'
+                                      : note.title.trim(),
+                                  active:
+                                      mainView == MainView.note &&
+                                      note.id == notes.selectedId,
+                                  onTap: () {
+                                    notes.select(note.id);
+                                    onSelectMainView(MainView.note);
+                                  },
                                   onClose: () => notes.closeTab(note.id),
                                 ),
                               ),
+                            // The graph is pinned to the end of the strip: a
+                            // view, not a document, so it has no × and never
+                            // leaves the strip.
+                            Flexible(
+                              child: _TitleTab(
+                                key: const ValueKey<String>('__graph__'),
+                                label: '图谱',
+                                icon: LucideIcons.gitFork,
+                                active: mainView == MainView.graph,
+                                onTap: () => onSelectMainView(MainView.graph),
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -323,7 +349,7 @@ class _BarDivider extends StatelessWidget {
   }
 }
 
-/// One open note.
+/// One tab in the strip: either an open note, or the graph view.
 ///
 /// The active tab is marked by a 2px underline that meets the editor's surface,
 /// not by a filled block: a block turns the strip into a row of buttons, while
@@ -332,19 +358,28 @@ class _BarDivider extends StatelessWidget {
 /// Width is content-driven up to 180px; when the strip runs out of room the
 /// [Flexible] around it shrinks the tab instead of pushing it under the
 /// outline button.
+///
+/// The graph is a *view*, not a document: it carries an icon and no close
+/// button, because closing it would just mean "go back to the note" and the
+/// strip would then have no way to reopen it.
 class _TitleTab extends StatefulWidget {
   const _TitleTab({
     super.key,
-    required this.note,
+    required this.label,
+    this.icon,
     required this.active,
     required this.onTap,
-    required this.onClose,
+    this.onClose,
   });
 
-  final Note note;
+  final String label;
+
+  /// Non-null marks a view tab (the graph) rather than a note.
+  final IconData? icon;
+
   final bool active;
   final VoidCallback onTap;
-  final VoidCallback onClose;
+  final VoidCallback? onClose;
 
   @override
   State<_TitleTab> createState() => _TitleTabState();
@@ -356,9 +391,7 @@ class _TitleTabState extends State<_TitleTab> {
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
-    final String title = widget.note.title.trim().isEmpty
-        ? '未命名'
-        : widget.note.title.trim();
+    final String title = widget.label;
     final Color background = widget.active
         ? p.surface
         : (_hovered
@@ -395,6 +428,14 @@ class _TitleTabState extends State<_TitleTab> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
+                    if (widget.icon != null) ...<Widget>[
+                      Icon(
+                        widget.icon,
+                        size: AppIconSize.xs - 1,
+                        color: widget.active ? p.textPrimary : p.textTertiary,
+                      ),
+                      const SizedBox(width: 6),
+                    ],
                     Flexible(
                       child: Text(
                         title,
@@ -413,19 +454,21 @@ class _TitleTabState extends State<_TitleTab> {
                         ),
                       ),
                     ),
-                    const SizedBox(width: 4),
                     // Always laid out, only sometimes visible: hiding it with
                     // `Opacity` keeps every tab the same width on hover, so the
                     // strip does not twitch as the pointer sweeps across it.
                     // `IgnorePointer` then makes sure an invisible × cannot be
                     // clicked by accident.
-                    IgnorePointer(
-                      ignoring: !(widget.active || _hovered),
-                      child: Opacity(
-                        opacity: widget.active || _hovered ? 1 : 0,
-                        child: _TabCloseButton(onPressed: widget.onClose),
+                    if (widget.onClose != null) ...<Widget>[
+                      const SizedBox(width: 4),
+                      IgnorePointer(
+                        ignoring: !(widget.active || _hovered),
+                        child: Opacity(
+                          opacity: widget.active || _hovered ? 1 : 0,
+                          child: _TabCloseButton(onPressed: widget.onClose!),
+                        ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
               ),
