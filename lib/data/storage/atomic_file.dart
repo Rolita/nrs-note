@@ -77,12 +77,66 @@ class AtomicFileWriter {
   /// removed once it is old enough that no running instance can still own it.
   /// [skipDirectories] lets the vault skip large bookkeeping trees (history
   /// snapshots) whose files are not notes.
+  ///
+  /// 已经为了别的原因遍历过目录的调用方（vault 自己扫 `.md` 就是）不必再走
+  /// 这一遍：那个递归纯粹是在重复刚才的 `list`，直接用 [recoverFile] 在处理
+  /// 每个条目时顺手做掉即可。
   Future<void> recover(
     Directory vault, {
     Duration maxTempAge = const Duration(hours: 1),
     Set<String> skipDirectories = const <String>{},
   }) async {
     await _recoverDir(vault, DateTime.now(), maxTempAge, skipDirectories);
+  }
+
+  /// Whether [path] is something [recoverFile] has an opinion about.
+  ///
+  /// 用来把「这个条目要不要多花一次系统调用」的判断放在调用方，遍历时不必
+  /// 为每个正常文件都问一遍。
+  static bool isRecoverable(String path) {
+    final String lower = path.toLowerCase();
+    return lower.endsWith(_backupSuffix) || lower.contains(_tempMarker);
+  }
+
+  static const String _backupSuffix = '.nrs-bak';
+  static const String _tempMarker = '.nrs-tmp-';
+
+  /// Recovers one file. Returns the restored target when a backup was put back.
+  ///
+  /// [now] is passed in so a whole directory can be judged against one instant.
+  Future<File?> recoverFile(
+    File file, {
+    DateTime? now,
+    Duration maxTempAge = const Duration(hours: 1),
+  }) async {
+    final String path = file.path;
+    if (path.toLowerCase().endsWith(_backupSuffix)) {
+      final File target = File(
+        path.substring(0, path.length - _backupSuffix.length),
+      );
+      try {
+        if (await target.exists()) {
+          await file.delete();
+          return null;
+        }
+        await file.rename(target.path);
+        return target;
+      } on FileSystemException {
+        // Read-only or locked: leave it for the next start rather than
+        // turning a note into an error dialog.
+        return null;
+      }
+    }
+    if (!path.toLowerCase().contains(_tempMarker)) return null;
+    try {
+      final FileStat stat = await file.stat();
+      if ((now ?? DateTime.now()).difference(stat.modified) > maxTempAge) {
+        await file.delete();
+      }
+    } on FileSystemException {
+      // Gone already, or not ours to delete.
+    }
+    return null;
   }
 
   Future<void> _recoverDir(
@@ -103,32 +157,8 @@ class AtomicFileWriter {
           continue;
         }
         if (entity is! File) continue;
-        final String path = entity.path;
-        if (path.endsWith('.nrs-bak')) {
-          final File target = File(
-            path.substring(0, path.length - '.nrs-bak'.length),
-          );
-          try {
-            if (await target.exists()) {
-              await entity.delete();
-            } else {
-              await entity.rename(target.path);
-            }
-          } on FileSystemException {
-            // Read-only or locked: leave it for the next start rather than
-            // turning a note into an error dialog.
-          }
-          continue;
-        }
-        if (!path.contains('.nrs-tmp-')) continue;
-        try {
-          final FileStat stat = await entity.stat();
-          if (now.difference(stat.modified) > maxTempAge) {
-            await entity.delete();
-          }
-        } on FileSystemException {
-          // Gone already, or not ours to delete.
-        }
+        if (!isRecoverable(entity.path)) continue;
+        await recoverFile(entity, now: now, maxTempAge: maxTempAge);
       }
     } on FileSystemException {
       // A vault that disappears mid-scan is a fresh install, not a failure.

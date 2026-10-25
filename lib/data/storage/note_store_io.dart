@@ -46,6 +46,12 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
   TrashStore? _trash;
   HistoryStore? _history;
 
+  /// 后台进行的回收站打扫。
+  ///
+  /// 启动时不 await 它（见 [init]），只有在要判断「这是不是一次全新安装」
+  /// 时才等——那条路径上「回收站里有没有东西」必须等打扫完才准。
+  Future<void> _residueCleanup = Future<void>.value();
+
   TrashStore get _trashStore =>
       _trash ??= TrashStore(vault, clock: _clock);
 
@@ -93,28 +99,24 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     _vault = dir;
     _location = dir.path;
 
-    // A crash mid-write can leave a backup or a half-written temp behind. Put
-    // the vault back together *before* deciding whether it is empty, otherwise
-    // a recovered note would not count and a welcome note would be seeded on
-    // top of it.
-    await _writer.recover(
-      dir,
-      skipDirectories: <String>{
-        TrashStore.dirName.toLowerCase(),
-        HistoryStore.dirName.toLowerCase(),
-      },
-    );
+    // 回收站清理是纯打扫：它只动 `.nrs-trash`，和读笔记没有任何交集。让它
+    // 在后台和 `loadAll()` 并行跑，不要挡在启动路径上——回收站里攒了几十条
+    // 时这一项就是几十毫秒，而它晚几百毫秒做完没有任何区别。
+    _residueCleanup = _trashStore
+        .cleanupResidue()
+        .catchError((Object _) {
+          // 清不动的回收站照样可读，不值得让启动失败。
+        });
 
-    try {
-      await _trashStore.cleanupResidue();
-    } on FileSystemException {
-      // A trash that cannot be tidied is still readable.
-    }
-
+    // 崩溃残骸（`.nrs-bak` / `.nrs-tmp-*`）由下面这次遍历顺手收拾：必须先
+    // 收完再判断「库是不是空的」，否则恢复出来的笔记不算数，欢迎笔记会盖
+    // 在它上面。
     final List<File> existing = await _mdFiles();
     if (existing.isEmpty) {
       bool trashEmpty = true;
       try {
+        // 全新安装的判断要看**打扫之后**的回收站：残骸不算「里面有东西」。
+        await _residueCleanup;
         trashEmpty = (await _trashStore.list()).isEmpty;
       } on FileSystemException {
         // Unknown trash contents are not evidence of a fresh install.
@@ -156,7 +158,10 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     final List<File> files = <File>[];
     final List<Directory> dirs = <Directory>[];
     try {
-      await _walk(vault, files: files, dirs: dirs);
+      // 顺手把崩溃残骸收拾掉：这一遍递归本来就要 `list` 每个目录，让
+      // `recover` 再走一遍等于把八百多次 `list` 做两次。恢复出来的文件
+      // 直接进清单——它现在就是一篇正式笔记。
+      await _walk(vault, files: files, dirs: dirs, recover: DateTime.now());
     } on FileSystemException {
       // 一个读不了的子目录不该藏起整个库。
     }
@@ -213,10 +218,14 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
 
   /// Walks the vault without descending into the app's own bookkeeping
   /// directories. Their `.md` files are snapshots, not notes.
+  ///
+  /// 传了 [recover] 就在这一遍里把 `.nrs-bak` / `.nrs-tmp-*` 收拾掉（[recover]
+  /// 是「现在几点」，整遍共用一个时刻）。
   Future<void> _walk(
     Directory dir, {
     List<File>? files,
     List<Directory>? dirs,
+    DateTime? recover,
   }) async {
     try {
       await for (final FileSystemEntity entity
@@ -224,11 +233,22 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
         if (entity is Directory) {
           if (_isInternalDirName(_baseName(entity.path))) continue;
           dirs?.add(entity);
-          await _walk(entity, files: files, dirs: dirs);
-        } else if (entity is File &&
-            files != null &&
-            entity.path.toLowerCase().endsWith('.md')) {
-          files.add(entity);
+          await _walk(entity, files: files, dirs: dirs, recover: recover);
+        } else if (entity is File) {
+          final String path = entity.path;
+          if (recover != null && AtomicFileWriter.isRecoverable(path)) {
+            final File? restored = await _writer.recoverFile(
+              entity,
+              now: recover,
+            );
+            if (restored != null &&
+                files != null &&
+                _mdSuffix.hasMatch(restored.path)) {
+              files.add(restored);
+            }
+            continue;
+          }
+          if (files != null && _mdSuffix.hasMatch(path)) files.add(entity);
         }
       }
     } on FileSystemException {

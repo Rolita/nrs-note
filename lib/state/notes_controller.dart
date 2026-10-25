@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../core/app_enums.dart';
+import '../core/platform/boot_trace.dart';
 import '../core/utils/debouncer.dart';
 import '../data/models/note.dart';
 import '../data/storage/note_store_factory.dart';
@@ -483,7 +484,9 @@ class NotesController extends ChangeNotifier {
     bool restored = false;
     try {
       await _store.init();
+      BootTrace.mark('store init');
       await refresh(keepSelection: false);
+      BootTrace.mark('refresh');
       // `refresh` 自己吞掉了读盘失败。读不到 vault 时不能把会话兑现成空
       // 标签栏，否则下一次保存就把上次的四个标签抹掉了。
       if (_error == null) restored = _applySession();
