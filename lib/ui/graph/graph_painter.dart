@@ -377,15 +377,17 @@ class GraphPainter extends CustomPainter {
       final double r = data.radii[i];
       final bool on = data.lit[i];
       final bool isFocus = i == focus;
-      final bool isNeighbour =
-          focus != null && g.nodes[focus].neighbours.contains(i);
 
       fill.color = _nodeColor(i).withValues(alpha: on ? 1 : 0.16);
       canvas.drawCircle(Offset(x, y), r, fill);
 
+      // 只在「焦点」和「当前笔记」上画环。
+      //
+      // 邻居也画的话，悬停一个枢纽节点会同时亮起五六个圈，整张图变成靶盘——
+      // 设计稿里邻居是靠**变亮**说话的，不是靠加圈。
       final bool isCurrent = node.id == data.currentId;
-      if (isCurrent || isFocus || isNeighbour) {
-        final double alpha = isFocus ? 0.95 : (isCurrent ? 0.55 : 0.32);
+      if (isCurrent || isFocus) {
+        final double alpha = isFocus ? 0.95 : 0.55;
         ring
           ..color = data.style.ring.withValues(alpha: alpha)
           ..strokeWidth = (isFocus ? 1.8 : 1.2) / math.max(data.scale, 0.5);
@@ -437,26 +439,32 @@ class GraphPainter extends CustomPainter {
       );
       if (alpha <= 0.02) continue;
 
-      final double x = data.layout.x[i] + data.radii[i] + 5;
-      // 描边那遍先画：压在连线上也读得清。淡掉的标签不描边，否则一圈
-      // 深色描边会让「被筛掉」的字反而更抢眼。
-      if (on) {
-        final TextPainter halo = labels.painter(
-          node.title,
-          color: data.style.label,
-          halo: data.style.labelHalo,
-          scaler: data.textScaler,
-        );
-        halo.paint(canvas, Offset(x, data.layout.y[i] - halo.height / 2));
-      }
-
+      // 标签在节点**下方居中**，和设计稿一致。
+      //
+      // 挂在右边时，长标题会横着长出去、和邻居的标签接上，整张图变成一行行
+      // 字；挂下方居中的话，字始终跟着自己那颗点走，缩小时也不会串行。
       final TextPainter fill = labels.painter(
         node.title,
         color: data.style.label.withValues(alpha: on ? alpha : alpha * 0.14),
         halo: null,
         scaler: data.textScaler,
       );
-      fill.paint(canvas, Offset(x, data.layout.y[i] - fill.height / 2));
+      final double x = data.layout.x[i] - fill.width / 2;
+      final double y = data.layout.y[i] + data.radii[i] + 11 - fill.height / 2;
+
+      // 描边那遍先画：压在连线上也读得清。淡掉的标签不描边，否则一圈
+      // 深色描边会让「被筛掉」的字反而更抢眼。
+      if (on) {
+        labels
+            .painter(
+              node.title,
+              color: data.style.label,
+              halo: data.style.labelHalo,
+              scaler: data.textScaler,
+            )
+            .paint(canvas, Offset(x, y));
+      }
+      fill.paint(canvas, Offset(x, y));
     }
   }
 
