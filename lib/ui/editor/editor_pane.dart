@@ -804,6 +804,8 @@ class EditorPaneState extends State<EditorPane> {
       savePastedImage: notes.saveAsset,
       imageProviderFor: (String source) =>
           imageProviderFor(notes.assetPathFor(source), source),
+      // 「查看大图」要知道原图多大，尺寸得从磁盘上那张文件读。
+      imagePathFor: (String source) => notes.assetPathFor(source),
       onChanged: notes.updateBody,
       onTopLineChanged: _onTopLine,
       onLineTopProbe: (double? Function(int line)? probe) =>

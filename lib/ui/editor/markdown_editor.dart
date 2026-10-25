@@ -34,6 +34,7 @@ import '../../state/settings_controller.dart';
 import '../common/notices.dart';
 import 'code_block_painter.dart';
 import 'editor_context_menu.dart';
+import 'image_viewer.dart';
 import 'line_layout/line_editable_text.dart';
 import 'line_layout/line_layout_engine.dart';
 import 'line_layout/line_layout_pool.dart';
@@ -960,6 +961,7 @@ class MarkdownEditor extends StatefulWidget {
     this.searchHighlightColor,
     this.savePastedImage,
     this.imageProviderFor,
+    this.imagePathFor,
     this.readOnly = false,
   });
 
@@ -1046,6 +1048,12 @@ class MarkdownEditor extends StatefulWidget {
 
   /// 把正文里的图片引用解析成可绘制的图片；null 表示这一行画不出来。
   final ImageProvider? Function(String source)? imageProviderFor;
+
+  /// 把正文里的图片引用解析成磁盘上的绝对路径。
+  ///
+  /// 只有「查看大图」用：浮层要知道原图多大，而尺寸得从文件头读。远程图
+  /// 返回 null，浮层就不显示尺寸那一行。
+  final String? Function(String source)? imagePathFor;
 
   final bool readOnly;
 
@@ -1837,7 +1845,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       return KeyEventResult.handled;
     }
     // 全屏看图：Esc 退出来。
-    if (key == LogicalKeyboardKey.escape && _viewImage != null) {
+    if (key == LogicalKeyboardKey.escape && _viewerOpen) {
       _closeImageViewer();
       widget.focusNode.requestFocus();
       return KeyEventResult.handled;
@@ -2456,8 +2464,8 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   /// 调它会撞上 `visitChildElements() called during build`。
   Rect? _imageActionsRect;
 
-  /// 正在全屏看的那张图。
-  _ImageView? _viewImage;
+  /// 正在全屏看的那张图（浮层自己管图，这里只记「开着没有」）。
+  bool _viewerOpen = false;
 
   /// 「查看大图」的那一层。
   ///
@@ -4468,30 +4476,61 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
   /// 全屏看这张图。
   ///
-  /// 图片行里的宽度是源码里的 `w=`，一张长截图缩在正文列里看不清细节；「查看
-  /// 大图」只做一件事——把它铺满**整个窗口**，点哪儿都退出来。
+  /// 浮层本身在 `image_viewer.dart`；这里只负责两件事：**把这篇笔记里的图
+  /// 都收集起来**（浮层要知道「我是第几张、还有几张」），以及把浮层挂到根
+  /// Overlay 上。
+  ///
+  /// 挂在根 Overlay 而不是编辑器 Stack 里：用户要的是「盖住整个软件」，而
+  /// 编辑器只占窗口中间那一块——挂在 Stack 里的话左边文件列表、右边边栏都
+  /// 还亮着，放大一张图反而更看不清。
   void _openImageViewer(int lineStart) {
-    final ({int from, int to, String text})? line = _sourceLineAt(lineStart);
-    if (line == null) return;
-    final ImageMarkup? markup = ImageMarkup.parseLine(line.text);
-    if (markup == null) return;
-    final ImageProvider? provider = widget.imageProviderFor?.call(markup.source);
-    if (provider == null) return;
-    final AppPalette? palette = _palette;
-    if (palette == null) return;
+    final String text = widget.controller.text;
+    final List<NoteImageView> images = <NoteImageView>[];
+    int index = 0;
 
-    final _ImageView image = _ImageView(
-      source: markup.source,
-      alt: markup.alt,
-      provider: provider,
-    );
+    // 手动扫行而不是 `split('\n')`：要知道当前这张在列表里的位置，就得跟着
+    // 维护行首偏移，正好和 [_sourceLineAt] 的口径一致。
+    int offset = 0;
+    while (offset <= text.length) {
+      final int newline = text.indexOf('\n', offset);
+      final int end = newline < 0 ? text.length : newline;
+      final ImageMarkup? markup = ImageMarkup.parseLine(
+        text.substring(offset, end),
+      );
+      if (markup != null) {
+        final ImageProvider? provider = widget.imageProviderFor?.call(
+          markup.source,
+        );
+        if (provider != null) {
+          // 用「落在这一行里」而不是「正好等于行首」：调用方给的是行首偏移，
+          // 但差一个字符也不该让浮层从第一张开始。
+          if (offset <= lineStart && lineStart <= end) index = images.length;
+          images.add(
+            NoteImageView(
+              source: markup.source,
+              alt: markup.alt,
+              provider: provider,
+              absolutePath: widget.imagePathFor?.call(markup.source),
+            ),
+          );
+        }
+      }
+      if (newline < 0) break;
+      offset = end + 1;
+    }
+
+    if (images.isEmpty) return;
+
     _viewImageEntry?.remove();
     final OverlayEntry entry = OverlayEntry(
-      builder: (BuildContext context) =>
-          _ImageViewer(image: image, palette: palette, onClose: _closeImageViewer),
+      builder: (BuildContext context) => NoteImageViewer(
+        images: images,
+        index: index,
+        onClose: _closeImageViewer,
+      ),
     );
     _viewImageEntry = entry;
-    setState(() => _viewImage = image);
+    setState(() => _viewerOpen = true);
     Overlay.of(context, rootOverlay: true).insert(entry);
   }
 
@@ -4501,7 +4540,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     _viewImageEntry = null;
     entry.remove();
     if (!mounted) return;
-    setState(() => _viewImage = null);
+    setState(() => _viewerOpen = false);
     widget.focusNode.requestFocus();
   }
 
@@ -4584,7 +4623,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     _imageMove = null;
     final OverlayEntry? viewer = _viewImageEntry;
     _viewImageEntry = null;
-    _viewImage = null;
+    _viewerOpen = false;
     viewer?.remove();
     if (text != null || focus != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -5645,19 +5684,6 @@ const double _kImageActionsEditWidth =
     _kImageActionButtonWidth * 3 + _kImageActionsGap * 2;
 const double _kImageActionsHeight = 24;
 
-/// 正在全屏查看的那张图。
-class _ImageView {
-  const _ImageView({
-    required this.source,
-    required this.alt,
-    required this.provider,
-  });
-
-  final String source;
-  final String? alt;
-  final ImageProvider provider;
-}
-
 /// 图片右上角那排按钮：「查看大图」「移动」「编辑这个区块」。
 ///
 /// 它悬在图片上，所以底色要压得住图片：浅色底 + 一圈描边，不用半透明——半透明
@@ -5980,142 +6006,6 @@ class _ImageActionButtonState extends State<_ImageActionButton> {
       ),
     );
   }
-}
-
-/// 全屏看一张图：压一层暗色，图按原比例铺满，点哪儿都退出来。
-///
-/// 挂在根 Overlay 上，所以它盖住的是整个窗口——左侧文件列表、右侧边栏一起压
-/// 下去。放在编辑器 Stack 里只能盖住正文那一块，放大一张图反而更看不清。
-class _ImageViewer extends StatelessWidget {
-  const _ImageViewer({
-    required this.image,
-    required this.palette,
-    required this.onClose,
-  });
-
-  final _ImageView image;
-  final AppPalette palette;
-  final VoidCallback onClose;
-
-  @override
-  Widget build(BuildContext context) {
-    return Focus(
-      autofocus: true,
-      onKeyEvent: (FocusNode node, KeyEvent event) {
-        if (event is KeyDownEvent &&
-            event.logicalKey == LogicalKeyboardKey.escape) {
-          onClose();
-          return KeyEventResult.handled;
-        }
-        return KeyEventResult.ignored;
-      },
-      // Overlay 的直系孩子没有 Material 祖先，文字会掉进 WidgetsApp 那条
-      // 黄色双下划线的兜底样式里。
-      child: Material(
-        type: MaterialType.transparency,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: onClose,
-          child: ColoredBox(
-            color: const Color(0xE6000000),
-            child: Stack(
-              children: <Widget>[
-                Positioned.fill(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(40, 48, 40, 40),
-                    child: Center(
-                      child: GestureDetector(
-                        // 点图本身不关：手指落下去是想看细节，不是想退出。
-                        onTap: () {},
-                        child: Image(
-                          image: image.provider,
-                          fit: BoxFit.contain,
-                          errorBuilder: (BuildContext context, Object _, _) =>
-                              Text(
-                                image.alt ?? '图片打不开',
-                                style: TextStyle(
-                                  fontSize: AppText.body,
-                                  color: palette.textTertiary,
-                                ),
-                              ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                Positioned(
-                  top: 12,
-                  left: 40,
-                  right: 16,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: <Widget>[
-                      Flexible(
-                        child: Text(
-                          image.alt ?? _fileNameOf(image.source),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: AppText.caption,
-                            color: const Color(0xB3FFFFFF),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      _ViewerCloseButton(palette: palette, onTap: onClose),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ViewerCloseButton extends StatefulWidget {
-  const _ViewerCloseButton({required this.palette, required this.onTap});
-
-  final AppPalette palette;
-  final VoidCallback onTap;
-
-  @override
-  State<_ViewerCloseButton> createState() => _ViewerCloseButtonState();
-}
-
-class _ViewerCloseButtonState extends State<_ViewerCloseButton> {
-  bool _hovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
-        child: Container(
-          width: 28,
-          height: 28,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: _hovered ? const Color(0x33FFFFFF) : const Color(0x1AFFFFFF),
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: const Icon(LucideIcons.x, size: 16, color: Color(0xFFFFFFFF)),
-        ),
-      ),
-    );
-  }
-}
-
-/// 路径里最后一段，用来给没有 alt 的图片当名字。
-String _fileNameOf(String source) {
-  final String tail = source.split(RegExp(r'[/\\]')).last;
-  return tail.isEmpty ? source : tail;
 }
 
 /// One open floating cell editor.
