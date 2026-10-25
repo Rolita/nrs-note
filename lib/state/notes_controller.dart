@@ -503,10 +503,11 @@ class NotesController extends ChangeNotifier {
     final List<String> folders;
     final List<NoteFileStamp>? stamps;
     try {
-      // Stamps first: if a file changes while it is being read, the snapshot is
-      // older than the change and the next focus checks it again.
-      stamps = await _store.stamps();
+      // 先读正文，再取指纹：读的时候顺手 stat 过了，`stamps()` 直接拿那份
+      // 结果，不用把八百多个文件再 open 一遍。桌面端的指纹和内容来自**同一次**
+      // stat，比原先两次独立扫描更一致。
       loaded = await _store.loadAll();
+      stamps = await _store.stamps();
       folders = await _store.listFolders();
     } catch (e) {
       _error = '读取笔记库失败:$e';
