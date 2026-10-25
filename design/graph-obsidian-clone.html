@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>图谱 · 复刻 Obsidian</title>
+<style>
+  /* Obsidian 默认深色主题的关键色，照抄它的 CSS 变量 */
+  :root {
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #262626;
+    --text-normal: #dadada;
+    --text-muted: #9d9d9d;
+    --text-faint: #6b6b6b;
+    --border: #363636;
+    --accent: #7f6df2;          /* Obsidian 默认紫色强调色 */
+    --graph-node: #9d9d9d;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg-primary);
+    color: var(--text-normal);
+    font: 14px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #stage { position: relative; width: 100%; height: 100%; }
+  canvas { display: block; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  canvas.pointing { cursor: pointer; }
+
+  /* ---------- 左上控制区（模仿 Obsidian 的图谱控制面板） ---------- */
+  #panel {
+    position: absolute; left: 14px; top: 14px; width: 232px;
+    background: rgba(38, 38, 38, .92);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.45);
+    backdrop-filter: blur(12px);
+    overflow: hidden;
+    font-size: 13px;
+  }
+  #panel .head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px 7px; border-bottom: 1px solid var(--border);
+    color: var(--text-muted); font-size: 12px; letter-spacing: .3px;
+    user-select: none;
+  }
+  #panel .head button {
+    appearance: none; border: 0; background: transparent; cursor: pointer;
+    color: var(--text-faint); font: inherit; padding: 0 2px; line-height: 1;
+  }
+  #panel .head button:hover { color: var(--text-normal); }
+  #panel .body { padding: 9px 10px 10px; }
+  #panel.collapsed .body { display: none; }
+
+  #search {
+    width: 100%; appearance: none;
+    background: #1b1b1b; border: 1px solid var(--border); border-radius: 5px;
+    color: var(--text-normal); font: inherit; font-size: 12.5px;
+    padding: 5px 8px; outline: none;
+  }
+  #search::placeholder { color: var(--text-faint); }
+  #search:focus { border-color: var(--accent); }
+
+  .row {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 9px; color: var(--text-muted); font-size: 12.5px;
+    cursor: pointer; user-select: none;
+  }
+  .row:hover { color: var(--text-normal); }
+  .sw {
+    width: 26px; height: 15px; border-radius: 8px; background: #3a3a3a;
+    position: relative; transition: background .16s; flex: 0 0 auto;
+  }
+  .sw::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 11px; height: 11px; border-radius: 50%;
+    background: #b0b0b0; transition: transform .16s, background .16s;
+  }
+  .row[aria-checked="true"] .sw { background: var(--accent); }
+  .row[aria-checked="true"] .sw::after { transform: translateX(11px); background: #fff; }
+
+  #panel .sep { height: 1px; background: var(--border); margin: 10px -10px 0; }
+  #panel .foot {
+    display: flex; gap: 6px; margin-top: 10px;
+  }
+  #panel .foot button {
+    flex: 1; appearance: none; cursor: pointer;
+    background: #2f2f2f; border: 1px solid var(--border); border-radius: 5px;
+    color: var(--text-muted); font: inherit; font-size: 12px; padding: 4px 0;
+    transition: background .14s, color .14s;
+  }
+  #panel .foot button:hover { background: #3a3a3a; color: var(--text-normal); }
+
+  /* ---------- 右下统计 / 底部提示 ---------- */
+  #stats {
+    position: absolute; right: 14px; bottom: 12px;
+    font-size: 11.5px; color: var(--text-faint);
+    font-family: var(--mono); pointer-events: none; user-select: none;
+  }
+  #hint {
+    position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+    font-size: 11.5px; color: #555; pointer-events: none; user-select: none;
+    white-space: nowrap;
+  }
+  #toast {
+    position: absolute; left: 50%; bottom: 42px; transform: translate(-50%, 6px);
+    background: #2f2f2f; border: 1px solid var(--border);
+    color: var(--text-normal); font-size: 12.5px;
+    padding: 6px 12px; border-radius: 6px;
+    opacity: 0; transition: opacity .16s, transform .16s;
+    pointer-events: none; white-space: nowrap;
+  }
+  #toast.on { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c"></canvas>
+
+  <div id="panel">
+    <div class="head">
+      <span>图谱设置</span>
+      <button id="collapse" title="收起">—</button>
+    </div>
+    <div class="body">
+      <input id="search" type="text" placeholder="搜索笔记…" spellcheck="false">
+      <div class="row" id="rLabels" aria-checked="true" role="checkbox"><span>显示标签</span><i class="sw"></i></div>
+      <div class="row" id="rArrows" aria-checked="false" role="checkbox"><span>显示箭头</span><i class="sw"></i></div>
+      <div class="row" id="rColors" aria-checked="false" role="checkbox"><span>按文件夹着色</span><i class="sw"></i></div>
+      <div class="sep"></div>
+      <div class="foot">
+        <button id="btnRelayout">重新布局</button>
+        <button id="btnFit">适应窗口</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="stats"></div>
+  <div id="hint">拖节点 · 滚轮缩放 · 拖空白平移 · 双击打开</div>
+  <div id="toast"></div>
+</div>
+
+<script>
+/* ==================================================================
+   数据。和真实笔记库一样：一篇笔记的 links 就是正文里的 [[双链]]。
+   ================================================================== */
+
+const FOLDERS = {
+  '':     { name: '根目录', color: '#9d9d9d' },
+  '日记': { name: '日记',   color: '#e9973f' },
+  '项目': { name: '项目',   color: '#44cf6e' },
+  '学习': { name: '学习',   color: '#53dfdd' },
+  '灵感': { name: '灵感',   color: '#a882ff' },
+};
+
+const NOTES = [
+  { t: '索引',        f: '',     links: ['开发进度', '快速入门', '待办', 'NRS 重构', '排版笔记', '双链的用法'] },
+  { t: '开发进度',    f: '',     links: ['NRS 重构', '数据安全', '表格功能', '图谱功能', '发布计划', '10月25日'] },
+  { t: '快速入门',    f: '',     links: ['待办', '双链的用法'] },
+  { t: '待办',        f: '',     links: ['发布计划', '开发进度'] },
+
+  { t: '10月25日',    f: '日记', links: ['10月24日', '开发进度', '图谱功能'] },
+  { t: '10月24日',    f: '日记', links: ['10月23日', '开发进度'] },
+  { t: '10月23日',    f: '日记', links: ['10月22日', '每日日记'] },
+  { t: '10月22日',    f: '日记', links: ['每日日记'] },
+  { t: '每日日记',    f: '日记', links: ['10月25日', '待办'] },
+
+  { t: 'NRS 重构',    f: '项目', links: ['数据安全', '表格功能', '图谱功能', '离线优先', '界面密度', '发布计划'] },
+  { t: '数据安全',    f: '项目', links: ['离线优先', '发布计划'] },
+  { t: '表格功能',    f: '项目', links: ['排版笔记', '界面密度'] },
+  { t: '图谱功能',    f: '项目', links: ['力导向布局', '双链的用法', '排版笔记', '10月25日'] },
+  { t: '发布计划',    f: '项目', links: ['待办', '会议记录'] },
+  { t: '会议记录',    f: '项目', links: ['待办', '发布计划'] },
+
+  { t: 'Rust 所有权', f: '学习', links: ['分布式共识'] },
+  { t: '力导向布局',  f: '学习', links: ['排版笔记'] },
+  { t: '排版笔记',    f: '学习', links: ['界面密度', '读书笔记'] },
+  { t: '分布式共识',  f: '学习', links: ['Rust 所有权', '排版笔记'] },
+  { t: '读书笔记',    f: '学习', links: ['排版笔记', 'Rust 所有权'] },
+  { t: '待读清单',    f: '学习', links: [] },
+
+  { t: '冷启动',      f: '灵感', links: ['离线优先', '界面密度'] },
+  { t: '离线优先',    f: '灵感', links: ['分布式共识', '数据安全'] },
+  { t: '界面密度',    f: '灵感', links: ['排版笔记', '冷启动'] },
+  { t: '双链的用法',  f: '灵感', links: ['快速入门', '索引'] },
+  { t: '随手记',      f: '灵感', links: [] },
+];
+
+/* ==================================================================
+   力导向 —— 参数按 Obsidian 的手感调过：
+   链接更长更紧、斥力更弱（所以簇更收），阻尼更大（所以不会晃）。
+   ================================================================== */
+
+const PHYS = {
+  rep: 8000,        // 斥力（与 d² 成反比）
+  spring: 0.055,    // 边上弹簧
+  rest: 190,        // 弹簧自然长度
+  grav: 0.008,      // 向心
+  damp: 0.62,       // 速度衰减（Obsidian 的 velocityDecay ≈ 0.38）
+  vmax: 32,         // 单帧位移上限：开场爆开要够快，但不能飞出去
+  collide: 7,       // 节点之间额外留的缝
+  // 常驻微动：alpha 衰减到这里就不再降。0.020 大约是「2 秒内游走 6px」，
+  // 看得见但不晃眼。想完全静止就改成 0。
+  alphaMin: 0.020,
+  alphaDecay: 0.019,
+};
+
+function buildGraph(notes) {
+  const byTitle = new Map(notes.map(n => [n.t, n]));
+  notes.forEach(n => {
+    n.out = 0; n.in = 0; n.deg = 0;
+    n.neigh = new Set();
+    n.vx = 0; n.vy = 0;
+  });
+  const byKey = new Map(), links = [];
+  for (const n of notes) {
+    for (const t of (n.links || [])) {
+      const m = byTitle.get(t);
+      if (!m || m === n) continue;              // 死链、自环都不要
+      n.out++; m.in++;
+      const k = n.t < m.t ? n.t + '\u0000' + m.t : m.t + '\u0000' + n.t;
+      const hit = byKey.get(k);
+      if (hit) { hit.ba = true; continue; }      // 互相链接只画一条线
+      const link = { a: n, b: m, ab: true, ba: false };
+      byKey.set(k, link);
+      links.push(link);
+      n.deg++; m.deg++;
+      n.neigh.add(m.t); m.neigh.add(n.t);
+    }
+  }
+  return { nodes: notes, links };
+}
+
+function radiusOf(deg) { return 3 + Math.sqrt(deg) * 1.9; }
+
+function step(g, alpha) {
+  const P = PHYS, nodes = g.nodes;
+
+  // 斥力
+  for (let i = 0; i < nodes.length; i++) {
+    const a = nodes[i];
+    for (let j = i + 1; j < nodes.length; j++) {
+      const b = nodes[j];
+      let dx = b.x - a.x, dy = b.y - a.y;
+      let d2 = dx * dx + dy * dy;
+      if (d2 < 0.01) { dx = (i - j) * 0.01 + 0.01; dy = 0.01; d2 = 0.01; }
+      const d = Math.sqrt(d2);
+      const f = P.rep / d2 * alpha;
+      const ux = dx / d, uy = dy / d;
+      a.vx -= ux * f; a.vy -= uy * f;
+      b.vx += ux * f; b.vy += uy * f;
+
+      // 碰撞：挤得太近就硬推开，保证点不会叠在一起
+      const min = a.r + b.r + P.collide;
+      if (d < min) {
+        const push = (min - d) * 0.5;
+        a.vx -= ux * push; a.vy -= uy * push;
+        b.vx += ux * push; b.vy += uy * push;
+      }
+    }
+  }
+
+  // 弹簧
+  for (const l of g.links) {
+    const dx = l.b.x - l.a.x, dy = l.b.y - l.a.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const f = (d - P.rest) * P.spring * alpha;
+    const ux = dx / d, uy = dy / d;
+    l.a.vx += ux * f; l.a.vy += uy * f;
+    l.b.vx -= ux * f; l.b.vy -= uy * f;
+  }
+
+  // 向心 + 积分
+  for (const n of nodes) {
+    if (n.pin) { n.vx = 0; n.vy = 0; continue; }
+    n.vx -= n.x * P.grav * alpha;
+    n.vy -= n.y * P.grav * alpha;
+    n.vx *= P.damp; n.vy *= P.damp;
+    const sp = Math.hypot(n.vx, n.vy);
+    if (sp > P.vmax) { n.vx *= P.vmax / sp; n.vy *= P.vmax / sp; }
+    n.x += n.vx; n.y += n.vy;
+  }
+}
+
+/** 开场：所有点挤在中心附近，让力把它们炸开——这就是 Obsidian 打开时的那个动画。 */
+function seed(g, spread) {
+  const n = g.nodes.length;
+  g.nodes.forEach((node, i) => {
+    const a = (i / n) * Math.PI * 2 + (i % 5) * 0.31;
+    const r = spread * (0.35 + ((i * 53) % 100) / 160);
+    node.x = Math.cos(a) * r;
+    node.y = Math.sin(a) * r;
+    node.vx = 0; node.vy = 0;
+  });
+}
+
+function bounds(g) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const n of g.nodes) {
+    if (n.x - n.r < x0) x0 = n.x - n.r;
+    if (n.y - n.r < y0) y0 = n.y - n.r;
+    if (n.x + n.r > x1) x1 = n.x + n.r;
+    if (n.y + n.r > y1) y1 = n.y + n.r;
+  }
+  return { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 };
+}
+
+/* ==================================================================
+   状态
+   ================================================================== */
+
+const TAU = Math.PI * 2;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+const G = buildGraph(NOTES.map(n => ({ ...n })));
+G.nodes.forEach((n, i) => {
+  n.i = i;
+  n.r = radiusOf(n.deg);
+  n.baseColor = FOLDERS[n.f].color;
+  n.va = 1;          // 视觉透明度（插值用）
+  n.vr = n.r;        // 视觉半径（插值用）
+});
+G.links.forEach(l => { l.va = 0.11; });
+
+let view = { s: 1, x: 0, y: 0 };
+let alpha = 1;
+let hover = null;
+let sel = null;
+let query = '';
+let showLabels = true;
+let showArrows = false;
+let useFolderColors = false;
+let dpr = 1, W = 0, H = 0;
+let cam = null;
+
+/* 开场动画 */
+seed(G, 26);
+
+/* ---------------- 视口 ---------------- */
+
+function fit(pad = 90) {
+  const b = bounds(G);
+  const s = Math.min((W - pad * 2) / Math.max(b.w, 1), (H - pad * 2) / Math.max(b.h, 1));
+  const scale = Math.max(0.25, Math.min(1.6, s));
+  view = {
+    s: scale,
+    x: W / 2 - ((b.x0 + b.x1) / 2) * scale,
+    y: H / 2 - ((b.y0 + b.y1) / 2) * scale,
+  };
+  cam = null;
+}
+
+function zoomAt(sx, sy, factor) {
+  const next = Math.max(0.18, Math.min(4, view.s * factor));
+  const k = next / view.s;
+  view.x = sx - (sx - view.x) * k;
+  view.y = sy - (sy - view.y) * k;
+  view.s = next;
+  cam = null;
+}
+
+function toWorld(sx, sy) { return { x: (sx - view.x) / view.s, y: (sy - view.y) / view.s }; }
+
+function nodeAt(sx, sy) {
+  const w = toWorld(sx, sy);
+  let best = null, bestD = Infinity;
+  for (const n of G.nodes) {
+    const d = Math.hypot(n.x - w.x, n.y - w.y);
+    const reach = n.r + 7 / view.s;
+    if (d <= reach && d < bestD) { bestD = d; best = n; }
+  }
+  return best;
+}
+
+/* ---------------- 命中 / 过滤 ---------------- */
+
+function matches(n) {
+  if (!query) return true;
+  return n.t.toLowerCase().includes(query);
+}
+
+/** 悬停优先，其次选中；两者都没有就是「没有焦点」。 */
+function focusNode() { return hover || sel; }
+
+function nodeAlpha(n) {
+  if (!matches(n)) return 0.10;                 // 搜索没命中
+  const f = focusNode();
+  if (!f) return 1;
+  if (n === f) return 1;
+  return f.neigh.has(n.t) ? 1 : 0.16;           // 非邻居淡出
+}
+
+function nodeColor(n) {
+  if (n === sel) return '#7f6df2';              // 选中 = Obsidian 的 accent 紫
+  if (useFolderColors) return n.baseColor;
+  return '#9d9d9d';
+}
+
+/** 一条边的目标透明度。悬停/选中时，只有连着焦点的那几条亮起来。 */
+function edgeAlpha(l, f) {
+  const hitA = matches(l.a), hitB = matches(l.b);
+  if (!hitA || !hitB) return 0.035;
+  if (!f) return 0.11;
+  if (l.a === f || l.b === f) return 0.62;
+  if (f.neigh.has(l.a.t) || f.neigh.has(l.b.t)) return 0.16;
+  return 0.045;
+}
+
+/**
+ * 每帧把「视觉值」朝目标值插值一次。
+ *
+ * 这是 Obsidian 那种手感的关键：悬停时周围不是「啪」一下变暗，而是
+ * 在一百多毫秒里退后。少了这一步，再对的配色也会显得生硬。
+ */
+function updateVisuals() {
+  const f = focusNode();
+  for (const n of G.nodes) {
+    n.va += (nodeAlpha(n) - n.va) * 0.20;
+    const targetR = n.r * (n === f ? 1.22 : 1);
+    n.vr += (targetR - n.vr) * 0.25;
+  }
+  for (const l of G.links) {
+    l.va += (edgeAlpha(l, f) - l.va) * 0.20;
+  }
+}
+
+/* ==================================================================
+   绘制
+   ================================================================== */
+
+function hexA(hex, a) {
+  const v = parseInt(hex.slice(1), 16);
+  return `rgba(${(v >> 16) & 255},${(v >> 8) & 255},${v & 255},${a})`;
+}
+
+function circle(x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); }
+
+/** 标签：Obsidian 是「缩放到一定比例才显形」，不是开关。 */
+function labelAlphaFor(n, isFocus) {
+  if (!showLabels) return 0;
+  if (isFocus) return 1;
+  // 0.55 → 0.95 之间淡入
+  const t = Math.max(0, Math.min(1, (view.s - 0.55) / 0.40));
+  return t;
+}
+
+function drawLabel(n, isFocus, a) {
+  if (a <= 0.02) return;
+  const fs = isFocus ? 13.5 : 12.5;
+  ctx.font = `${isFocus ? 500 : 400} ${fs}px -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowColor = 'rgba(30,30,30,0.95)';
+  ctx.shadowBlur = 4;
+  ctx.fillStyle = isFocus ? '#ffffff' : hexA('#dadada', a);
+  ctx.fillText(n.t, n.x, n.y + n.r + 11);
+  ctx.shadowBlur = 0;
+}
+
+function draw(now) {
+  // 背景：Obsidian 的图谱就是主题底色，没有渐变、没有装饰
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#1e1e1e';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.translate(view.x, view.y);
+  ctx.scale(view.s, view.s);
+
+  const f = focusNode();
+
+  /* ---- 连线 ---- */
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 1 / view.s * Math.max(0.85, Math.min(1.6, view.s));
+
+  for (const l of G.links) {
+    const lit = f && (l.a === f || l.b === f);
+    ctx.strokeStyle = `rgba(255,255,255,${l.va.toFixed(3)})`;
+
+    ctx.beginPath();
+    ctx.moveTo(l.a.x, l.a.y);
+    ctx.lineTo(l.b.x, l.b.y);
+    ctx.stroke();
+
+    // 箭头：只在有焦点时画，免得常态变成一团箭
+    if (showArrows && f && lit && l.ab !== l.ba) {
+      const from = l.ab ? l.a : l.b;
+      const to = l.ab ? l.b : l.a;
+      if (from === f) arrow(from, to);
+    }
+  }
+
+  /* ---- 节点 ---- */
+  for (const n of G.nodes) {
+    const isFocus = n === f;
+    ctx.globalAlpha = n.va;
+    ctx.fillStyle = nodeColor(n);
+    circle(n.x, n.y, n.vr);
+    ctx.fill();
+
+    // 选中节点：一圈 accent 环（Obsidian 的 focused 状态）
+    if (n === sel) {
+      ctx.strokeStyle = hexA('#7f6df2', 0.55);
+      ctx.lineWidth = 1.4 / view.s * Math.max(0.9, view.s);
+      circle(n.x, n.y, n.vr + 4.5 / view.s * Math.max(1, view.s));
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /* ---- 标签（画在节点之上） ---- */
+  for (const n of G.nodes) {
+    const isFocus = n === f;
+    const a = labelAlphaFor(n, isFocus) * (n.va < 0.5 ? n.va : 1);
+    if (a > 0.02) drawLabel(n, isFocus, a);
+  }
+
+  ctx.restore();
+}
+
+function arrow(from, to) {
+  const dx = to.x - from.x, dy = to.y - from.y;
+  const d = Math.hypot(dx, dy) || 1;
+  const ux = dx / d, uy = dy / d;
+  // 箭头尖停在目标节点边缘，不插进圆里
+  const tipX = to.x - ux * (to.r + 2);
+  const tipY = to.y - uy * (to.r + 2);
+  const size = 6 / Math.max(0.7, Math.min(1.6, view.s));
+  const px = -uy, py = ux;
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.beginPath();
+  ctx.moveTo(tipX, tipY);
+  ctx.lineTo(tipX - ux * size + px * size * 0.5, tipY - uy * size + py * size * 0.5);
+  ctx.lineTo(tipX - ux * size - px * size * 0.5, tipY - uy * size - py * size * 0.5);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/* ==================================================================
+   主循环
+   ================================================================== */
+
+function frame(now) {
+  // 物理：alpha 一路衰减到 alphaMin，之后常驻——这就是「永远有一点点活」
+  if (alpha > PHYS.alphaMin) {
+    step(G, alpha);
+    alpha *= (1 - PHYS.alphaDecay);
+    if (alpha < PHYS.alphaMin) alpha = PHYS.alphaMin;
+  } else {
+    step(G, alpha);
+  }
+
+  if (cam) {
+    const t = Math.min(1, (now - cam.t0) / cam.dur);
+    const e = 1 - Math.pow(1 - t, 3);
+    view.s = cam.from.s + (cam.to.s - cam.from.s) * e;
+    view.x = cam.from.x + (cam.to.x - cam.from.x) * e;
+    view.y = cam.from.y + (cam.to.y - cam.from.y) * e;
+    if (t >= 1) cam = null;
+  }
+
+  updateVisuals();
+  draw(now);
+  requestAnimationFrame(frame);
+}
+
+/* ==================================================================
+   交互
+   ================================================================== */
+
+let dragNode = null, panFrom = null, panStart = null, moved = false;
+
+canvas.addEventListener('pointerdown', e => {
+  const n = nodeAt(e.offsetX, e.offsetY);
+  moved = false;
+  if (n) {
+    dragNode = n;
+    n.pin = true;
+    const w = toWorld(e.offsetX, e.offsetY);
+    n.x = w.x; n.y = w.y;
+    n.vx = 0; n.vy = 0;
+    alpha = Math.max(alpha, 0.45);          // 拖一下就把整张图「叫醒」
+    canvas.classList.add('dragging');
+  } else {
+    panFrom = { x: e.offsetX, y: e.offsetY };
+    panStart = { ...view };
+    cam = null;
+  }
+  canvas.setPointerCapture(e.pointerId);
+});
+
+canvas.addEventListener('pointermove', e => {
+  if (dragNode) {
+    moved = true;
+    const w = toWorld(e.offsetX, e.offsetY);
+    dragNode.x = w.x; dragNode.y = w.y;
+    dragNode.vx = 0; dragNode.vy = 0;
+    return;
+  }
+  if (panFrom) {
+    const dx = e.offsetX - panFrom.x, dy = e.offsetY - panFrom.y;
+    if (Math.hypot(dx, dy) > 3) moved = true;
+    if (moved) { view.x = panStart.x + dx; view.y = panStart.y + dy; }
+    return;
+  }
+  const n = nodeAt(e.offsetX, e.offsetY);
+  hover = n;
+  canvas.classList.toggle('pointing', !!n);
+});
+
+canvas.addEventListener('pointerup', e => {
+  if (dragNode) {
+    dragNode.pin = false;
+    alpha = Math.max(alpha, 0.32);           // 松手后回弹，再慢慢静下来
+    dragNode = null;
+    canvas.classList.remove('dragging');
+  } else if (panFrom && !moved) {
+    sel = null;                              // 点空白取消选中
+  }
+  panFrom = null;
+  canvas.releasePointerCapture?.(e.pointerId);
+});
+
+canvas.addEventListener('pointerleave', () => { hover = null; });
+
+canvas.addEventListener('click', e => {
+  const n = nodeAt(e.offsetX, e.offsetY);
+  if (n) sel = n;
+});
+
+canvas.addEventListener('dblclick', e => {
+  const n = nodeAt(e.offsetX, e.offsetY);
+  if (n) toast('打开笔记：' + n.t);
+});
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  zoomAt(e.offsetX, e.offsetY, Math.exp(-e.deltaY * 0.0017));
+}, { passive: false });
+
+/* ---------------- 面板 ---------------- */
+
+const $ = s => document.querySelector(s);
+const statsEl = $('#stats');
+
+function stats() {
+  const n = G.nodes.filter(matches).length;
+  const e = G.links.filter(l => matches(l.a) && matches(l.b)).length;
+  statsEl.textContent = `${n} 篇笔记 · ${e} 条链接`;
+}
+
+$('#search').addEventListener('input', e => {
+  query = e.target.value.trim().toLowerCase();
+  stats();
+});
+
+function bindToggle(id, get, set) {
+  const el = $(id);
+  el.addEventListener('click', () => {
+    set(!get());
+    el.setAttribute('aria-checked', String(get()));
+  });
+  el.setAttribute('aria-checked', String(get()));
+}
+
+bindToggle('#rLabels', () => showLabels, v => { showLabels = v; });
+bindToggle('#rArrows', () => showArrows, v => { showArrows = v; });
+bindToggle('#rColors', () => useFolderColors, v => { useFolderColors = v; });
+
+$('#collapse').addEventListener('click', e => {
+  const p = $('#panel');
+  p.classList.toggle('collapsed');
+  e.currentTarget.textContent = p.classList.contains('collapsed') ? '+' : '—';
+});
+
+$('#btnRelayout').addEventListener('click', () => {
+  seed(G, 26);
+  alpha = 1;
+  sel = null;
+  fit();
+});
+
+$('#btnFit').addEventListener('click', () => fit());
+
+/* ---------------- toast ---------------- */
+
+const toastEl = $('#toast');
+let toastTimer = 0;
+function toast(text) {
+  toastEl.textContent = text;
+  toastEl.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('on'), 1500);
+}
+
+/* ---------------- 尺寸 ---------------- */
+
+function resize() {
+  const r = document.getElementById('stage').getBoundingClientRect();
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  W = Math.max(1, Math.round(r.width));
+  H = Math.max(1, Math.round(r.height));
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+}
+
+resize();
+stats();
+
+/* 开场：先空跑 420 帧把布局基本收敛，这样 fit() 算出来的视口是对的；
+   然后再给一点 alpha 余温，第一帧之后还能看见最后那点收拢。 */
+for (let i = 0; i < 420; i++) { step(G, alpha); alpha *= (1 - PHYS.alphaDecay); }
+alpha = 0.30;
+fit();
+requestAnimationFrame(frame);
+
+new ResizeObserver(() => {
+  const w0 = W, h0 = H;
+  resize();
+  if (w0 !== W || h0 !== H) fit();
+}).observe(document.getElementById('stage'));
+</script>
+</body>
+</html>
