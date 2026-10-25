@@ -35,8 +35,11 @@ class GraphStyle {
       arrow = palette.textPrimary.withValues(
         alpha: palette.isDark ? 0.40 : 0.48,
       ),
-      beamFrom = palette.isDark ? 0.34 : 0.44,
-      beamTo = palette.isDark ? 0.10 : 0.16,
+      // 数值照抄设计稿：常态边的底是 10%，光带把它拆成
+      // 「源 13.5% → 靶 4%」。比原来的单色 8.5% 更淡，但一头亮一头暗，
+      // 方向就写在亮度里了。
+      beamFrom = palette.isDark ? 0.15 : 0.20,
+      beamTo = palette.isDark ? 0.045 : 0.07,
       beamGlow = palette.accent.withValues(
         alpha: palette.isDark ? 0.10 : 0.14,
       ),

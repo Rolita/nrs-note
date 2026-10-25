@@ -58,6 +58,20 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   final _Repaint _repaint = _Repaint();
   final GraphLabelCache _labels = GraphLabelCache();
 
+  /// 光点的时钟。painter 每帧现取，不用为它重建绘制数据。
+  final GraphClock _clock = GraphClock();
+
+  /// 上一次 tick 的 elapsed。Ticker 停掉再启动会从 0 重新计，
+  /// 所以要把「倒退」当成新的一轮，否则时间会往回跳、光点集体倒着走。
+  Duration _lastTick = Duration.zero;
+
+  /// 鼠标是不是在画布里。
+  ///
+  /// 光点只在鼠标进来时才跑：一直转的 Ticker 会让 `pumpAndSettle` 永远
+  /// 等不到静止，也违背「静止的图谱不该烧电」。测试用触摸事件，这里恒为
+  /// false，所以测试里图是静止的。
+  bool _mouseInside = false;
+
   /// 全库的图。建一次，局部视图靠 [NoteGraph.subgraph] 切片。
   NoteGraph _graph = NoteGraph.empty();
 
@@ -312,15 +326,34 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     if (!_ticker.isActive) _ticker.start();
   }
 
-  void _onTick(Duration _) {
-    _layout.step(
-      _view,
-      math.max(_layout.alpha, _dragging != null ? 0.7 : 0),
-    );
-    _layout.alpha *= 0.972;
+  /// 有焦点、鼠标也在画布里时，让 Ticker 一直转——出链上的光点要跑。
+  void _flow() {
+    if (!_mouseInside) return;
+    if ((_hover ?? _selected) == null) return;
+    if (!_ticker.isActive) _ticker.start();
+  }
+
+  void _onTick(Duration elapsed) {
+    if (elapsed < _lastTick) _lastTick = Duration.zero;
+    _clock.seconds += (elapsed - _lastTick).inMicroseconds / 1e6;
+    _lastTick = elapsed;
+
+    final bool settled =
+        _layout.alpha < GraphPhysics.restingAlpha && _dragging == null;
+    if (!settled) {
+      _layout.step(
+        _view,
+        math.max(_layout.alpha, _dragging != null ? 0.7 : 0),
+      );
+      _layout.alpha *= 0.972;
+    }
     _repaint.tick();
-    if (_layout.alpha < GraphPhysics.restingAlpha && _dragging == null) {
+
+    // 布局停了还在转，只可能是光点在跑；鼠标一离开就停。
+    final bool flowing = _mouseInside && (_hover ?? _selected) != null;
+    if (settled && !flowing) {
       _ticker.stop();
+      _lastTick = Duration.zero;
     }
   }
 
@@ -532,7 +565,14 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       children: <Widget>[
         Positioned.fill(
           child: MouseRegion(
-            onExit: (_) => _clearHover(),
+            onEnter: (_) {
+              _mouseInside = true;
+              _flow();
+            },
+            onExit: (_) {
+              _mouseInside = false;
+              _clearHover();
+            },
             child: GestureDetector(
               onDoubleTapDown: (TapDownDetails d) {
                 final int? hit = _nodeAt(d.localPosition);
@@ -549,6 +589,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
                   painter: GraphPainter(
                     data: data,
                     labels: _labels,
+                    clock: _clock,
                     repaint: _repaint,
                   ),
                   child: const SizedBox.expand(),
@@ -845,6 +886,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
         _dragMoved = false;
         _hover = hit;
       });
+      _flow();
       return;
     }
     _panFrom = e.localPosition;
@@ -879,6 +921,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
         _hover = hit;
         _pointer = e.localPosition;
       });
+      _flow();
     } else if (hit != null) {
       setState(() => _pointer = e.localPosition);
     }

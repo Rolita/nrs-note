@@ -58,6 +58,14 @@ class GraphPaintData {
   final TextScaler textScaler;
 }
 
+/// 光点用的时钟（秒）。
+///
+/// 不放进 [GraphPaintData]：那是 `build` 时拍的一张快照，而光点要**每帧**
+/// 读最新值。放这里，painter 每帧现取，不用为了一个 double 重建整份数据。
+class GraphClock {
+  double seconds = 0;
+}
+
 /// 一个文件夹在图上的质心与半径。
 class _Cluster {
   double x = 0;
@@ -80,11 +88,13 @@ class GraphPainter extends CustomPainter {
   GraphPainter({
     required this.data,
     required this.labels,
+    required this.clock,
     required Listenable repaint,
   }) : super(repaint: repaint);
 
   final GraphPaintData data;
   final GraphLabelCache labels;
+  final GraphClock clock;
 
   /// 超过这个边数就不逐条上渐变了。
   static const int beamGradientLimit = 400;
@@ -264,7 +274,12 @@ class GraphPainter extends CustomPainter {
           ..lineTo(to.dx, to.dy);
       }
 
-      if (data.arrows && !e.isBidirectional) {
+      // 箭头只在焦点边上出现。
+      //
+      // 「光带」的主张是**方向不用箭头解释**——一头亮一头暗已经说清楚了，
+      // 常显的箭头只会在几十条线上堆成一片三角。悬停时才补上箭头，是给
+      // 「我正在看这一条」加一句确证。
+      if (data.arrows && hot && !e.isBidirectional) {
         _addArrow(arrows, from, to, data.radii[dst]);
       }
     }
@@ -283,6 +298,45 @@ class GraphPainter extends CustomPainter {
     if (data.arrows) {
       canvas.drawPath(arrows, Paint()..color = data.style.arrow);
     }
+
+    _paintParticles(canvas);
+  }
+
+  /// 出链上跑的光点——「光带」这个说法的由来。
+  ///
+  /// 只跑**出链**：入链的光点会从目标流回焦点，看着像「别人在引用我」，
+  /// 方向刚好反了。双向边没有方向，不跑。
+  ///
+  /// 画在连线之后、节点之前，所以光点会被节点挡住一部分——那是想要的，
+  /// 它看起来是从节点里钻出来的。
+  void _paintParticles(Canvas canvas) {
+    final int? focus = data.focus;
+    if (focus == null) return;
+
+    final Paint paint = Paint();
+    for (final GraphEdge e in data.graph.edges) {
+      if (e.from != focus || e.isBidirectional) continue;
+      if (!data.lit[e.a] || !data.lit[e.b]) continue;
+
+      final Offset pa = Offset(data.layout.x[e.a], data.layout.y[e.a]);
+      final Offset pb = Offset(data.layout.x[e.b], data.layout.y[e.b]);
+      final bool forward = e.from == e.a;
+      final Offset from = forward ? pa : pb;
+      final Offset to = forward ? pb : pa;
+
+      // 相位按边算：几条线才不会同时在同一位置亮，看着像一串珠子。
+      final double phase = ((e.a * 31 + e.b * 17) % 100) / 100;
+      final double t = (clock.seconds / 1.5 + phase) % 1.0;
+      final Offset at = Offset.lerp(from, to, t)!;
+
+      paint.shader = ui.Gradient.radial(at, 5.5, <Color>[
+        data.style.ring,
+        data.style.beamGlow.withValues(alpha: 0.55),
+        data.style.beamGlow.withValues(alpha: 0),
+      ], <double>[0, 0.35, 1]);
+      canvas.drawCircle(at, 5.5, paint);
+    }
+    paint.shader = null;
   }
 
   static double _clamp(double v) => v < 0 ? 0 : (v > 1 ? 1 : v);

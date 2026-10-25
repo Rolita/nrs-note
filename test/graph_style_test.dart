@@ -121,7 +121,7 @@ void main() {
         final GraphStyle s = GraphStyle.from(p);
         expect(s.beamFrom, greaterThan(s.beamTo), reason: '${p.isDark}');
         // 但两头都得看得见：终点太淡就成了一根「半截线」
-        expect(s.beamTo, greaterThan(0.06), reason: '${p.isDark}');
+        expect(s.beamTo, greaterThan(0.03), reason: '${p.isDark}');
         expect(s.beamFrom, lessThan(0.6), reason: '${p.isDark}');
       }
     });
