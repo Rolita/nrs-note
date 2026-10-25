@@ -28,7 +28,6 @@ class GraphPaintData {
     required this.folderColors,
     required this.scale,
     required this.offset,
-    required this.labelFade,
     required this.textScaler,
   });
 
@@ -58,14 +57,6 @@ class GraphPaintData {
   /// 视口变换。
   final double scale;
   final Offset offset;
-
-  /// 标签的缩放淡出系数，0..1，由视图按「当前缩放 ÷ 铺满画布时的缩放」算好。
-  ///
-  /// 不直接拿 [scale] 去算：设计稿的 `view.s` 是相对量（初始就是 1），而
-  /// 我们的 [scale] 是绝对量——世界坐标多大、画布多大都会影响它。同一张图
-  /// 换个窗口尺寸，绝对 scale 就变了，直接拿它当门槛会出现「窗口一小标签
-  /// 全没了」。
-  final double labelFade;
 
   final TextScaler textScaler;
 }
@@ -512,19 +503,46 @@ class GraphPainter extends CustomPainter {
 
   // ------------------------------------------------------------------ 标签
 
-  /// 标签的浓度：枢纽写实、叶子写虚，缩得太小就整片收掉。
+  /// 屏幕上一颗点平均离最近的邻居多少像素。
   ///
-  /// 三百篇笔记把标签全写实，整张图会糊成一片字。度数高的节点才是读者
-  /// 找路的锚点，先让它们清楚。
+  /// 标签要不要写，看它**够不够地方**：一行 12px 的字加上节点本身要占
+  /// 24px 见方，两颗点比这还近的时候，标签只会互相压成一片糊——所以缩略
+  /// 视图里应该一个标签都没有，放大到点散开了才逐层出现（Obsidian 就是
+  /// 这个行为）。
   ///
-  /// 那个 `t` 是设计稿里的**缩放门槛**：`(相对缩放 - 0.55) / 0.40`。缩到
-  /// 铺满画布时的 55% 以下，标签全是不可读的碎点，留着只会把画布压灰；
-  /// 放大到 95% 以上才全亮。没有它，缩略视图就是一层噪声。
+  /// 抽样算最近邻，不逐对全算：一千篇两两是 100 万次，每帧都跑不起；
+  /// 抽 80 个样本已经是 8 万次，而间距是个统计量，样本够用。
+  double _screenGap() {
+    final int n = data.layout.length;
+    if (n <= 1) return double.infinity;
+    final int step = math.max(1, n ~/ 80);
+    double sum = 0;
+    int count = 0;
+    for (int i = 0; i < n; i += step) {
+      double best = double.infinity;
+      for (int j = 0; j < n; j++) {
+        if (i == j) continue;
+        final double dx = data.layout.x[i] - data.layout.x[j];
+        final double dy = data.layout.y[i] - data.layout.y[j];
+        final double d = dx * dx + dy * dy;
+        if (d < best) best = d;
+      }
+      sum += math.sqrt(best);
+      count++;
+    }
+    return sum / count * data.scale;
+  }
+
+  /// 标签的浓度：枢纽写实、叶子写虚，挤不下就整片收掉。
+  ///
+  /// [gap] 是屏幕上的平均间距。小于 [labelGapMin] 一律不写——那不是
+  /// 「淡一点」，是「根本读不出来」，留着只是把画布压灰。
   double _labelAlpha(
     GraphNode node, {
     required bool isFocus,
     required bool isNear,
     required String focusFolder,
+    required double gap,
   }) {
     if (isFocus) return 1;
 
@@ -534,11 +552,22 @@ class GraphPainter extends CustomPainter {
       return isNear ? 0.86 : 0;
     }
 
-    final double w = node.globalDegree >= _hubDegree
-        ? 1
-        : (node.globalDegree >= 1 ? 0.55 : 0.32);
-    return data.labelFade * w;
+    // 孤立笔记的标题在图上没有信息量：它谁都不连，写出来只是挡住邻居。
+    if (node.globalDegree == 0) return 0;
+
+    final double t = _clamp((gap - labelGapMin) / labelGapFull);
+    final double w = node.globalDegree >= _hubDegree ? 1 : 0.55;
+    return t * w;
   }
+
+  /// 间距小于这个值（屏幕像素）就一个标签都不写。
+  ///
+  /// 24px ≈ 一行 12px 的字 + 一颗节点的直径。比这更挤的时候写出来也是
+  /// 叠在一起，不如空着让点自己说话。
+  static const double labelGapMin = 22;
+
+  /// 从这个间距开始，标签全亮。两者之间是连续淡入，不是硬切。
+  static const double labelGapFull = 20;
 
   /// 没有焦点时，度到多少才配一个实心标签。
   ///
@@ -559,6 +588,9 @@ class GraphPainter extends CustomPainter {
     final Set<int> related = <int>{
       if (focus != null) ...g.nodes[focus].neighbours,
     };
+    // 有焦点时标签只看关系，不看间距——这时整张图已经被压暗了，
+    // 剩下的那几个字不会挤。顺带省掉每帧一次抽样。
+    final double gap = focus == null ? _screenGap() : 0;
 
     for (final GraphNode node in g.nodes) {
       final int i = node.index;
@@ -567,6 +599,7 @@ class GraphPainter extends CustomPainter {
         isFocus: i == focus,
         isNear: related.contains(i),
         focusFolder: focusFolder,
+        gap: gap,
       );
       // 节点被压暗时标签跟着压：整簇都退下去了，字还亮着就露馅了。
       final double va = _nodeAlpha(i, focus, focusFolder, related);
