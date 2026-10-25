@@ -2,6 +2,7 @@ import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/core/utils/image_markup.dart';
 import 'package:nrs/ui/editor/line_layout/line_layout_engine.dart';
+import 'package:nrs/ui/editor/line_layout/render_line_editable.dart';
 
 /// 测试字体每个字形都是 [fontSize] 见方，行高 `16 * 1.5 = 24`。
 const TextStyle _body = TextStyle(fontSize: 16, height: 1.5);
@@ -1014,6 +1015,42 @@ void main() {
       expect(layout.laidOut[2].insets.left, 118);
       expect(layout.laidOut[2].insets.right, 0);
       expect(layout.laidOut[2].gutter, 118);
+    });
+
+    test('贴左边浮动时，列表标记跟着正文一起右移，不掉进图片里', () {
+      // 图片贴左边、正文在右边绕排：圆点/序号/方框是**槽位里画的**，
+      // 它们的 x 必须以这一行的左内边距起算。从 0 起算就会画在图片上
+      // ——序号跑到图片左边那一窄条里，看起来和正文脱节。
+      final LineDocumentLayout layout = _floatLayout(
+        '正文\n图\n- [ ] 甲\n- [ ] 乙',
+        ImageAlign.left,
+      );
+      addTearDown(layout.dispose);
+
+      final LaidOutLine first = layout.laidOut[2];
+      expect(first.insets.left, 118);
+      expect(first.slot.marker, greaterThan(0), reason: '这一行确实有标记');
+      expect(first.slot.indent, 0, reason: '顶级项没有缩进，标记本该从 0 起算');
+      expect(
+        first.markerOrigin,
+        118,
+        reason: '标记起点跟着内边距走，正好在图片右边',
+      );
+      // 复选框是槽位里画的图形，矩形同理：不能落在图片宽度之内。
+      final Rect box = RenderLineEditable.checkboxRectOf(first, layout.metrics);
+      expect(box.left, greaterThanOrEqualTo(118));
+      // 正文列在标记之后，两者不重叠。
+      expect(first.gutter, greaterThan(box.right));
+
+      // 越过图片底部的行恢复正常，标记回到最左边。
+      final LineDocumentLayout below = _floatLayout(
+        '正文\n图\n- [ ] 甲\n- [ ] 乙',
+        ImageAlign.left,
+        height: 24,
+      );
+      addTearDown(below.dispose);
+      expect(below.laidOut[3].insets.left, 0);
+      expect(below.laidOut[3].markerOrigin, 0);
     });
 
     test('文末那张浮动图片把整篇撑高，不会被裁掉下半截', () {

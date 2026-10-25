@@ -226,6 +226,13 @@ class LaidOutLine {
   /// 「这一行的字从哪里起笔」，所以续行、光标、命中统一读这个值。
   double get gutter => insets.left + slot.width;
 
+  /// 标记槽位起点的 x（文档坐标）。
+  ///
+  /// 槽位紧跟在**这一行的左内边距**之后，而不是从 0 起算：左边贴着浮动图片
+  /// 时正文整体右移，圆点/序号/方框必须跟着走，否则会掉进图片里。绘制、命中、
+  /// 折叠箭头都读这一个值，别各自算一遍。
+  double get markerOrigin => insets.left + slot.indent;
+
   /// [localY]（相对行顶）落在第几条视觉行。
   int visualIndexAtY(double localY) {
     for (int i = visuals.length - 1; i >= 0; i--) {

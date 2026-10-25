@@ -1554,7 +1554,7 @@ class RenderLineEditable extends RenderEditable {
       switch (source.kind) {
         case LineBlockKind.bullet:
           canvas.drawCircle(
-            Offset(line.slot.indent + 2 + _kBulletDiameter / 2, middle),
+            Offset(line.markerOrigin + 2 + _kBulletDiameter / 2, middle),
             _kBulletDiameter / 2,
             Paint()..color = style.bullet,
           );
@@ -1614,8 +1614,8 @@ class RenderLineEditable extends RenderEditable {
   /// 落在本行**标记槽位里**的那根（同级自己这一列）要在字形上下断开：
   /// 否则 1px 的线会从数字/复选框中间穿过去，看起来像把标记切开了。
   void _paintRails(Canvas canvas, LaidOutLine line, Paint paint) {
-    final double markerLeft = line.slot.indent;
-    final double markerRight = line.slot.indent + line.slot.marker;
+    final double markerLeft = line.markerOrigin;
+    final double markerRight = line.markerOrigin + line.slot.marker;
     double? glyphTop;
     double? glyphBottom;
     if (line.source.isList) {
@@ -1628,7 +1628,11 @@ class RenderLineEditable extends RenderEditable {
       glyphTop = baseline - size * 0.68;
       glyphBottom = baseline + size * 0.08;
     }
-    for (final double x in line.slot.railXs) {
+    // 导轨中心是按槽位（x 从 0 起）算出来的，这一行贴着浮动图片时整列
+    // 都要跟着右移，否则线会留在图片里、和标记断开。
+    final double shift = line.insets.left;
+    for (final double rail in line.slot.railXs) {
+      final double x = rail + shift;
       // 半像素回退，让 1px 的线落在像素栅格上，而不是被抗锯齿摊成两像素。
       final bool own = x > markerLeft && x < markerRight;
       // 标记已经摊成文字时，自己这一列会从序号/圆点中间穿过去，干脆不画。
@@ -1690,7 +1694,7 @@ class RenderLineEditable extends RenderEditable {
     painter.paint(
       canvas,
       Offset(
-        line.slot.indent,
+        line.markerOrigin,
         line.top - lineTextRise(line) + bodyBaseline - numberBaseline,
       ),
     );
@@ -1744,7 +1748,7 @@ class RenderLineEditable extends RenderEditable {
     final double middle = line.top + first.top + first.height / 2;
     final double lead = math.max(0, line.slot.marker - metrics.taskWidth);
     return Rect.fromLTWH(
-      line.slot.indent + lead + _kCheckboxLeft,
+      line.markerOrigin + lead + _kCheckboxLeft,
       middle - _kCheckboxSize / 2,
       _kCheckboxSize,
       _kCheckboxSize,
@@ -1782,7 +1786,7 @@ class RenderLineEditable extends RenderEditable {
     for (final LaidOutLine line in layout.laidOut) {
       if (line.height <= 0 || !line.source.isList) continue;
       if (local.dy < line.top || local.dy >= line.top + line.height) continue;
-      return local.dx < line.slot.indent;
+      return local.dx < line.markerOrigin;
     }
     return false;
   }
@@ -1815,7 +1819,7 @@ class RenderLineEditable extends RenderEditable {
       if ((local.dy - middle).abs() > half) continue;
       if (local.dx < 0) continue;
       final bool revealed = line.slot.revealedMarkers;
-      double markerWidth = line.slot.indent + line.slot.marker;
+      double markerWidth = line.markerOrigin + line.slot.marker;
       if (revealed) {
         // 摊开以后标记是真实字形：宽度按排出来的算，但缩进仍由槽位占着，
         // 命中区要从正文列起算，不然嵌套列表的标记会被当成正文。
@@ -1835,7 +1839,7 @@ class RenderLineEditable extends RenderEditable {
       // 缩进槽里没有字形：点在它上面等于点在正文左侧的空白，必须让给正文
       // 定位。否则隐藏态会把落点夹回 `markerStart` 并摊开标记，光标停在
       // `3. ` 前面，接着输入就把文字插进标记里（`qie'huan3. [ ]`）。
-      if (local.dx < line.slot.indent) continue;
+      if (local.dx < line.markerOrigin) continue;
       if (local.dx >= (revealed ? markerWidth : line.gutter)) continue;
       return (
         start: line.source.start,
@@ -1873,7 +1877,7 @@ class RenderLineEditable extends RenderEditable {
     )..layout();
     final int within = painter
         .getPositionForOffset(
-          Offset(math.max(0, dx - line.slot.indent), painter.height / 2),
+          Offset(math.max(0, dx - line.markerOrigin), painter.height / 2),
         )
         .offset;
     painter.dispose();
@@ -1903,7 +1907,7 @@ class RenderLineEditable extends RenderEditable {
       final VisualLine first = line.visuals.first;
       final double center = line.top + first.top + first.height / 2;
       final Rect button = Rect.fromLTWH(
-        line.slot.indent - 16,
+        line.markerOrigin - 16,
         center - 10,
         16,
         20,
