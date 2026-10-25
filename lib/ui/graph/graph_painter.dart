@@ -58,11 +58,24 @@ class GraphPaintData {
   final TextScaler textScaler;
 }
 
+/// 一个文件夹在图上的质心与半径。
+class _Cluster {
+  double x = 0;
+  double y = 0;
+  int count = 0;
+
+  /// 离质心最远的那个成员的距离（含半径）。底雾和簇名都按它定位。
+  double radius = 0;
+}
+
 /// 图谱画布。
 ///
-/// 三遍画完：连线（按三种状态各拼一条 Path）→ 节点 → 标签。连线不用逐条
-/// `drawLine`，是为了把 100 条线的 draw call 压成 3 次；标签用缓存好的
-/// [TextPainter]，否则每帧重新排版三百个短句会直接把帧率吃掉。
+/// 五遍画完：底雾 → 连线 → 节点 → 标签 → 簇名。
+///
+/// 连线是**逐条**画的，不是拼成一条 Path：每条边要一个「起点色 → 终点色」的
+/// 线性渐变，方向就写在线里。50 条边是 50 次 drawLine，桌面端无所谓；
+/// 超过 [beamGradientLimit] 条才退回拼 Path 的单色画法，否则大库会被
+/// 每帧几百个 `Gradient.linear` 拖住。
 class GraphPainter extends CustomPainter {
   GraphPainter({
     required this.data,
@@ -73,6 +86,9 @@ class GraphPainter extends CustomPainter {
   final GraphPaintData data;
   final GraphLabelCache labels;
 
+  /// 超过这个边数就不逐条上渐变了。
+  static const int beamGradientLimit = 400;
+
   @override
   void paint(Canvas canvas, Size size) {
     _paintBackground(canvas, size);
@@ -80,9 +96,14 @@ class GraphPainter extends CustomPainter {
     canvas.save();
     canvas.translate(data.offset.dx, data.offset.dy);
     canvas.scale(data.scale);
+
+    final Map<String, _Cluster> clusters = _clusters();
+    _paintMist(canvas, clusters);
     _paintEdges(canvas);
     _paintNodes(canvas);
     if (data.showLabels) _paintLabels(canvas);
+    _paintClusterChips(canvas, clusters);
+
     canvas.restore();
   }
 
@@ -106,7 +127,61 @@ class GraphPainter extends CustomPainter {
     );
   }
 
+  // ------------------------------------------------------------------ 簇
+
+  /// 每个文件夹的质心、半径、篇数。
+  ///
+  /// 两遍扫：先求质心，再求「离质心最远多远」。O(n)，每帧一次。
+  Map<String, _Cluster> _clusters() {
+    final Map<String, _Cluster> out = <String, _Cluster>{};
+    for (final GraphNode n in data.graph.nodes) {
+      final _Cluster c = out.putIfAbsent(n.folder, () => _Cluster());
+      c.x += data.layout.x[n.index];
+      c.y += data.layout.y[n.index];
+      c.count++;
+    }
+    for (final _Cluster c in out.values) {
+      c.x /= c.count;
+      c.y /= c.count;
+    }
+    for (final GraphNode n in data.graph.nodes) {
+      final _Cluster c = out[n.folder]!;
+      final double dx = data.layout.x[n.index] - c.x;
+      final double dy = data.layout.y[n.index] - c.y;
+      final double d = math.sqrt(dx * dx + dy * dy) + data.radii[n.index];
+      if (d > c.radius) c.radius = d;
+    }
+    return out;
+  }
+
+  /// 每个文件夹铺一团同色底雾。簇是靠这个「托」出来的，不是靠画框。
+  void _paintMist(Canvas canvas, Map<String, _Cluster> clusters) {
+    final Paint paint = Paint();
+    for (final MapEntry<String, _Cluster> e in clusters.entries) {
+      final _Cluster c = e.value;
+      if (c.count < 2) continue;
+      final Color base = data.folderColors[e.key] ?? data.style.node;
+      final double r = c.radius + 46;
+      if (r <= 1) continue;
+      paint.shader = ui.Gradient.radial(
+        Offset(c.x, c.y),
+        r,
+        <Color>[
+          base.withValues(alpha: data.style.mistAlpha),
+          base.withValues(alpha: data.style.mistAlpha * 0.42),
+          base.withValues(alpha: 0),
+        ],
+        <double>[0, 0.55, 1],
+      );
+      canvas.drawCircle(Offset(c.x, c.y), r, paint);
+    }
+    paint.shader = null;
+  }
+
   // ------------------------------------------------------------------ 连线
+
+  Color _nodeColor(int i) =>
+      data.folderColors[data.graph.nodes[i].folder] ?? data.style.node;
 
   void _paintEdges(Canvas canvas) {
     final NoteGraph g = data.graph;
@@ -116,94 +191,112 @@ class GraphPainter extends CustomPainter {
       if (center != null) ...center.neighbours,
     };
 
-    final Path plain = Path();
-    final Path lit = Path();
-    final Path hot = Path();
+    final double width = 1 / math.max(data.scale, 0.35);
+    final bool gradient = g.edges.length <= beamGradientLimit;
+
+    // 被筛掉的边先画，而且一次画完：它们必须待在亮线**下面**，
+    // 否则一条 1.4% 的灰线会横穿在焦点边上。
     final Path dim = Path();
+    for (final GraphEdge e in g.edges) {
+      if (data.lit[e.a] && data.lit[e.b]) continue;
+      dim
+        ..moveTo(data.layout.x[e.a], data.layout.y[e.a])
+        ..lineTo(data.layout.x[e.b], data.layout.y[e.b]);
+    }
+    canvas.drawPath(
+      dim,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = width
+        ..color = data.style.edgeDim,
+    );
+
+    final Path flat = Path();
     final Path arrows = Path();
 
+    final Paint beam = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = width
+      ..color = const Color(0xFFFFFFFF);
+    final Paint glow = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = width * 3.4
+      ..color = data.style.beamGlow;
+
     for (final GraphEdge e in g.edges) {
-      final bool ok = data.lit[e.a] && data.lit[e.b];
-      final bool touchesFocus =
-          center != null && (e.a == focus || e.b == focus);
-      final bool touchesNeighbour =
+      if (!data.lit[e.a] || !data.lit[e.b]) continue;
+
+      final Offset pa = Offset(data.layout.x[e.a], data.layout.y[e.a]);
+      final Offset pb = Offset(data.layout.x[e.b], data.layout.y[e.b]);
+
+      final bool hot = center != null && (e.a == focus || e.b == focus);
+      final bool near =
           center != null && (related.contains(e.a) || related.contains(e.b));
 
-      final double ax = data.layout.x[e.a];
-      final double ay = data.layout.y[e.a];
-      final double bx = data.layout.x[e.b];
-      final double by = data.layout.y[e.b];
+      // 方向：`from` 是正文里写链接的那一头。双向边没有方向，按 a→b 画，
+      // 只是不画箭头——两个方向都成立，画哪个都是撒谎。
+      final bool forward = e.from == null || e.from == e.a;
+      final int src = forward ? e.a : e.b;
+      final int dst = forward ? e.b : e.a;
+      final Offset from = forward ? pa : pb;
+      final Offset to = forward ? pb : pa;
 
-      if (!ok) {
-        dim
-          ..moveTo(ax, ay)
-          ..lineTo(bx, by);
-        continue;
-      }
-      if (touchesFocus) {
-        hot
-          ..moveTo(ax, ay)
-          ..lineTo(bx, by);
-      } else if (center != null && touchesNeighbour) {
-        lit
-          ..moveTo(ax, ay)
-          ..lineTo(bx, by);
+      final double aFrom = _clamp(
+        hot ? 0.72 : (near ? data.style.beamFrom * 1.5 : data.style.beamFrom),
+      );
+      final double aTo = _clamp(
+        hot ? 0.34 : (near ? data.style.beamTo * 1.6 : data.style.beamTo),
+      );
+
+      if (hot) canvas.drawLine(from, to, glow);
+
+      if (gradient) {
+        beam.shader = ui.Gradient.linear(from, to, <Color>[
+          _nodeColor(src).withValues(alpha: aFrom),
+          _nodeColor(dst).withValues(alpha: aTo),
+        ]);
+        canvas.drawLine(from, to, beam);
       } else {
-        plain
-          ..moveTo(ax, ay)
-          ..lineTo(bx, by);
+        flat
+          ..moveTo(from.dx, from.dy)
+          ..lineTo(to.dx, to.dy);
       }
 
-      if (data.arrows && (center == null || touchesFocus || touchesNeighbour)) {
-        _addArrow(arrows, ax, ay, bx, by, data.radii[e.b]);
+      if (data.arrows && !e.isBidirectional) {
+        _addArrow(arrows, from, to, data.radii[dst]);
       }
     }
 
-    final double width = 1 / math.max(data.scale, 0.35);
-    canvas
-      ..drawPath(
-        dim,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = width
-          ..color = data.style.edgeDim,
-      )
-      ..drawPath(
-        plain,
+    beam.shader = null;
+
+    if (!gradient) {
+      canvas.drawPath(
+        flat,
         Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = width
           ..color = data.style.edge,
-      )
-      ..drawPath(
-        lit,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = width
-          ..color = data.style.edgeLit,
-      )
-      ..drawPath(
-        hot,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = width * 1.4
-          ..color = data.style.edgeFocus,
       );
+    }
     if (data.arrows) {
       canvas.drawPath(arrows, Paint()..color = data.style.arrow);
     }
   }
 
+  static double _clamp(double v) => v < 0 ? 0 : (v > 1 ? 1 : v);
+
   /// 把箭头三角拼进同一条 Path——一百条边也只多一次 draw call。
-  void _addArrow(Path path, double ax, double ay, double bx, double by, double r) {
-    final double dx = bx - ax;
-    final double dy = by - ay;
+  void _addArrow(Path path, Offset from, Offset to, double r) {
+    final double dx = to.dx - from.dx;
+    final double dy = to.dy - from.dy;
     final double d = math.sqrt(dx * dx + dy * dy);
     if (d < r + 8) return;
     final double ux = dx / d;
     final double uy = dy / d;
-    final double tipX = bx - ux * (r + 2);
-    final double tipY = by - uy * (r + 2);
+    final double tipX = to.dx - ux * (r + 2);
+    final double tipY = to.dy - uy * (r + 2);
     const double length = 6;
     const double half = 2.6;
     final double baseX = tipX - ux * length;
@@ -233,8 +326,7 @@ class GraphPainter extends CustomPainter {
       final bool isNeighbour =
           focus != null && g.nodes[focus].neighbours.contains(i);
 
-      fill.color = (data.folderColors[node.folder] ?? data.style.node)
-          .withValues(alpha: on ? 1 : 0.16);
+      fill.color = _nodeColor(i).withValues(alpha: on ? 1 : 0.16);
       canvas.drawCircle(Offset(x, y), r, fill);
 
       final bool isCurrent = node.id == data.currentId;
@@ -250,31 +342,120 @@ class GraphPainter extends CustomPainter {
 
   // ------------------------------------------------------------------ 标签
 
+  /// 标签的浓度：枢纽写实、叶子写虚。
+  ///
+  /// 三百篇笔记把标签全写实，整张图会糊成一片字。度数高的节点才是读者
+  /// 找路的锚点，先让它们清楚。
+  double _labelAlpha(
+    GraphNode node, {
+    required bool isFocus,
+    required bool isNear,
+  }) {
+    if (isFocus) return 1;
+
+    final int? focus = data.focus;
+    if (focus != null) {
+      if (isNear) return 0.86;
+      // 整簇是亮的，所以同文件夹的也写
+      if (node.folder == data.graph.nodes[focus].folder) return 0.9;
+      return 0;
+    }
+
+    if (node.globalDegree >= 3) return 1;
+    if (node.globalDegree >= 1) return 0.55;
+    return 0.32;
+  }
+
   void _paintLabels(Canvas canvas) {
     final NoteGraph g = data.graph;
+    final int? focus = data.focus;
+    final Set<int> related = <int>{
+      if (focus != null) ...g.nodes[focus].neighbours,
+    };
+
     for (final GraphNode node in g.nodes) {
       final int i = node.index;
       final bool on = data.lit[i];
+      final double alpha = _labelAlpha(
+        node,
+        isFocus: i == focus,
+        isNear: related.contains(i),
+      );
+      if (alpha <= 0.02) continue;
+
+      final double x = data.layout.x[i] + data.radii[i] + 5;
+      // 描边那遍先画：压在连线上也读得清。淡掉的标签不描边，否则一圈
+      // 深色描边会让「被筛掉」的字反而更抢眼。
+      if (on) {
+        final TextPainter halo = labels.painter(
+          node.title,
+          color: data.style.label,
+          halo: data.style.labelHalo,
+          scaler: data.textScaler,
+        );
+        halo.paint(canvas, Offset(x, data.layout.y[i] - halo.height / 2));
+      }
+
       final TextPainter fill = labels.painter(
         node.title,
-        color: data.style.label.withValues(alpha: on ? 1 : 0.14),
+        color: data.style.label.withValues(alpha: on ? alpha : alpha * 0.14),
         halo: null,
         scaler: data.textScaler,
       );
+      fill.paint(canvas, Offset(x, data.layout.y[i] - fill.height / 2));
+    }
+  }
 
-      final double x = data.layout.x[i] + data.radii[i] + 5;
-      final double y = data.layout.y[i] - fill.height / 2;
-      if (on) {
-        labels
-            .painter(
-              node.title,
-              color: data.style.label,
-              halo: data.style.labelHalo,
-              scaler: data.textScaler,
-            )
-            .paint(canvas, Offset(x, y));
-      }
-      fill.paint(canvas, Offset(x, y));
+  // ------------------------------------------------------------------ 簇名
+
+  /// 簇名挂在**雾的正上方**，做成一个带色点的小胶囊。
+  ///
+  /// 不挂在「簇内最上面那个节点」上：邻簇的节点会把它顶开，名字就飘到
+  /// 别人家里去了。胶囊底是必需的——簇名经常压在别人的节点上。
+  void _paintClusterChips(Canvas canvas, Map<String, _Cluster> clusters) {
+    if (!data.showLabels) return;
+
+    final Paint chip = Paint()..color = data.style.chip;
+    final Paint edge = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1 / math.max(data.scale, 0.5)
+      ..color = data.style.chipEdge;
+    final Paint dot = Paint();
+
+    for (final MapEntry<String, _Cluster> e in clusters.entries) {
+      final _Cluster c = e.value;
+      if (c.count < 2) continue;
+
+      final String label = e.key.isEmpty ? '根目录' : e.key;
+      final String text = '$label · ${c.count}';
+      final TextPainter tp = labels.painter(
+        text,
+        color: data.style.label.withValues(alpha: 0.82),
+        halo: null,
+        scaler: data.textScaler,
+        fontSize: AppText.caption - 0.5,
+      );
+
+      final double padX = 9;
+      final double gap = 9;
+      final double h = tp.height + 6;
+      final double w = tp.width + padX * 2 + gap;
+      final double top = c.y - c.radius - 14 - h / 2;
+      final Rect rect = Rect.fromLTWH(c.x - w / 2, top, w, h);
+      final RRect rrect = RRect.fromRectAndRadius(rect, Radius.circular(h / 2));
+
+      canvas.drawRRect(rrect, chip);
+      canvas.drawRRect(rrect, edge);
+
+      final Color base = data.folderColors[e.key] ?? data.style.node;
+      dot.color = base.withValues(alpha: 0.95);
+      canvas.drawCircle(
+        Offset(rect.left + padX, rect.center.dy),
+        2.3 / math.max(data.scale, 0.5),
+        dot,
+      );
+
+      tp.paint(canvas, Offset(rect.left + padX + gap, rect.center.dy - tp.height / 2));
     }
   }
 
@@ -302,18 +483,20 @@ class GraphLabelCache {
     required Color color,
     required Color? halo,
     required TextScaler scaler,
+    double fontSize = AppText.caption,
   }) {
     if (_scaler != scaler) {
       _scaler = scaler;
       clear();
     }
-    // 颜色进 key：同一个标题有「亮着」和「被筛掉」两种颜色，不能共用一份。
-    final String key = '$text\u0000$color\u0000$halo';
+    // 颜色和字号都进 key：同一个标题有「亮着」「被筛掉」两种颜色，
+    // 簇名又比节点标签小一号，都不能共用一份。
+    final String key = '$text\u0000$color\u0000$halo\u0000$fontSize';
     final TextPainter? hit = _painters[key];
     if (hit != null) return hit;
 
     final TextStyle style = TextStyle(
-      fontSize: AppText.caption,
+      fontSize: fontSize,
       fontFamily: AppFonts.ui,
       fontFamilyFallback: AppFonts.uiFallback,
       height: 1.2,

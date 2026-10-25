@@ -116,6 +116,31 @@ void main() {
       expect(_luminance(dark.canvasTop), lessThan(0.05));
     });
 
+    test('光带起点比终点亮：方向写在线里', () {
+      for (final AppPalette p in <AppPalette>[AppPalette.light, AppPalette.dark]) {
+        final GraphStyle s = GraphStyle.from(p);
+        expect(s.beamFrom, greaterThan(s.beamTo), reason: '${p.isDark}');
+        // 但两头都得看得见：终点太淡就成了一根「半截线」
+        expect(s.beamTo, greaterThan(0.06), reason: '${p.isDark}');
+        expect(s.beamFrom, lessThan(0.6), reason: '${p.isDark}');
+      }
+    });
+
+    test('簇的底雾很淡，不能盖住连线', () {
+      for (final AppPalette p in <AppPalette>[AppPalette.light, AppPalette.dark]) {
+        final GraphStyle s = GraphStyle.from(p);
+        expect(s.mistAlpha, lessThan(0.08), reason: '${p.isDark}');
+        expect(s.mistAlpha, greaterThan(0.02), reason: '${p.isDark}');
+      }
+    });
+
+    test('簇名胶囊的底和画布区分得开，但不是一个色块', () {
+      for (final AppPalette p in <AppPalette>[AppPalette.light, AppPalette.dark]) {
+        final GraphStyle s = GraphStyle.from(p);
+        expect(_contrast(s.chip, s.canvasTop), lessThan(1.8), reason: '${p.isDark}');
+      }
+    });
+
     test('标签描边和画布同一档亮度，不会出现刺眼白边', () {
       final GraphStyle light = GraphStyle.from(AppPalette.light);
       final GraphStyle dark = GraphStyle.from(AppPalette.dark);

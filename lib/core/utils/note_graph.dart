@@ -51,11 +51,27 @@ class GraphNode {
 }
 
 /// 一条无向边，`a < b` 恒成立。
+///
+/// `a < b` 只是为了去重和物理层好写，**和链接方向无关**：正文里真正写下的
+/// 那一头在 [from]/[to] 里。图谱按「起点亮、终点暗」画光带，靠的就是它。
 class GraphEdge {
-  const GraphEdge(this.a, this.b);
+  const GraphEdge(this.a, this.b, {this.from, this.to});
 
   final int a;
   final int b;
+
+  /// 这条线的方向：正文里写 `[[目标]]` 的那一篇是 [from]，被指向的是 [to]。
+  ///
+  /// 互相链接（A→B 且 B→A）时两者都是 `null`——两个方向都成立，
+  /// 画任何一个都是在撒谎，所以干脆不画方向。
+  final int? from;
+  final int? to;
+
+  /// 双向边：不画箭头，也不跑光点。
+  bool get isBidirectional => from == null || to == null;
+
+  /// 抹掉方向（发现反向链接时用）。
+  GraphEdge undirected() => GraphEdge(a, b);
 }
 
 /// 从整个 vault 抽出来的链接结构。
@@ -141,7 +157,14 @@ class NoteGraph {
       final int? a = remap[e.a];
       final int? b = remap[e.b];
       if (a == null || b == null) continue;
-      subEdges.add(GraphEdge(a, b));
+      subEdges.add(
+        GraphEdge(
+          a,
+          b,
+          from: e.from == null ? null : remap[e.from],
+          to: e.to == null ? null : remap[e.to],
+        ),
+      );
       sub[a].neighbours.add(b);
       sub[b].neighbours.add(a);
     }
@@ -192,7 +215,7 @@ NoteGraph buildNoteGraph(List<Note> notes) {
     byId.putIfAbsent(note.id, () => i);
   }
 
-  final Set<int> drawn = <int>{};
+  final Map<int, int> drawn = <int, int>{};
   final List<GraphEdge> edges = <GraphEdge>[];
   for (int i = 0; i < notes.length; i++) {
     final Set<int> targets = <int>{};
@@ -206,8 +229,16 @@ NoteGraph buildNoteGraph(List<Note> notes) {
       final int lo = i < j ? i : j;
       final int hi = i < j ? j : i;
       // A→B 与 B→A 同时存在时只画一条线，但上面的出/入链各算各的。
-      if (!drawn.add(lo * nodes.length + hi)) continue;
-      edges.add(GraphEdge(lo, hi));
+      final int key = lo * nodes.length + hi;
+      final int? seen = drawn[key];
+      if (seen != null) {
+        // 反向链接也出现了：这条线是双向的，方向抹掉。
+        edges[seen] = edges[seen].undirected();
+        continue;
+      }
+      drawn[key] = edges.length;
+      // 方向记成 `i → j`：正文里写链接的那一篇是起点。
+      edges.add(GraphEdge(lo, hi, from: i, to: j));
       nodes[lo].neighbours.add(hi);
       nodes[hi].neighbours.add(lo);
     }

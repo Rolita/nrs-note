@@ -26,12 +26,6 @@ class GraphStyle {
       edgeDim = palette.textPrimary.withValues(
         alpha: palette.isDark ? 0.014 : 0.03,
       ),
-      edgeLit = palette.textPrimary.withValues(
-        alpha: palette.isDark ? 0.34 : 0.42,
-      ),
-      edgeFocus = palette.textPrimary.withValues(
-        alpha: palette.isDark ? 0.62 : 0.68,
-      ),
       ring = palette.textPrimary,
       label = palette.textSecondary,
       labelHalo = palette.isDark
@@ -39,18 +33,28 @@ class GraphStyle {
           : const Color(0xFFEFEFEC),
       node = palette.textSecondary,
       arrow = palette.textPrimary.withValues(
-        alpha: palette.isDark ? 0.28 : 0.36,
-      );
+        alpha: palette.isDark ? 0.40 : 0.48,
+      ),
+      beamFrom = palette.isDark ? 0.34 : 0.44,
+      beamTo = palette.isDark ? 0.10 : 0.16,
+      beamGlow = palette.accent.withValues(
+        alpha: palette.isDark ? 0.10 : 0.14,
+      ),
+      mistAlpha = palette.isDark ? 0.045 : 0.055,
+      chip = (palette.isDark ? const Color(0xFF1B1B1E) : const Color(0xFFF7F7F4))
+          .withValues(alpha: palette.isDark ? 0.82 : 0.88),
+      chipEdge = palette.outlineSoft;
 
   /// 画布渐变的两端。比 `surface` 更深：正文是亮起的纸，图谱是凹陷的画布，
   /// 一眼就能分清「在看内容」和「在看结构」。
   final Color canvasTop;
   final Color canvasBottom;
 
-  /// 连线：常态 / 邻居 / 焦点 / 被筛掉。
+  /// 被筛掉的连线，以及边太多、退回单色画法时用的那一档。
+  ///
+  /// 常态/邻居/焦点三档不再存颜色：它们由 [beamFrom] / [beamTo] 乘以
+  /// 节点自己的分组色算出来，一条边一个渐变——见 `GraphPainter._paintEdges`。
   final Color edge;
-  final Color edgeLit;
-  final Color edgeFocus;
   final Color edgeDim;
 
   /// 当前笔记与选中节点的环。
@@ -65,6 +69,23 @@ class GraphStyle {
   final Color node;
 
   final Color arrow;
+
+  /// 光带的两端透明度：起点亮、终点暗。
+  ///
+  /// 方向**写在线里**，不靠箭头解释——一眼就能看出谁引用了谁，
+  /// 而不是只看到「这两个有关系」。
+  final double beamFrom;
+  final double beamTo;
+
+  /// 焦点边垫在下面的那层柔光，像通了电。
+  final Color beamGlow;
+
+  /// 每个文件夹一团底雾的透明度。按分组色铺，把簇托出来。
+  final double mistAlpha;
+
+  /// 簇名胶囊的底色与描边。
+  final Color chip;
+  final Color chipEdge;
 
   /// 分组调色板：表格高亮那六个色名，顺序固定，前六个文件夹各得一色。
   ///

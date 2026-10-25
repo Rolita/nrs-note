@@ -22,6 +22,17 @@ abstract final class GraphPhysics {
   /// 向心引力。没有它，斥力会让整张图无限扩散。
   static const double gravity = 0.0125;
 
+  /// 横向斥力权重。
+  ///
+  /// x 方向推得更狠，图才会长成**横的椭圆**。各向同性的斥力 + 向心只能
+  /// 排出一根竖条——四个文件夹会排成一条线，画布左右全空。
+  /// 这是「星群 / 光带」那版设计稿里验过的：改在物理层，不是画的时候硬拉伸
+  /// （硬拉伸会把圆拉成椭圆，而且物理一跑就弹回去）。
+  static const double wide = 1.4;
+
+  /// 横向向心权重，配合 [wide] 一起用。
+  static const double stretch = 0.52;
+
   /// 速度衰减。0.80 比 0.9 收敛快，比 0.6 不抖。
   static const double damping = 0.80;
 
@@ -128,9 +139,10 @@ class GraphLayout {
         final double f = GraphPhysics.repulsion / d2 * alpha;
         final double ux = dx / d;
         final double uy = dy / d;
-        vx[i] -= ux * f;
+        // 横向乘一个权重：见 [GraphPhysics.wide]。
+        vx[i] -= ux * f * GraphPhysics.wide;
         vy[i] -= uy * f;
-        vx[j] += ux * f;
+        vx[j] += ux * f * GraphPhysics.wide;
         vy[j] += uy * f;
       }
     }
@@ -152,7 +164,7 @@ class GraphLayout {
 
     // 3. 向心引力 + 积分
     for (int i = 0; i < n; i++) {
-      vx[i] -= x[i] * GraphPhysics.gravity * alpha;
+      vx[i] -= x[i] * GraphPhysics.gravity * GraphPhysics.stretch * alpha;
       vy[i] -= y[i] * GraphPhysics.gravity * alpha;
       vx[i] *= GraphPhysics.damping;
       vy[i] *= GraphPhysics.damping;

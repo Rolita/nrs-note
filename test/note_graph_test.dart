@@ -156,6 +156,47 @@ void main() {
     });
   });
 
+  group('方向', () {
+    test('单向链接记下 from → to，光带才画得出朝向', () {
+      final NoteGraph g = buildNoteGraph(<Note>[
+        note('A', body: '见 [[B]]'),
+        note('B'),
+      ]);
+
+      final GraphEdge e = g.edges.single;
+      expect(g.nodes[e.from!].title, 'A');
+      expect(g.nodes[e.to!].title, 'B');
+      expect(e.isBidirectional, isFalse);
+    });
+
+    test('互相链接的边没有方向，箭头不该画', () {
+      final NoteGraph g = buildNoteGraph(<Note>[
+        note('A', body: '见 [[B]]'),
+        note('B', body: '回 [[A]]'),
+      ]);
+
+      expect(g.edges.single.isBidirectional, isTrue);
+      expect(g.edges.single.from, isNull);
+      expect(g.edges.single.to, isNull);
+    });
+
+    test('子图切片保住方向，重编号后仍指向同一对笔记', () {
+      final NoteGraph g = buildNoteGraph(<Note>[
+        note('A', body: '见 [[B]]'),
+        note('B'),
+        note('C', body: '见 [[B]]'),
+      ]);
+      final NoteGraph sub = g.subgraph(<int>{
+        nodeOf(g, 'A').index,
+        nodeOf(g, 'B').index,
+      });
+
+      final GraphEdge e = sub.edges.single;
+      expect(sub.nodes[e.from!].title, 'A');
+      expect(sub.nodes[e.to!].title, 'B');
+    });
+  });
+
   group('度数', () {
     test('度数是去重后的邻居数，不是边数', () {
       final NoteGraph g = buildNoteGraph(<Note>[

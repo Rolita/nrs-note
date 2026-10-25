@@ -84,6 +84,20 @@ void main() {
       expect(minGap(l), greaterThan(0));
     });
 
+    test('布局是横的：包围盒明显宽于高', () {
+      // 各向同性的斥力 + 向心只能排出一根竖条，四个文件夹会排成一条线，
+      // 画布左右全空。横向权重（wide / stretch）就是为了这个。
+      for (final NoteGraph g in <NoteGraph>[star(), ring()]) {
+        final GraphLayout l = GraphLayout.of(g)..settle(g, 800);
+        final b = l.bounds();
+        expect(
+          b.width / b.height,
+          greaterThan(1.25),
+          reason: '${g.nodes.length} 个节点的图被排成了竖条',
+        );
+      }
+    });
+
     test('800 帧之后基本不动了', () {
       final NoteGraph g = star();
       final GraphLayout l = GraphLayout.of(g)..settle(g, 800);
