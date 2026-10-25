@@ -369,7 +369,7 @@ void main() {
     expect(widgetCount(tree), 0);
   });
 
-  testWidgets('tapping a checkbox flips the task and opens the whole marker', (
+  testWidgets('tapping a checkbox flips the task and keeps the caret', (
     WidgetTester tester,
   ) async {
     final MarkdownSourceController controller = await pump(
@@ -392,33 +392,26 @@ void main() {
     await tester.pump();
 
     expect(controller.text, '- [ ] 待办\n- [x] 另一件\n');
-    // 点复选框和点序号一样，整行标记摊成源码——两截不能各进各的。
-    //
-    // 按行首偏移取行，别用 `laidOut.last`：文末的 `\n` 后面还有一条零高的
-    // 占位行（光标要能停在那儿），它的槽位永远是收起的。
+    // 勾待办是最高频的动作：翻一下就完，**不进编辑态**。整行变成 `- [x] 源码`
+    // 太吵，而且光标也会被拽进标记里。摊开标记只由点序号/圆点触发。
     final RenderLineEditable r = editable(tester) as RenderLineEditable;
     final LaidOutLine second = r.lineLayout!.laidOut.firstWhere(
       (LaidOutLine l) => l.source.start == 9,
     );
-    expect(second.slot.revealedMarkers, isTrue, reason: '点方框也要把这一行摊开');
-    expect(
-      second.slot.width,
-      second.slot.indent,
-      reason: '摊开之后槽位只剩缩进，标记让出宽度给正文',
-    );
-    // 第二行从 9 起，标记 `- [ ] ` 占 9..15。
+    expect(second.slot.revealedMarkers, isFalse, reason: '点方框不该摊开标记');
+    expect(second.slot.width, second.slot.indent + second.slot.marker);
     expect(
       controller.selection.baseOffset,
-      inInclusiveRange(9, 15),
-      reason: '光标落进点中的那段标记里，而不是甩回点之前的位置',
+      0,
+      reason: 'flipping a box should not move the insertion point',
     );
   });
 
-  testWidgets('a checkbox click opens the number too, not just the box', (
+  testWidgets('clicking an ordered task’s number still opens number and box', (
     WidgetTester tester,
   ) async {
-    // 有序任务：`1. ` 和 `[ ] ` 是同一段标记的两截。点方框只翻方框、序号还
-    // 画在槽位里，就是「两截各进各的」；点下去应该整段一起变成源码。
+    // 有序任务那一行有两段标记：序号 `1. ` 和复选框 `[ ] `。点序号进编辑态时
+    // 两段要一起摊开——不能只露序号、方框还画在槽位里。
     final MarkdownSourceController controller = await pump(
       tester,
       '1. [ ] 甲\n2. [ ] 乙\n',
@@ -426,25 +419,31 @@ void main() {
     controller.selection = const TextSelection.collapsed(offset: 0);
     await tester.pump();
 
-    final List<Rect> boxes = (editable(tester) as RenderLineEditable)
-        .taskCheckboxRects();
+    final RenderLineEditable r = editable(tester) as RenderLineEditable;
+    // 从第二行复选框的矩形往左退一点，就落在序号 `2.` 上（序号和方框同属
+    // 槽位里的标记，坐标只能从渲染对象拿）。
+    final List<Rect> boxes = r.taskCheckboxRects();
     expect(boxes, hasLength(2));
-    await tester.tapAt(boxes.last.center);
+    final Rect box = boxes.last;
+    await tester.tapAt(Offset(box.left - 8, box.center.dy));
     await tester.pump();
 
-    expect(controller.text, '1. [ ] 甲\n2. [x] 乙\n');
-    final RenderLineEditable r = editable(tester) as RenderLineEditable;
-    final LaidOutLine second = r.lineLayout!.laidOut.firstWhere(
+    final LaidOutLine opened = r.lineLayout!.laidOut.firstWhere(
       (LaidOutLine l) => l.source.start == 9,
     );
-    expect(second.slot.revealedMarkers, isTrue, reason: '序号也得跟着进编辑态');
-    expect(second.slot.width, second.slot.indent);
-    // 第二行从 9 起，`2. [ ] ` 占 9..16：光标落进这一段，不是甩回行首。
+    expect(opened.slot.revealedMarkers, isTrue, reason: '点序号要摊开这一行');
     expect(
-      controller.selection.baseOffset,
-      inInclusiveRange(9, 16),
-      reason: '光标落在点中的那段标记里',
+      opened.slot.width,
+      opened.slot.indent,
+      reason: '摊开之后槽位只剩缩进，序号和方框一起让出宽度',
     );
+    // 方框跟着变成源码：不再有画出来的复选框。
+    expect(
+      r.taskCheckboxRects(),
+      hasLength(1),
+      reason: '只剩第一行那个还画着，第二行已经是 `[ ]` 源码',
+    );
+    expect(controller.text, '1. [ ] 甲\n2. [ ] 乙\n', reason: '点序号不翻转');
   });
 
   /// A gesture that ends on a marker ends as a **click**, whatever the field
