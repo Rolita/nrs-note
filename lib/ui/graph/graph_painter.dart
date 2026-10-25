@@ -22,7 +22,6 @@ class GraphPaintData {
     required this.lit,
     required this.focus,
     required this.selected,
-    required this.showLabels,
     required this.arrows,
     required this.style,
     required this.folderColors,
@@ -49,7 +48,6 @@ class GraphPaintData {
   /// 才换色。设计稿里 `nodeColor` 也只认 `sel`。
   final int? selected;
 
-  final bool showLabels;
   final bool arrows;
   final GraphStyle style;
   final Map<String, Color> folderColors;
@@ -59,6 +57,34 @@ class GraphPaintData {
   final Offset offset;
 
   final TextScaler textScaler;
+}
+
+/// 屏幕上一颗点平均离最近的邻居多少像素。
+///
+/// 抽样算最近邻，不逐对全算：一千篇两两是 100 万次，每帧都跑不起；抽 80 个
+/// 样本已经是 8 万次，而间距是个统计量，样本够用。
+///
+/// 提成顶层函数而不是留在 painter 里，是因为它是「标签写不写」的唯一依据，
+/// 单测要能直接量它，不用先造一份 [GraphPaintData]。
+double screenGap(GraphLayout layout, double scale) {
+  final int n = layout.length;
+  if (n <= 1) return double.infinity;
+  final int step = math.max(1, n ~/ 80);
+  double sum = 0;
+  int count = 0;
+  for (int i = 0; i < n; i += step) {
+    double best = double.infinity;
+    for (int j = 0; j < n; j++) {
+      if (i == j) continue;
+      final double dx = layout.x[i] - layout.x[j];
+      final double dy = layout.y[i] - layout.y[j];
+      final double d = dx * dx + dy * dy;
+      if (d < best) best = d;
+    }
+    sum += math.sqrt(best);
+    count++;
+  }
+  return sum / count * scale;
 }
 
 /// 光点用的时钟（秒）。
@@ -132,7 +158,7 @@ class GraphPainter extends CustomPainter {
     _paintMist(canvas, clusters);
     _paintEdges(canvas);
     _paintNodes(canvas);
-    if (data.showLabels) _paintLabels(canvas);
+    _paintLabels(canvas);
     _paintClusterChips(canvas, clusters);
 
     canvas.restore();
@@ -509,29 +535,7 @@ class GraphPainter extends CustomPainter {
   /// 24px 见方，两颗点比这还近的时候，标签只会互相压成一片糊——所以缩略
   /// 视图里应该一个标签都没有，放大到点散开了才逐层出现（Obsidian 就是
   /// 这个行为）。
-  ///
-  /// 抽样算最近邻，不逐对全算：一千篇两两是 100 万次，每帧都跑不起；
-  /// 抽 80 个样本已经是 8 万次，而间距是个统计量，样本够用。
-  double _screenGap() {
-    final int n = data.layout.length;
-    if (n <= 1) return double.infinity;
-    final int step = math.max(1, n ~/ 80);
-    double sum = 0;
-    int count = 0;
-    for (int i = 0; i < n; i += step) {
-      double best = double.infinity;
-      for (int j = 0; j < n; j++) {
-        if (i == j) continue;
-        final double dx = data.layout.x[i] - data.layout.x[j];
-        final double dy = data.layout.y[i] - data.layout.y[j];
-        final double d = dx * dx + dy * dy;
-        if (d < best) best = d;
-      }
-      sum += math.sqrt(best);
-      count++;
-    }
-    return sum / count * data.scale;
-  }
+  double _screenGap() => screenGap(data.layout, data.scale);
 
   /// 标签的浓度：枢纽写实、叶子写虚，挤不下就整片收掉。
   ///
@@ -640,8 +644,6 @@ class GraphPainter extends CustomPainter {
   /// 描边用**这个簇自己的分组色**（30%），所以即使底是画布色，也能一眼
   /// 看出这行字属于哪个色团。
   void _paintClusterChips(Canvas canvas, Map<String, _Cluster> clusters) {
-    if (!data.showLabels) return;
-
     final Paint chip = Paint()..color = data.style.chip;
     final Paint edge = Paint()
       ..style = PaintingStyle.stroke

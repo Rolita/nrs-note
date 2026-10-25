@@ -384,7 +384,6 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     }
     if (next.query != old.query ||
         next.folder != old.folder ||
-        next.showLabels != old.showLabels ||
         next.showArrows != old.showArrows) {
       _recomputeLit();
       _repaint.tick();
@@ -556,7 +555,6 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       lit: _lit,
       focus: focus,
       selected: _selected,
-      showLabels: _settings.showLabels,
       arrows: _settings.showArrows,
       style: style,
       folderColors: folderColors,
@@ -971,11 +969,6 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   /// 通过筛选的节点数（其余淡到 16%）。
   @visibleForTesting
   int get debugLitCount => _lit.where((bool b) => b).length;
-
-  /// 会画几个标签。开关关掉就是 0——这就是「开就显示、关就全不显示」。
-  @visibleForTesting
-  int get debugLabelCount =>
-      _settings.showLabels ? _view.nodes.length : 0;
 
   @visibleForTesting
   int? get debugSelected => _selected;

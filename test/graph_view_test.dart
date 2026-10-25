@@ -192,15 +192,12 @@ void main() {
   });
 
   group('筛选', () {
-    testWidgets('显示标签是开关：关掉就一个都不画', (WidgetTester tester) async {
-      final Harness h = await pumpGraph(tester);
-      expect(h.view.debugLabelCount, 5);
-
-      await tester.tap(find.text('显示标签'));
-      await tester.pumpAndSettle();
-
-      expect(h.view.debugLabelCount, 0);
-      expect(h.view.debugNodeCount, 5, reason: '关标签不该动图');
+    testWidgets('标签是自动的：面板里不再有「显示标签」开关', (
+      WidgetTester tester,
+    ) async {
+      await pumpGraph(tester);
+      // 放大才显示、缩小就收掉——没有第二种状态，就不该留一个开关让人去关。
+      expect(find.text('显示标签'), findsNothing);
     });
 
     testWidgets('关掉孤立笔记，孤立节点真的消失并重排', (WidgetTester tester) async {
@@ -258,12 +255,12 @@ void main() {
 
     testWidgets('面板可以整块收起', (WidgetTester tester) async {
       await pumpGraph(tester);
-      expect(find.text('显示标签'), findsOneWidget);
+      expect(find.text('孤立笔记'), findsOneWidget);
 
       await tester.tap(find.text('图谱设置'));
       await tester.pumpAndSettle();
 
-      expect(find.text('显示标签'), findsNothing);
+      expect(find.text('孤立笔记'), findsNothing);
       expect(find.text('图谱设置'), findsOneWidget);
     });
   });

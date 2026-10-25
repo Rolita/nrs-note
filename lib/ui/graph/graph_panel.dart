@@ -25,7 +25,6 @@ class GraphSettings {
     this.scope = GraphScope.global,
     this.depth = 1,
     this.query = '',
-    this.showLabels = true,
     this.showOrphans = true,
     this.showArrows = false,
     this.nodeScale = 1,
@@ -41,9 +40,6 @@ class GraphSettings {
   /// 搜索框内容（已 trim + 小写）。
   final String query;
 
-  /// 显示标签：开就全显示，关就全不显示。没有第三种状态。
-  final bool showLabels;
-
   final bool showOrphans;
   final bool showArrows;
 
@@ -58,7 +54,6 @@ class GraphSettings {
     GraphScope? scope,
     int? depth,
     String? query,
-    bool? showLabels,
     bool? showOrphans,
     bool? showArrows,
     double? nodeScale,
@@ -69,7 +64,6 @@ class GraphSettings {
       scope: scope ?? this.scope,
       depth: depth ?? this.depth,
       query: query ?? this.query,
-      showLabels: showLabels ?? this.showLabels,
       showOrphans: showOrphans ?? this.showOrphans,
       showArrows: showArrows ?? this.showArrows,
       nodeScale: nodeScale ?? this.nodeScale,
@@ -87,7 +81,6 @@ class GraphSettings {
       other.scope == scope &&
       other.depth == depth &&
       other.query == query &&
-      other.showLabels == showLabels &&
       other.showOrphans == showOrphans &&
       other.showArrows == showArrows &&
       other.nodeScale == nodeScale &&
@@ -99,7 +92,6 @@ class GraphSettings {
     scope,
     depth,
     query,
-    showLabels,
     showOrphans,
     showArrows,
     nodeScale,
@@ -215,12 +207,6 @@ class GraphPanel extends StatelessWidget {
                           value: settings.query,
                           onChanged: (String v) =>
                               onChanged(settings.copyWith(query: v)),
-                        ),
-                        _SwitchRow(
-                          label: '显示标签',
-                          value: settings.showLabels,
-                          onChanged: (bool v) =>
-                              onChanged(settings.copyWith(showLabels: v)),
                         ),
                         _SwitchRow(
                           label: '孤立笔记',
