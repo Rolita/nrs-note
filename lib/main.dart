@@ -100,6 +100,8 @@ Future<void> main() async {
   // 初始化的。此时窗口刚显示出来，用户不可能已经点到关闭。
   await guardCloseBeforeExit(() async {
     await notes.saveNow();
+    BootTrace.mark('notes saved');
     await canvas.flush();
+    BootTrace.mark('canvas flushed');
   });
 }

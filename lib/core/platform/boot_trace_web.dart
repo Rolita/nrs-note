@@ -4,7 +4,11 @@ library;
 abstract final class BootTrace {
   static void mark(String label) {}
 
+  static void restart(String label) {}
+
   static void watchFrames() {}
 
   static Future<void> flushIfSlow() async {}
+
+  static Future<void> flushNow() async {}
 }

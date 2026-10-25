@@ -39,6 +39,33 @@ abstract final class BootTrace {
     if (now > slowMarkMs) _slow = true;
   }
 
+  /// 从零开始记一条新的时间轴（关窗口时用：那时候「启动第几毫秒」没有意义）。
+  static void restart(String label) {
+    _lines.clear();
+    _watch.reset();
+    _last = 0;
+    _slow = false;
+    // 墙上时间：外部计时器（点击、进程退出）只有这个能对上。
+    _lines.add('wall ${DateTime.now().toIso8601String()}');
+    mark(label);
+  }
+
+  /// 不管快慢都写一份。关窗口时要在进程消失之前落盘，所以不能等判定。
+  static Future<void> flushNow() async {
+    _lines.add('${_last}ms  total');
+    await _write();
+  }
+
+  static Future<void> _write() async {
+    try {
+      await File(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}nrs-boot.log',
+      ).writeAsString(_lines.join('\n'));
+    } on FileSystemException {
+      // 写不下就算了：性能记录不该让启动失败。
+    }
+  }
+
   /// 记下前几帧的 build / raster 用时。
   ///
   /// 这一条决定了「数据到了但屏幕还没变」到底花在 Dart 建树还是光栅化上，
@@ -63,12 +90,6 @@ abstract final class BootTrace {
   static Future<void> flushIfSlow() async {
     if (!_forced && !_slow) return;
     _lines.add('${_last}ms  content ready（不含进程启动到 main() 的那一段）');
-    try {
-      await File(
-        '${Directory.systemTemp.path}${Platform.pathSeparator}nrs-boot.log',
-      ).writeAsString(_lines.join('\n'));
-    } on FileSystemException {
-      // 写不下就算了：性能记录不该让启动失败。
-    }
+    await _write();
   }
 }
