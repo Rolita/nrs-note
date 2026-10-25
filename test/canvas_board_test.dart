@@ -1195,6 +1195,262 @@ void main() {
     });
   });
 
+  group('撤销重做', () {
+    testWidgets('新建一张卡片能撤掉，也能再走回来', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(tester);
+
+      h.state.createCard();
+      await tester.pump();
+      expect(h.nodes.length, 1);
+
+      h.state.undo();
+      await tester.pump();
+      expect(h.nodes, isEmpty);
+
+      h.state.redo();
+      await tester.pump();
+      expect(h.nodes.length, 1);
+    });
+
+    testWidgets('拖动一步只占一格撤销', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[cardAtOrigin()]),
+      );
+      final CanvasNode a = h.nodes.first;
+
+      final TestGesture g = await tester.startGesture(
+        centerOf(h, a),
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveBy(Offset(20 * h.zoom, 20 * h.zoom));
+      await tester.pump();
+      await g.moveBy(Offset(20 * h.zoom, 0));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+      expect(a.x, closeTo(40, 1e-6));
+
+      h.state.undo();
+      await tester.pump();
+      // 撤销是「把快照装回来」，节点对象会换一批——所以要看文档里的那张，
+      // 不能看手上这个旧引用。
+      expect(h.nodes.first.x, 0, reason: '一步撤回整段拖动');
+    });
+
+    testWidgets('删除也能撤回来，边一起回来', (WidgetTester tester) async {
+      final CanvasDocument doc = CanvasDocument(
+        nodes: <CanvasNode>[
+          cardAtOrigin(id: 'a'),
+          textNode('b', x: 400, y: 0),
+        ],
+        edges: <CanvasEdge>[CanvasEdge(id: 'e1', fromNode: 'a', toNode: 'b')],
+      );
+      final Harness h = await pumpBoard(tester, document: doc);
+      await tapCard(tester, h, doc.nodeById('a')!);
+
+      h.state.deleteSelection();
+      await tester.pump();
+      expect(doc.nodes.length, 1);
+      expect(doc.edges, isEmpty);
+
+      h.state.undo();
+      await tester.pump();
+      expect(doc.nodes.length, 2);
+      expect(doc.edges.length, 1);
+    });
+
+    testWidgets('撤销之后重做栈被新动作作废', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(tester);
+
+      h.state.createCard();
+      await tester.pump();
+      h.state.undo();
+      await tester.pump();
+      expect(h.state.canRedo, isTrue);
+
+      h.state.createCard();
+      await tester.pump();
+      expect(h.state.canRedo, isFalse);
+    });
+  });
+
+  group('框选与全选', () {
+    testWidgets('框住两张卡片就选中两张', (WidgetTester tester) async {
+      final CanvasDocument doc = docWith(<CanvasNode>[
+        cardAtOrigin(id: 'a'),
+        textNode('b', x: 400, y: 0),
+        textNode('c', x: 2000, y: 2000),
+      ]);
+      final Harness h = await pumpBoard(tester, document: doc);
+
+      final Offset from = h.state.viewport.toScreen(const Offset(-50, -50));
+      final Offset to = h.state.viewport.toScreen(const Offset(500, 120));
+      final TestGesture g = await tester.startGesture(
+        from,
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveTo(to);
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(h.state.debugSelection, <String>{'a', 'b'});
+    });
+
+    testWidgets('碰一下边就算选中，不用完全框住', (WidgetTester tester) async {
+      final CanvasDocument doc = docWith(<CanvasNode>[cardAtOrigin(id: 'a')]);
+      final Harness h = await pumpBoard(tester, document: doc);
+
+      // 只框到卡片右下角的一小块。
+      final Offset from = h.state.viewport.toScreen(const Offset(200, 80));
+      final Offset to = h.state.viewport.toScreen(const Offset(260, 140));
+      final TestGesture g = await tester.startGesture(
+        from,
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveTo(to);
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(h.state.debugSelection, <String>{'a'});
+    });
+
+    testWidgets('Ctrl+A 全选，Esc 清空', (WidgetTester tester) async {
+      final CanvasDocument doc = docWith(<CanvasNode>[
+        cardAtOrigin(id: 'a'),
+        textNode('b', x: 400, y: 0),
+      ]);
+      final Harness h = await pumpBoard(tester, document: doc);
+      await tapCard(tester, h, doc.nodes.first);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+
+      expect(h.state.debugSelection, <String>{'a', 'b'});
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.escape);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(h.state.debugSelection, isEmpty);
+    });
+  });
+
+  group('复制粘贴', () {
+    testWidgets('Ctrl+D 原地复制一份，错开 20', (WidgetTester tester) async {
+      final CanvasDocument doc = docWith(<CanvasNode>[cardAtOrigin(id: 'a')]);
+      final Harness h = await pumpBoard(tester, document: doc);
+      await tapCard(tester, h, doc.nodes.first);
+
+      h.state.duplicateSelection();
+      await tester.pump();
+
+      expect(doc.nodes.length, 2);
+      expect(doc.nodes.last.id, isNot('a'), reason: 'id 必须重新发');
+      expect(doc.nodes.last.x, 20);
+      expect(doc.nodes.last.y, 20);
+      expect(h.state.debugSelection, <String>{doc.nodes.last.id});
+    });
+
+    testWidgets('复制只带走两端都在选区里的边', (WidgetTester tester) async {
+      final CanvasDocument doc = CanvasDocument(
+        nodes: <CanvasNode>[
+          cardAtOrigin(id: 'a'),
+          textNode('b', x: 400, y: 0),
+          textNode('c', x: 800, y: 0),
+        ],
+        edges: <CanvasEdge>[
+          CanvasEdge(id: 'e1', fromNode: 'a', toNode: 'b'),
+          CanvasEdge(id: 'e2', fromNode: 'b', toNode: 'c'),
+        ],
+      );
+      final Harness h = await pumpBoard(tester, document: doc);
+      await tapCard(tester, h, doc.nodeById('a')!);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tapCard(tester, h, doc.nodeById('b')!);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+
+      h.state.copySelection();
+      h.state.pasteClipboard();
+      await tester.pump();
+
+      expect(doc.nodes.length, 5);
+      expect(doc.edges.length, 3, reason: '只复制 a—b，b—c 的一端在选区外');
+    });
+
+    testWidgets('没有复制过就粘贴，什么也不发生', (WidgetTester tester) async {
+      final CanvasDocument doc = docWith(<CanvasNode>[cardAtOrigin()]);
+      final Harness h = await pumpBoard(tester, document: doc);
+
+      h.state.pasteClipboard();
+      await tester.pump();
+
+      expect(doc.nodes.length, 1);
+    });
+
+    testWidgets('粘贴出来的边指向新的卡片，不是原来那张', (WidgetTester tester) async {
+      final CanvasDocument doc = CanvasDocument(
+        nodes: <CanvasNode>[
+          cardAtOrigin(id: 'a'),
+          textNode('b', x: 400, y: 0),
+        ],
+        edges: <CanvasEdge>[CanvasEdge(id: 'e1', fromNode: 'a', toNode: 'b')],
+      );
+      final Harness h = await pumpBoard(tester, document: doc);
+      h.state.selectAll();
+      h.state.copySelection();
+      h.state.pasteClipboard();
+      await tester.pump();
+
+      final Set<String> pasted = h.state.debugSelection;
+      final CanvasEdge copy = doc.edges.last;
+      expect(pasted.contains(copy.fromNode), isTrue);
+      expect(pasted.contains(copy.toNode), isTrue);
+      expect(copy.id, isNot('e1'));
+    });
+  });
+
+  group('方向键微调', () {
+    testWidgets('一次 1px，Shift 一次 10px', (WidgetTester tester) async {
+      final CanvasDocument doc = docWith(<CanvasNode>[cardAtOrigin()]);
+      final Harness h = await pumpBoard(tester, document: doc);
+      final CanvasNode a = doc.nodes.first;
+      await tapCard(tester, h, a);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowRight);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(a.x, 1);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowDown);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowDown);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump();
+      expect(a.y, 10);
+    });
+  });
+
+  group('视口裁剪', () {
+    testWidgets('远到看不见的卡片不建 Widget', (WidgetTester tester) async {
+      final CanvasDocument doc = docWith(<CanvasNode>[cardAtOrigin(id: 'near')]);
+      final Harness h = await pumpBoard(tester, document: doc);
+      expect(find.text('卡片'), findsOneWidget);
+
+      // 视口稳定之后塞一张远在天边的卡片，再逼它重建一次。
+      doc.nodes.add(textNode('far', x: 50000, y: 50000));
+      h.state.selectAll();
+      await tester.pump();
+
+      expect(doc.nodes.length, 2);
+      expect(find.text('卡片'), findsOneWidget, reason: '远的那张不建');
+    });
+  });
+
   group('点阵', () {
     test('缩得太小时彻底不画', () {
       expect(canvasGridOpacity(0.2), 0);

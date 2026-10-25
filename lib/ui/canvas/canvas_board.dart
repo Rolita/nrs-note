@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
@@ -13,6 +14,7 @@ import '../../core/utils/table_model.dart' show CellColor;
 import 'canvas_card.dart';
 import 'canvas_edge_painter.dart';
 import 'canvas_grid_painter.dart';
+import 'canvas_history.dart';
 import 'canvas_pickers.dart';
 import 'canvas_style.dart';
 import 'canvas_toolbar.dart';
@@ -137,6 +139,12 @@ class CanvasBoardState extends State<CanvasBoard> {
   /// 正在编辑标签的边。
   String? _editingEdgeId;
 
+  /// 撤销栈。快照是整份文档的 JSON。
+  final CanvasHistory _history = CanvasHistory();
+
+  /// 复制缓冲区：选中的节点和它们之间的边，也是 JSON。
+  String? _clipboard;
+
   /// 空格按住 = 临时切换成抓手。
   bool _spaceHeld = false;
 
@@ -205,10 +213,65 @@ class CanvasBoardState extends State<CanvasBoard> {
   }
 
   /// 改文档的唯一入口：改完重画一遍，再告诉外面「脏了」。
-  void _mutate(VoidCallback change) {
+  ///
+  /// [record] 为 false 时不进撤销栈——撤销/重做自己要用它，不然退一步
+  /// 反而把「退回」这个动作也记成了新的一步。
+  void _mutate(VoidCallback change, {bool record = true}) {
     if (_readOnly) return;
+    if (record) _pushHistory();
     setState(change);
     widget.onChanged?.call();
+  }
+
+  void _pushHistory() {
+    final CanvasDocument? doc = _doc;
+    if (doc == null) return;
+    _history.push(encodeCanvas(doc));
+  }
+
+  bool get canUndo => _history.canUndo;
+
+  bool get canRedo => _history.canRedo;
+
+  void undo() {
+    final CanvasDocument? doc = _doc;
+    if (doc == null) return;
+    final String? snapshot = _history.undo(encodeCanvas(doc));
+    if (snapshot == null) return;
+    _restore(snapshot);
+  }
+
+  void redo() {
+    final CanvasDocument? doc = _doc;
+    if (doc == null) return;
+    final String? snapshot = _history.redo(encodeCanvas(doc));
+    if (snapshot == null) return;
+    _restore(snapshot);
+  }
+
+  /// 把一份快照装回当前文档。
+  ///
+  /// 是**原地替换内容**而不是换掉 `widget.document` 那个对象：外壳、选择、
+  /// 视口都拿着同一个引用，换对象等于让它们全部指向旧的那份。
+  void _restore(String snapshot) {
+    final CanvasDocument parsed;
+    try {
+      parsed = parseCanvas(snapshot);
+    } on CanvasFormatException {
+      // 自己写进去的快照解析不了，说明是代码 bug，不是用户数据问题。
+      // 与其把白板清空，不如什么都不做。
+      return;
+    }
+    _mutate(() {
+      _doc!
+        ..nodes.clear()
+        ..nodes.addAll(parsed.nodes)
+        ..edges.clear()
+        ..edges.addAll(parsed.edges);
+      _selected.clear();
+      _editingId = null;
+      _editingEdgeId = null;
+    }, record: false);
   }
 
   // ------------------------------------------------------------- viewport
@@ -358,6 +421,149 @@ class CanvasBoardState extends State<CanvasBoard> {
       );
       _selected.clear();
       _editingId = null;
+    });
+  }
+
+  /// 框选松手：框到谁就选谁。
+  ///
+  /// 判据是**相交**而不是「完全框住」：从右下往左上拖的人，心里想的是
+  /// 「碰到的都算」。要求完全框住，只有习惯从左上往右下拖的人才顺。
+  void _selectInMarquee() {
+    final Rect? box = _marqueeRect;
+    final CanvasDocument? doc = _doc;
+    if (box == null || doc == null || box.width < 2 || box.height < 2) return;
+    final Rect world = _viewport.rectToWorld(box);
+    setState(() {
+      for (final CanvasNode node in doc.nodes) {
+        if (node.rect.overlaps(world)) _selected.add(node.id);
+      }
+    });
+  }
+
+  /// 全选。
+  void selectAll() {
+    final CanvasDocument? doc = _doc;
+    if (doc == null) return;
+    setState(() {
+      _selected
+        ..clear()
+        ..addAll(doc.nodes.map((CanvasNode n) => n.id))
+        ..addAll(doc.edges.map((CanvasEdge e) => e.id));
+    });
+  }
+
+  /// 复制选中的卡片（连同它们之间的边）。
+  void copySelection() {
+    final CanvasDocument? doc = _doc;
+    if (doc == null || _selected.isEmpty) return;
+    final List<CanvasNode> nodes = doc.nodes
+        .where((CanvasNode n) => _selected.contains(n.id))
+        .toList();
+    if (nodes.isEmpty) return;
+    final Set<String> ids = nodes.map((CanvasNode n) => n.id).toSet();
+    _clipboard = encodeCanvas(
+      CanvasDocument(
+        nodes: nodes,
+        // 只带上「两端都在选区里」的边。一端在外面的，粘出来会连到一张
+        // 没被复制的卡片上，那是个悬空引用。
+        edges: doc.edges
+            .where(
+              (CanvasEdge e) =>
+                  ids.contains(e.fromNode) && ids.contains(e.toNode),
+            )
+            .toList(),
+      ),
+    );
+  }
+
+  /// 粘贴。偏移 +20,+20，粘完选中粘出来的那一批。
+  void pasteClipboard() {
+    final String? raw = _clipboard;
+    if (raw == null || _doc == null) return;
+    final CanvasDocument clip;
+    try {
+      clip = parseCanvas(raw);
+    } on CanvasFormatException {
+      return;
+    }
+    _pasteFrom(clip);
+  }
+
+  /// 原地复制（Ctrl+D）。
+  void duplicateSelection() {
+    if (_doc == null || _selected.isEmpty) return;
+    copySelection();
+    pasteClipboard();
+  }
+
+  void _pasteFrom(CanvasDocument clip) {
+    final CanvasDocument doc = _doc!;
+    // 换 id、挪位置都在 **JSON 层**做，然后整体解析回来。
+    //
+    // 为什么不在对象上改：`id` / `fromNode` / `toNode` 都是 final，这是
+    // 有意的——一份文档里 id 变了，所有指向它的边就悄悄失效了。粘一份
+    // 新东西本来就该是「新对象」，走一遍序列化最省心，也顺手验证了
+    // 「存下去再读回来」这条路。
+    final Map<String, Object?> json = clip.toJson();
+    final List<Object?> rawNodes =
+        (json['nodes'] as List<Object?>?) ?? const <Object?>[];
+    final List<Object?> rawEdges =
+        (json['edges'] as List<Object?>?) ?? const <Object?>[];
+
+    final Map<String, String> remap = <String, String>{};
+    const double offset = 20;
+    for (final Object? raw in rawNodes) {
+      final Map<String, Object?> node = (raw! as Map<Object?, Object?>)
+          .cast<String, Object?>();
+      final String? old = node['id'] as String?;
+      if (old == null) continue;
+      final String next = newCanvasId();
+      remap[old] = next;
+      node['id'] = next;
+      node['x'] = ((node['x'] as num?)?.toDouble() ?? 0) + offset;
+      node['y'] = ((node['y'] as num?)?.toDouble() ?? 0) + offset;
+    }
+    final List<Object?> keptEdges = <Object?>[];
+    for (final Object? raw in rawEdges) {
+      final Map<String, Object?> edge = (raw! as Map<Object?, Object?>)
+          .cast<String, Object?>();
+      final String? from = remap[edge['fromNode']];
+      final String? to = remap[edge['toNode']];
+      if (from == null || to == null) continue;
+      edge['id'] = newCanvasId();
+      edge['fromNode'] = from;
+      edge['toNode'] = to;
+      keptEdges.add(edge);
+    }
+    json['nodes'] = rawNodes;
+    json['edges'] = keptEdges;
+
+    final CanvasDocument pasted;
+    try {
+      pasted = parseCanvas(jsonEncode(json));
+    } on CanvasFormatException {
+      return;
+    }
+
+    _mutate(() {
+      doc.nodes.addAll(pasted.nodes);
+      doc.edges.addAll(pasted.edges);
+      _selected
+        ..clear()
+        ..addAll(pasted.nodes.map((CanvasNode n) => n.id));
+    });
+  }
+
+  /// 方向键微调。
+  void nudgeSelection(double dx, double dy) {
+    final CanvasDocument? doc = _doc;
+    if (doc == null || _selected.isEmpty) return;
+    _mutate(() {
+      for (final CanvasNode node in doc.nodes) {
+        if (!_selected.contains(node.id)) continue;
+        node.x += dx;
+        node.y += dy;
+      }
     });
   }
 
@@ -590,6 +796,7 @@ class CanvasBoardState extends State<CanvasBoard> {
     final CanvasResizeHandle? handle = _handleAt(e.localPosition);
     if (handle != null) {
       final CanvasNode node = _singleSelection!;
+      _pushHistory();
       setState(() {
         _mode = _Interaction.resizing;
         _handle = handle;
@@ -640,6 +847,8 @@ class CanvasBoardState extends State<CanvasBoard> {
             ..clear()
             ..add(node.id);
         }
+        // 一次拖动只记一步：在按下时记，不是每一帧都记。
+        _pushHistory();
         _mode = _Interaction.maybeDrag;
         _dragFrom = world;
         _dragFromScreen = e.localPosition;
@@ -771,6 +980,15 @@ class CanvasBoardState extends State<CanvasBoard> {
         _mode = _Interaction.idle;
         _connectFromId = null;
         _connectCursor = null;
+      });
+      return;
+    }
+    if (_mode == _Interaction.marquee) {
+      _selectInMarquee();
+      setState(() {
+        _mode = _Interaction.idle;
+        _marqueeStart = null;
+        _marqueeEnd = null;
       });
       return;
     }
@@ -1054,6 +1272,48 @@ class CanvasBoardState extends State<CanvasBoard> {
       deleteSelection();
       return KeyEventResult.handled;
     }
+    final bool ctrl = keys.isControlPressed;
+    if (ctrl && event.logicalKey == LogicalKeyboardKey.keyZ) {
+      if (keys.isShiftPressed) {
+        redo();
+      } else {
+        undo();
+      }
+      return KeyEventResult.handled;
+    }
+    if (ctrl && event.logicalKey == LogicalKeyboardKey.keyY) {
+      redo();
+      return KeyEventResult.handled;
+    }
+    if (ctrl && event.logicalKey == LogicalKeyboardKey.keyA) {
+      selectAll();
+      return KeyEventResult.handled;
+    }
+    if (ctrl && event.logicalKey == LogicalKeyboardKey.keyC) {
+      copySelection();
+      return KeyEventResult.handled;
+    }
+    if (ctrl && event.logicalKey == LogicalKeyboardKey.keyV) {
+      pasteClipboard();
+      return KeyEventResult.handled;
+    }
+    if (ctrl && event.logicalKey == LogicalKeyboardKey.keyD) {
+      duplicateSelection();
+      return KeyEventResult.handled;
+    }
+    // 方向键微调：1px，按住 Shift 10px。
+    final (double dx, double dy) = switch (event.logicalKey) {
+      LogicalKeyboardKey.arrowLeft => (-1.0, 0.0),
+      LogicalKeyboardKey.arrowRight => (1.0, 0.0),
+      LogicalKeyboardKey.arrowUp => (0.0, -1.0),
+      LogicalKeyboardKey.arrowDown => (0.0, 1.0),
+      _ => (0.0, 0.0),
+    };
+    if ((dx != 0 || dy != 0) && _selected.isNotEmpty && !ctrl) {
+      final double step = keys.isShiftPressed ? 10 : 1;
+      nudgeSelection(dx * step, dy * step);
+      return KeyEventResult.handled;
+    }
     if (keys.isControlPressed && event.logicalKey == LogicalKeyboardKey.digit0) {
       resetZoom();
       return KeyEventResult.handled;
@@ -1179,8 +1439,9 @@ class CanvasBoardState extends State<CanvasBoard> {
                       child: Stack(
                         fit: StackFit.expand,
                         children: <Widget>[
-                          for (final CanvasNode node in doc?.nodes ?? const <CanvasNode>[])
-                            if (node.id != _editingId)
+                          for (final CanvasNode node
+                              in doc?.nodes ?? const <CanvasNode>[])
+                            if (node.id != _editingId && _onScreen(node))
                               _positioned(
                                 node,
                                 CanvasCard(
@@ -1317,6 +1578,21 @@ class CanvasBoardState extends State<CanvasBoard> {
         ),
       ),
     );
+  }
+
+  /// 这张卡片要不要建。
+  ///
+  /// 视口外的卡片不建 Widget：200 张卡片全建出来，每一帧的布局和命中测试
+  /// 都要过一遍。留 200px 的余量，免得拖动时边缘的卡片「先消失再出现」。
+  bool _onScreen(CanvasNode node) {
+    if (_stage.isEmpty) return true;
+    final Rect visible = Rect.fromLTWH(
+      -200,
+      -200,
+      _stage.width + 400,
+      _stage.height + 400,
+    );
+    return _viewport.rectToScreen(node.rect).overlaps(visible);
   }
 
   /// 把世界坐标的矩形摆到屏幕上。
