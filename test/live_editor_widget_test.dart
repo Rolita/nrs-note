@@ -369,7 +369,7 @@ void main() {
     expect(widgetCount(tree), 0);
   });
 
-  testWidgets('tapping a checkbox flips the task and keeps the caret', (
+  testWidgets('tapping a checkbox flips the task and opens the whole marker', (
     WidgetTester tester,
   ) async {
     final MarkdownSourceController controller = await pump(
@@ -392,10 +392,58 @@ void main() {
     await tester.pump();
 
     expect(controller.text, '- [ ] 待办\n- [x] 另一件\n');
+    // 点复选框和点序号一样，整行标记摊成源码——两截不能各进各的。
+    //
+    // 按行首偏移取行，别用 `laidOut.last`：文末的 `\n` 后面还有一条零高的
+    // 占位行（光标要能停在那儿），它的槽位永远是收起的。
+    final RenderLineEditable r = editable(tester) as RenderLineEditable;
+    final LaidOutLine second = r.lineLayout!.laidOut.firstWhere(
+      (LaidOutLine l) => l.source.start == 9,
+    );
+    expect(second.slot.revealedMarkers, isTrue, reason: '点方框也要把这一行摊开');
+    expect(
+      second.slot.width,
+      second.slot.indent,
+      reason: '摊开之后槽位只剩缩进，标记让出宽度给正文',
+    );
+    // 第二行从 9 起，标记 `- [ ] ` 占 9..15。
     expect(
       controller.selection.baseOffset,
-      0,
-      reason: 'flipping a box should not move the insertion point',
+      inInclusiveRange(9, 15),
+      reason: '光标落进点中的那段标记里，而不是甩回点之前的位置',
+    );
+  });
+
+  testWidgets('a checkbox click opens the number too, not just the box', (
+    WidgetTester tester,
+  ) async {
+    // 有序任务：`1. ` 和 `[ ] ` 是同一段标记的两截。点方框只翻方框、序号还
+    // 画在槽位里，就是「两截各进各的」；点下去应该整段一起变成源码。
+    final MarkdownSourceController controller = await pump(
+      tester,
+      '1. [ ] 甲\n2. [ ] 乙\n',
+    );
+    controller.selection = const TextSelection.collapsed(offset: 0);
+    await tester.pump();
+
+    final List<Rect> boxes = (editable(tester) as RenderLineEditable)
+        .taskCheckboxRects();
+    expect(boxes, hasLength(2));
+    await tester.tapAt(boxes.last.center);
+    await tester.pump();
+
+    expect(controller.text, '1. [ ] 甲\n2. [x] 乙\n');
+    final RenderLineEditable r = editable(tester) as RenderLineEditable;
+    final LaidOutLine second = r.lineLayout!.laidOut.firstWhere(
+      (LaidOutLine l) => l.source.start == 9,
+    );
+    expect(second.slot.revealedMarkers, isTrue, reason: '序号也得跟着进编辑态');
+    expect(second.slot.width, second.slot.indent);
+    // 第二行从 9 起，`2. [ ] ` 占 9..16：光标落进这一段，不是甩回行首。
+    expect(
+      controller.selection.baseOffset,
+      inInclusiveRange(9, 16),
+      reason: '光标落在点中的那段标记里',
     );
   });
 

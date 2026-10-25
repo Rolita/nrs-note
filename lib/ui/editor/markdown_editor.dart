@@ -1403,6 +1403,32 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     return field.taskCheckboxAt(globalPosition, slop: _kCheckboxTouchSlop);
   }
 
+  /// 从复选框的源码偏移反查它所在那一行的整段标记范围。
+  ///
+  /// 点复选框要的是「整行进编辑态」，而 [RenderLineEditable.listMarkerAt] 是按
+  /// 指针**几何**命中的：按在方框上沿、或者按下点和抬起点不是一个地方时，
+  /// 它会判不中。这里改成从源码算——方框的偏移是确定的，行首和标记长度也
+  /// 是确定的，跟指针落在哪半像素无关。
+  ///
+  /// 光标给到 [markerStart] 自己，也就是方框开头：点方框的人想改的是
+  /// `[ ]` 这三个字符。
+  ({int start, int markerStart, int paintStart, bool revealed, int caret})?
+  _markerRangeOf(int markerStart) {
+    final ({int from, int to, String text})? line = _sourceLineAt(markerStart);
+    if (line == null) return null;
+    final LineMarker marker = scanLineMarker(line.text);
+    if (marker.length <= 0) return null;
+    final int from = line.from + marker.indent;
+    final int to = from + marker.length;
+    return (
+      start: line.from,
+      markerStart: from,
+      paintStart: to,
+      revealed: false,
+      caret: markerStart.clamp(from, to),
+    );
+  }
+
   /// 指针下压着的 `#标签` 胶囊（文档偏移区间），没有则为 `null`。
   ///
   /// 只认胶囊真正覆盖的那块矩形：`positionAt` 会把段落右侧的空白吸附到行末，
@@ -3387,7 +3413,13 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     // 整行在手指还没动的时候重排（见上面冻结揭示选区的理由）。
     _markerCaret = null;
     _pendingMarker = null;
-    if (_checkboxAt(event.position) != null) {
+    final int? checkbox = _checkboxAt(event.position);
+    if (checkbox != null) {
+      // 复选框和序号是同一个标记的两段。以前点复选框只翻转、不进编辑态，
+      // 点序号才摊开，于是「有序任务」这一行两段各进各的——点一下方框，
+      // 前面的 `1. ` 还画在槽位里。现在照常记下这一行的标记范围，抬手时
+      // 和序号一样整行摊开；翻转仍然在抬手那段做。
+      _pendingMarker = _markerRangeOf(checkbox);
       _setMarkerReveal(null);
       return;
     }
@@ -4023,6 +4055,20 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
     final TextEditingController c = widget.controller;
     final String next = toggleTaskAt(c.text, at);
+    // 点复选框也把整行标记摊进正文——序号和复选框是一段标记的两截，只翻
+    // 方框的话前面的 `1. ` 还画在槽位里，两截各进各的。
+    //
+    // ⚠️ 按下点和抬起点可能不是同一个位置（按在方框右边的留白、抬起才落到
+    // 方框上），那种情况下按下的那一下没有记到标记范围，这里按偏移补一次。
+    final ({int start, int markerStart, int paintStart, bool revealed, int caret})?
+    marker = pendingMarker ?? _markerRangeOf(at);
+    final bool reveal = marker != null && !_gestureMoved;
+    if (reveal) {
+      _setMarkerReveal((
+        start: marker.start,
+        paintStart: marker.paintStart,
+      ));
+    }
     // Whatever the pointer dragged out on the way, a click on a marker ends as a
     // click. `TextField` counts clicks, and two of them select a **word**: the
     // marker column is one character wide — the box swallows the rest of
@@ -4030,7 +4076,18 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     // cell itself, and the wash paints a square growing out of the checkbox.
     // Handing the old caret back is not enough on its own: a press that missed
     // the box has no caret to hand back.
-    final TextSelection end = saved ?? TextSelection.collapsed(offset: at);
+    //
+    // 摊开之后光标要落在**点中的那一段**：还给点之前的位置，人会看见整行
+    // 变成源码、光标却还在别处，想改 `[ ]` 还得再点一次。
+    final TextSelection end = reveal
+        ? TextSelection.collapsed(
+            // 夹在标记内部：按下点和抬起点可能不是同一个位置（按下在方框
+            // 右边的留白、抬起才落到方框上），换算出来的偏移会跑到正文里去。
+            offset: marker.caret
+                .clamp(marker.start, marker.paintStart)
+                .clamp(0, next.length),
+          )
+        : (saved ?? TextSelection.collapsed(offset: at));
     _downPosition = null;
     if (next != c.text) {
       // `[ ]` ⇄ `[x]` is one character for one, so selections stay valid, the
