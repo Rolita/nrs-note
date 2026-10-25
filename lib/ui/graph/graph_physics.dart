@@ -11,13 +11,13 @@ import '../../core/utils/note_graph.dart';
 /// 800 帧后漂移 4.1（已收敛），无 NaN。
 abstract final class GraphPhysics {
   /// 斥力强度，与距离平方成反比（库仑）。
-  static const double repulsion = 9200;
+  static const double repulsion = 1500;
 
   /// 边上弹簧的系数。
   static const double spring = 0.021;
 
   /// 弹簧自然长度。
-  static const double restLength = 74;
+  static const double restLength = 40;
 
   /// 向心引力。没有它，斥力会让整张图无限扩散。
   static const double gravity = 0.0125;
@@ -48,7 +48,7 @@ abstract final class GraphPhysics {
 /// 开平方是为了压住差异：度 0 是 3.4，度 9 才 8.9。线性的话一个中心节点会
 /// 变成一颗球，把周围的字全盖住。
 double graphNodeRadius(int degree, {double scale = 1}) =>
-    (3.4 + math.sqrt(degree) * 1.85) * scale;
+    (4.6 + math.sqrt(degree) * 2.4) * scale;
 
 /// 一帧一帧推进的布局状态。
 ///
@@ -93,12 +93,17 @@ class GraphLayout {
 
   /// 随机撒点。用固定种子，所以同一个库每次打开的形状是同一个——
   /// 关掉再打开图谱，图不会莫名其妙换一副样子。
+  ///
+  /// 撒点半径按 `√n` 走，不是按 `n`：面积正比于节点数，半径才正比于 √n。
+  /// 原来写的是 `150 + n * 9`，一千篇笔记会撒在半径 9000 的圈上，而首屏
+  /// 只同步跑 120 帧——根本收不回来，看到的就是一团散沙（包围盒 15000+，
+  /// 缩到画布里每个点不到 1 像素）。
   void seed(NoteGraph graph, {int seed = 1}) {
     final math.Random random = math.Random(seed);
     final int n = length;
+    final double r = 140 + math.sqrt(n) * 14;
     for (int i = 0; i < n; i++) {
       final double angle = (i / math.max(n, 1)) * math.pi * 2 + random.nextDouble() * .4;
-      final double r = 150 + n * 9.0;
       final double spread = r * (0.55 + random.nextDouble() * 0.45);
       x[i] = math.cos(angle) * spread;
       y[i] = math.sin(angle) * spread;

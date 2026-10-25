@@ -317,7 +317,12 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       final double dx = world.dx - _layout.x[i];
       final double dy = world.dy - _layout.y[i];
       final double d = math.sqrt(dx * dx + dy * dy);
-      if (d <= _radii[i] + 6 && d < bestDistance) {
+      // 和 painter 用同一个下限：画得比物理半径大时，点边缘也得点得到。
+      final double r = math.max(
+        _radii[i],
+        GraphPainter.minScreenRadius / math.max(_scale, 0.01),
+      );
+      if (d <= r + 6 && d < bestDistance) {
         bestDistance = d;
         best = i;
       }

@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' show Rect;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/core/utils/note_graph.dart';
@@ -179,10 +180,10 @@ void main() {
 
   group('半径与帧数', () {
     test('半径按度数开平方，压住差异', () {
-      expect(graphNodeRadius(0), closeTo(3.4, 1e-9));
-      expect(graphNodeRadius(9), closeTo(3.4 + 3 * 1.85, 1e-9));
-      // 度 0 → 9 只大 5.5px，不会变成一颗球
-      expect(graphNodeRadius(9) - graphNodeRadius(0), lessThan(6));
+      expect(graphNodeRadius(0), closeTo(4.6, 1e-9));
+      expect(graphNodeRadius(9), closeTo(4.6 + 3 * 2.4, 1e-9));
+      // 度 0 → 9 只大 7px 出头，不会变成一颗球
+      expect(graphNodeRadius(9) - graphNodeRadius(0), lessThan(8));
       expect(graphNodeRadius(4, scale: 2), closeTo(graphNodeRadius(4) * 2, 1e-9));
     });
 
@@ -203,6 +204,29 @@ void main() {
 
       expect(l.radius[0], before);
       expect(scaled[0], closeTo(before * 2, 1e-9));
+    });
+
+    test('撒点半径按 √n 走：几百篇也不会散成一片', () {
+      // 撒点半径按 n 线性增长的话，四百篇会撒在半径 3600 的圈上，首屏
+      // 120 帧根本收不回来（实测包围盒 15000+）。缩进画布后每颗点不到
+      // 半个像素，整张图看起来就是一层灰，而不是「很多篇笔记」。
+      final List<Note> notes = <Note>[
+        for (int i = 0; i < 400; i++)
+          note(
+            'n$i',
+            body: '[[n${(i + 1) % 400}]] [[n${(i * 7) % 400}]]',
+          ),
+      ];
+      final NoteGraph g = buildNoteGraph(notes);
+      final GraphLayout l = GraphLayout.of(g);
+      l.settle(g, settleTicksFor(notes.length));
+
+      final Rect b = l.bounds();
+      expect(
+        math.max(b.width, b.height),
+        lessThan(2200),
+        reason: '收敛后还这么大，说明首屏那些帧根本没把它收回来',
+      );
     });
   });
 }

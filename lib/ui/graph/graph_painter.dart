@@ -204,12 +204,16 @@ class GraphPainter extends CustomPainter {
       final Color base = data.folderColors[e.key] ?? data.style.node;
       final double r = c.radius + 26;
       if (r <= 1) continue;
+      // 簇越大，雾越淡：一个 200 篇的簇铺出来的圆会盖住整张画布，
+      // 底雾就从「托住簇」变成了「一层脏底」。
+      final double fade = math.min(1.0, 40 / c.count);
+      final double a = data.style.mistAlpha * fade;
       paint.shader = ui.Gradient.radial(
         Offset(c.x, c.y),
         r,
         <Color>[
-          base.withValues(alpha: data.style.mistAlpha),
-          base.withValues(alpha: data.style.mistAlpha * 0.42),
+          base.withValues(alpha: a),
+          base.withValues(alpha: a * 0.42),
           base.withValues(alpha: 0),
         ],
         <double>[0, 0.55, 1],
@@ -230,8 +234,20 @@ class GraphPainter extends CustomPainter {
       i == data.selected ? data.style.ring : _beamColor(i);
 
   /// 画出来的半径：焦点那颗放大 22%（设计稿 `targetR = r * 1.22`）。
-  double _visualRadius(int i) =>
-      data.radii[i] * (i == data.focus ? 1.22 : 1);
+  ///
+  /// 有个**屏幕下限**：世界半径再小，画出来也不低于 [minScreenRadius] 个
+  /// 屏幕像素。几百上千篇的库铺满画布后缩放会很小，不设下限的话每颗点
+  /// 只剩半个像素——整张图看上去就是一层灰，而不是「很多篇笔记」。
+  double _visualRadius(int i) {
+    final double world = math.max(
+      data.radii[i],
+      minScreenRadius / math.max(data.scale, 0.01),
+    );
+    return world * (i == data.focus ? 1.22 : 1);
+  }
+
+  /// 节点在屏幕上的最小半径。2.2 是「还能看出是个圆」的下限。
+  static const double minScreenRadius = 2.2;
 
   /// 节点浓度，照设计稿 `nodeAlpha()`。
   ///
@@ -518,10 +534,22 @@ class GraphPainter extends CustomPainter {
       return isNear ? 0.86 : 0;
     }
 
-    final double w = node.globalDegree >= 3
+    final double w = node.globalDegree >= _hubDegree
         ? 1
         : (node.globalDegree >= 1 ? 0.55 : 0.32);
     return data.labelFade * w;
+  }
+
+  /// 没有焦点时，度到多少才配一个实心标签。
+  ///
+  /// 固定用 3 在小图上是对的，在千篇的库上就是满屏小字——标签之间互相
+  /// 压、谁也读不出来，整张图看上去像一层脏灰。节点越多，门槛越高：
+  /// 只让真正的枢纽说话，剩下的靠位置和颜色认。
+  int get _hubDegree {
+    final int n = data.graph.nodes.length;
+    if (n > 700) return 5;
+    if (n > 200) return 3;
+    return 2;
   }
 
   void _paintLabels(Canvas canvas) {
