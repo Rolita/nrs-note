@@ -78,3 +78,25 @@ List<({int start, int end, String target, bool embed})> wikilinkRuns(
   }
   return runs;
 }
+
+/// 一段文字**整个就是**一个双链时，返回它的区间与内部文字；否则 `null`。
+///
+/// 「取消链接」的判据：`[[笔记]]` 算，`看 [[笔记]]` 不算——后者里还有正文，
+/// 照双链处理会连正文一起吞掉。前后允许有空白（拖选很容易多带一个空格），
+/// 返回的区间不含那点空白，替换时原地保留。
+///
+/// `![[图片]]` 不算：那是嵌入，不是双链，去掉方括号等于把图片换成文件名。
+({int start, int end, String label})? soleWikilink(String text) {
+  final int first = text.indexOf('[[');
+  if (first < 0) return null;
+  // `![[…]]` 的第一个 `[[` 前面是 `!`，这里直接判掉嵌入。
+  if (text.substring(0, first).trim().isNotEmpty) return null;
+  for (final ({int start, int end, String target, bool embed}) run
+      in wikilinkRuns(text)) {
+    if (run.embed || run.start != first) continue;
+    if (text.substring(run.end).trim().isNotEmpty) return null;
+    return (start: run.start, end: run.end, label: run.target);
+  }
+  return null;
+}
+

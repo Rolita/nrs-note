@@ -7,6 +7,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
+import '../../core/utils/inline_syntax.dart';
 import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/table_model.dart';
 import '../../core/utils/table_selection.dart';
@@ -187,6 +188,15 @@ List<MenuNode> buildEditorMenu({
   final BlockStyle current = blockStyleOf(markerAt(value));
   final bool hasSelection =
       value.selection.isValid && !value.selection.isCollapsed;
+  // 选区里除了一个双链什么都没有时，「新增链接」没有意义——那一行本来就有
+  // 链接，该给的出口是「取消链接」。判据与编辑动作共用 [soleWikilink]，
+  // 菜单上出现什么、点下去做什么不会各说各话。
+  final bool soleWikilinkSelected =
+      hasSelection &&
+      soleWikilink(
+            value.text.substring(value.selection.start, value.selection.end),
+          ) !=
+          null;
 
   // The caret's own line decides whether the table rows apply. Offsets are read
   // through the same `lineStartOf` / `lineEndOf` pair as everything else, so a
@@ -310,11 +320,18 @@ List<MenuNode> buildEditorMenu({
   }
 
   return <MenuNode>[
-    MenuAction(
-      label: '新增链接',
-      icon: LucideIcons.link,
-      onPressed: () => onApply(insertWikilink()),
-    ),
+    if (soleWikilinkSelected)
+      MenuAction(
+        label: '取消链接',
+        icon: LucideIcons.unlink,
+        onPressed: () => onApply(removeWikilink()),
+      )
+    else
+      MenuAction(
+        label: '新增链接',
+        icon: LucideIcons.link,
+        onPressed: () => onApply(insertWikilink()),
+      ),
     MenuAction(
       label: '新增外部链接',
       icon: LucideIcons.externalLink,

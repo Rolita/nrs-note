@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/services.dart';
 
+import 'inline_syntax.dart';
 import 'table_model.dart';
 import 'table_selection.dart';
 
@@ -2580,6 +2581,33 @@ MarkdownEditFn insertWikilink() {
         baseOffset: start,
         extentOffset: (start + label.length).clamp(0, next.length),
       ),
+    );
+  };
+}
+
+/// 把选中的那个双链拆回纯文字（`[[笔记]]` → `笔记`）。
+///
+/// 只处理「选区里除了这一个双链什么都没有」的情况，判据在 [soleWikilink]
+/// 里——所以菜单可以放心把它挂在「新增链接」的位置上，不会误伤正文。
+///
+/// 选区前后那点空白原地保留：拖选时很容易多带一个空格，连着删掉会让人
+/// 以为自己选错了。光标落在拆出来的文字后面，接着就能改字。
+MarkdownEditFn removeWikilink() {
+  return (TextEditingValue raw) {
+    final TextEditingValue v = _normalised(raw);
+    if (!v.selection.isValid || v.selection.isCollapsed) return v;
+    final String selected = v.text.substring(
+      v.selection.start,
+      v.selection.end,
+    );
+    final ({int start, int end, String label})? hit = soleWikilink(selected);
+    if (hit == null) return v;
+    final int from = v.selection.start + hit.start;
+    final int to = v.selection.start + hit.end;
+    final String next = v.text.replaceRange(from, to, hit.label);
+    return TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: from + hit.label.length),
     );
   };
 }

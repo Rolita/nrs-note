@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/core/theme/app_palette.dart';
+import 'package:nrs/core/utils/inline_syntax.dart';
 import 'package:nrs/core/utils/markdown_actions.dart';
 import 'package:nrs/core/utils/markdown_outline.dart';
 import 'package:nrs/data/models/note.dart';
@@ -425,6 +426,33 @@ Setext 标题
       final TextEditingValue bare = insertLink()(value('', 0));
       expect(bare.text, '[标题](https://)');
       expect(bare.selection.textInside(bare.text), 'https://');
+    });
+
+    test('a selection that is exactly one wikilink can be unlinked', () {
+      const String doc = '看 [[笔记]] 这里';
+      final int from = doc.indexOf('[[');
+      final int to = from + '[[笔记]]'.length;
+      final TextEditingValue out = removeWikilink()(value(doc, from, to));
+      expect(out.text, '看 笔记 这里');
+      // 光标停在拆出来的文字后面，接着就能改。
+      expect(out.selection.isCollapsed, isTrue);
+      expect(out.selection.baseOffset, from + '笔记'.length);
+
+      // 前后带空白也算「只有这一个双链」，替换时空白原地保留。
+      final ({int start, int end, String label})? padded = soleWikilink(
+        ' [[笔记]] ',
+      );
+      expect(padded?.label, '笔记');
+      expect(padded?.start, 1);
+      expect(removeWikilink()(value(' [[笔记]] ', 1, 7)).text, ' 笔记 ');
+
+      // 只有整整一个双链才算：多一个字、嵌入、两个双链都不算。
+      expect(soleWikilink('[[笔记]]'), isNotNull);
+      expect(soleWikilink('看 [[笔记]]'), isNull);
+      expect(soleWikilink('![[图片.png]]'), isNull, reason: '嵌入不是双链');
+      expect(soleWikilink('[[甲]] [[乙]]'), isNull);
+      // 选区不是双链时动作原样返回，菜单也不会挂上它。
+      expect(removeWikilink()(value(doc, 0, 1)).text, doc);
     });
 
     test('inserts a divider on a line of its own', () {

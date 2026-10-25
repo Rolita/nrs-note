@@ -401,6 +401,50 @@ void main() {
 
   // ------------------------------------------------------- pointer behaviour
 
+  testWidgets('选中一个双链时，新增链接换成取消链接', (WidgetTester tester) async {
+    const String doc = '看 [[笔记标题]] 这里\n';
+    final MarkdownSourceController controller = await pump(tester, doc);
+    final int from = doc.indexOf('[[');
+    final int to = from + '[[笔记标题]]'.length;
+    controller.selection = TextSelection(baseOffset: from, extentOffset: to);
+    await tester.pump();
+
+    // 右键落在选区里：右键不会丢掉选区，菜单读到的就是这一段。
+    await tester.tapAt(glyph(tester, from + 1).center, buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+
+    expect(find.text('取消链接'), findsOneWidget);
+    expect(find.text('新增链接'), findsNothing, reason: '这一段已经有双链了');
+    expect(
+      find.text('新增外部链接'),
+      findsOneWidget,
+      reason: '外部链接是另一个入口，不跟着变',
+    );
+
+    await tester.tap(find.text('取消链接'));
+    await tester.pumpAndSettle();
+    expect(controller.text, '看 笔记标题 这里\n');
+    expect(controller.selection.baseOffset, from + '笔记标题'.length);
+  });
+
+  testWidgets('选区里还有正文时，新增链接照旧', (WidgetTester tester) async {
+    const String doc = '看 [[笔记标题]] 这里\n';
+    final MarkdownSourceController controller = await pump(tester, doc);
+    // 只选中「笔记标题」这几个字：那是双链内部的一段，不是整个双链。
+    final int from = doc.indexOf('笔记标题');
+    controller.selection = TextSelection(
+      baseOffset: from,
+      extentOffset: from + 4,
+    );
+    await tester.pump();
+
+    await tester.tapAt(glyph(tester, from).center, buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+
+    expect(find.text('新增链接'), findsOneWidget);
+    expect(find.text('取消链接'), findsNothing);
+  });
+
   testWidgets('a right-click inside the selection leaves it alone', (
     WidgetTester tester,
   ) async {
