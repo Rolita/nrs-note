@@ -1,0 +1,1208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>图谱观感 · 以「复刻 Obsidian」为基础的四个方向</title>
+<style>
+  /* 配色照抄 Obsidian 默认深色主题，和 graph-obsidian-clone.html 一致 */
+  :root {
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #262626;
+    --text-normal: #dadada;
+    --text-muted: #9d9d9d;
+    --text-faint: #6b6b6b;
+    --border: #363636;
+    --accent: #7f6df2;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    --font: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg-primary);
+    color: var(--text-normal);
+    font: 14px/1.5 var(--font);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #app { height: 100%; display: flex; flex-direction: column; }
+
+  /* ---------- 顶栏：标题 + 四个标签 + 开关 ---------- */
+  header {
+    height: 46px; flex: 0 0 auto;
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 12px 0 14px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    user-select: none;
+  }
+  .brand { font-size: 13px; font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
+  .brand em {
+    font-style: normal; font-weight: 400; font-size: 11.5px;
+    color: var(--text-faint); margin-left: 9px;
+  }
+  nav { display: flex; gap: 2px; margin-left: auto; }
+  nav button {
+    appearance: none; background: transparent; cursor: pointer;
+    border: 1px solid transparent; border-radius: 6px;
+    color: var(--text-muted); font: inherit; font-size: 12.5px;
+    padding: 5px 10px; display: flex; align-items: center; gap: 7px;
+    transition: background .14s, color .14s, border-color .14s;
+  }
+  nav button:hover { background: #2f2f2f; color: var(--text-normal); }
+  nav button.on {
+    background: rgba(127,109,242,.16);
+    border-color: rgba(127,109,242,.45);
+    color: #b9aefa;
+  }
+  nav button b { font-weight: 500; }
+  nav button i { font-style: normal; font-size: 10.5px; color: var(--text-faint); }
+  nav button.on i { color: #8f83d6; }
+
+  .tools { display: flex; gap: 5px; margin-left: 12px; padding-left: 12px; border-left: 1px solid var(--border); }
+  .tools button {
+    appearance: none; cursor: pointer;
+    background: #2f2f2f; border: 1px solid var(--border); border-radius: 5px;
+    color: var(--text-muted); font: inherit; font-size: 11.5px; padding: 4px 9px;
+    transition: background .14s, color .14s, border-color .14s;
+    white-space: nowrap;
+  }
+  .tools button:hover { background: #3a3a3a; color: var(--text-normal); }
+  .tools button[aria-pressed="true"] {
+    background: rgba(127,109,242,.16); border-color: rgba(127,109,242,.45); color: #b9aefa;
+  }
+
+  main { position: relative; flex: 1 1 auto; min-height: 0; }
+  canvas { display: block; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  canvas.pointing { cursor: pointer; }
+
+  /* ---------- 左上：图谱设置（与 clone 一致） ---------- */
+  #panel {
+    position: absolute; left: 14px; top: 14px; width: 232px;
+    background: rgba(38,38,38,.92);
+    border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.45);
+    backdrop-filter: blur(12px);
+    overflow: hidden; font-size: 13px;
+  }
+  #panel .head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px 7px; border-bottom: 1px solid var(--border);
+    color: var(--text-muted); font-size: 12px; letter-spacing: .3px;
+    user-select: none;
+  }
+  #panel .head button {
+    appearance: none; border: 0; background: transparent; cursor: pointer;
+    color: var(--text-faint); font: inherit; padding: 0 2px; line-height: 1;
+  }
+  #panel .head button:hover { color: var(--text-normal); }
+  #panel .body { padding: 9px 10px 10px; }
+  #panel.collapsed .body { display: none; }
+
+  #search {
+    width: 100%; appearance: none;
+    background: #1b1b1b; border: 1px solid var(--border); border-radius: 5px;
+    color: var(--text-normal); font: inherit; font-size: 12.5px;
+    padding: 5px 8px; outline: none;
+  }
+  #search::placeholder { color: var(--text-faint); }
+  #search:focus { border-color: var(--accent); }
+
+  .row {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 9px; color: var(--text-muted); font-size: 12.5px;
+    cursor: pointer; user-select: none;
+  }
+  .row:hover { color: var(--text-normal); }
+  .sw {
+    width: 26px; height: 15px; border-radius: 8px; background: #3a3a3a;
+    position: relative; transition: background .16s; flex: 0 0 auto;
+  }
+  .sw::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 11px; height: 11px; border-radius: 50%;
+    background: #b0b0b0; transition: transform .16s, background .16s;
+  }
+  .row[aria-checked="true"] .sw { background: var(--accent); }
+  .row[aria-checked="true"] .sw::after { transform: translateX(11px); background: #fff; }
+
+  #panel .sep { height: 1px; background: var(--border); margin: 10px -10px 0; }
+  #panel .foot { display: flex; gap: 6px; margin-top: 10px; }
+  #panel .foot button {
+    flex: 1; appearance: none; cursor: pointer;
+    background: #2f2f2f; border: 1px solid var(--border); border-radius: 5px;
+    color: var(--text-muted); font: inherit; font-size: 12px; padding: 4px 0;
+    transition: background .14s, color .14s;
+  }
+  #panel .foot button:hover { background: #3a3a3a; color: var(--text-normal); }
+
+  /* ---------- 右上：这个方案在说什么 ---------- */
+  #card {
+    position: absolute; right: 14px; top: 14px; width: 272px;
+    background: rgba(38,38,38,.92);
+    border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.45);
+    backdrop-filter: blur(12px);
+    padding: 11px 12px 12px; font-size: 12.5px;
+    user-select: none;
+  }
+  #card h2 {
+    margin: 0 0 6px; font-size: 13.5px; font-weight: 600; color: var(--text-normal);
+    display: flex; align-items: baseline; gap: 8px;
+  }
+  #card h2 span {
+    font-size: 10.5px; font-weight: 400; color: var(--text-faint);
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+  }
+  #card .lede { margin: 0 0 9px; color: var(--text-muted); line-height: 1.62; }
+  #card .h {
+    font-size: 10.5px; letter-spacing: .5px; color: var(--text-faint);
+    margin: 10px 0 5px;
+  }
+  #card ul { margin: 0; padding-left: 15px; color: var(--text-muted); }
+  #card li { margin: 3px 0; line-height: 1.55; }
+  #card li b { color: var(--text-normal); font-weight: 500; }
+  #card .cost {
+    margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border);
+    color: var(--text-faint); line-height: 1.6;
+  }
+  #card .cost b { color: #d99a4e; font-weight: 500; }
+
+  /* ---------- 底部 ---------- */
+  #hint {
+    position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+    font-size: 11.5px; color: #555; pointer-events: none; user-select: none;
+    white-space: nowrap;
+  }
+  #stats {
+    position: absolute; right: 14px; bottom: 12px;
+    font-size: 11.5px; color: var(--text-faint);
+    font-family: var(--mono); pointer-events: none; user-select: none;
+  }
+  #toast {
+    position: absolute; left: 50%; bottom: 42px; transform: translate(-50%, 6px);
+    background: #2f2f2f; border: 1px solid var(--border);
+    color: var(--text-normal); font-size: 12.5px;
+    padding: 6px 12px; border-radius: 6px;
+    opacity: 0; transition: opacity .16s, transform .16s;
+    pointer-events: none; white-space: nowrap;
+  }
+  #toast.on { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">图谱观感<em>以「复刻 Obsidian」为基础 · 四个都活着，点标签切换</em></div>
+    <nav id="tabs"></nav>
+    <div class="tools">
+      <button id="btnLabels" aria-pressed="true">显示标签</button>
+      <button id="btnArrows" aria-pressed="true">显示箭头</button>
+      <button id="btnColors" aria-pressed="false">按文件夹着色</button>
+    </div>
+  </header>
+
+  <main>
+    <canvas id="c"></canvas>
+
+    <div id="panel">
+      <div class="head">
+        <span>图谱设置</span>
+        <button id="collapse" title="收起">—</button>
+      </div>
+      <div class="body">
+        <input id="search" type="text" placeholder="搜索笔记…" spellcheck="false">
+        <div class="row" id="rLabels" aria-checked="true" role="checkbox"><span>显示标签</span><i class="sw"></i></div>
+        <div class="row" id="rArrows" aria-checked="true" role="checkbox"><span>显示箭头</span><i class="sw"></i></div>
+        <div class="row" id="rColors" aria-checked="false" role="checkbox"><span>按文件夹着色</span><i class="sw"></i></div>
+        <div class="sep"></div>
+        <div class="foot">
+          <button id="btnRelayout2">重新布局</button>
+          <button id="btnFit2">适应窗口</button>
+        </div>
+      </div>
+    </div>
+
+    <aside id="card"></aside>
+    <div id="hint">拖节点 · 滚轮缩放 · 拖空白平移 · 双击打开</div>
+    <div id="stats"></div>
+    <div id="toast"></div>
+  </main>
+</div>
+
+<script>
+/* ==================================================================
+   数据 —— 和 graph-obsidian-clone.html 完全相同。
+
+   四个方向共用同一份数据、同一套力导向、同一套交互，所以它们之间比的
+   是**观感**，不是布局算法。想比布局，点「重新布局」。
+   ================================================================== */
+
+const FOLDERS = {
+  '':     { name: '根目录', color: '#9d9d9d' },
+  '日记': { name: '日记',   color: '#e9973f' },
+  '项目': { name: '项目',   color: '#44cf6e' },
+  '学习': { name: '学习',   color: '#53dfdd' },
+  '灵感': { name: '灵感',   color: '#a882ff' },
+};
+
+const NOTES = [
+  { t: '索引',        f: '',     links: ['开发进度', '快速入门', '待办', 'NRS 重构', '排版笔记', '双链的用法'] },
+  { t: '开发进度',    f: '',     links: ['NRS 重构', '数据安全', '表格功能', '图谱功能', '发布计划', '10月25日'] },
+  { t: '快速入门',    f: '',     links: ['待办', '双链的用法'] },
+  { t: '待办',        f: '',     links: ['发布计划', '开发进度'] },
+
+  { t: '10月25日',    f: '日记', links: ['10月24日', '开发进度', '图谱功能'] },
+  { t: '10月24日',    f: '日记', links: ['10月23日', '开发进度'] },
+  { t: '10月23日',    f: '日记', links: ['10月22日', '每日日记'] },
+  { t: '10月22日',    f: '日记', links: ['每日日记'] },
+  { t: '每日日记',    f: '日记', links: ['10月25日', '待办'] },
+
+  { t: 'NRS 重构',    f: '项目', links: ['数据安全', '表格功能', '图谱功能', '离线优先', '界面密度', '发布计划'] },
+  { t: '数据安全',    f: '项目', links: ['离线优先', '发布计划'] },
+  { t: '表格功能',    f: '项目', links: ['排版笔记', '界面密度'] },
+  { t: '图谱功能',    f: '项目', links: ['力导向布局', '双链的用法', '排版笔记', '10月25日'] },
+  { t: '发布计划',    f: '项目', links: ['待办', '会议记录'] },
+  { t: '会议记录',    f: '项目', links: ['待办', '发布计划'] },
+
+  { t: 'Rust 所有权', f: '学习', links: ['分布式共识'] },
+  { t: '力导向布局',  f: '学习', links: ['排版笔记'] },
+  { t: '排版笔记',    f: '学习', links: ['界面密度', '读书笔记'] },
+  { t: '分布式共识',  f: '学习', links: ['Rust 所有权', '排版笔记'] },
+  { t: '读书笔记',    f: '学习', links: ['排版笔记', 'Rust 所有权'] },
+  { t: '待读清单',    f: '学习', links: [] },
+
+  { t: '冷启动',      f: '灵感', links: ['离线优先', '界面密度'] },
+  { t: '离线优先',    f: '灵感', links: ['分布式共识', '数据安全'] },
+  { t: '界面密度',    f: '灵感', links: ['排版笔记', '冷启动'] },
+  { t: '双链的用法',  f: '灵感', links: ['快速入门', '索引'] },
+  { t: '随手记',      f: '灵感', links: [] },
+];
+
+/* ==================================================================
+   四个方向
+   ================================================================== */
+
+const VARIANTS = {
+  cluster: {
+    name: '聚簇',
+    tag: '看结构',
+    lede: '同文件夹的笔记互相吸引，图自己长成一团一团；簇心浮着文件夹名，' +
+          '碰一下某个节点，它那一簇整簇亮着，别的簇退到后面。',
+    changes: [
+      '物理层加一条<b>向心力</b>：同文件夹的节点朝自己那一簇的质心收（簇内紧、簇间松）',
+      '簇心画一团<b>柔光</b>（文件夹色 10% → 0）+ 文件夹名与篇数',
+      '悬停/选中时<b>整簇</b>保持亮度，其余簇降到 0.18',
+      '节点仍是实心圆、连线仍是直线——只改「谁和谁在一起」',
+    ],
+    cost: '每帧多一遍 O(n) 求质心（可忽略）；簇边界靠斥力自然分开，' +
+          '极端情况下两簇会挤成一条，需要调向心力强度',
+    cluster: 0.0090,
+    grav: 0.0030,
+    apart: 2.6,
+    alphaMin: 0.020,
+    radius: 'degree',
+  },
+
+  flow: {
+    name: '流向',
+    tag: '看方向',
+    lede: '连线是带方向的弧，出链上跑着极淡的粒子：一眼看出谁引用了谁，' +
+          '而不是只看到「这两个有关系」。',
+    changes: [
+      '连线改<b>二次贝塞尔</b>，每条边固定弧度（由标题哈希决定，不会来回抖）',
+      '<b>箭头常显</b>，透明度跟着边一起淡入淡出，箭尖停在圆边缘不插进去',
+      '焦点节点的<b>出链</b>上跑粒子（1.6px，1.4s 一圈）；互相链接的不跑（不撒谎）',
+      '出链用强调紫、入链用中性白——方向不同，颜色不同',
+    ],
+    cost: '曲线要算控制点（一次，缓存）；粒子只在有焦点时开，常态零开销。' +
+          '边多时紫白混排会比纯白略吵，可以只在悬停时上色',
+    cluster: 0,
+    grav: 0.008,
+    alphaMin: 0.018,
+    radius: 'degree',
+  },
+
+  capsule: {
+    name: '胶囊',
+    tag: '看内容',
+    lede: '节点就是标题胶囊，不用悬停也知道每颗点是什么——这张图能当目录用。',
+    changes: [
+      '节点从圆点变成<b>标题胶囊</b>（12.5px，宽随标题走，高 22）',
+      '标签写在胶囊里，不再挂在下方，所以「显示标签」对它没影响',
+      '碰撞半径按胶囊半宽算，整张图横向铺开，更接近一份<b>列表</b>',
+      '焦点胶囊换强调色描边 + 白字，其余保持中性；连线接到胶囊边缘，不穿进去',
+    ],
+    cost: '胶囊把图撑大约 1.6–2 倍，150 篇以上会挤；文字要 measureText 一次并缓存',
+    cluster: 0,
+    grav: 0.008,
+    alphaMin: 0.018,
+    radius: 'capsule',
+  },
+
+  still: {
+    name: '静默',
+    tag: '看大库',
+    lede: '反 Obsidian 的那一半：不呼吸、不发光、没有影子。图是一张精确的技术图，' +
+          '静止时一帧都不跑。',
+    changes: [
+      '节点是 <b>1px 描边圆</b>，不填充不发光；有链接的才填 6% 白',
+      '布局<b>真的会停</b>（alpha 衰减到 0），静止时 0 帧、0 CPU',
+      '标签只在有焦点时显示<b>焦点 + 一跳邻居</b>，其余一律不画',
+      '连线 0.8px / 5.5% 白；焦点边 50%。整体去掉了所有柔光和阴影',
+    ],
+    cost: '没有「生命感」，大库看着像电路图——但它是最快、最不吵的一版，' +
+          '几百篇笔记时差别很明显',
+    cluster: 0,
+    grav: 0.008,
+    alphaMin: 0,
+    radius: 'degree',
+  },
+};
+
+const ORDER = ['cluster', 'flow', 'capsule', 'still'];
+
+/* ==================================================================
+   力导向（参数沿用 clone；聚簇方向多一条向心力）
+   ================================================================== */
+
+const PHYS = {
+  rep: 8000,
+  spring: 0.055,
+  rest: 190,
+  damp: 0.62,
+  vmax: 32,
+  collide: 7,
+  alphaDecay: 0.019,
+};
+
+function buildGraph(notes) {
+  const byTitle = new Map(notes.map(n => [n.t, n]));
+  notes.forEach(n => {
+    n.out = 0; n.in = 0; n.deg = 0;
+    n.neigh = new Set();
+    n.vx = 0; n.vy = 0;
+  });
+  const byKey = new Map(), links = [];
+  for (const n of notes) {
+    for (const t of (n.links || [])) {
+      const m = byTitle.get(t);
+      if (!m || m === n) continue;               // 死链、自环都不要
+      n.out++; m.in++;
+      const k = n.t < m.t ? n.t + '\u0000' + m.t : m.t + '\u0000' + n.t;
+      const hit = byKey.get(k);
+      if (hit) { hit.ba = true; continue; }       // 互相链接只画一条线
+      const link = { a: n, b: m, ab: true, ba: false };
+      // 固定弧度：同一条边永远同一个弯，不随帧抖。
+      link.bend = (hash(link.a.t + '>' + link.b.t) % 13) - 6;
+      link.phase = (hash(link.b.t + '<' + link.a.t) % 1000) / 1000;
+      byKey.set(k, link);
+      links.push(link);
+      n.deg++; m.deg++;
+    }
+  }
+  return { nodes: notes, links };
+}
+
+function hash(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0);
+}
+
+function radiusOf(deg) { return 3 + Math.sqrt(deg) * 1.9; }
+
+const CAPSULE_H = 22;
+
+function capsuleWidth(n) {
+  if (n.cw != null) return n.cw;
+  ctx.font = '12.5px ' + FONT;
+  n.cw = Math.ceil(ctx.measureText(n.t).width) + 18;
+  return n.cw;
+}
+
+/** 每个文件夹的质心、半径（离质心最远那个成员的距离）、篇数。 */
+function centroids() {
+  const map = new Map();
+  for (const n of G.nodes) {
+    let c = map.get(n.f);
+    if (!c) { c = { x: 0, y: 0, n: 0, r: 0, top: Infinity }; map.set(n.f, c); }
+    c.x += n.x; c.y += n.y; c.n++;
+  }
+  for (const c of map.values()) { c.x /= c.n; c.y /= c.n; }
+  for (const n of G.nodes) {
+    const c = map.get(n.f);
+    const d = Math.hypot(n.x - c.x, n.y - c.y) + n.r;
+    if (d > c.r) c.r = d;
+    const t = n.y - n.r;
+    if (t < c.top) c.top = t;
+  }
+  return map;
+}
+
+function step(g, alpha) {
+  const V = VARIANTS[variant], nodes = g.nodes;
+  const cents = V.cluster > 0 ? centroids() : null;
+
+  // 斥力 + 碰撞
+  for (let i = 0; i < nodes.length; i++) {
+    const a = nodes[i];
+    for (let j = i + 1; j < nodes.length; j++) {
+      const b = nodes[j];
+      let dx = b.x - a.x, dy = b.y - a.y;
+      let d2 = dx * dx + dy * dy;
+      if (d2 < 0.01) { dx = (i - j) * 0.01 + 0.01; dy = 0.01; d2 = 0.01; }
+      const d = Math.sqrt(d2);
+      // 聚簇方向：不同文件夹之间额外再推一把，簇才会真的分开而不是糊成一团。
+      const apart = (V.apart && a.f !== b.f) ? V.apart : 1;
+      const f = PHYS.rep * apart / d2 * alpha;
+      const ux = dx / d, uy = dy / d;
+      a.vx -= ux * f; a.vy -= uy * f;
+      b.vx += ux * f; b.vy += uy * f;
+
+      const min = a.r + b.r + PHYS.collide;
+      if (d < min) {
+        const push = (min - d) * 0.5;
+        a.vx -= ux * push; a.vy -= uy * push;
+        b.vx += ux * push; b.vy += uy * push;
+      }
+    }
+  }
+
+  // 弹簧
+  for (const l of g.links) {
+    const dx = l.b.x - l.a.x, dy = l.b.y - l.a.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const f = (d - PHYS.rest) * PHYS.spring * alpha;
+    const ux = dx / d, uy = dy / d;
+    l.a.vx += ux * f; l.a.vy += uy * f;
+    l.b.vx -= ux * f; l.b.vy -= uy * f;
+  }
+
+  // 向心（全局）+ 聚簇（每个文件夹一个）
+  for (const n of nodes) {
+    if (n.pin) { n.vx = 0; n.vy = 0; continue; }
+    n.vx -= n.x * V.grav * alpha;
+    n.vy -= n.y * V.grav * alpha;
+    if (cents) {
+      const c = cents.get(n.f);
+      if (c && c.n > 1) {
+        n.vx += (c.x - n.x) * V.cluster * alpha;
+        n.vy += (c.y - n.y) * V.cluster * alpha;
+      }
+    }
+    n.vx *= PHYS.damp; n.vy *= PHYS.damp;
+    const sp = Math.hypot(n.vx, n.vy);
+    if (sp > PHYS.vmax) { n.vx *= PHYS.vmax / sp; n.vy *= PHYS.vmax / sp; }
+    n.x += n.vx; n.y += n.vy;
+  }
+}
+
+function seed(g, spread) {
+  const n = g.nodes.length;
+  g.nodes.forEach((node, i) => {
+    const a = (i / n) * Math.PI * 2 + (i % 5) * 0.31;
+    const r = spread * (0.35 + ((i * 53) % 100) / 160);
+    node.x = Math.cos(a) * r;
+    node.y = Math.sin(a) * r;
+    node.vx = 0; node.vy = 0;
+  });
+}
+
+function bounds(g) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const n of g.nodes) {
+    const hw = variant === 'capsule' ? capsuleWidth(n) / 2 : n.r;
+    const hh = variant === 'capsule' ? CAPSULE_H / 2 : n.r;
+    if (n.x - hw < x0) x0 = n.x - hw;
+    if (n.y - hh < y0) y0 = n.y - hh;
+    if (n.x + hw > x1) x1 = n.x + hw;
+    if (n.y + hh > y1) y1 = n.y + hh;
+  }
+  return { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 };
+}
+
+/* ==================================================================
+   状态
+   ================================================================== */
+
+const TAU = Math.PI * 2;
+const FONT = '-apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+const G = buildGraph(NOTES.map(n => ({ ...n })));
+G.nodes.forEach((n, i) => {
+  n.i = i;
+  n.baseColor = FOLDERS[n.f].color;
+  n.va = 1;
+  n.vr = 3;
+  n.cw = null;
+});
+// 邻居表：两个方向都要记，悬停时才知道「我连了谁」。
+for (const l of G.links) {
+  l.a.neigh.add(l.b.t);
+  l.b.neigh.add(l.a.t);
+}
+G.links.forEach(l => { l.va = 0.11; });
+
+let variant = ORDER.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'cluster';
+let view = { s: 1, x: 0, y: 0 };
+let alpha = 1;
+let hover = null;
+let sel = null;
+let query = '';
+let showLabels = true;
+let showArrows = true;
+let useFolderColors = false;
+let dpr = 1, W = 0, H = 0;
+let cam = null;
+
+/* ---------------- 半径 / 视口 ---------------- */
+
+function applyRadius() {
+  for (const n of G.nodes) {
+    n.r = VARIANTS[variant].radius === 'capsule'
+      ? capsuleWidth(n) / 2
+      : radiusOf(n.deg);
+    n.vr = n.r;
+  }
+}
+
+function fitTarget(pad = 90) {
+  const b = bounds(G);
+  const s = Math.min((W - pad * 2) / Math.max(b.w, 1), (H - pad * 2) / Math.max(b.h, 1));
+  const scale = Math.max(0.16, Math.min(1.6, s));
+  return {
+    s: scale,
+    x: W / 2 - ((b.x0 + b.x1) / 2) * scale,
+    y: H / 2 - ((b.y0 + b.y1) / 2) * scale,
+  };
+}
+
+function fit(pad = 90) { view = fitTarget(pad); cam = null; }
+
+function fitAnimated(pad = 90, dur = 460) {
+  const to = fitTarget(pad);
+  cam = { from: { ...view }, to, t0: performance.now(), dur };
+}
+
+function zoomAt(sx, sy, factor) {
+  const next = Math.max(0.18, Math.min(4, view.s * factor));
+  const k = next / view.s;
+  view.x = sx - (sx - view.x) * k;
+  view.y = sy - (sy - view.y) * k;
+  view.s = next;
+  cam = null;
+}
+
+function toWorld(sx, sy) { return { x: (sx - view.x) / view.s, y: (sy - view.y) / view.s }; }
+
+function nodeAt(sx, sy) {
+  const w = toWorld(sx, sy);
+  let best = null, bestD = Infinity;
+  for (const n of G.nodes) {
+    const d = Math.hypot(n.x - w.x, n.y - w.y);
+    const reach = n.r + 7 / view.s;
+    if (d <= reach && d < bestD) { bestD = d; best = n; }
+  }
+  return best;
+}
+
+/* ---------------- 命中 / 过滤 ---------------- */
+
+function matches(n) {
+  if (!query) return true;
+  return n.t.toLowerCase().includes(query);
+}
+
+function focusNode() { return hover || sel; }
+
+function nodeAlpha(n) {
+  if (!matches(n)) return 0.10;
+  const f = focusNode();
+  if (!f) return 1;
+  if (n === f) return 1;
+  if (variant === 'cluster' && n.f === f.f) return 1;      // 整簇亮着
+  return f.neigh.has(n.t) ? 1 : (variant === 'cluster' ? 0.18 : 0.16);
+}
+
+function nodeColor(n) {
+  if (n === sel) return '#7f6df2';
+  if (useFolderColors) return n.baseColor;
+  return variant === 'still' ? '#c8c8c8' : '#9d9d9d';
+}
+
+function edgeAlpha(l, f) {
+  if (!matches(l.a) || !matches(l.b)) return 0.035;
+  if (!f) return 0.11;
+  if (l.a === f || l.b === f) return 0.62;
+  if (variant === 'cluster' && (l.a.f === f.f || l.b.f === f.f)) return 0.26;
+  if (f.neigh.has(l.a.t) || f.neigh.has(l.b.t)) return 0.16;
+  return 0.045;
+}
+
+function updateVisuals() {
+  const f = focusNode();
+  for (const n of G.nodes) {
+    n.va += (nodeAlpha(n) - n.va) * 0.20;
+    const targetR = n.r * (n === f ? 1.22 : 1);
+    n.vr += (targetR - n.vr) * 0.25;
+  }
+  for (const l of G.links) {
+    l.va += (edgeAlpha(l, f) - l.va) * 0.20;
+  }
+}
+
+/* ==================================================================
+   绘制
+   ================================================================== */
+
+function hexA(hex, a) {
+  const v = parseInt(hex.slice(1), 16);
+  return `rgba(${(v >> 16) & 255},${(v >> 8) & 255},${v & 255},${a})`;
+}
+
+function circle(x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); }
+
+function roundRect(x, y, w, h, r) {
+  const x0 = x - w / 2, y0 = y - h / 2;
+  ctx.beginPath();
+  ctx.moveTo(x0 + r, y0);
+  ctx.lineTo(x0 + w - r, y0);
+  ctx.quadraticCurveTo(x0 + w, y0, x0 + w, y0 + r);
+  ctx.lineTo(x0 + w, y0 + h - r);
+  ctx.quadraticCurveTo(x0 + w, y0 + h, x0 + w - r, y0 + h);
+  ctx.lineTo(x0 + r, y0 + h);
+  ctx.quadraticCurveTo(x0, y0 + h, x0, y0 + h - r);
+  ctx.lineTo(x0, y0 + r);
+  ctx.quadraticCurveTo(x0, y0, x0 + r, y0);
+  ctx.closePath();
+}
+
+/* ---- 聚簇：柔光 + 文件夹名 ---- */
+
+function drawClusterGlow(cents) {
+  for (const [key, c] of cents) {
+    if (c.n < 2) continue;
+    const r = c.r + 26;
+    const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, r);
+    g.addColorStop(0, hexA(FOLDERS[key].color, 0.055));
+    g.addColorStop(0.5, hexA(FOLDERS[key].color, 0.030));
+    g.addColorStop(1, hexA(FOLDERS[key].color, 0));
+    ctx.fillStyle = g;
+    circle(c.x, c.y, r);
+    ctx.fill();
+  }
+}
+
+function drawClusterNames(cents) {
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `11px ${FONT}`;
+  for (const [key, c] of cents) {
+    if (c.n < 2) continue;
+    const y = c.top - 15;
+    ctx.fillStyle = 'rgba(30,30,30,.92)';
+    ctx.fillText(`${FOLDERS[key].name} · ${c.n}`, c.x + 0.6, y + 0.6);
+    ctx.fillStyle = hexA(FOLDERS[key].color, 0.72);
+    ctx.fillText(`${FOLDERS[key].name} · ${c.n}`, c.x, y);
+  }
+}
+
+/* ---- 连线 ---- */
+
+function ctrlPoint(l) {
+  const mx = (l.a.x + l.b.x) / 2, my = (l.a.y + l.b.y) / 2;
+  const dx = l.b.x - l.a.x, dy = l.b.y - l.a.y;
+  const d = Math.hypot(dx, dy) || 1;
+  return { x: mx - dy / d * l.bend, y: my + dx / d * l.bend };
+}
+
+function quadPoint(l, t) {
+  const c = ctrlPoint(l);
+  const u = 1 - t;
+  return {
+    x: u * u * l.a.x + 2 * u * t * c.x + t * t * l.b.x,
+    y: u * u * l.a.y + 2 * u * t * c.y + t * t * l.b.y,
+  };
+}
+
+/** 胶囊的边缘点：射线和圆角矩形的交点（按矩形算，够用）。 */
+function capsuleEdge(n, ux, uy) {
+  const hw = capsuleWidth(n) / 2, hh = CAPSULE_H / 2;
+  const t = Math.min(
+    hw / Math.max(1e-6, Math.abs(ux)),
+    hh / Math.max(1e-6, Math.abs(uy)),
+  );
+  return { x: n.x + ux * t, y: n.y + uy * t };
+}
+
+function edgeColor(l, f) {
+  if (variant !== 'flow' || !f) return null;
+  if (l.a === f) return '#b9aefa';                 // 我的出链：强调紫
+  if (l.b === f) return '#dadada';                 // 我的入链：中性白
+  return null;
+}
+
+function drawEdges(f) {
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 1 / view.s * Math.max(0.85, Math.min(1.6, view.s));
+  const curved = variant === 'flow' || variant === 'capsule';
+
+  for (const l of G.links) {
+    const a = l.va;
+    if (a <= 0.01) continue;
+    const tint = edgeColor(l, f);
+    ctx.strokeStyle = tint
+      ? hexA(tint, Math.min(1, a * 1.15))
+      : `rgba(255,255,255,${a.toFixed(3)})`;
+
+    if (variant === 'capsule') {
+      const dx = l.b.x - l.a.x, dy = l.b.y - l.a.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const p1 = capsuleEdge(l.a, dx / d, dy / d);
+      const p2 = capsuleEdge(l.b, -dx / d, -dy / d);
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.stroke();
+      continue;
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(l.a.x, l.a.y);
+    if (curved) {
+      const c = ctrlPoint(l);
+      ctx.quadraticCurveTo(c.x, c.y, l.b.x, l.b.y);
+    } else {
+      ctx.lineTo(l.b.x, l.b.y);
+    }
+    ctx.stroke();
+
+    // 箭头：flow 里常显（跟着边一起淡），其余方向只在有焦点时画，免得变成一团箭
+    const lit = f && (l.a === f || l.b === f);
+    const show = variant === 'flow' ? showArrows : (showArrows && lit);
+    if (show && !l.ba && a > 0.08) arrowHead(l, a);
+  }
+
+  if (variant === 'flow') drawParticles(f);
+}
+
+function arrowHead(l, a) {
+  const c = variant === 'flow' ? ctrlPoint(l) : null;
+  // 箭尖方向取「曲线在终点处的切线」
+  let ux, uy;
+  if (c) {
+    ux = l.b.x - c.x; uy = l.b.y - c.y;
+  } else {
+    ux = l.b.x - l.a.x; uy = l.b.y - l.a.y;
+  }
+  const d = Math.hypot(ux, uy) || 1;
+  ux /= d; uy /= d;
+  const tipX = l.b.x - ux * (l.b.r + 2);
+  const tipY = l.b.y - uy * (l.b.r + 2);
+  const size = 6 / Math.max(0.7, Math.min(1.6, view.s));
+  const px = -uy, py = ux;
+  ctx.fillStyle = `rgba(255,255,255,${Math.min(0.62, a * 1.1).toFixed(3)})`;
+  ctx.beginPath();
+  ctx.moveTo(tipX, tipY);
+  ctx.lineTo(tipX - ux * size + px * size * 0.5, tipY - uy * size + py * size * 0.5);
+  ctx.lineTo(tipX - ux * size - px * size * 0.5, tipY - uy * size - py * size * 0.5);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/** 出链上跑的粒子。互相链接的不跑——那是双向的，跑了就在撒谎。 */
+function drawParticles(f) {
+  if (!f) return;
+  ctx.fillStyle = 'rgba(185,174,250,.9)';
+  for (const l of G.links) {
+    if (l.ba || l.a !== f) continue;
+    if (l.va < 0.2) continue;
+    const t = ((performance.now() / 1400) + l.phase) % 1;
+    const p = quadPoint(l, t);
+    circle(p.x, p.y, 1.7);
+    ctx.fill();
+  }
+}
+
+/* ---- 节点 ---- */
+
+function drawNodes(f) {
+  for (const n of G.nodes) {
+    const isFocus = n === f;
+    ctx.globalAlpha = n.va;
+    const color = nodeColor(n);
+
+    if (variant === 'capsule') {
+      const w = capsuleWidth(n), h = CAPSULE_H;
+      const hot = isFocus || n === sel;
+      roundRect(n.x, n.y, w, h, 6);
+      ctx.fillStyle = hot ? 'rgba(127,109,242,.18)' : 'rgba(58,58,58,.92)';
+      ctx.fill();
+      ctx.strokeStyle = hot ? hexA('#7f6df2', .85) : 'rgba(255,255,255,.13)';
+      ctx.lineWidth = 1 / view.s * Math.max(0.9, view.s);
+      ctx.stroke();
+
+      ctx.font = `${hot ? 500 : 400} 12.5px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = hot ? '#ffffff' : hexA('#dadada', .92);
+      ctx.fillText(n.t, n.x, n.y + 0.5);
+      ctx.globalAlpha = 1;
+      continue;
+    }
+
+    if (variant === 'still') {
+      // 描边圆，不填充：有链接的填一层 6% 白，孤立点就是个空圈
+      circle(n.x, n.y, n.vr);
+      ctx.fillStyle = '#1e1e1e';
+      ctx.fill();
+      if (n.deg > 0) {
+        ctx.fillStyle = 'rgba(255,255,255,.06)';
+        ctx.fill();
+      }
+      ctx.strokeStyle = isFocus ? '#ffffff' : color;
+      ctx.lineWidth = (isFocus ? 1.6 : 1.1) / view.s * Math.max(0.9, view.s);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      continue;
+    }
+
+    ctx.fillStyle = color;
+    circle(n.x, n.y, n.vr);
+    ctx.fill();
+
+    if (n === sel || isFocus) {
+      ctx.strokeStyle = hexA('#7f6df2', n === sel ? .62 : .40);
+      ctx.lineWidth = 1.4 / view.s * Math.max(0.9, view.s);
+      circle(n.x, n.y, n.vr + 4.5 / view.s * Math.max(1, view.s));
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+/* ---- 标签 ---- */
+
+function labelAlphaFor(n, isFocus) {
+  if (!showLabels) return 0;
+  if (variant === 'capsule') return 0;             // 标签就在胶囊里
+  if (variant === 'still') {
+    // 静默：没有焦点就几乎不写；有焦点只写焦点 + 一跳邻居
+    const f = focusNode();
+    if (!f) return 0.30;
+    if (isFocus) return 1;
+    return f.neigh.has(n.t) ? 0.78 : 0;
+  }
+  if (isFocus) return 1;
+  const t = Math.max(0, Math.min(1, (view.s - 0.55) / 0.40));
+  return t;
+}
+
+function drawLabels(f) {
+  for (const n of G.nodes) {
+    const isFocus = n === f;
+    const a = labelAlphaFor(n, isFocus) * (n.va < 0.5 ? n.va : 1);
+    if (a <= 0.02) continue;
+    const fs = isFocus ? 13.5 : 12.5;
+    ctx.font = `${isFocus ? 500 : 400} ${fs}px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    if (variant !== 'still') {
+      ctx.shadowColor = 'rgba(30,30,30,0.95)';
+      ctx.shadowBlur = 4;
+    }
+    ctx.fillStyle = isFocus ? '#ffffff' : hexA('#dadada', a);
+    ctx.fillText(n.t, n.x, n.y + n.vr + 11);
+    ctx.shadowBlur = 0;
+  }
+}
+
+/* ---- 一帧 ---- */
+
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#1e1e1e';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.translate(view.x, view.y);
+  ctx.scale(view.s, view.s);
+
+  const f = focusNode();
+  const cents = variant === 'cluster' ? centroids() : null;
+
+  if (cents) drawClusterGlow(cents);
+  drawEdges(f);
+  drawNodes(f);
+  drawLabels(f);
+  if (cents) drawClusterNames(cents);
+
+  ctx.restore();
+}
+
+/* ==================================================================
+   主循环
+   ================================================================== */
+
+function frame(now) {
+  const V = VARIANTS[variant];
+  if (V.alphaMin > 0) {
+    step(G, alpha);
+    alpha *= (1 - PHYS.alphaDecay);
+    if (alpha < V.alphaMin) alpha = V.alphaMin;
+  } else {
+    // 静默方向：收敛到阈值以下就彻底不跑物理，只重画（视口可能还在动）
+    if (alpha > 0) {
+      step(G, alpha);
+      alpha *= (1 - PHYS.alphaDecay);
+      if (alpha < 0.004) alpha = 0;
+    }
+  }
+
+  if (cam) {
+    const t = Math.min(1, (now - cam.t0) / cam.dur);
+    const e = 1 - Math.pow(1 - t, 3);
+    view.s = cam.from.s + (cam.to.s - cam.from.s) * e;
+    view.x = cam.from.x + (cam.to.x - cam.from.x) * e;
+    view.y = cam.from.y + (cam.to.y - cam.from.y) * e;
+    if (t >= 1) cam = null;
+  }
+
+  updateVisuals();
+  draw();
+  requestAnimationFrame(frame);
+}
+
+/* ==================================================================
+   交互
+   ================================================================== */
+
+let dragNode = null, panFrom = null, panStart = null, moved = false;
+
+canvas.addEventListener('pointerdown', e => {
+  const n = nodeAt(e.offsetX, e.offsetY);
+  moved = false;
+  if (n) {
+    dragNode = n;
+    n.pin = true;
+    const w = toWorld(e.offsetX, e.offsetY);
+    n.x = w.x; n.y = w.y;
+    n.vx = 0; n.vy = 0;
+    alpha = Math.max(alpha, 0.45);
+    canvas.classList.add('dragging');
+  } else {
+    panFrom = { x: e.offsetX, y: e.offsetY };
+    panStart = { ...view };
+    cam = null;
+  }
+  canvas.setPointerCapture(e.pointerId);
+});
+
+canvas.addEventListener('pointermove', e => {
+  if (dragNode) {
+    moved = true;
+    const w = toWorld(e.offsetX, e.offsetY);
+    dragNode.x = w.x; dragNode.y = w.y;
+    dragNode.vx = 0; dragNode.vy = 0;
+    return;
+  }
+  if (panFrom) {
+    const dx = e.offsetX - panFrom.x, dy = e.offsetY - panFrom.y;
+    if (Math.hypot(dx, dy) > 3) moved = true;
+    if (moved) { view.x = panStart.x + dx; view.y = panStart.y + dy; }
+    return;
+  }
+  const n = nodeAt(e.offsetX, e.offsetY);
+  hover = n;
+  canvas.classList.toggle('pointing', !!n);
+});
+
+canvas.addEventListener('pointerup', e => {
+  if (dragNode) {
+    dragNode.pin = false;
+    alpha = Math.max(alpha, 0.32);
+    dragNode = null;
+    canvas.classList.remove('dragging');
+  } else if (panFrom && !moved) {
+    sel = null;
+  }
+  panFrom = null;
+  canvas.releasePointerCapture?.(e.pointerId);
+});
+
+canvas.addEventListener('pointerleave', () => { hover = null; });
+
+canvas.addEventListener('click', e => {
+  const n = nodeAt(e.offsetX, e.offsetY);
+  if (n) sel = n;
+});
+
+canvas.addEventListener('dblclick', e => {
+  const n = nodeAt(e.offsetX, e.offsetY);
+  if (n) toast('打开笔记：' + n.t);
+});
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  zoomAt(e.offsetX, e.offsetY, Math.exp(-e.deltaY * 0.0017));
+}, { passive: false });
+
+/* ==================================================================
+   方案切换
+   ================================================================== */
+
+const $ = s => document.querySelector(s);
+const tabsEl = $('#tabs');
+const cardEl = $('#card');
+
+for (const key of ORDER) {
+  const v = VARIANTS[key];
+  const b = document.createElement('button');
+  b.dataset.key = key;
+  b.innerHTML = `<b>${v.name}</b><i>${v.tag}</i>`;
+  b.addEventListener('click', () => setVariant(key));
+  tabsEl.appendChild(b);
+}
+
+function updateTabs() {
+  for (const b of tabsEl.children) {
+    b.classList.toggle('on', b.dataset.key === variant);
+  }
+}
+
+function updateCard() {
+  const v = VARIANTS[variant];
+  cardEl.innerHTML = `
+    <h2>${v.name}<span>${v.tag}</span></h2>
+    <p class="lede">${v.lede}</p>
+    <div class="h">改了什么</div>
+    <ul>${v.changes.map(c => `<li>${c}</li>`).join('')}</ul>
+    <div class="cost"><b>代价</b> ${v.cost}</div>
+  `;
+}
+
+function setVariant(key, { refit = true } = {}) {
+  const before = G.nodes.length ? G.nodes[0].r : 0;
+  variant = key;
+  applyRadius();
+  const changed = Math.abs((G.nodes[0]?.r ?? 0) - before) > 1.5;
+
+  // 半径换了（圆点 ⇄ 胶囊）碰撞半径差一倍，不重排会叠在一起；
+  // 没换就只跑几十帧让它松一下，布局基本停在原地——这样比的才是观感。
+  const rounds = changed ? 240 : 60;
+  for (let i = 0; i < rounds; i++) step(G, changed ? 0.55 : 0.30);
+  alpha = Math.max(alpha, VARIANTS[key].alphaMin > 0 ? 0.26 : 0.26);
+
+  if (changed && refit) fitAnimated();
+  updateTabs();
+  updateCard();
+  syncToggles();
+}
+
+/* ==================================================================
+   面板
+   ================================================================== */
+
+const statsEl = $('#stats');
+
+function stats() {
+  const n = G.nodes.filter(matches).length;
+  const e = G.links.filter(l => matches(l.a) && matches(l.b)).length;
+  statsEl.textContent = `${n} 篇笔记 · ${e} 条链接`;
+}
+
+$('#search').addEventListener('input', e => {
+  query = e.target.value.trim().toLowerCase();
+  stats();
+});
+
+function syncToggles() {
+  $('#btnLabels').setAttribute('aria-pressed', String(showLabels));
+  $('#btnArrows').setAttribute('aria-pressed', String(showArrows));
+  $('#btnColors').setAttribute('aria-pressed', String(useFolderColors));
+  $('#rLabels').setAttribute('aria-checked', String(showLabels));
+  $('#rArrows').setAttribute('aria-checked', String(showArrows));
+  $('#rColors').setAttribute('aria-checked', String(useFolderColors));
+}
+
+$('#btnLabels').addEventListener('click', () => { showLabels = !showLabels; syncToggles(); });
+$('#btnArrows').addEventListener('click', () => { showArrows = !showArrows; syncToggles(); });
+$('#btnColors').addEventListener('click', () => { useFolderColors = !useFolderColors; syncToggles(); });
+$('#rLabels').addEventListener('click', () => { showLabels = !showLabels; syncToggles(); });
+$('#rArrows').addEventListener('click', () => { showArrows = !showArrows; syncToggles(); });
+$('#rColors').addEventListener('click', () => { useFolderColors = !useFolderColors; syncToggles(); });
+
+$('#collapse').addEventListener('click', e => {
+  const p = $('#panel');
+  p.classList.toggle('collapsed');
+  e.currentTarget.textContent = p.classList.contains('collapsed') ? '+' : '—';
+});
+
+function relayout() {
+  seed(G, variant === 'capsule' ? 40 : 26);
+  alpha = 1;
+  sel = null;
+  fit();
+}
+$('#btnRelayout2').addEventListener('click', relayout);
+$('#btnFit2').addEventListener('click', () => fitAnimated());
+
+/* ---------------- toast ---------------- */
+
+const toastEl = $('#toast');
+let toastTimer = 0;
+function toast(text) {
+  toastEl.textContent = text;
+  toastEl.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('on'), 1500);
+}
+
+/* ==================================================================
+   尺寸 / 启动
+   ================================================================== */
+
+function resize() {
+  const r = document.getElementById('c').parentElement.getBoundingClientRect();
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  W = Math.max(1, Math.round(r.width));
+  H = Math.max(1, Math.round(r.height));
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+}
+
+resize();
+applyRadius();
+seed(G, 26);
+stats();
+
+/* 开场：先空跑 420 帧把布局收敛，fit 算出来的视口才准；然后留一点余温。 */
+for (let i = 0; i < 420; i++) { step(G, alpha); alpha *= (1 - PHYS.alphaDecay); }
+alpha = 0.30;
+fit();
+
+updateTabs();
+updateCard();
+syncToggles();
+requestAnimationFrame(frame);
+
+new ResizeObserver(() => {
+  const w0 = W, h0 = H;
+  resize();
+  if (w0 !== W || h0 !== H) fit();
+}).observe(canvas.parentElement);
+</script>
+</body>
+</html>

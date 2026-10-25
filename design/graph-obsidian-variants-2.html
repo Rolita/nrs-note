@@ -1,0 +1,1304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>图谱观感 2 · 星群 / 玻璃 / 光带 / 墨</title>
+<style>
+  /* 配色照抄 Obsidian 默认深色主题，和 graph-obsidian-clone.html 一致 */
+  :root {
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #262626;
+    --text-normal: #dadada;
+    --text-muted: #9d9d9d;
+    --text-faint: #6b6b6b;
+    --border: #363636;
+    --accent: #7f6df2;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    --font: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg-primary);
+    color: var(--text-normal);
+    font: 14px/1.5 var(--font);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #app { height: 100%; display: flex; flex-direction: column; }
+
+  /* ---------- 顶栏：标题 + 四个标签 + 开关 ---------- */
+  header {
+    height: 46px; flex: 0 0 auto;
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 12px 0 14px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    user-select: none;
+  }
+  .brand { font-size: 13px; font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
+  .brand em {
+    font-style: normal; font-weight: 400; font-size: 11.5px;
+    color: var(--text-faint); margin-left: 9px;
+  }
+  nav { display: flex; gap: 2px; margin-left: auto; }
+  nav button {
+    appearance: none; background: transparent; cursor: pointer;
+    border: 1px solid transparent; border-radius: 6px;
+    color: var(--text-muted); font: inherit; font-size: 12.5px;
+    padding: 5px 10px; display: flex; align-items: center; gap: 7px;
+    transition: background .14s, color .14s, border-color .14s;
+  }
+  nav button:hover { background: #2f2f2f; color: var(--text-normal); }
+  nav button.on {
+    background: rgba(127,109,242,.16);
+    border-color: rgba(127,109,242,.45);
+    color: #b9aefa;
+  }
+  nav button b { font-weight: 500; }
+  nav button i { font-style: normal; font-size: 10.5px; color: var(--text-faint); }
+  nav button.on i { color: #8f83d6; }
+
+  .tools { display: flex; gap: 5px; margin-left: 12px; padding-left: 12px; border-left: 1px solid var(--border); }
+  .tools button {
+    appearance: none; cursor: pointer;
+    background: #2f2f2f; border: 1px solid var(--border); border-radius: 5px;
+    color: var(--text-muted); font: inherit; font-size: 11.5px; padding: 4px 9px;
+    transition: background .14s, color .14s, border-color .14s;
+    white-space: nowrap;
+  }
+  .tools button:hover { background: #3a3a3a; color: var(--text-normal); }
+  .tools button[aria-pressed="true"] {
+    background: rgba(127,109,242,.16); border-color: rgba(127,109,242,.45); color: #b9aefa;
+  }
+
+  main { position: relative; flex: 1 1 auto; min-height: 0; }
+  canvas { display: block; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  canvas.pointing { cursor: pointer; }
+
+  /* ---------- 左上：图谱设置（与 clone 一致） ---------- */
+  #panel {
+    position: absolute; left: 14px; top: 14px; width: 232px;
+    background: rgba(38,38,38,.92);
+    border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.45);
+    backdrop-filter: blur(12px);
+    overflow: hidden; font-size: 13px;
+  }
+  #panel .head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px 7px; border-bottom: 1px solid var(--border);
+    color: var(--text-muted); font-size: 12px; letter-spacing: .3px;
+    user-select: none;
+  }
+  #panel .head button {
+    appearance: none; border: 0; background: transparent; cursor: pointer;
+    color: var(--text-faint); font: inherit; padding: 0 2px; line-height: 1;
+  }
+  #panel .head button:hover { color: var(--text-normal); }
+  #panel .body { padding: 9px 10px 10px; }
+  #panel.collapsed .body { display: none; }
+
+  #search {
+    width: 100%; appearance: none;
+    background: #1b1b1b; border: 1px solid var(--border); border-radius: 5px;
+    color: var(--text-normal); font: inherit; font-size: 12.5px;
+    padding: 5px 8px; outline: none;
+  }
+  #search::placeholder { color: var(--text-faint); }
+  #search:focus { border-color: var(--accent); }
+
+  .row {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 9px; color: var(--text-muted); font-size: 12.5px;
+    cursor: pointer; user-select: none;
+  }
+  .row:hover { color: var(--text-normal); }
+  .sw {
+    width: 26px; height: 15px; border-radius: 8px; background: #3a3a3a;
+    position: relative; transition: background .16s; flex: 0 0 auto;
+  }
+  .sw::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 11px; height: 11px; border-radius: 50%;
+    background: #b0b0b0; transition: transform .16s, background .16s;
+  }
+  .row[aria-checked="true"] .sw { background: var(--accent); }
+  .row[aria-checked="true"] .sw::after { transform: translateX(11px); background: #fff; }
+
+  #panel .sep { height: 1px; background: var(--border); margin: 10px -10px 0; }
+  #panel .foot { display: flex; gap: 6px; margin-top: 10px; }
+  #panel .foot button {
+    flex: 1; appearance: none; cursor: pointer;
+    background: #2f2f2f; border: 1px solid var(--border); border-radius: 5px;
+    color: var(--text-muted); font: inherit; font-size: 12px; padding: 4px 0;
+    transition: background .14s, color .14s;
+  }
+  #panel .foot button:hover { background: #3a3a3a; color: var(--text-normal); }
+
+  /* ---------- 右上：这个方案在说什么 ---------- */
+  #card {
+    position: absolute; right: 14px; top: 14px; width: 272px;
+    background: rgba(38,38,38,.92);
+    border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.45);
+    backdrop-filter: blur(12px);
+    padding: 11px 12px 12px; font-size: 12.5px;
+    user-select: none;
+  }
+  #card h2 {
+    margin: 0 0 6px; font-size: 13.5px; font-weight: 600; color: var(--text-normal);
+    display: flex; align-items: baseline; gap: 8px;
+  }
+  #card h2 span {
+    font-size: 10.5px; font-weight: 400; color: var(--text-faint);
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+  }
+  #card .lede { margin: 0 0 9px; color: var(--text-muted); line-height: 1.62; }
+  #card .h {
+    font-size: 10.5px; letter-spacing: .5px; color: var(--text-faint);
+    margin: 10px 0 5px;
+  }
+  #card ul { margin: 0; padding-left: 15px; color: var(--text-muted); }
+  #card li { margin: 3px 0; line-height: 1.55; }
+  #card li b { color: var(--text-normal); font-weight: 500; }
+  #card .cost {
+    margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border);
+    color: var(--text-faint); line-height: 1.6;
+  }
+  #card .cost b { color: #d99a4e; font-weight: 500; }
+
+  /* ---------- 底部 ---------- */
+  #hint {
+    position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+    font-size: 11.5px; color: #555; pointer-events: none; user-select: none;
+    white-space: nowrap;
+  }
+  #stats {
+    position: absolute; right: 14px; bottom: 12px;
+    font-size: 11.5px; color: var(--text-faint);
+    font-family: var(--mono); pointer-events: none; user-select: none;
+  }
+  #toast {
+    position: absolute; left: 50%; bottom: 42px; transform: translate(-50%, 6px);
+    background: #2f2f2f; border: 1px solid var(--border);
+    color: var(--text-normal); font-size: 12.5px;
+    padding: 6px 12px; border-radius: 6px;
+    opacity: 0; transition: opacity .16s, transform .16s;
+    pointer-events: none; white-space: nowrap;
+  }
+  #toast.on { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">图谱观感<em>以「复刻 Obsidian」为基础 · 四个都活着，点标签切换</em></div>
+    <nav id="tabs"></nav>
+    <div class="tools">
+      <button id="btnLabels" aria-pressed="true">显示标签</button>
+      <button id="btnArrows" aria-pressed="true">显示箭头</button>
+      <button id="btnColors" aria-pressed="false">按文件夹着色</button>
+    </div>
+  </header>
+
+  <main>
+    <canvas id="c"></canvas>
+
+    <div id="panel">
+      <div class="head">
+        <span>图谱设置</span>
+        <button id="collapse" title="收起">—</button>
+      </div>
+      <div class="body">
+        <input id="search" type="text" placeholder="搜索笔记…" spellcheck="false">
+        <div class="row" id="rLabels" aria-checked="true" role="checkbox"><span>显示标签</span><i class="sw"></i></div>
+        <div class="row" id="rArrows" aria-checked="true" role="checkbox"><span>显示箭头</span><i class="sw"></i></div>
+        <div class="row" id="rColors" aria-checked="false" role="checkbox"><span>按文件夹着色</span><i class="sw"></i></div>
+        <div class="sep"></div>
+        <div class="foot">
+          <button id="btnRelayout2">重新布局</button>
+          <button id="btnFit2">适应窗口</button>
+        </div>
+      </div>
+    </div>
+
+    <aside id="card"></aside>
+    <div id="hint">拖节点 · 滚轮缩放 · 拖空白平移 · 双击打开</div>
+    <div id="stats"></div>
+    <div id="toast"></div>
+  </main>
+</div>
+
+<script>
+/* ==================================================================
+   数据 —— 和 graph-obsidian-clone.html 完全相同。
+
+   四个方向共用同一份数据、同一套力导向、同一套交互，所以它们之间比的
+   是**观感**，不是布局算法。想比布局，点「重新布局」。
+   ================================================================== */
+
+const FOLDERS = {
+  '':     { name: '根目录', color: '#9d9d9d' },
+  '日记': { name: '日记',   color: '#e9973f' },
+  '项目': { name: '项目',   color: '#44cf6e' },
+  '学习': { name: '学习',   color: '#53dfdd' },
+  '灵感': { name: '灵感',   color: '#a882ff' },
+};
+
+const NOTES = [
+  { t: '索引',        f: '',     links: ['开发进度', '快速入门', '待办', 'NRS 重构', '排版笔记', '双链的用法'] },
+  { t: '开发进度',    f: '',     links: ['NRS 重构', '数据安全', '表格功能', '图谱功能', '发布计划', '10月25日'] },
+  { t: '快速入门',    f: '',     links: ['待办', '双链的用法'] },
+  { t: '待办',        f: '',     links: ['发布计划', '开发进度'] },
+
+  { t: '10月25日',    f: '日记', links: ['10月24日', '开发进度', '图谱功能'] },
+  { t: '10月24日',    f: '日记', links: ['10月23日', '开发进度'] },
+  { t: '10月23日',    f: '日记', links: ['10月22日', '每日日记'] },
+  { t: '10月22日',    f: '日记', links: ['每日日记'] },
+  { t: '每日日记',    f: '日记', links: ['10月25日', '待办'] },
+
+  { t: 'NRS 重构',    f: '项目', links: ['数据安全', '表格功能', '图谱功能', '离线优先', '界面密度', '发布计划'] },
+  { t: '数据安全',    f: '项目', links: ['离线优先', '发布计划'] },
+  { t: '表格功能',    f: '项目', links: ['排版笔记', '界面密度'] },
+  { t: '图谱功能',    f: '项目', links: ['力导向布局', '双链的用法', '排版笔记', '10月25日'] },
+  { t: '发布计划',    f: '项目', links: ['待办', '会议记录'] },
+  { t: '会议记录',    f: '项目', links: ['待办', '发布计划'] },
+
+  { t: 'Rust 所有权', f: '学习', links: ['分布式共识'] },
+  { t: '力导向布局',  f: '学习', links: ['排版笔记'] },
+  { t: '排版笔记',    f: '学习', links: ['界面密度', '读书笔记'] },
+  { t: '分布式共识',  f: '学习', links: ['Rust 所有权', '排版笔记'] },
+  { t: '读书笔记',    f: '学习', links: ['排版笔记', 'Rust 所有权'] },
+  { t: '待读清单',    f: '学习', links: [] },
+
+  { t: '冷启动',      f: '灵感', links: ['离线优先', '界面密度'] },
+  { t: '离线优先',    f: '灵感', links: ['分布式共识', '数据安全'] },
+  { t: '界面密度',    f: '灵感', links: ['排版笔记', '冷启动'] },
+  { t: '双链的用法',  f: '灵感', links: ['快速入门', '索引'] },
+  { t: '随手记',      f: '灵感', links: [] },
+];
+
+/* ==================================================================
+   四个方向
+   ================================================================== */
+
+const VARIANTS = {
+  glow: {
+    name: '星群',
+    tag: '看光',
+    lede: '每颗节点自己带一圈光，同文件夹的连线亮、跨文件夹的几乎看不见——' +
+          '整张图变成几团星群，而不是一团乱麻。',
+    changes: [
+      '节点 = <b>三层</b>：外发光（2.7 倍半径）+ 实心核 + 一点高光，像一颗小星',
+      '同文件夹的连线 <b>20%</b> 白，跨文件夹只有 <b>4.5%</b>——分组靠亮度说，不靠画框',
+      '簇心铺一层<b>同色星云</b>，簇名做成带色点的小胶囊挂在簇顶，像星座标注',
+      '即使关掉「按文件夹着色」，节点仍留一层<b>淡色相</b>——纯白的一堆点分不出簇',
+      '每颗星的光晕按各自相位轻轻起伏（幅度 10%），是「活的」不是「闪的」',
+      '悬停时整簇点亮、其余簇退到 0.14；箭头常显',
+    ],
+    cost: '每个节点每帧一次径向渐变（26 篇无所谓，200 篇以上要缓存渐变对象）；' +
+          '横向斥力和向心都加了方向权重，布局才是横的椭圆——这两条改的是物理，不是画法',
+    cluster: 0.0165, grav: 0.0042, apart: 1.90, stretch: 0.50, wide: 1.40, alphaMin: 0.020,
+  },
+
+  glass: {
+    name: '玻璃',
+    tag: '看质感',
+    lede: '节点是一颗颗玻璃珠：上亮下暗、一圈内描边、左上一块高光，' +
+          '底下还压着一层影。整张图有「可以摸」的实体感。',
+    changes: [
+      '节点 = 上亮下暗的<b>线性渐变</b> + 1px 内描边 + 左上椭圆高光 + 下方柔影',
+      '簇用一团极淡的<b>同色底雾</b>托住（5%），像玻璃放在绒布上',
+      '连线 0.8px / 9% 白；焦点边 55%，箭头小而实',
+      '悬停时整簇保持不透明，其他簇降到 0.15',
+    ],
+    cost: '每颗节点 3 次绘制（影、球、高光），比实心圆贵一倍；大库要按缩放阈值降级成实心圆',
+    cluster: 0.0155, grav: 0.0042, apart: 1.80, stretch: 0.52, wide: 1.36, alphaMin: 0.018,
+  },
+
+  beam: {
+    name: '光带',
+    tag: '看流向',
+    lede: '连线是一条<b>从源渐到目标</b>的光带：起点亮、终点暗，出链上还跑着光点。' +
+          '方向不用箭头解释，看一眼就知道往哪流。',
+    changes: [
+      '连线是<b>双色渐变</b>：起点是源节点颜色，终点淡到 40%；按文件夹着色时每条线都有色相朝向',
+      '悬停时出链上跑<b>光点</b>，互相链接的不跑（不撒谎）',
+      '焦点边额外铺一层 <b>3.4px 柔光</b>，像通了电',
+      '节点小而实、不发光——光全留给连线，画面才不会糊',
+    ],
+    cost: '每条边每帧一个渐变对象（50 条无所谓，500 条要缓存）；低端机上柔光层可只在悬停时开',
+    cluster: 0.0150, grav: 0.0042, apart: 1.75, stretch: 0.52, wide: 1.34, alphaMin: 0.018,
+  },
+
+  ink: {
+    name: '墨',
+    tag: '看留白',
+    lede: '几乎不发光：节点是一团柔边的墨，连线细到快看不见。' +
+          '整张图像一张出版物插图，安静但清楚。',
+    changes: [
+      '节点 = <b>柔边径向渐变</b>（中心 100%，1.8 倍半径处完全透明），没有硬边',
+      '连线 0.6px / 6% 白，焦点边 40%；箭头是极小的实心三角',
+      '簇之间靠<b>留白</b>分开，簇名用灰白小字，不加任何装饰',
+      '关掉「按文件夹着色」是纯黑白；打开时墨团才染上颜色',
+    ],
+    cost: '柔边靠渐变实现，每颗节点一次；优点是抗锯齿天然好，缩到很小时也不会碎',
+    cluster: 0.0170, grav: 0.0040, apart: 1.95, stretch: 0.50, wide: 1.42, alphaMin: 0.016,
+  },
+};
+
+const ORDER = ['glow', 'glass', 'beam', 'ink'];
+
+/* ==================================================================
+   力导向（参数沿用 clone；聚簇方向多一条向心力）
+   ================================================================== */
+
+const PHYS = {
+  rep: 5200,
+  spring: 0.062,
+  rest: 120,
+  damp: 0.62,
+  vmax: 32,
+  collide: 6,
+  alphaDecay: 0.019,
+};
+
+function buildGraph(notes) {
+  const byTitle = new Map(notes.map(n => [n.t, n]));
+  notes.forEach(n => {
+    n.out = 0; n.in = 0; n.deg = 0;
+    n.neigh = new Set();
+    n.vx = 0; n.vy = 0;
+  });
+  const byKey = new Map(), links = [];
+  for (const n of notes) {
+    for (const t of (n.links || [])) {
+      const m = byTitle.get(t);
+      if (!m || m === n) continue;               // 死链、自环都不要
+      n.out++; m.in++;
+      const k = n.t < m.t ? n.t + '\u0000' + m.t : m.t + '\u0000' + n.t;
+      const hit = byKey.get(k);
+      if (hit) { hit.ba = true; continue; }       // 互相链接只画一条线
+      const link = { a: n, b: m, ab: true, ba: false };
+      // 固定相位：光点每帧从这条边的同一个位置起跑，不会几条线挤在一起
+      link.phase = (hash(link.b.t + '<' + link.a.t) % 1000) / 1000;
+      byKey.set(k, link);
+      links.push(link);
+      n.deg++; m.deg++;
+    }
+  }
+  return { nodes: notes, links };
+}
+
+function hash(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0);
+}
+
+function radiusOf(deg) { return 4.2 + Math.sqrt(deg) * 2.3; }
+
+/** 每个文件夹的质心、半径（离质心最远那个成员的距离）、篇数。 */
+function centroids() {
+  const map = new Map();
+  for (const n of G.nodes) {
+    let c = map.get(n.f);
+    if (!c) { c = { x: 0, y: 0, n: 0, r: 0, top: Infinity }; map.set(n.f, c); }
+    c.x += n.x; c.y += n.y; c.n++;
+  }
+  for (const c of map.values()) { c.x /= c.n; c.y /= c.n; }
+  for (const n of G.nodes) {
+    const c = map.get(n.f);
+    const d = Math.hypot(n.x - c.x, n.y - c.y) + n.r;
+    if (d > c.r) c.r = d;
+    const t = n.y - n.r;
+    if (t < c.top) c.top = t;
+  }
+  return map;
+}
+
+function step(g, alpha) {
+  const V = VARIANTS[variant], nodes = g.nodes;
+  const cents = V.cluster > 0 ? centroids() : null;
+
+  // 斥力 + 碰撞
+  for (let i = 0; i < nodes.length; i++) {
+    const a = nodes[i];
+    for (let j = i + 1; j < nodes.length; j++) {
+      const b = nodes[j];
+      let dx = b.x - a.x, dy = b.y - a.y;
+      let d2 = dx * dx + dy * dy;
+      if (d2 < 0.01) { dx = (i - j) * 0.01 + 0.01; dy = 0.01; d2 = 0.01; }
+      const d = Math.sqrt(d2);
+      // 聚簇方向：不同文件夹之间额外再推一把，簇才会真的分开而不是糊成一团。
+      const apart = (V.apart && a.f !== b.f) ? V.apart : 1;
+      const f = PHYS.rep * apart / d2 * alpha;
+      const ux = dx / d, uy = dy / d;
+      // 横向斥力再乘一个系数：配合向心力的 stretch，图才会长成横的椭圆。
+      // 两条力都在模型里，所以拉完是稳定形状，不是画的时候硬拉伸。
+      const wx = V.wide ?? 1.35;
+      a.vx -= ux * f * wx; a.vy -= uy * f;
+      b.vx += ux * f * wx; b.vy += uy * f;
+
+      const min = a.r + b.r + PHYS.collide;
+      if (d < min) {
+        const push = (min - d) * 0.5;
+        a.vx -= ux * push; a.vy -= uy * push;
+        b.vx += ux * push; b.vy += uy * push;
+      }
+    }
+  }
+
+  // 弹簧
+  for (const l of g.links) {
+    const dx = l.b.x - l.a.x, dy = l.b.y - l.a.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const f = (d - PHYS.rest) * PHYS.spring * alpha;
+    const ux = dx / d, uy = dy / d;
+    l.a.vx += ux * f; l.a.vy += uy * f;
+    l.b.vx -= ux * f; l.b.vy -= uy * f;
+  }
+
+  // 向心（全局）+ 聚簇（每个文件夹一个）
+  //
+  // x 方向的向心力只给 stretch 倍：画布是横的，四个簇如果受同样的
+  // 向心，会排成一条竖线、左右全空。横向拉松一点，图才铺得满。
+  const gx = V.grav * (V.stretch ?? 0.55);
+  for (const n of nodes) {
+    if (n.pin) { n.vx = 0; n.vy = 0; continue; }
+    n.vx -= n.x * gx * alpha;
+    n.vy -= n.y * V.grav * alpha;
+    if (cents) {
+      const c = cents.get(n.f);
+      if (c && c.n > 1) {
+        n.vx += (c.x - n.x) * V.cluster * alpha;
+        n.vy += (c.y - n.y) * V.cluster * alpha;
+      }
+    }
+    n.vx *= PHYS.damp; n.vy *= PHYS.damp;
+    const sp = Math.hypot(n.vx, n.vy);
+    if (sp > PHYS.vmax) { n.vx *= PHYS.vmax / sp; n.vy *= PHYS.vmax / sp; }
+    n.x += n.vx; n.y += n.vy;
+  }
+}
+
+function seed(g, spread) {
+  const n = g.nodes.length;
+  g.nodes.forEach((node, i) => {
+    const a = (i / n) * Math.PI * 2 + (i % 5) * 0.31;
+    const r = spread * (0.35 + ((i * 53) % 100) / 160);
+    node.x = Math.cos(a) * r;
+    node.y = Math.sin(a) * r;
+    node.vx = 0; node.vy = 0;
+  });
+}
+
+function bounds(g) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const n of g.nodes) {
+    if (n.x - n.r < x0) x0 = n.x - n.r;
+    if (n.y - n.r < y0) y0 = n.y - n.r;
+    if (n.x + n.r > x1) x1 = n.x + n.r;
+    if (n.y + n.r > y1) y1 = n.y + n.r;
+  }
+  return { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 };
+}
+
+/* ==================================================================
+   状态
+   ================================================================== */
+
+const TAU = Math.PI * 2;
+const FONT = '-apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+const G = buildGraph(NOTES.map(n => ({ ...n })));
+G.nodes.forEach((n, i) => {
+  n.i = i;
+  n.baseColor = FOLDERS[n.f].color;
+  n.va = 1;
+  n.vr = 3;
+  n.cw = null;
+});
+// 邻居表：两个方向都要记，悬停时才知道「我连了谁」。
+for (const l of G.links) {
+  l.a.neigh.add(l.b.t);
+  l.b.neigh.add(l.a.t);
+}
+G.links.forEach(l => { l.va = 0.11; });
+
+let variant = ORDER.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'glow';
+let view = { s: 1, x: 0, y: 0 };
+let alpha = 1;
+let hover = null;
+let sel = null;
+let query = '';
+let showLabels = true;
+let showArrows = true;
+let useFolderColors = false;
+let dpr = 1, W = 0, H = 0;
+let cam = null;
+
+/* ---------------- 半径 / 视口 ---------------- */
+
+function applyRadius() {
+  for (const n of G.nodes) {
+    n.r = radiusOf(n.deg);
+    n.vr = n.r;
+  }
+}
+
+function fitTarget(pad = 66) {
+  const b = bounds(G);
+  const s = Math.min((W - pad * 2) / Math.max(b.w, 1), (H - pad * 2) / Math.max(b.h, 1));
+  const scale = Math.max(0.16, Math.min(1.6, s));
+  return {
+    s: scale,
+    x: W / 2 - ((b.x0 + b.x1) / 2) * scale,
+    y: H / 2 - ((b.y0 + b.y1) / 2) * scale,
+  };
+}
+
+function fit(pad = 66) { view = fitTarget(pad); cam = null; }
+
+function fitAnimated(pad = 66, dur = 460) {
+  const to = fitTarget(pad);
+  cam = { from: { ...view }, to, t0: performance.now(), dur };
+}
+
+function zoomAt(sx, sy, factor) {
+  const next = Math.max(0.18, Math.min(4, view.s * factor));
+  const k = next / view.s;
+  view.x = sx - (sx - view.x) * k;
+  view.y = sy - (sy - view.y) * k;
+  view.s = next;
+  cam = null;
+}
+
+function toWorld(sx, sy) { return { x: (sx - view.x) / view.s, y: (sy - view.y) / view.s }; }
+
+function nodeAt(sx, sy) {
+  const w = toWorld(sx, sy);
+  let best = null, bestD = Infinity;
+  for (const n of G.nodes) {
+    const d = Math.hypot(n.x - w.x, n.y - w.y);
+    const reach = n.r + 7 / view.s;
+    if (d <= reach && d < bestD) { bestD = d; best = n; }
+  }
+  return best;
+}
+
+/* ---------------- 命中 / 过滤 ---------------- */
+
+function matches(n) {
+  if (!query) return true;
+  return n.t.toLowerCase().includes(query);
+}
+
+function focusNode() { return hover || sel; }
+
+/** 四个方向都靠「簇」组织画面，所以淡化规则统一：同簇留、邻接留、其余退。 */
+function nodeAlpha(n) {
+  if (!matches(n)) return 0.10;
+  const f = focusNode();
+  if (!f) return 1;
+  if (n === f) return 1;
+  if (n.f === f.f) return 1;
+  return f.neigh.has(n.t) ? 0.95 : 0.14;
+}
+
+function nodeColor(n) {
+  if (n === sel) return '#7f6df2';
+  if (useFolderColors) return n.baseColor;
+  // 没开文件夹着色时，每个方向用一点自己的中性色：
+  // 星群要「星光」偏冷白，墨要「墨色」偏纸白，玻璃/光带留在中灰。
+  // 星群即使在「按文件夹着色」关掉时也留一点色相：
+  // 26 颗纯白的点看不出分组，淡淡一层色就够了。
+  if (variant === 'glow') {
+    if (!n.tint) n.tint = mixHex(n.baseColor, '#cfcfda', 0.60);
+    return n.tint;
+  }
+  if (variant === 'ink') return '#dcdcdc';
+  if (variant === 'glass') return '#a8a8b6';
+  return '#9d9d9d';
+}
+
+/** 每条边的基础亮度。star 里同文件夹的线单独给一个更亮的值。 */
+const EDGE = {
+  glow:  { base: 0.045, same: 0.200, focus: 0.62, near: 0.100, dim: 0.020 },
+  glass: { base: 0.090, same: 0.140, focus: 0.55, near: 0.140, dim: 0.030 },
+  beam:  { base: 0.100, same: 0.150, focus: 0.60, near: 0.150, dim: 0.032 },
+  ink:   { base: 0.060, same: 0.090, focus: 0.40, near: 0.090, dim: 0.020 },
+};
+
+function edgeAlpha(l, f) {
+  const E = EDGE[variant];
+  if (!matches(l.a) || !matches(l.b)) return E.dim * 0.7;
+  if (!f) {
+    if (variant === 'glow' && l.a.f === l.b.f) return E.same;
+    return E.base;
+  }
+  if (l.a === f || l.b === f) return E.focus;
+  if (l.a.f === f.f && l.b.f === f.f) return E.same * 1.1;
+  if (l.a.f === f.f || l.b.f === f.f) return E.near;
+  if (f.neigh.has(l.a.t) || f.neigh.has(l.b.t)) return E.near;
+  return E.dim;
+}
+
+function updateVisuals() {
+  const f = focusNode();
+  for (const n of G.nodes) {
+    n.va += (nodeAlpha(n) - n.va) * 0.20;
+    const targetR = n.r * (n === f ? 1.22 : 1);
+    n.vr += (targetR - n.vr) * 0.25;
+  }
+  for (const l of G.links) {
+    l.va += (edgeAlpha(l, f) - l.va) * 0.20;
+  }
+}
+
+/* ==================================================================
+   绘制
+   ================================================================== */
+
+function hexA(hex, a) {
+  const v = parseInt(hex.slice(1), 16);
+  return `rgba(${(v >> 16) & 255},${(v >> 8) & 255},${v & 255},${a})`;
+}
+
+/** a 往 b 混 t（0..1），hex 进 hex 出。 */
+function mixHex(a, b, t) {
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const ch = sh => [(sh >> 16) & 255, (sh >> 8) & 255, sh & 255];
+  const [ar, ag, ab] = ch(pa), [br, bg, bb] = ch(pb);
+  const m = (x, y) => Math.round(x + (y - x) * t);
+  return '#' + ((1 << 24) |
+    (m(ar, br) << 16) | (m(ag, bg) << 8) | m(ab, bb)).toString(16).slice(1);
+}
+
+/** 提亮（k>0）/ 压暗（k<0），返回同格式的 hex，好继续喂给 hexA。 */
+function shade(hex, k) {
+  const v = parseInt(hex.slice(1), 16);
+  const mix = x => Math.max(0, Math.min(255, Math.round(
+    k > 0 ? x + (255 - x) * k : x * (1 + k))));
+  const r = mix((v >> 16) & 255), g = mix((v >> 8) & 255), b = mix(v & 255);
+  return '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+}
+
+function circle(x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); }
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+/** 描边宽度：世界坐标下恒定的「1px 屏幕线」，缩放时不跟着变粗。 */
+function hairline() { return 1 / view.s * Math.max(0.9, Math.min(1.7, view.s)); }
+
+/* ---- 簇：底雾 + 簇名 ---- */
+
+const MIST = {
+  glow:  { pad: 42, a: 0.078, mid: 0.034 },
+  glass: { pad: 30, a: 0.062, mid: 0.028 },
+  beam:  { pad: 26, a: 0.045, mid: 0.020 },
+  ink:   { pad: 18, a: 0.022, mid: 0.010 },
+};
+
+function drawClusterMist(cents) {
+  const M = MIST[variant];
+  for (const [key, c] of cents) {
+    if (c.n < 2) continue;
+    const r = c.r + M.pad;
+    const col = FOLDERS[key].color;
+    const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, r);
+    g.addColorStop(0, hexA(col, M.a));
+    g.addColorStop(0.55, hexA(col, M.mid));
+    g.addColorStop(1, hexA(col, 0));
+    ctx.fillStyle = g;
+    circle(c.x, c.y, r);
+    ctx.fill();
+  }
+}
+
+function drawClusterNames(cents) {
+  ctx.textBaseline = 'middle';
+  for (const [key, c] of cents) {
+    if (c.n < 2) continue;
+    const label = `${FOLDERS[key].name} · ${c.n}`;
+    const y = c.y - c.r - 14;
+    const dot = variant === 'glow';
+
+    ctx.font = variant === 'ink' ? `10.5px ${FONT}` : `11px ${FONT}`;
+    const w = ctx.measureText(label).width;
+    const padX = 9, h = 16, gap = dot ? 9 : 0;
+    const pillW = w + padX * 2 + gap;
+    const x0 = c.x - pillW / 2;
+
+    // 簇名经常压在别的簇的节点上，所以给它一个自己的底
+    roundRect(x0, y - h / 2, pillW, h, h / 2);
+    ctx.fillStyle = 'rgba(26,26,29,.80)';
+    ctx.fill();
+    ctx.strokeStyle = hexA(FOLDERS[key].color, 0.30);
+    ctx.lineWidth = hairline();
+    ctx.stroke();
+
+    if (dot) {
+      ctx.fillStyle = hexA(FOLDERS[key].color, 0.95);
+      circle(x0 + padX, y, 2.3);
+      ctx.fill();
+    }
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = variant === 'ink'
+      ? 'rgba(206,206,214,.62)'
+      : 'rgba(216,216,228,.82)';
+    ctx.fillText(label, x0 + padX + gap, y + 0.5);
+  }
+}
+
+/* ---- 连线 ---- */
+
+/** 箭头透明度系数：光带最实（它靠方向说话），墨最虚。 */
+const ARROW = { glow: 0.50, glass: 0.85, beam: 1.00, ink: 0.45 };
+
+function drawEdges(f) {
+  ctx.lineCap = 'round';
+  // 墨的线是「画」出来的：虚线 + 略粗一点，才看得出是笔触而不是屏幕线
+  ctx.setLineDash(variant === 'ink' ? [3.2, 3.8] : []);
+  const baseW = variant === 'ink' ? 0.9 : (variant === 'glass' ? 0.8 : 0.9);
+  const lw = baseW * hairline();
+  const glowW = 3.4 * hairline();
+  const AR = ARROW[variant];
+
+  for (const l of G.links) {
+    const a = l.va;
+    if (a <= 0.01) continue;
+    const lit = f && (l.a === f || l.b === f);
+
+    if (variant === 'beam') {
+      // 焦点边先垫一层柔光，主线再压上去，看起来像通了电
+      if (lit) {
+        ctx.strokeStyle = `rgba(185,174,250,${(a * 0.20).toFixed(3)})`;
+        ctx.lineWidth = glowW;
+        ctx.beginPath();
+        ctx.moveTo(l.a.x, l.a.y);
+        ctx.lineTo(l.b.x, l.b.y);
+        ctx.stroke();
+      }
+      // 起点亮、终点暗：方向写在线里，不靠箭头解释
+      const c1 = useFolderColors ? l.a.baseColor : '#ffffff';
+      const c2 = useFolderColors ? l.b.baseColor : '#ffffff';
+      const g = ctx.createLinearGradient(l.a.x, l.a.y, l.b.x, l.b.y);
+      g.addColorStop(0, hexA(c1, Math.min(1, a * 1.35)));
+      g.addColorStop(1, hexA(c2, Math.min(1, a * 0.40)));
+      ctx.strokeStyle = g;
+      ctx.lineWidth = lw;
+    } else {
+      ctx.strokeStyle = `rgba(255,255,255,${a.toFixed(3)})`;
+      ctx.lineWidth = lw;
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(l.a.x, l.a.y);
+    ctx.lineTo(l.b.x, l.b.y);
+    ctx.stroke();
+
+    // 箭头常显（用户点名喜欢这个），互相链接的不画——双向的箭头会撒谎
+    if (showArrows && !l.ba && a > 0.06) arrowHead(l, a * AR);
+  }
+
+  ctx.setLineDash([]);
+  if (variant === 'beam') drawParticles(f);
+}
+
+function arrowHead(l, a) {
+  const ux0 = l.b.x - l.a.x, uy0 = l.b.y - l.a.y;
+  const d = Math.hypot(ux0, uy0) || 1;
+  const ux = ux0 / d, uy = uy0 / d;
+  const tipX = l.b.x - ux * (l.b.r + 2);
+  const tipY = l.b.y - uy * (l.b.r + 2);
+  const size = (variant === 'ink' ? 5.2 : 7) / Math.max(0.7, Math.min(1.6, view.s));
+  const px = -uy, py = ux;
+  const col = variant === 'beam' && useFolderColors ? l.b.baseColor : '#ffffff';
+  // 箭头常显：亮度从 0.18 起底，再跟着边往上走——不然淡边上的箭头等于没画
+  ctx.fillStyle = hexA(col, Math.min(0.72, 0.22 + a * 1.5));
+  ctx.beginPath();
+  ctx.moveTo(tipX, tipY);
+  ctx.lineTo(tipX - ux * size + px * size * 0.5, tipY - uy * size + py * size * 0.5);
+  ctx.lineTo(tipX - ux * size - px * size * 0.5, tipY - uy * size - py * size * 0.5);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/** 出链上跑的光点。互相链接的不跑——那是双向的，跑了就在撒谎。 */
+function drawParticles(f) {
+  if (!f) return;
+  for (const l of G.links) {
+    if (l.ba || l.a !== f) continue;
+    if (l.va < 0.2) continue;
+    const t = ((performance.now() / 1500) + l.phase) % 1;
+    const x = l.a.x + (l.b.x - l.a.x) * t;
+    const y = l.a.y + (l.b.y - l.a.y) * t;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, 5.5);
+    g.addColorStop(0, 'rgba(255,255,255,.95)');
+    g.addColorStop(0.35, 'rgba(185,174,250,.50)');
+    g.addColorStop(1, 'rgba(185,174,250,0)');
+    ctx.fillStyle = g;
+    circle(x, y, 5.5);
+    ctx.fill();
+  }
+}
+
+/* ---- 节点 ---- */
+
+function drawGlowNode(n) {
+  const r = n.vr, c = nodeColor(n);
+  const R = r * 2.7;
+  // 每颗星的相位不同，光晕轻轻起伏；幅度只有 10%，是「活的」不是「闪的」
+  const tw = 0.90 + 0.10 * Math.sin(performance.now() / 900 + n.i * 1.7);
+  const g = ctx.createRadialGradient(n.x, n.y, r * 0.80, n.x, n.y, R);
+  g.addColorStop(0, hexA(c, 0.34 * tw));
+  g.addColorStop(0.24, hexA(c, 0.12 * tw));
+  g.addColorStop(0.55, hexA(c, 0.032 * tw));
+  g.addColorStop(1, hexA(c, 0));
+  ctx.fillStyle = g;
+  circle(n.x, n.y, R);
+  ctx.fill();
+
+  ctx.fillStyle = mixHex(c, '#ffffff', 0.18);
+  circle(n.x, n.y, r);
+  ctx.fill();
+
+  // 一点高光，偏左上——光从左上来的话，所有节点都一致
+  ctx.fillStyle = 'rgba(255,255,255,.42)';
+  circle(n.x - r * 0.30, n.y - r * 0.34, Math.max(0.9, r * 0.28));
+  ctx.fill();
+}
+
+function drawGlassNode(n) {
+  const r = n.vr, c = nodeColor(n);
+
+  // 影子先画（不描边，否则影子会带一圈边）
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,.55)';
+  ctx.shadowBlur = 9;
+  ctx.shadowOffsetY = 3;
+  const g = ctx.createLinearGradient(n.x, n.y - r, n.x, n.y + r);
+  g.addColorStop(0, shade(c, 0.52));
+  g.addColorStop(0.52, c);
+  g.addColorStop(1, shade(c, -0.46));
+  ctx.fillStyle = g;
+  circle(n.x, n.y, r);
+  ctx.fill();
+  ctx.restore();
+
+  // 内描边：玻璃的「厚度」全靠这一圈
+  ctx.strokeStyle = 'rgba(255,255,255,.20)';
+  ctx.lineWidth = hairline();
+  circle(n.x, n.y, Math.max(0.8, r - 0.4));
+  ctx.stroke();
+
+  // 左上椭圆高光
+  ctx.save();
+  ctx.translate(n.x - r * 0.26, n.y - r * 0.36);
+  ctx.rotate(-0.5);
+  ctx.scale(1, 0.62);
+  const hr = Math.max(1, r * 0.52);
+  const hg = ctx.createRadialGradient(0, 0, 0, 0, 0, hr);
+  hg.addColorStop(0, 'rgba(255,255,255,.44)');
+  hg.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = hg;
+  circle(0, 0, hr);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawInkNode(n) {
+  const r = n.vr, c = nodeColor(n);
+  const R = r * 1.55;
+  // 中心不纯白、边缘化开：墨落在纸上是没有硬边的
+  const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, R);
+  g.addColorStop(0, hexA(c, 0.95));
+  g.addColorStop(0.55, hexA(c, 0.62));
+  g.addColorStop(0.85, hexA(c, 0.14));
+  g.addColorStop(1, hexA(c, 0));
+  ctx.fillStyle = g;
+  circle(n.x, n.y, R);
+  ctx.fill();
+  // 一圈极淡的外环，像版画的边线
+  ctx.strokeStyle = hexA(c, 0.20);
+  ctx.lineWidth = 0.8 * hairline();
+  circle(n.x, n.y, R * 0.90);
+  ctx.stroke();
+}
+
+function drawSolidNode(n) {
+  ctx.fillStyle = nodeColor(n);
+  circle(n.x, n.y, n.vr);
+  ctx.fill();
+}
+
+function drawFocusRing(n) {
+  ctx.strokeStyle = hexA('#7f6df2', n === sel ? .62 : .40);
+  ctx.lineWidth = 1.4 * hairline();
+  circle(n.x, n.y, n.vr + 4.5 * Math.max(1, view.s) / view.s);
+  ctx.stroke();
+}
+
+function drawNodes(f) {
+  for (const n of G.nodes) {
+    ctx.globalAlpha = n.va;
+    if (variant === 'glow') drawGlowNode(n);
+    else if (variant === 'glass') drawGlassNode(n);
+    else if (variant === 'ink') drawInkNode(n);
+    else drawSolidNode(n);
+    if (n === sel || n === f) drawFocusRing(n);
+    ctx.globalAlpha = 1;
+  }
+}
+
+/* ---- 标签 ---- */
+
+function labelAlphaFor(n, isFocus) {
+  if (!showLabels) return 0;
+  if (isFocus) return 1;
+
+  // 有焦点时只写焦点 + 它的邻居（同簇的也写，因为整簇是亮的）
+  const f = focusNode();
+  if (f) {
+    if (n.f === f.f) return 0.92;
+    return f.neigh.has(n.t) ? 0.86 : 0;
+  }
+
+  // 没有焦点时按度数分层：枢纽写实，叶子写虚——26 个标签全写实会糊成一片
+  const t = Math.max(0, Math.min(1, (view.s - 0.55) / 0.40));
+  const w = n.deg >= 3 ? 1 : (n.deg >= 1 ? 0.55 : 0.32);
+  return t * w * (variant === 'ink' ? 0.78 : 1);
+}
+
+function drawLabels(f) {
+  for (const n of G.nodes) {
+    const isFocus = n === f;
+    const a = labelAlphaFor(n, isFocus) * (n.va < 0.5 ? n.va : 1);
+    if (a <= 0.02) continue;
+    const fs = isFocus ? 13.5 : 12.5;
+    ctx.font = `${isFocus ? 500 : 400} ${fs}px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    if (variant !== 'ink') {
+      ctx.shadowColor = 'rgba(30,30,30,0.95)';
+      ctx.shadowBlur = 4;
+    }
+    ctx.fillStyle = isFocus ? '#ffffff' : hexA('#dadada', a);
+    ctx.fillText(n.t, n.x, n.y + n.vr + 11);
+    ctx.shadowBlur = 0;
+  }
+}
+
+/* ---- 一帧 ---- */
+
+let bgGrad = null, bgKey = '';
+
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  // 画布中心比四角亮一点点：深色底上一块纯色会显得「死」，
+  // 一点径向渐变就把画面撑起来了。尺寸没变就复用，别每帧重建。
+  const key = W + 'x' + H;
+  if (key !== bgKey) {
+    bgKey = key;
+    bgGrad = ctx.createRadialGradient(
+      W * 0.5, H * 0.42, 0, W * 0.5, H * 0.42, Math.max(W, H) * 0.76);
+    bgGrad.addColorStop(0, '#252528');
+    bgGrad.addColorStop(0.55, '#1e1e1f');
+    bgGrad.addColorStop(1, '#171718');
+  }
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.translate(view.x, view.y);
+  ctx.scale(view.s, view.s);
+
+  const f = focusNode();
+  const cents = centroids();
+
+  drawClusterMist(cents);
+  drawEdges(f);
+  drawNodes(f);
+  drawLabels(f);
+  drawClusterNames(cents);
+
+  ctx.restore();
+}
+
+/* ==================================================================
+   主循环
+   ================================================================== */
+
+function frame(now) {
+  const V = VARIANTS[variant];
+  if (V.alphaMin > 0) {
+    step(G, alpha);
+    alpha *= (1 - PHYS.alphaDecay);
+    if (alpha < V.alphaMin) alpha = V.alphaMin;
+  } else {
+    // 静默方向：收敛到阈值以下就彻底不跑物理，只重画（视口可能还在动）
+    if (alpha > 0) {
+      step(G, alpha);
+      alpha *= (1 - PHYS.alphaDecay);
+      if (alpha < 0.004) alpha = 0;
+    }
+  }
+
+  if (cam) {
+    const t = Math.min(1, (now - cam.t0) / cam.dur);
+    const e = 1 - Math.pow(1 - t, 3);
+    view.s = cam.from.s + (cam.to.s - cam.from.s) * e;
+    view.x = cam.from.x + (cam.to.x - cam.from.x) * e;
+    view.y = cam.from.y + (cam.to.y - cam.from.y) * e;
+    if (t >= 1) cam = null;
+  }
+
+  updateVisuals();
+  draw();
+  requestAnimationFrame(frame);
+}
+
+/* ==================================================================
+   交互
+   ================================================================== */
+
+let dragNode = null, panFrom = null, panStart = null, moved = false;
+
+canvas.addEventListener('pointerdown', e => {
+  const n = nodeAt(e.offsetX, e.offsetY);
+  moved = false;
+  if (n) {
+    dragNode = n;
+    n.pin = true;
+    const w = toWorld(e.offsetX, e.offsetY);
+    n.x = w.x; n.y = w.y;
+    n.vx = 0; n.vy = 0;
+    alpha = Math.max(alpha, 0.45);
+    canvas.classList.add('dragging');
+  } else {
+    panFrom = { x: e.offsetX, y: e.offsetY };
+    panStart = { ...view };
+    cam = null;
+  }
+  canvas.setPointerCapture(e.pointerId);
+});
+
+canvas.addEventListener('pointermove', e => {
+  if (dragNode) {
+    moved = true;
+    const w = toWorld(e.offsetX, e.offsetY);
+    dragNode.x = w.x; dragNode.y = w.y;
+    dragNode.vx = 0; dragNode.vy = 0;
+    return;
+  }
+  if (panFrom) {
+    const dx = e.offsetX - panFrom.x, dy = e.offsetY - panFrom.y;
+    if (Math.hypot(dx, dy) > 3) moved = true;
+    if (moved) { view.x = panStart.x + dx; view.y = panStart.y + dy; }
+    return;
+  }
+  const n = nodeAt(e.offsetX, e.offsetY);
+  hover = n;
+  canvas.classList.toggle('pointing', !!n);
+});
+
+canvas.addEventListener('pointerup', e => {
+  if (dragNode) {
+    dragNode.pin = false;
+    alpha = Math.max(alpha, 0.32);
+    dragNode = null;
+    canvas.classList.remove('dragging');
+  } else if (panFrom && !moved) {
+    sel = null;
+  }
+  panFrom = null;
+  canvas.releasePointerCapture?.(e.pointerId);
+});
+
+canvas.addEventListener('pointerleave', () => { hover = null; });
+
+canvas.addEventListener('click', e => {
+  const n = nodeAt(e.offsetX, e.offsetY);
+  if (n) sel = n;
+});
+
+canvas.addEventListener('dblclick', e => {
+  const n = nodeAt(e.offsetX, e.offsetY);
+  if (n) toast('打开笔记：' + n.t);
+});
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  zoomAt(e.offsetX, e.offsetY, Math.exp(-e.deltaY * 0.0017));
+}, { passive: false });
+
+/* ==================================================================
+   方案切换
+   ================================================================== */
+
+const $ = s => document.querySelector(s);
+const tabsEl = $('#tabs');
+const cardEl = $('#card');
+
+for (const key of ORDER) {
+  const v = VARIANTS[key];
+  const b = document.createElement('button');
+  b.dataset.key = key;
+  b.innerHTML = `<b>${v.name}</b><i>${v.tag}</i>`;
+  b.addEventListener('click', () => setVariant(key));
+  tabsEl.appendChild(b);
+}
+
+function updateTabs() {
+  for (const b of tabsEl.children) {
+    b.classList.toggle('on', b.dataset.key === variant);
+  }
+}
+
+function updateCard() {
+  const v = VARIANTS[variant];
+  cardEl.innerHTML = `
+    <h2>${v.name}<span>${v.tag}</span></h2>
+    <p class="lede">${v.lede}</p>
+    <div class="h">改了什么</div>
+    <ul>${v.changes.map(c => `<li>${c}</li>`).join('')}</ul>
+    <div class="cost"><b>代价</b> ${v.cost}</div>
+  `;
+}
+
+function setVariant(key) {
+  variant = key;
+  applyRadius();
+
+  // 四个方向的节点半径一样（都是按度数），所以布局不用重排：
+  // 只跑几十帧让它松一下，位置基本停在原地——这样比的才是观感，不是布局。
+  for (let i = 0; i < 60; i++) step(G, 0.30);
+  alpha = Math.max(alpha, 0.26);
+
+  updateTabs();
+  updateCard();
+  syncToggles();
+}
+
+/* ==================================================================
+   面板
+   ================================================================== */
+
+const statsEl = $('#stats');
+
+function stats() {
+  const n = G.nodes.filter(matches).length;
+  const e = G.links.filter(l => matches(l.a) && matches(l.b)).length;
+  statsEl.textContent = `${n} 篇笔记 · ${e} 条链接`;
+}
+
+$('#search').addEventListener('input', e => {
+  query = e.target.value.trim().toLowerCase();
+  stats();
+});
+
+function syncToggles() {
+  $('#btnLabels').setAttribute('aria-pressed', String(showLabels));
+  $('#btnArrows').setAttribute('aria-pressed', String(showArrows));
+  $('#btnColors').setAttribute('aria-pressed', String(useFolderColors));
+  $('#rLabels').setAttribute('aria-checked', String(showLabels));
+  $('#rArrows').setAttribute('aria-checked', String(showArrows));
+  $('#rColors').setAttribute('aria-checked', String(useFolderColors));
+}
+
+$('#btnLabels').addEventListener('click', () => { showLabels = !showLabels; syncToggles(); });
+$('#btnArrows').addEventListener('click', () => { showArrows = !showArrows; syncToggles(); });
+$('#btnColors').addEventListener('click', () => { useFolderColors = !useFolderColors; syncToggles(); });
+$('#rLabels').addEventListener('click', () => { showLabels = !showLabels; syncToggles(); });
+$('#rArrows').addEventListener('click', () => { showArrows = !showArrows; syncToggles(); });
+$('#rColors').addEventListener('click', () => { useFolderColors = !useFolderColors; syncToggles(); });
+
+$('#collapse').addEventListener('click', e => {
+  const p = $('#panel');
+  p.classList.toggle('collapsed');
+  e.currentTarget.textContent = p.classList.contains('collapsed') ? '+' : '—';
+});
+
+function relayout() {
+  seed(G, 26);
+  alpha = 1;
+  sel = null;
+  fit();
+}
+$('#btnRelayout2').addEventListener('click', relayout);
+$('#btnFit2').addEventListener('click', () => fitAnimated());
+
+/* ---------------- toast ---------------- */
+
+const toastEl = $('#toast');
+let toastTimer = 0;
+function toast(text) {
+  toastEl.textContent = text;
+  toastEl.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('on'), 1500);
+}
+
+/* ==================================================================
+   尺寸 / 启动
+   ================================================================== */
+
+function resize() {
+  const r = document.getElementById('c').parentElement.getBoundingClientRect();
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  W = Math.max(1, Math.round(r.width));
+  H = Math.max(1, Math.round(r.height));
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+}
+
+resize();
+applyRadius();
+seed(G, 26);
+stats();
+
+/* 开场：先空跑 420 帧把布局收敛，fit 算出来的视口才准；然后留一点余温。 */
+for (let i = 0; i < 420; i++) { step(G, alpha); alpha *= (1 - PHYS.alphaDecay); }
+alpha = 0.30;
+fit();
+
+updateTabs();
+updateCard();
+syncToggles();
+requestAnimationFrame(frame);
+
+new ResizeObserver(() => {
+  const w0 = W, h0 = H;
+  resize();
+  if (w0 !== W || h0 !== H) fit();
+}).observe(canvas.parentElement);
+</script>
+</body>
+</html>
