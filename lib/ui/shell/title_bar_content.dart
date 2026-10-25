@@ -243,29 +243,9 @@ class TitleBarLayout extends StatelessWidget {
                                   onClose: () => notes.closeTab(note.id),
                                 ),
                               ),
-                            // The graph is pinned to the end of the strip: a
-                            // view, not a document, so it has no × and never
-                            // leaves the strip.
-                            Flexible(
-                              child: _TitleTab(
-                                key: const ValueKey<String>('__graph__'),
-                                label: '图谱',
-                                icon: LucideIcons.gitFork,
-                                active: mainView == MainView.graph,
-                                onTap: () => onSelectMainView(MainView.graph),
-                              ),
-                            ),
-                            // 白板同样钉在末尾。一期只有一块（单实例视图），
-                            // 所以和「图谱」一样没有 ×。
-                            Flexible(
-                              child: _TitleTab(
-                                key: const ValueKey<String>('__canvas__'),
-                                label: '白板',
-                                icon: LucideIcons.squareDashed,
-                                active: mainView == MainView.canvas,
-                                onTap: () => onSelectMainView(MainView.canvas),
-                              ),
-                            ),
+                            // 图谱和白板曾经也钉在这里，但它们不是文档、没有
+                            // ×，占着标签条只会让真正的笔记标签被挤窄。现在
+                            // 两个入口都在左侧功能栏（见 AppRail）。
                           ],
                         ),
                       ),
@@ -369,24 +349,16 @@ class _BarDivider extends StatelessWidget {
 /// Width is content-driven up to 180px; when the strip runs out of room the
 /// [Flexible] around it shrinks the tab instead of pushing it under the
 /// outline button.
-///
-/// The graph is a *view*, not a document: it carries an icon and no close
-/// button, because closing it would just mean "go back to the note" and the
-/// strip would then have no way to reopen it.
 class _TitleTab extends StatefulWidget {
   const _TitleTab({
     super.key,
     required this.label,
-    this.icon,
     required this.active,
     required this.onTap,
     this.onClose,
   });
 
   final String label;
-
-  /// Non-null marks a view tab (the graph) rather than a note.
-  final IconData? icon;
 
   final bool active;
   final VoidCallback onTap;
@@ -439,14 +411,6 @@ class _TitleTabState extends State<_TitleTab> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
-                    if (widget.icon != null) ...<Widget>[
-                      Icon(
-                        widget.icon,
-                        size: AppIconSize.xs - 1,
-                        color: widget.active ? p.textPrimary : p.textTertiary,
-                      ),
-                      const SizedBox(width: 6),
-                    ],
                     Flexible(
                       child: Text(
                         title,

@@ -8,8 +8,13 @@ import '../../core/theme/app_tokens.dart';
 /// The narrow strip on the far left.
 ///
 /// It holds only what does not fit in the title bar's three regions: the tag
-/// view and the template action at the top, and the vault utilities — trash,
-/// settings — pinned to the bottom where they are always in the same place.
+/// view, the template action and the two full-screen views (graph, canvas) at
+/// the top, and the vault utilities — trash, settings — pinned to the bottom
+/// where they are always in the same place.
+///
+/// The graph and the canvas live here rather than in the tab strip because
+/// neither is a document: they have no ×, they cannot be closed, and pinning
+/// them to the tabs only stole width from the notes that can.
 ///
 /// Selection is marked the same way here as in every other column: an
 /// `accentSoft` square with a 2px `accent` bar against its left edge. One
@@ -20,17 +25,28 @@ class AppRail extends StatelessWidget {
     required this.view,
     required this.onSelectView,
     required this.onOpenTemplates,
+    required this.onOpenGraph,
     required this.onOpenCanvas,
     required this.onOpenTrash,
     required this.onOpenSettings,
+    this.graphActive = false,
+    this.canvasActive = false,
   });
 
   final SidebarView view;
   final ValueChanged<SidebarView> onSelectView;
   final VoidCallback onOpenTemplates;
+  final VoidCallback onOpenGraph;
   final VoidCallback onOpenCanvas;
   final VoidCallback onOpenTrash;
   final VoidCallback onOpenSettings;
+
+  /// The main area is showing that view right now.
+  ///
+  /// The rail is the only place left that says which of the three views is on
+  /// screen, so it has to carry the marker the tabs used to.
+  final bool graphActive;
+  final bool canvasActive;
 
   @override
   Widget build(BuildContext context) {
@@ -61,9 +77,18 @@ class AppRail extends StatelessWidget {
           ),
           const SizedBox(height: AppSpace.xs),
           _RailButton(
+            icon: LucideIcons.gitFork,
+            tooltip: '关系图谱',
+            shortcut: 'Ctrl+G',
+            selected: graphActive,
+            onPressed: onOpenGraph,
+          ),
+          const SizedBox(height: AppSpace.xs),
+          _RailButton(
             icon: LucideIcons.squareDashed,
             tooltip: '白板',
             shortcut: 'Ctrl+Shift+B',
+            selected: canvasActive,
             onPressed: onOpenCanvas,
           ),
           const Spacer(),

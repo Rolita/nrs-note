@@ -25,6 +25,7 @@ import 'package:nrs/ui/editor/markdown_editor.dart';
 import 'package:nrs/ui/editor/image_panel.dart';
 import 'package:nrs/ui/editor/outline_panel.dart';
 import 'package:nrs/ui/editor/table_panel.dart';
+import 'package:nrs/ui/graph/graph_view.dart';
 import 'package:nrs/ui/shell/app_shell.dart';
 import 'package:nrs/ui/shell/function_rail.dart';
 import 'package:nrs/ui/shell/note_list_panel.dart';
@@ -1794,5 +1795,44 @@ void main() {
     // 这一笔写入的自动保存还在防抖里（300ms 落笔，之后还有 2s 的收尾计时），
     // 等它走完再结束。
     await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('图谱和白板不再是标签页，入口都在左侧功能栏', (
+    WidgetTester tester,
+  ) async {
+    await pumpShell(tester);
+
+    // 标签条里只剩笔记：两个视图不是文档，占着标签只会把笔记挤窄。
+    expect(find.text('图谱'), findsNothing);
+    expect(find.text('白板'), findsNothing);
+
+    final Finder graph = find.byTooltip('关系图谱  ·  Ctrl+G');
+    final Finder canvas = find.byTooltip('白板  ·  Ctrl+Shift+B');
+    expect(graph, findsOneWidget);
+    expect(canvas, findsOneWidget);
+
+    // 图谱在白板上面，中间不夹别的东西。
+    final Rect graphRect = tester.getRect(graph);
+    final Rect canvasRect = tester.getRect(canvas);
+    expect(graphRect.bottom, lessThanOrEqualTo(canvasRect.top));
+
+    // 都在功能栏里，而不是飘到标题栏去。
+    final Rect rail = tester.getRect(find.byType(AppRail));
+    expect(rail.contains(graphRect.topLeft), isTrue);
+    expect(rail.contains(canvasRect.topLeft), isTrue);
+  });
+
+  testWidgets('点功能栏的图谱按钮切到图谱，再点笔记标签切回来', (
+    WidgetTester tester,
+  ) async {
+    await pumpShell(tester);
+
+    await tester.tap(find.byTooltip('关系图谱  ·  Ctrl+G'));
+    await tester.pumpAndSettle();
+    expect(find.byType(GraphView), findsOneWidget);
+
+    await tester.tap(find.text('一篇笔记').first);
+    await tester.pumpAndSettle();
+    expect(find.byType(EditorPane), findsOneWidget);
   });
 }

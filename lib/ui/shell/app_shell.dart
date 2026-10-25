@@ -792,10 +792,14 @@ class _AppShellState extends State<AppShell> {
                                   view: _view,
                                   onSelectView: _selectView,
                                   onOpenTemplates: _openTemplatePicker,
+                                  onOpenGraph: () =>
+                                      _selectMainView(MainView.graph),
                                   onOpenCanvas: _openCanvas,
                                   onOpenTrash: () => showTrashDialog(context),
                                   onOpenSettings: () =>
                                       showSettingsDialog(context),
+                                  graphActive: _mainView == MainView.graph,
+                                  canvasActive: _mainView == MainView.canvas,
                                 ),
                               // The panes each get a handle on the edge that faces the
                               // editor, and each handle is carved out of the pane it
