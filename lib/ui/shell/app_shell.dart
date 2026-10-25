@@ -8,6 +8,7 @@ import '../../core/platform/vault_sync.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../core/utils/canvas_document.dart';
+import '../../core/utils/external_link.dart';
 import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/markdown_outline.dart';
 import '../../core/utils/note_image.dart';
@@ -189,6 +190,27 @@ class _AppShellState extends State<AppShell> {
   ///
   /// 一期没有「打开哪一块」的选择器（P6 才有），所以就是切到那一块。
   void _openCanvas() => _selectMainView(MainView.canvas);
+
+  /// 白板上双击一张文件卡片：打开那篇笔记并切回正文。
+  ///
+  /// 卡片里存的是相对路径（`FileNode.file`），所以按路径找笔记——白板
+  /// 文件可以被别处改名，路径对不上就当这张卡片失效，什么都不做。
+  void _openFromCanvas(String relativePath) {
+    final NotesController notes = context.read<NotesController>();
+    for (final Note note in notes.allNotes) {
+      if (note.relativePath != relativePath) continue;
+      notes.select(note.id);
+      _selectMainView(MainView.note);
+      return;
+    }
+    _toast('这篇笔记已经不在了', kind: NoticeKind.info, detail: relativePath);
+  }
+
+  Future<void> _openCanvasLink(String url) async {
+    final bool opened = await openExternal(url);
+    if (!mounted || opened) return;
+    _toast('打不开这个链接', kind: NoticeKind.error, detail: url);
+  }
 
   /// 图谱里双击一个节点：打开那篇笔记并切回正文。
   void _openFromGraph(String noteId) {
@@ -814,6 +836,17 @@ class _AppShellState extends State<AppShell> {
                                         child: CanvasBoard(
                                           key: _canvasKey,
                                           document: _canvasDocument,
+                                          files: <({String path, String title})>[
+                                            for (final Note note in context
+                                                .watch<NotesController>()
+                                                .allNotes)
+                                              (
+                                                path: note.relativePath,
+                                                title: _displayTitle(note),
+                                              ),
+                                          ],
+                                          onOpenFile: _openFromCanvas,
+                                          onOpenLink: _openCanvasLink,
                                         ),
                                       ),
                                   ],

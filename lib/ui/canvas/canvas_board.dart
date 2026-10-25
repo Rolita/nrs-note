@@ -13,6 +13,7 @@ import '../../core/utils/table_model.dart' show CellColor;
 import 'canvas_card.dart';
 import 'canvas_edge_painter.dart';
 import 'canvas_grid_painter.dart';
+import 'canvas_pickers.dart';
 import 'canvas_style.dart';
 import 'canvas_toolbar.dart';
 
@@ -35,6 +36,9 @@ class CanvasBoard extends StatefulWidget {
     required this.document,
     this.onChanged,
     this.onViewportChanged,
+    this.files = const <({String path, String title})>[],
+    this.onOpenFile,
+    this.onOpenLink,
   });
 
   /// 要画的文档。null = 只读空板（还不能编辑），此时不响应任何修改。
@@ -46,6 +50,15 @@ class CanvasBoard extends StatefulWidget {
 
   /// 视口变了（缩放或平移）。
   final ValueChanged<CanvasViewport>? onViewportChanged;
+
+  /// 可以放到白板上的笔记。文件卡片的挑选列表就是它。
+  final List<({String path, String title})> files;
+
+  /// 双击文件卡片：打开那篇笔记。
+  final ValueChanged<String>? onOpenFile;
+
+  /// 双击链接卡片：用系统浏览器打开。
+  final ValueChanged<String>? onOpenLink;
 
   @override
   State<CanvasBoard> createState() => CanvasBoardState();
@@ -256,6 +269,81 @@ class CanvasBoardState extends State<CanvasBoard> {
     _beginEdit(node);
   }
 
+  /// 把一张卡片放到视口正中（或指定位置），对齐到网格并选中它。
+  T _addCard<T extends CanvasNode>(T node, {Offset? at}) {
+    final CanvasDocument doc = _doc!;
+    final Offset center = at ?? _viewport.toWorld(_stage.center(Offset.zero));
+    node.x = snapToGrid(center.dx - node.width / 2);
+    node.y = snapToGrid(center.dy - node.height / 2);
+    _mutate(() {
+      // 分组是底板，永远压在最下面；其它卡片叠在最上面。
+      if (node is GroupNode) {
+        doc.nodes.insert(0, node);
+      } else {
+        doc.nodes.add(node);
+      }
+      _selected
+        ..clear()
+        ..add(node.id);
+    });
+    return node;
+  }
+
+  /// 放一篇笔记到白板上。
+  Future<void> createFileCard({Offset? at}) async {
+    if (_readOnly) return;
+    final String? path = await showCanvasFilePicker(
+      context,
+      files: widget.files,
+    );
+    if (!mounted || path == null) return;
+    _addCard<FileNode>(
+      FileNode(
+        id: newCanvasId(),
+        x: 0,
+        y: 0,
+        width: canvasDefaultWidth,
+        height: 100,
+        file: path,
+      ),
+      at: at,
+    );
+  }
+
+  /// 放一个网址到白板上。
+  Future<void> createLinkCard({Offset? at}) async {
+    if (_readOnly) return;
+    final String? url = await showCanvasLinkDialog(context);
+    if (!mounted || url == null) return;
+    _addCard<LinkNode>(
+      LinkNode(
+        id: newCanvasId(),
+        x: 0,
+        y: 0,
+        width: canvasDefaultWidth,
+        height: 100,
+        url: url,
+      ),
+      at: at,
+    );
+  }
+
+  /// 放一个分组框。
+  Future<void> createGroupCard({Offset? at}) async {
+    if (_readOnly) return;
+    _addCard<GroupNode>(
+      GroupNode(
+        id: newCanvasId(),
+        x: 0,
+        y: 0,
+        width: 420,
+        height: 300,
+        label: '分组',
+      ),
+      at: at,
+    );
+  }
+
   /// 删掉选中的节点，连带删掉连在它们身上的边。
   void deleteSelection() {
     final CanvasDocument? doc = _doc;
@@ -286,10 +374,35 @@ class CanvasBoardState extends State<CanvasBoard> {
 
   // --------------------------------------------------------------- editing
 
+  /// 这张卡片能编辑的那段文字。null = 不可编辑（文件卡片、链接卡片）。
+  ///
+  /// 文字卡片编的是正文，分组编的是标签——两处都只有一行 `String`，
+  /// 用一个开关比开两套编辑状态省事。
+  String? _editableText(CanvasNode node) => switch (node) {
+    TextNode(:final String text) => text,
+    GroupNode(:final String? label) => label ?? '',
+    _ => null,
+  };
+
+  void _writeText(CanvasNode node, String value) {
+    switch (node) {
+      case TextNode():
+        node.text = value;
+      case GroupNode():
+        // 空标签存 null：规范里 label 是可选的，空字符串会在别人那边
+        // 变成一个「有名字但是空的」分组。
+        node.label = value.trim().isEmpty ? null : value;
+      case FileNode():
+      case LinkNode():
+        break;
+    }
+  }
+
   void _beginEdit(CanvasNode node) {
-    if (node is! TextNode) return;
-    _editor.text = node.text;
-    _editor.selection = TextSelection.collapsed(offset: node.text.length);
+    final String? current = _editableText(node);
+    if (current == null) return;
+    _editor.text = current;
+    _editor.selection = TextSelection.collapsed(offset: current.length);
     setState(() => _editingId = node.id);
     // 输入框这一帧才建出来，等它挂上再要焦点。
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -307,7 +420,7 @@ class CanvasBoardState extends State<CanvasBoard> {
     if (id == null) return;
     if (doc != null) {
       final CanvasNode? node = doc.nodeById(id);
-      if (node is TextNode) node.text = _editor.text;
+      if (node != null) _writeText(node, _editor.text);
     }
     setState(() => _editingId = null);
     widget.onChanged?.call();
@@ -506,7 +619,16 @@ class CanvasBoardState extends State<CanvasBoard> {
     final CanvasNode? node = _nodeAt(world);
     if (node != null) {
       if (_isDoubleTap(e.localPosition, node.id)) {
-        _beginEdit(node);
+        // 文件卡片和链接卡片的「双击」是打开，不是编辑——它们没有可编辑
+        // 的正文。分组卡片改的是标签，所以仍然进编辑。
+        switch (node) {
+          case FileNode(:final String file):
+            widget.onOpenFile?.call(file);
+          case LinkNode(:final String url):
+            widget.onOpenLink?.call(url);
+          default:
+            _beginEdit(node);
+        }
         return;
       }
       final bool additive = HardwareKeyboard.instance.isControlPressed;
@@ -534,6 +656,19 @@ class CanvasBoardState extends State<CanvasBoard> {
                   ),
                 ),
           );
+        // 拖分组时把它框住的卡片一起带走：分组的意思就是「这些是一伙的」，
+        // 只挪框不挪内容，等于每次都要再手动搬一遍。
+        if (node is GroupNode) {
+          final Rect box = node.rect;
+          for (final CanvasNode other in _doc!.nodes) {
+            if (other.id == node.id || other is GroupNode) continue;
+            if (!box.contains(other.rect.center)) continue;
+            _dragOrigins.putIfAbsent(
+              other.id,
+              () => Offset(other.x, other.y),
+            );
+          }
+        }
       });
       return;
     }
@@ -814,10 +949,26 @@ class CanvasBoardState extends State<CanvasBoard> {
   Future<void> _showBoardMenu(Offset global) async {
     final String? picked = await _popup(global, <PopupMenuEntry<String>>[
       const PopupMenuItem<String>(
-        value: 'new',
+        value: 'text',
         height: 34,
-        child: Text('新建卡片', style: TextStyle(fontSize: AppText.ui)),
+        child: Text('新建文字卡片', style: TextStyle(fontSize: AppText.ui)),
       ),
+      const PopupMenuItem<String>(
+        value: 'file',
+        height: 34,
+        child: Text('新建文件卡片', style: TextStyle(fontSize: AppText.ui)),
+      ),
+      const PopupMenuItem<String>(
+        value: 'link',
+        height: 34,
+        child: Text('新建链接卡片', style: TextStyle(fontSize: AppText.ui)),
+      ),
+      const PopupMenuItem<String>(
+        value: 'group',
+        height: 34,
+        child: Text('新建分组', style: TextStyle(fontSize: AppText.ui)),
+      ),
+      const PopupMenuDivider(),
       const PopupMenuItem<String>(
         value: 'fit',
         height: 34,
@@ -825,12 +976,22 @@ class CanvasBoardState extends State<CanvasBoard> {
       ),
     ]);
     if (!mounted || picked == null) return;
-    if (picked == 'new') {
-      final RenderBox? box = context.findRenderObject() as RenderBox?;
-      final Offset local = box?.globalToLocal(global) ?? global;
-      createCard(at: _viewport.toWorld(local));
-    } else if (picked == 'fit') {
+    if (picked == 'fit') {
       fitToContent();
+      return;
+    }
+    final RenderBox? box = context.findRenderObject() as RenderBox?;
+    final Offset local = box?.globalToLocal(global) ?? global;
+    final Offset at = _viewport.toWorld(local);
+    switch (picked) {
+      case 'text':
+        createCard(at: at);
+      case 'file':
+        await createFileCard(at: at);
+      case 'link':
+        await createLinkCard(at: at);
+      case 'group':
+        await createGroupCard(at: at);
     }
   }
 
@@ -1199,9 +1360,7 @@ class CanvasBoardState extends State<CanvasBoard> {
             fontFamilyFallback: AppFonts.uiFallback,
           ),
         ),
-        onChanged: (String value) {
-          if (node is TextNode) node.text = value;
-        },
+        onChanged: (String value) => _writeText(node, value),
         onTapOutside: (_) => _commitEdit(),
         onSubmitted: (_) => _commitEdit(),
       ),

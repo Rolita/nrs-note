@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -52,6 +54,9 @@ Future<Harness> pumpBoard(
   CanvasDocument? document,
   bool readOnly = false,
   Size size = const Size(1000, 700),
+  List<({String path, String title})> files = const <({String path, String title})>[],
+  ValueChanged<String>? onOpenFile,
+  ValueChanged<String>? onOpenLink,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
@@ -65,7 +70,15 @@ Future<Harness> pumpBoard(
   await tester.pumpWidget(
     MaterialApp(
       theme: AppTheme.build(AppPalette.dark),
-      home: Scaffold(body: CanvasBoard(key: key, document: doc)),
+      home: Scaffold(
+        body: CanvasBoard(
+          key: key,
+          document: doc,
+          files: files,
+          onOpenFile: onOpenFile,
+          onOpenLink: onOpenLink,
+        ),
+      ),
     ),
   );
   await tester.pumpAndSettle();
@@ -1021,6 +1034,164 @@ void main() {
 
       expect(doc.edges, isEmpty);
       expect(doc.nodes.length, 2);
+    });
+  });
+
+  group('文件卡片', () {
+    CanvasDocument withFile(String path) => CanvasDocument(
+      nodes: <CanvasNode>[
+        FileNode(
+          id: 'f1',
+          x: 0,
+          y: 0,
+          width: 250,
+          height: 100,
+          file: path,
+        ),
+      ],
+      edges: <CanvasEdge>[],
+    );
+
+    testWidgets('双击文件卡片打开那篇笔记，不进编辑', (WidgetTester tester) async {
+      final List<String> opened = <String>[];
+      final CanvasDocument doc = withFile('笔记/甲.md');
+      final Harness h = await pumpBoard(
+        tester,
+        document: doc,
+        onOpenFile: opened.add,
+      );
+
+      await doubleTapCard(tester, h, doc.nodes.first);
+
+      expect(opened, <String>['笔记/甲.md']);
+      expect(h.state.debugEditing, isNull);
+    });
+
+    testWidgets('双击链接卡片打开网址', (WidgetTester tester) async {
+      final List<String> opened = <String>[];
+      final CanvasDocument doc = CanvasDocument(
+        nodes: <CanvasNode>[
+          LinkNode(
+            id: 'l1',
+            x: 0,
+            y: 0,
+            width: 250,
+            height: 100,
+            url: 'https://example.com',
+          ),
+        ],
+        edges: <CanvasEdge>[],
+      );
+      final Harness h = await pumpBoard(
+        tester,
+        document: doc,
+        onOpenLink: opened.add,
+      );
+
+      await doubleTapCard(tester, h, doc.nodes.first);
+
+      expect(opened, <String>['https://example.com']);
+    });
+
+    testWidgets('挑一篇笔记放到白板上', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        files: const <({String path, String title})>[
+          (path: 'a.md', title: '甲'),
+          (path: 'b.md', title: '乙'),
+        ],
+      );
+
+      unawaited(h.state.createFileCard());
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('乙'));
+      await tester.pumpAndSettle();
+
+      expect(h.nodes.length, 1);
+      expect((h.nodes.first as FileNode).file, 'b.md');
+    });
+  });
+
+  group('分组', () {
+    testWidgets('新建的分组压在最底下', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        document: docWith(<CanvasNode>[cardAtOrigin()]),
+      );
+
+      unawaited(h.state.createGroupCard());
+      await tester.pumpAndSettle();
+
+      expect(h.nodes.length, 2);
+      expect(h.nodes.first, isA<GroupNode>(), reason: '分组是底板，排在最前面');
+      expect(h.nodes.last.id, 'a');
+    });
+
+    testWidgets('拖分组把它框住的卡片一起带走', (WidgetTester tester) async {
+      final CanvasDocument doc = CanvasDocument(
+        nodes: <CanvasNode>[
+          GroupNode(
+            id: 'g',
+            x: -40,
+            y: -40,
+            width: 400,
+            height: 300,
+            label: '一组',
+          ),
+          cardAtOrigin(id: 'inside'),
+          textNode('outside', x: 600, y: 0),
+        ],
+        edges: <CanvasEdge>[],
+      );
+      final Harness h = await pumpBoard(tester, document: doc);
+      final CanvasNode group = doc.nodeById('g')!;
+      final CanvasNode inside = doc.nodeById('inside')!;
+      final CanvasNode outside = doc.nodeById('outside')!;
+
+      // 点分组框的空白角落（避开里面的卡片）。
+      final Offset grab = h.state.viewport.toScreen(
+        Offset(group.x + 10, group.y + 10),
+      );
+      final TestGesture g = await tester.startGesture(
+        grab,
+        kind: PointerDeviceKind.mouse,
+      );
+      await g.moveBy(Offset(20 * h.zoom, 20 * h.zoom));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(group.x, closeTo(-20, 1e-6));
+      expect(inside.x, closeTo(20, 1e-6), reason: '框里的卡片跟着走');
+      expect(outside.x, 600, reason: '框外的卡片不动');
+    });
+
+    testWidgets('双击分组改标签', (WidgetTester tester) async {
+      final CanvasDocument doc = CanvasDocument(
+        nodes: <CanvasNode>[
+          GroupNode(
+            id: 'g',
+            x: 0,
+            y: 0,
+            width: 400,
+            height: 300,
+            label: '旧名字',
+          ),
+        ],
+        edges: <CanvasEdge>[],
+      );
+      final Harness h = await pumpBoard(tester, document: doc);
+
+      await doubleTapCard(tester, h, doc.nodes.first);
+      expect(h.state.debugEditing, 'g');
+
+      await tester.enterText(find.byType(TextField), '新名字');
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.escape);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+
+      expect((doc.nodes.first as GroupNode).label, '新名字');
     });
   });
 

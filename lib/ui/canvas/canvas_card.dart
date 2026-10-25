@@ -50,22 +50,33 @@ class CanvasCard extends StatelessWidget {
     final AppPalette p = context.palette;
     final CellColor? color = canvasCellColor(node.color);
     final double radius = (AppRadius.md * zoom).clamp(2.0, AppRadius.md);
+    // 分组是底板：半透明的浅色块 + 一圈细边，没有阴影。它得看起来像
+    // 「一块区域」，而不是「一张卡片」——否则用户会以为它和卡片同级。
+    final bool isGroup = node is GroupNode;
 
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: canvasCardFill(p, color),
+        color: isGroup
+            ? p.accentSoft.withValues(alpha: 0.22)
+            : canvasCardFill(p, color),
         borderRadius: BorderRadius.circular(radius),
         border: Border.all(
-          color: selected ? p.accent : canvasCardBorder(p, color),
+          color: selected
+              ? p.accent
+              : (isGroup
+                    ? p.accent.withValues(alpha: 0.35)
+                    : canvasCardBorder(p, color)),
           width: selected ? 1.5 : 1,
         ),
-        boxShadow: <BoxShadow>[
-          BoxShadow(
-            color: p.shadow,
-            blurRadius: selected ? 20 : 12,
-            offset: Offset(0, 2 * zoom),
-          ),
-        ],
+        boxShadow: isGroup
+            ? const <BoxShadow>[]
+            : <BoxShadow>[
+                BoxShadow(
+                  color: p.shadow,
+                  blurRadius: selected ? 20 : 12,
+                  offset: Offset(0, 2 * zoom),
+                ),
+              ],
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(radius),
