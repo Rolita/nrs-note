@@ -44,6 +44,13 @@ class CanvasController extends ChangeNotifier {
   String? _error;
   Timer? _timer;
 
+  /// 文件树要用的白板清单，由 [refreshCanvases] 填。
+  List<CanvasRef> _canvases = const <CanvasRef>[];
+
+  /// vault 里所有白板。列表为空不代表没有白板——读盘失败时它也是空的，
+  /// 那种情况下 `error` 会说明原因。
+  List<CanvasRef> get canvases => _canvases;
+
   /// 当前打开的白板。null = 还没打开过。
   CanvasDocument? get document => _document;
 
@@ -70,6 +77,32 @@ class CanvasController extends ChangeNotifier {
       _fail('读取白板列表失败', e);
       return const <CanvasRef>[];
     }
+  }
+
+  /// 重新扫一遍 vault 里的 `.nrs`，变了才通知。
+  ///
+  /// 文件树每建一次都要读这份清单，所以它必须是个字段：让树自己去 `list()`
+  /// 的话，每次输入引发的重建都会读一遍盘。
+  Future<void> refreshCanvases() async {
+    final List<CanvasRef> refs;
+    try {
+      refs = await store.list();
+    } catch (e) {
+      // 读失败就保持上一次的清单：列表里少一行，比整块白板从界面上消失好。
+      _fail('读取白板列表失败', e);
+      return;
+    }
+    if (_samePaths(refs, _canvases)) return;
+    _canvases = refs;
+    notifyListeners();
+  }
+
+  static bool _samePaths(List<CanvasRef> a, List<CanvasRef> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+      if (a[i].relativePath != b[i].relativePath) return false;
+    }
+    return true;
   }
 
   /// 打开一份白板。
@@ -108,6 +141,19 @@ class CanvasController extends ChangeNotifier {
       _path = relative;
       _dirty = false;
       _error = null;
+      // 新文件已经落盘，文件树要立刻多出一行。这里直接插进清单而不是重读
+      // 一遍：路径刚刚才知道，读盘只会换来同一份结果和一次多余的通知。
+      _canvases = <CanvasRef>[
+        ..._canvases,
+        CanvasRef(
+          relativePath: relative,
+          title: canvasTitleOf(relative),
+          modified: DateTime.now(),
+        ),
+      ]..sort(
+        (CanvasRef a, CanvasRef b) =>
+            a.relativePath.toLowerCase().compareTo(b.relativePath.toLowerCase()),
+      );
       notifyListeners();
       return true;
     } catch (e) {

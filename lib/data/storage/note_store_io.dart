@@ -173,7 +173,39 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     return scan;
   }
 
-  Future<List<File>> _mdFiles() async => (await _scanVault()).files;
+  Future<List<File>> _mdFiles() async {
+    final List<File> all = (await _scanVault()).files;
+    return all
+        .where((File f) => _mdSuffix.hasMatch(f.path))
+        .toList(growable: false);
+  }
+
+  /// 文件树要显示的「其他文件」：图片、PDF、附件。
+  ///
+  /// 排除的东西各有理由：
+  /// - `.md` 是笔记、`.nrs` 是白板，两者各有自己的通路（标题、打开方式、
+  ///   回收站），混进这个清单只会被当成陌生文件；
+  /// - `.nrs-bak` / `.nrs-tmp-*` 是写盘中途留下的残骸，正常启动时会被
+  ///   `recover` 收走，万一没收走也不该出现在列表里；
+  /// - 点开头的是隐藏文件（`.obsidian` 之类），不是用户放进来的内容。
+  @override
+  Future<List<VaultFile>> listFiles() async {
+    final List<VaultFile> out = <VaultFile>[];
+    for (final File file in (await _scanVault()).files) {
+      final String relative = _relativeOf(file);
+      final String name = relative.split('/').last;
+      if (name.startsWith('.')) continue;
+      final String lower = name.toLowerCase();
+      if (lower.endsWith('.md') || lower.endsWith('.nrs')) continue;
+      if (lower.endsWith('.nrs-bak') || lower.contains('.nrs-tmp-')) continue;
+      out.add(VaultFile(relativePath: relative));
+    }
+    out.sort(
+      (VaultFile a, VaultFile b) =>
+          a.relativePath.toLowerCase().compareTo(b.relativePath.toLowerCase()),
+    );
+    return out;
+  }
 
   /// 开 [readConcurrency] 条并发把 [count] 件事做完。
   ///
@@ -241,14 +273,12 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
               entity,
               now: recover,
             );
-            if (restored != null &&
-                files != null &&
-                _mdSuffix.hasMatch(restored.path)) {
-              files.add(restored);
-            }
+            if (restored != null && files != null) files.add(restored);
             continue;
           }
-          if (files != null && _mdSuffix.hasMatch(path)) files.add(entity);
+          // 全部收下，由调用方筛：文件树要把图片、附件一起列出来，只留
+          // `.md` 的清单在这里不够用。
+          if (files != null) files.add(entity);
         }
       }
     } on FileSystemException {
@@ -290,14 +320,11 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
   @override
   Future<List<String>> listFolders() async {
     final List<Directory> found = (await _scanVault()).dirs;
+    // `assets/` 也列出来。它是粘贴图片的落地目录，用户在资源管理器里看得
+    // 到，列表里就该看得到；藏起来只会让人问「图存哪了」。
     final List<String> folders = found
         .map(_relativeOf)
         .where((String p) => p.isNotEmpty)
-        .where(
-          (String p) => !p
-              .split('/')
-              .any((String segment) => segment.toLowerCase() == 'assets'),
-        )
         .toList();
     folders.sort(
       (String a, String b) => a.toLowerCase().compareTo(b.toLowerCase()),
@@ -602,6 +629,8 @@ class IoNoteStore with NoteStoreSupport implements NoteStore {
     final String assetsRel = folder.isEmpty ? 'assets' : '$folder/assets';
     final Directory dir = Directory(_pathFor(assetsRel));
     await dir.create(recursive: true);
+    // 新目录和新图片都要进文件树，缓存的清单里还没有它们。
+    invalidateScan();
 
     String base = _baseName(fileName.trim());
     base = base.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_');

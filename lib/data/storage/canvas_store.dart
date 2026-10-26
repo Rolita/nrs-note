@@ -23,6 +23,13 @@ class CanvasRef {
   final String title;
 
   final DateTime? modified;
+
+  /// 所在文件夹的相对路径，根目录是空串。文件树按它把白板归到正确的那一层。
+  String get folderPath {
+    final String normalized = relativePath.replaceAll('\\', '/');
+    final int slash = normalized.lastIndexOf('/');
+    return slash <= 0 ? '' : normalized.substring(0, slash);
+  }
 }
 
 /// 写不进去时抛这个：目标文件名被别的东西占了。

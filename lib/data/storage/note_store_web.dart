@@ -149,6 +149,13 @@ class WebNoteStore with NoteStoreSupport implements NoteStore {
     return _allFolders();
   }
 
+  /// 浏览器里只有笔记和白板，没有「别的文件」。
+  ///
+  /// 附件要落地成一个真实文件才有意义，`localStorage` 里塞一份二进制既
+  /// 撑不住也不值得；所以这里如实返回空清单，文件树就只显示它真有的东西。
+  @override
+  Future<List<VaultFile>> listFiles() async => const <VaultFile>[];
+
   @override
   Future<String> createFolder(String folderPath) async {
     await init();

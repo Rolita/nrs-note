@@ -37,6 +37,40 @@ class NoteFileStamp {
   int get hashCode => Object.hash(relativePath, modifiedAt, size);
 }
 
+/// vault 里一个「既不是笔记也不是白板」的文件：图片、PDF、附件。
+///
+/// 文件树把它们和笔记、白板列在一起，是为了让列表和磁盘长得一样 —— 用户
+/// 在资源管理器里看得到的文件，在这里也应该找得到，而不是只剩 `.md`。
+/// 它们不参与任何索引：不解析、不进图谱、不进回收站。
+class VaultFile {
+  const VaultFile({required this.relativePath});
+
+  /// Vault-relative path, `/`-separated.
+  final String relativePath;
+
+  /// 所在文件夹，根目录是空串。
+  String get folderPath {
+    final int slash = relativePath.lastIndexOf('/');
+    return slash <= 0 ? '' : relativePath.substring(0, slash);
+  }
+
+  /// 文件名，带后缀。
+  String get fileName => relativePath.split('/').last;
+
+  /// 后缀，不带点，保留原大小写。没有后缀时是空串。
+  String get extension {
+    final int dot = fileName.lastIndexOf('.');
+    return dot <= 0 ? '' : fileName.substring(dot + 1);
+  }
+
+  /// 去掉后缀的名字。树里显示的就是它。
+  String get title {
+    final String name = fileName;
+    final int dot = name.lastIndexOf('.');
+    return dot <= 0 ? name : name.substring(0, dot);
+  }
+}
+
 /// A deleted note waiting in the vault's trash.
 class TrashEntry {
   const TrashEntry({
@@ -124,6 +158,12 @@ abstract class NoteStore {
   /// Empty folders are included: they are real directories the user made, and a
   /// file tree that hides them cannot explain where the next note will land.
   Future<List<String>> listFolders() async => const <String>[];
+
+  /// vault 里的非笔记文件（图片、PDF、附件……），不含 `.md` 和 `.nrs`。
+  ///
+  /// 只给文件树显示用，所以不读内容、也不 stat：一个装了几百张图的
+  /// `assets/` 不值得为了一次列表去开几百个句柄。
+  Future<List<VaultFile>> listFiles() async => const <VaultFile>[];
 
   /// Creates [folderPath] and its parents. Returns the normalized path.
   Future<String> createFolder(String folderPath) async =>

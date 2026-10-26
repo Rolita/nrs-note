@@ -451,16 +451,26 @@ void main() {
       expect(await store.saveAsset('', '截图', Uint8List(1)), 'assets/截图.png');
     });
 
-    test('the assets folder stays out of the note tree', () async {
+    test('the assets folder is a folder like any other, and the pictures '
+        'inside it are listed as files', () async {
       final IoNoteStore store = IoNoteStore(overrideRoot: root);
       await store.init();
       await store.createFolder('项目');
-      await store.saveAsset('项目', 'x.png', Uint8List.fromList(<int>[1]));
+      await store.saveAsset('项目', 'x', Uint8List.fromList(<int>[1]));
 
       final List<String> folders = await store.listFolders();
 
       expect(folders, contains('项目'));
-      expect(folders.any((String p) => p.contains('assets')), isFalse);
+      // 贴图目录不再藏起来：用户在资源管理器里看得到它，列表里就该看得到。
+      expect(folders, contains('项目/assets'));
+
+      final List<VaultFile> files = await store.listFiles();
+      final List<String> paths = files
+          .map((VaultFile f) => f.relativePath)
+          .toList();
+      expect(paths, contains('项目/assets/x.png'));
+      // 笔记不在这个清单里——它有自己的通路（标题、回收站、索引）。
+      expect(paths.any((String p) => p.toLowerCase().endsWith('.md')), isFalse);
     });
   });
 }

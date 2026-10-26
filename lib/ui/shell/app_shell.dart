@@ -231,6 +231,36 @@ class _AppShellState extends State<AppShell> {
     }
   }
 
+  /// 文件树里点开一块白板：读进来，再切到白板视图。
+  ///
+  /// 和功能栏那个入口的区别只在「挑哪一块」——这里用户已经挑好了，不该再
+  /// 弹一次选择框。
+  Future<void> _openCanvasFile(CanvasRef board) async {
+    final CanvasController canvas = context.read<CanvasController>();
+    if (canvas.path != board.relativePath) {
+      if (!await canvas.open(board.relativePath)) {
+        if (mounted && canvas.error != null) {
+          _toast('白板打不开', kind: NoticeKind.error, detail: canvas.error);
+        }
+        return;
+      }
+    }
+    _selectMainView(MainView.canvas);
+  }
+
+  /// 文件树里点开一个附件（图片、PDF……）：交给系统的默认程序。
+  ///
+  /// NRS 不解释这些格式，在应用里硬画一遍只会多出一套半成品预览；用户在
+  /// 资源管理器里双击会发生什么，在这里双击就该发生什么。
+  Future<void> _openVaultFile(VaultFile file) async {
+    final String? vault = _notes.vaultPath;
+    if (vault == null) return;
+    final String path = '$vault/${file.relativePath}';
+    final bool opened = await openExternal(Uri.file(path).toString());
+    if (!mounted || opened) return;
+    _toast('打不开这个文件', kind: NoticeKind.error, detail: file.relativePath);
+  }
+
   /// 白板上双击一张文件卡片：打开那篇笔记并切回正文。
   ///
   /// 卡片里存的是相对路径（`FileNode.file`），所以按路径找笔记——白板
@@ -815,6 +845,8 @@ class _AppShellState extends State<AppShell> {
                                     onDeleteNotes: _confirmDeleteMany,
                                     onDeleteFolder: _confirmDeleteFolder,
                                     onSwitchView: _selectView,
+                                    onOpenCanvas: _openCanvasFile,
+                                    onOpenFile: _openVaultFile,
                                     // 搜索结果先开笔记，正文要等这一帧绑定
                                     // 完才可用，所以跳转挂到帧末。
                                     onRevealOffset: (int offset) {

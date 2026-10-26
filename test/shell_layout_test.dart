@@ -11,7 +11,9 @@ import 'package:nrs/core/theme/app_theme.dart';
 import 'package:nrs/core/theme/app_tokens.dart';
 import 'package:nrs/core/utils/markdown_outline.dart';
 import 'package:nrs/data/models/note.dart';
+import 'package:nrs/data/storage/canvas_store.dart';
 import 'package:nrs/data/storage/note_store.dart';
+import 'package:nrs/state/canvas_controller.dart';
 import 'package:nrs/state/notes_controller.dart';
 import 'package:nrs/state/settings_controller.dart';
 import 'package:nrs/state/template_settings.dart';
@@ -35,12 +37,48 @@ import 'package:nrs/ui/templates/template_new_note_dialog.dart';
 import 'package:nrs/ui/templates/template_picker.dart';
 
 /// A tiny vault so the shell can be built without touching the real one.
+/// 文件树只读 [CanvasController.canvases]，不碰存储。
+///
+/// 这些用例关心的是布局，不是白板；给一个永远空着的实现，省得为了一个
+/// 空清单去建真目录。
+class _NoCanvasStore implements CanvasStore {
+  _NoCanvasStore({this.canvases = const <CanvasRef>[]});
+
+  final List<CanvasRef> canvases;
+
+  @override
+  Future<void> init() async {}
+
+  @override
+  String get location => 'memory:';
+
+  @override
+  bool get supportsNativeFiles => false;
+
+  @override
+  Future<List<CanvasRef>> list() async => canvases;
+
+  @override
+  Future<String> read(String relativePath) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> write(String relativePath, String contents) async {}
+
+  @override
+  Future<String> create(String folderPath, {String? title}) async {
+    final String name = canvasFileName(title);
+    return folderPath.isEmpty ? '$name.nrs' : '$folderPath/$name.nrs';
+  }
+}
+
 class _VaultStore extends NoteStore {
-  _VaultStore(this.notes, {List<String>? folders})
+  _VaultStore(this.notes, {List<String>? folders, this.files = const <VaultFile>[]})
     : folders = <String>[...?folders];
 
   final List<Note> notes;
   final List<String> folders;
+  final List<VaultFile> files;
 
   @override
   Future<void> init() async {}
@@ -53,6 +91,9 @@ class _VaultStore extends NoteStore {
 
   @override
   Future<List<Note>> loadAll() async => List<Note>.of(notes);
+
+  @override
+  Future<List<VaultFile>> listFiles() async => files;
 
   @override
   Future<List<String>> listFolders() async => List<String>.of(folders);
@@ -147,6 +188,17 @@ void main() {
   Finder treeRow(String title) =>
       find.descendant(of: find.byType(VaultTree), matching: find.text(title));
 
+  /// 树在启动时是全折叠的，所以要看、要拖文件夹里的东西，先得把它打开。
+  ///
+  /// 走工具栏那个按钮而不是逐个点文件夹：它和用户的第一反应一致，也不用
+  /// 在用例里重复一遍路径。
+  Future<void> expandEverything(WidgetTester tester) async {
+    final Finder button = find.byTooltip('全部展开');
+    if (button.evaluate().isEmpty) return;
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+  }
+
   Note note(String id, String title, DateTime updatedAt) => Note(
     id: id,
     title: title,
@@ -160,6 +212,8 @@ void main() {
     Size size = const Size(1400, 900),
     List<Note>? vault,
     List<String>? folders,
+    List<CanvasRef>? canvases,
+    List<VaultFile>? files,
     SortMode sort = SortMode.updatedDesc,
   }) async {
     tester.view.physicalSize = size;
@@ -182,16 +236,29 @@ void main() {
       updatedAt: DateTime(2026, 1, 2),
     );
     final NotesController notes = NotesController(
-      store: _VaultStore(vault ?? <Note>[note], folders: folders),
+      store: _VaultStore(
+        vault ?? <Note>[note],
+        folders: folders,
+        files: files ?? const <VaultFile>[],
+      ),
     )..sortMode = settings.sort;
     addTearDown(notes.dispose);
     await notes.bootstrap();
+
+    // 文件树会读白板清单，外壳也会在白板视图里读当前打开的那份，所以这里
+    // 必须有个 CanvasController。它不落盘：这些用例只关心布局。
+    final CanvasController canvas = CanvasController(
+      store: _NoCanvasStore(canvases: canvases ?? const <CanvasRef>[]),
+    );
+    addTearDown(canvas.dispose);
+    await canvas.refreshCanvases();
 
     await tester.pumpWidget(
       MultiProvider(
         providers: [
           ChangeNotifierProvider<SettingsController>.value(value: settings),
           ChangeNotifierProvider<NotesController>.value(value: notes),
+          ChangeNotifierProvider<CanvasController>.value(value: canvas),
         ],
         child: MaterialApp(
           theme: AppTheme.build(settings.paletteFor(Brightness.light)),
@@ -218,8 +285,9 @@ void main() {
     expect(find.text('文件'), findsOneWidget);
     const List<String> actions = <String>[
       '排序方式',
-      // One expand/collapse button, showing 全部收起 while everything is open.
-      '全部收起',
+      // One expand/collapse button, showing 全部展开 while everything is folded
+      // — which is how the tree starts.
+      '全部展开',
       '新建文件夹',
       '新建笔记  ·  Ctrl+N',
     ];
@@ -230,7 +298,7 @@ void main() {
       expect(rect.left, greaterThanOrEqualTo(previousRight), reason: tooltip);
       previousRight = rect.right;
     }
-    expect(find.byTooltip('全部展开'), findsNothing);
+    expect(find.byTooltip('全部收起'), findsNothing);
     // Nothing sits to their right: the group ends at the panel's own edge.
     final Rect panel = tester.getRect(find.byType(NoteListPanel));
     expect(panel.right - previousRight, lessThanOrEqualTo(AppSpace.xs));
@@ -1292,6 +1360,7 @@ void main() {
               ).copyWith(folderPath: '项目'),
             ],
           );
+      await expandEverything(tester);
 
       final Rect tree = tester.getRect(find.byType(VaultTree));
       final Offset from = tester.getCenter(treeRow('A 笔记'));
@@ -1312,6 +1381,7 @@ void main() {
             note('a', 'A 笔记', DateTime(2026, 3, 1)).copyWith(folderPath: '项目'),
           ],
         );
+    await expandEverything(tester);
 
     final Offset from = tester.getCenter(treeRow('A 笔记'));
     final Offset to = tester.getCenter(treeRow('项目'));
@@ -1335,6 +1405,7 @@ void main() {
       ],
       folders: <String>['项目'],
     );
+    await expandEverything(tester);
 
     final Offset from = tester.getCenter(treeRow('A 笔记'));
     final TestGesture gesture = await tester.startGesture(from);
@@ -1362,6 +1433,7 @@ void main() {
   ) async {
     final ({SettingsController settings, NotesController notes}) app =
         await pumpShell(tester, folders: <String>['甲', '乙']);
+    await expandEverything(tester);
 
     final Offset from = tester.getCenter(treeRow('甲'));
     final Offset to = tester.getCenter(treeRow('乙'));
@@ -1596,7 +1668,14 @@ void main() {
       ],
     );
 
-    // Everything opens expanded, so the button offers to close.
+    // Everything starts folded, so the button offers to open.
+    expect(find.byTooltip('全部展开'), findsOneWidget);
+    expect(find.byTooltip('全部收起'), findsNothing);
+    expect(treeRow('A 笔记'), findsNothing, reason: '折叠的文件夹不列里面的笔记');
+
+    await tester.tap(find.byTooltip('全部展开'));
+    await tester.pumpAndSettle();
+
     expect(find.byTooltip('全部收起'), findsOneWidget);
     expect(find.byTooltip('全部展开'), findsNothing);
     expect(treeRow('A 笔记'), findsOneWidget);
@@ -1605,14 +1684,34 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byTooltip('全部展开'), findsOneWidget);
-    expect(find.byTooltip('全部收起'), findsNothing);
     expect(treeRow('A 笔记'), findsNothing, reason: '收起要把文件夹里的笔记藏起来');
+  });
 
-    await tester.tap(find.byTooltip('全部展开'));
-    await tester.pumpAndSettle();
+  testWidgets('白板、图片和只有图片的文件夹都出现在文件树里，行尾带后缀', (
+    WidgetTester tester,
+  ) async {
+    await pumpShell(
+      tester,
+      vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
+      folders: <String>['assets'],
+      canvases: <CanvasRef>[
+        const CanvasRef(relativePath: '未命名白板.nrs', title: '未命名白板'),
+      ],
+      files: <VaultFile>[const VaultFile(relativePath: 'assets/pic.png')],
+    );
+    await expandEverything(tester);
 
-    expect(find.byTooltip('全部收起'), findsOneWidget);
-    expect(treeRow('A 笔记'), findsOneWidget);
+    // 白板：行里是名字，行尾是 NRS。
+    expect(treeRow('未命名白板'), findsOneWidget);
+    expect(treeRow('NRS'), findsOneWidget);
+
+    // assets 文件夹本身就是一行（它以前被藏起来了），里面那张图也在。
+    expect(treeRow('assets'), findsOneWidget);
+    expect(treeRow('pic'), findsOneWidget);
+    expect(treeRow('PNG'), findsOneWidget);
+
+    // 笔记是默认格式，行尾不加 MD —— 和 Obsidian 一致。
+    expect(treeRow('MD'), findsNothing);
   });
 
   testWidgets('Ctrl+P 打开模板选择器，Enter 把模板插进当前笔记', (

@@ -6,26 +6,31 @@ import 'package:flutter/services.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/app_enums.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../data/models/note.dart';
+import '../../data/storage/canvas_store.dart';
+import '../../data/storage/note_store.dart';
 import '../../state/notes_controller.dart';
 import '../common/app_widgets.dart';
 import '../editor/editor_context_menu.dart';
 import 'data_safety_dialogs.dart';
 
-/// The real directory tree of the vault: folders first, then the notes that
-/// live directly in each one.
+/// The real directory tree of the vault: folders first, then the files that
+/// live directly in each one — notes, boards (`.nrs`) and everything else
+/// (pictures, attachments).
 ///
 /// Every expanded folder keeps its own row; an empty one simply shows nothing
-/// underneath. Expansion is on purpose *not* persisted: after a restart the
-/// vault opens with every folder visible, which is the state that hides the
-/// fewest notes.
+/// underneath. Expansion is on purpose *not* persisted, and the vault opens
+/// fully collapsed: with eight hundred notes, an all-expanded tree is a wall
+/// the user has to fold back one folder at a time before it becomes a list.
 ///
 /// Files select like a file manager: a plain click opens one, Shift+click takes
 /// the visible range from the anchor, and a right-click offers the per-file
 /// actions. The multi-selection is local to the tree — the editor still edits
-/// the one note that was opened last.
+/// the one note that was opened last. Boards and other files are shown for
+/// orientation, not for bulk actions: they have no trash and no tags.
 class VaultTree extends StatefulWidget {
   const VaultTree({
     super.key,
@@ -33,12 +38,30 @@ class VaultTree extends StatefulWidget {
     required this.onOpenNote,
     required this.onDeleteNotes,
     required this.onDeleteFolder,
+    this.canvases = const <CanvasRef>[],
+    this.files = const <VaultFile>[],
+    this.activeCanvasPath,
+    this.onOpenCanvas,
+    this.onOpenFile,
     this.onAllExpandedChanged,
   });
 
   final NotesController notes;
   final ValueChanged<Note> onOpenNote;
   final ValueChanged<List<Note>> onDeleteNotes;
+
+  /// 白板清单。它们和笔记一起排在同一层里，才能解释「这个文件夹里到底有
+  /// 什么」——白板不打开的时候在别处根本看不见。
+  final List<CanvasRef> canvases;
+
+  /// 图片、附件这些非笔记文件。只显示，不解析。
+  final List<VaultFile> files;
+
+  /// 当前打开的那块白板，用来给它的行加高亮。
+  final String? activeCanvasPath;
+
+  final ValueChanged<CanvasRef>? onOpenCanvas;
+  final ValueChanged<VaultFile>? onOpenFile;
 
   /// Deletes a folder after the shell's confirmation. True means the folder or
   /// the notes inside it are gone, so this tree drops its local expansion state.
@@ -125,7 +148,9 @@ class VaultTreeState extends State<VaultTree> {
         (notes.folders.isEmpty && notes.allNotes.isEmpty)) {
       return;
     }
-    _expanded.addAll(notes.folders);
+    // 启动时一个都不展开。八百多篇的库把每个文件夹都摊开，第一屏是一堵
+    // 墙，而用户接下来要做的第一件事通常是「找到某一篇」，不是「看全部」。
+    // 展开状态也不持久化：每次打开都从折叠开始，位置是可预期的。
     _seeded = true;
   }
 
@@ -211,8 +236,8 @@ class VaultTreeState extends State<VaultTree> {
 
   List<Note> _visibleFiles() {
     return _rows(widget.notes)
-        .where((_TreeRow row) => row.note != null)
-        .map((_TreeRow row) => row.note!)
+        .map((_TreeRow row) => row.entry?.note)
+        .whereType<Note>()
         .toList(growable: false);
   }
 
@@ -666,9 +691,33 @@ class VaultTreeState extends State<VaultTree> {
         parent = child;
       }
     }
-    final Map<String, List<Note>> notesByFolder = <String, List<Note>>{};
+
+    // 三种文件放在同一张表里：同一层里它们要按同一套规则排序，分成三张
+    // 表再拼起来，就只能「笔记全在前、白板全在后」，看着像两个列表。
+    final Map<String, List<_FileEntry>> filesByFolder =
+        <String, List<_FileEntry>>{};
     for (final Note note in notes.allNotes) {
-      notesByFolder.putIfAbsent(note.folderPath, () => <Note>[]).add(note);
+      filesByFolder
+          .putIfAbsent(note.folderPath, () => <_FileEntry>[])
+          .add(_FileEntry.note(note));
+    }
+    for (final CanvasRef board in widget.canvases) {
+      filesByFolder
+          .putIfAbsent(board.folderPath, () => <_FileEntry>[])
+          .add(_FileEntry.canvas(board));
+    }
+    for (final VaultFile file in widget.files) {
+      filesByFolder
+          .putIfAbsent(file.folderPath, () => <_FileEntry>[])
+          .add(_FileEntry.asset(file));
+    }
+    // `allNotes` 已经按当前排序排好，所以只有掺进别的文件的那一组才需要
+    // 重排。多数文件夹里没有白板和图片，这一步直接跳过。
+    for (final List<_FileEntry> entries in filesByFolder.values) {
+      if (!entries.any((_FileEntry e) => e.note == null)) continue;
+      entries.sort(
+        (_FileEntry a, _FileEntry b) => _compareEntries(a, b, notes.sortMode),
+      );
     }
 
     List<String> childrenOf(String parent) {
@@ -687,8 +736,9 @@ class VaultTreeState extends State<VaultTree> {
         if (!_expanded.contains(folder)) continue;
         walk(folder, depth + 1);
       }
-      for (final Note note in notesByFolder[parent] ?? const <Note>[]) {
-        rows.add(_TreeRow.file(note, depth));
+      for (final _FileEntry entry
+          in filesByFolder[parent] ?? const <_FileEntry>[]) {
+        rows.add(_TreeRow.file(entry, depth));
       }
     }
 
@@ -696,10 +746,37 @@ class VaultTreeState extends State<VaultTree> {
     return rows;
   }
 
+  /// 和 [NotesController] 的排序保持同一套规则，否则白板插进笔记中间时会
+  /// 落在一个说不通的位置。白板没有创建时间，用修改时间顶上；图片两个都
+  /// 没有，就固定排在后面。
+  static int _compareEntries(_FileEntry a, _FileEntry b, SortMode mode) {
+    final int primary = switch (mode) {
+      SortMode.titleAsc => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
+      SortMode.titleDesc => b.title.toLowerCase().compareTo(a.title.toLowerCase()),
+      SortMode.updatedDesc => _byDate(b.modified, a.modified),
+      SortMode.updatedAsc => _byDate(a.modified, b.modified),
+      SortMode.createdDesc => _byDate(b.created, a.created),
+      SortMode.createdAsc => _byDate(a.created, b.created),
+    };
+    if (primary != 0) return primary;
+    return a.path.toLowerCase().compareTo(b.path.toLowerCase());
+  }
+
+  /// 没有时间的那一方永远排在后面，不管正序倒序。
+  static int _byDate(DateTime? a, DateTime? b) {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    return a.compareTo(b);
+  }
+
   @override
   Widget build(BuildContext context) {
     final NotesController notes = widget.notes;
-    if (notes.allNotes.isEmpty && notes.folders.isEmpty) {
+    if (notes.allNotes.isEmpty &&
+        notes.folders.isEmpty &&
+        widget.canvases.isEmpty &&
+        widget.files.isEmpty) {
       return const EmptyState(
         compact: true,
         icon: LucideIcons.notebookPen,
@@ -747,8 +824,8 @@ class VaultTreeState extends State<VaultTree> {
               itemCount: rows.length,
               itemBuilder: (BuildContext context, int i) {
                 final _TreeRow row = rows[i];
-                final Note? note = row.note;
-                if (note != null) return _fileRow(row, note, notes);
+                final _FileEntry? entry = row.entry;
+                if (entry != null) return _fileRow(row, entry, notes);
                 return _folderRow(row, notes);
               },
             ),
@@ -756,13 +833,19 @@ class VaultTreeState extends State<VaultTree> {
     );
   }
 
-  Widget _fileRow(_TreeRow row, Note note, NotesController notes) {
+  Widget _fileRow(_TreeRow row, _FileEntry entry, NotesController notes) {
+    final Note? note = entry.note;
+    if (note == null) return _plainFileRow(row, entry);
+
     final bool renaming = _renamingNoteId == note.id;
     final Widget content = _FileRow(
-      note: note,
+      title: note.title.trim().isEmpty ? '未命名' : note.title.trim(),
+      tooltip: note.relativePath,
       depth: row.depth,
       selected: _selected.contains(note.id),
       active: note.id == notes.selectedId,
+      badge: entry.badge,
+      trailing: _TaskBadge(noteId: note.id),
       renameField: renaming ? _renameField() : null,
       onTap: () => _tapFile(note),
       onSecondaryTapDown: (TapDownDetails d) =>
@@ -780,6 +863,52 @@ class VaultTreeState extends State<VaultTree> {
       childWhenDragging: Opacity(opacity: 0.4, child: content),
       child: content,
     );
+  }
+
+  /// 白板和图片行：能看、能点开，但不参与多选、拖动和右键批量操作。
+  ///
+  /// 它们不进回收站，混进笔记的多选里只会让人以为删掉的东西还能找回来。
+  Widget _plainFileRow(_TreeRow row, _FileEntry entry) {
+    final CanvasRef? board = entry.canvas;
+    return _FileRow(
+      title: entry.title,
+      tooltip: entry.path,
+      depth: row.depth,
+      selected: false,
+      active: board != null && board.relativePath == widget.activeCanvasPath,
+      icon: board != null
+          ? LucideIcons.layoutDashboard
+          : _iconFor(entry.extension),
+      badge: entry.badge,
+      onTap: () {
+        if (board != null) {
+          widget.onOpenCanvas?.call(board);
+        } else if (entry.file != null) {
+          widget.onOpenFile?.call(entry.file!);
+        }
+      },
+    );
+  }
+
+  static const Set<String> _imageExtensions = <String>{
+    'png',
+    'jpg',
+    'jpeg',
+    'gif',
+    'webp',
+    'avif',
+    'bmp',
+    'svg',
+    'heic',
+    'tif',
+    'tiff',
+  };
+
+  static IconData _iconFor(String extension) {
+    final String ext = extension.toLowerCase();
+    if (_imageExtensions.contains(ext)) return LucideIcons.image;
+    if (ext == 'pdf') return LucideIcons.fileText;
+    return LucideIcons.file;
   }
 
   Widget _folderRow(_TreeRow row, NotesController notes) {
@@ -948,19 +1077,83 @@ class _TreeRow {
     required this.depth,
     this.folderPath,
     this.name = '',
-    this.note,
+    this.entry,
   });
 
   factory _TreeRow.folder(String path, String name, int depth) =>
       _TreeRow._(depth: depth, folderPath: path, name: name);
 
-  factory _TreeRow.file(Note note, int depth) =>
-      _TreeRow._(depth: depth, note: note);
+  factory _TreeRow.file(_FileEntry entry, int depth) =>
+      _TreeRow._(depth: depth, entry: entry);
 
   final int depth;
   final String? folderPath;
   final String name;
+  final _FileEntry? entry;
+}
+
+/// 文件树里的一行文件：笔记、白板，或者别的什么（图片、附件）。
+///
+/// 三者共用一套排序键，才能在同一层里混排——分成三种行、三套顺序拼起来，
+/// 结果就是「笔记在前、白板在后」，看着像两个列表而不是一个文件夹。
+class _FileEntry {
+  _FileEntry.note(Note note)
+    : this._(
+        note: note,
+        title: note.title,
+        extension: 'md',
+        modified: note.updatedAt,
+        created: note.createdAt,
+        path: note.relativePath,
+      );
+
+  _FileEntry.canvas(CanvasRef board)
+    : this._(
+        canvas: board,
+        title: board.title,
+        extension: 'nrs',
+        modified: board.modified,
+        created: board.modified,
+        path: board.relativePath,
+      );
+
+  _FileEntry.asset(VaultFile file)
+    : this._(
+        file: file,
+        title: file.title,
+        extension: file.extension,
+        modified: null,
+        created: null,
+        path: file.relativePath,
+      );
+
+  const _FileEntry._({
+    required this.title,
+    required this.extension,
+    required this.modified,
+    required this.created,
+    required this.path,
+    this.note,
+    this.canvas,
+    this.file,
+  });
+
   final Note? note;
+  final CanvasRef? canvas;
+  final VaultFile? file;
+
+  final String title;
+  final String extension;
+  final DateTime? modified;
+  final DateTime? created;
+  final String path;
+
+  /// 行尾那个后缀。
+  ///
+  /// `.md` 是空串：笔记是这个库的默认格式，每行都挂一个 MD 只是噪音。
+  /// 白板、图片、附件才是需要一眼认出来的东西——和 Obsidian 一致。
+  String get badge =>
+      extension.toLowerCase() == 'md' ? '' : extension.toUpperCase();
 }
 
 class _FolderRow extends StatelessWidget {
@@ -1047,21 +1240,39 @@ class _FolderRow extends StatelessWidget {
 
 class _FileRow extends StatelessWidget {
   const _FileRow({
-    required this.note,
+    required this.title,
+    required this.tooltip,
     required this.depth,
     required this.selected,
     required this.active,
     required this.onTap,
-    required this.onSecondaryTapDown,
+    this.icon,
+    this.badge = '',
+    this.trailing,
+    this.onSecondaryTapDown,
     this.renameField,
   });
 
-  final Note note;
+  final String title;
+
+  /// 悬停时给出的完整路径：标题可能被截断，路径不会。
+  final String tooltip;
+
   final int depth;
   final bool selected;
   final bool active;
+
+  /// 行首的小图标。笔记没有——它和文件夹名对齐着，多一个图标反而像缩进。
+  final IconData? icon;
+
+  /// 行尾的后缀（`NRS`、`PNG`……）。空串表示不显示。
+  final String badge;
+
+  /// 任务进度之类的附加信息，排在标题和后缀之间。
+  final Widget? trailing;
+
   final VoidCallback onTap;
-  final ValueChanged<TapDownDetails> onSecondaryTapDown;
+  final ValueChanged<TapDownDetails>? onSecondaryTapDown;
 
   /// Replaces the label while the note is being renamed in place.
   final Widget? renameField;
@@ -1111,17 +1322,26 @@ class _FileRow extends StatelessWidget {
                   _IndentGuides(depth: depth),
                   // Same left edge as a folder name: the folder row spends this
                   // width on its disclosure arrow.
-                  const SizedBox(width: 19),
+                  SizedBox(
+                    width: 19,
+                    child: icon == null
+                        ? null
+                        : Center(
+                            child: Icon(
+                              icon,
+                              size: 11,
+                              color: p.textTertiary,
+                            ),
+                          ),
+                  ),
                   Expanded(
                     child:
                         renameField ??
                         Tooltip(
-                          message: note.relativePath,
+                          message: tooltip,
                           waitDuration: const Duration(milliseconds: 600),
                           child: Text(
-                            note.title.trim().isEmpty
-                                ? '未命名'
-                                : note.title.trim(),
+                            title,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
@@ -1135,7 +1355,21 @@ class _FileRow extends StatelessWidget {
                           ),
                         ),
                   ),
-                  _TaskBadge(noteId: note.id),
+                  ?trailing,
+                  if (badge.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(left: AppSpace.xs),
+                      child: Text(
+                        badge,
+                        style: TextStyle(
+                          fontSize: 9.5,
+                          height: 1.1,
+                          letterSpacing: 0.3,
+                          fontWeight: FontWeight.w500,
+                          color: p.textTertiary,
+                        ),
+                      ),
+                    ),
                   const SizedBox(width: AppSpace.xxs),
                 ],
               ),

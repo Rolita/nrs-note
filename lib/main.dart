@@ -77,6 +77,9 @@ Future<void> main() async {
       // 分不清是建树慢还是光栅化慢。
       Timer(const Duration(milliseconds: 900), BootTrace.flushIfSlow);
       if (notes.error != null) return;
+      // 白板清单要等 vault 路径就绪才能读（`init()` 之后），所以挂在读盘
+      // 完成之后，不占启动的关键路径。
+      unawaited(canvas.refreshCanvases());
       saveSession();
       notes.addListener(saveSession);
     }),

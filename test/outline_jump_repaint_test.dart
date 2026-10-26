@@ -5,7 +5,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:nrs/core/theme/app_theme.dart';
 import 'package:nrs/data/models/note.dart';
+import 'package:nrs/data/storage/canvas_store.dart';
 import 'package:nrs/data/storage/note_store.dart';
+import 'package:nrs/state/canvas_controller.dart';
 import 'package:nrs/state/notes_controller.dart';
 import 'package:nrs/state/settings_controller.dart';
 import 'package:nrs/ui/editor/editor_pane.dart';
@@ -55,6 +57,32 @@ class _VaultStore extends NoteStore {
   Future<TrashEntry?> delete(Note note) async => null;
 }
 
+/// 文件树会读白板清单。这些用例只关心正文的绘制，所以给一个永远空着的
+/// 存储——为了一份空清单去建真目录，只会让测试多一条失败的理由。
+class _NoCanvasStore implements CanvasStore {
+  @override
+  Future<void> init() async {}
+
+  @override
+  String get location => 'memory:';
+
+  @override
+  bool get supportsNativeFiles => false;
+
+  @override
+  Future<List<CanvasRef>> list() async => const <CanvasRef>[];
+
+  @override
+  Future<String> read(String relativePath) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> write(String relativePath, String contents) async {}
+
+  @override
+  Future<String> create(String folderPath, {String? title}) async => '';
+}
+
 void main() {
   testWidgets('大纲跳转后第一帧就画出目标段落，不靠 hover', (
     WidgetTester tester,
@@ -80,12 +108,15 @@ void main() {
     addTearDown(notes.dispose);
     await notes.bootstrap();
     notes.select(note.id);
+    final CanvasController canvas = CanvasController(store: _NoCanvasStore());
+    addTearDown(canvas.dispose);
 
     await tester.pumpWidget(
       MultiProvider(
         providers: [
           ChangeNotifierProvider<SettingsController>.value(value: settings),
           ChangeNotifierProvider<NotesController>.value(value: notes),
+          ChangeNotifierProvider<CanvasController>.value(value: canvas),
         ],
         child: MaterialApp(
           theme: AppTheme.build(settings.paletteFor(Brightness.light)),
@@ -155,12 +186,15 @@ void main() {
     addTearDown(notes.dispose);
     await notes.bootstrap();
     notes.select(note.id);
+    final CanvasController canvas = CanvasController(store: _NoCanvasStore());
+    addTearDown(canvas.dispose);
 
     await tester.pumpWidget(
       MultiProvider(
         providers: [
           ChangeNotifierProvider<SettingsController>.value(value: settings),
           ChangeNotifierProvider<NotesController>.value(value: notes),
+          ChangeNotifierProvider<CanvasController>.value(value: canvas),
         ],
         child: MaterialApp(
           theme: AppTheme.build(settings.paletteFor(Brightness.light)),

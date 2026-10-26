@@ -10,6 +10,9 @@ import '../../core/platform/drop_support.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../data/models/note.dart';
+import '../../data/storage/canvas_store.dart';
+import '../../data/storage/note_store.dart';
+import '../../state/canvas_controller.dart';
 import '../../state/notes_controller.dart';
 import '../../state/settings_controller.dart';
 import '../common/app_widgets.dart';
@@ -30,6 +33,8 @@ class NoteListPanel extends StatefulWidget {
     required this.onDeleteFolder,
     required this.onSwitchView,
     required this.onRevealOffset,
+    this.onOpenCanvas,
+    this.onOpenFile,
   });
 
   final SidebarView view;
@@ -45,6 +50,11 @@ class NoteListPanel extends StatefulWidget {
   /// its note — the panel has no handle on the editor, the shell does.
   final ValueChanged<int> onRevealOffset;
 
+  /// 文件树里点开一块白板 / 一个附件。白板要切到白板视图，附件交给系统，
+  /// 两件事都只有外壳能做。
+  final ValueChanged<CanvasRef>? onOpenCanvas;
+  final ValueChanged<VaultFile>? onOpenFile;
+
   @override
   State<NoteListPanel> createState() => NoteListPanelState();
 }
@@ -56,7 +66,10 @@ class NoteListPanelState extends State<NoteListPanel> {
 
   /// Mirrors [VaultTreeState.allExpanded] so the toolbar button can flip its
   /// own label without waiting for a rebuild to read the tree.
-  bool _allExpanded = true;
+  ///
+  /// 从 false 开始：树在启动时是全折叠的（见 `VaultTreeState._seedIfReady`），
+  /// 按钮第一次出现时该提供的是「全部展开」。
+  bool _allExpanded = false;
 
   /// Result groups the user folded shut, by note id. Search results stay open
   /// by default — a result you have to open is a result you did not find.
@@ -253,6 +266,11 @@ class NoteListPanelState extends State<NoteListPanel> {
                 VaultTree(
                   key: _treeKey,
                   notes: notes,
+                  canvases: context.watch<CanvasController>().canvases,
+                  files: notes.files,
+                  activeCanvasPath: context.watch<CanvasController>().path,
+                  onOpenCanvas: widget.onOpenCanvas,
+                  onOpenFile: widget.onOpenFile,
                   onOpenNote: (Note note) => notes.select(note.id),
                   onDeleteNotes: widget.onDeleteNotes,
                   onDeleteFolder: widget.onDeleteFolder,

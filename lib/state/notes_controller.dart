@@ -139,6 +139,9 @@ class NotesController extends ChangeNotifier {
   List<Note> _notes = <Note>[];
   List<Note> _ordered = <Note>[];
   List<String> _folders = <String>[];
+
+  /// 文件树里的「其他文件」：图片、附件。只用于显示，不参与任何索引。
+  List<VaultFile> _files = <VaultFile>[];
   String _activeFolder = '';
   String? _selectedId;
   Note? _draft;
@@ -226,6 +229,9 @@ class NotesController extends ChangeNotifier {
       ..sort((String a, String b) => a.toLowerCase().compareTo(b.toLowerCase()));
     return List<String>.unmodifiable(list);
   }
+
+  /// 文件树里的「其他文件」：图片、PDF、附件。笔记和白板不在其中。
+  List<VaultFile> get files => List<VaultFile>.unmodifiable(_files);
 
   /// Direct children of [parentPath], as full vault-relative paths.
   List<String> childFoldersOf(String parentPath) {
@@ -505,6 +511,7 @@ class NotesController extends ChangeNotifier {
     final List<Note> loaded;
     final List<String> folders;
     final List<NoteFileStamp>? stamps;
+    final List<VaultFile> files;
     try {
       // 先读正文，再取指纹：读的时候顺手 stat 过了，`stamps()` 直接拿那份
       // 结果，不用把八百多个文件再 open 一遍。桌面端的指纹和内容来自**同一次**
@@ -512,6 +519,8 @@ class NotesController extends ChangeNotifier {
       loaded = await _store.loadAll();
       stamps = await _store.stamps();
       folders = await _store.listFolders();
+      // 不读内容也不 stat，只从上面那次遍历的结果里筛，所以它是免费的。
+      files = await _store.listFiles();
     } catch (e) {
       _error = '读取笔记库失败:$e';
       notifyListeners();
@@ -525,6 +534,7 @@ class NotesController extends ChangeNotifier {
     }
     _notes = loaded;
     _folders = folders;
+    _files = files;
     // A tab whose note is gone (deleted or moved on disk) has nothing to show.
     _openIds.removeWhere((String id) => _noteById(id) == null);
     if (_activeFolder.isNotEmpty && !_folderPaths().contains(_activeFolder)) {
