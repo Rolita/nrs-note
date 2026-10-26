@@ -20,6 +20,16 @@ namespace {
 constexpr UINT_PTR kRaiseTimerId = 0x4E525331;  // 'NRS1'
 constexpr UINT kRaiseDelayMs = 220;
 
+// Fallback for the startup show.
+//
+// Showing the window is Dart's job (it is the only side that knows the final
+// geometry). If that call never arrives -- a crash, a hung isolate -- the
+// window would stay invisible forever, so after a few seconds it appears at
+// whatever position it has. Generous on purpose: the normal path takes well
+// under a second, and showing too early is exactly the glitch this avoids.
+constexpr UINT_PTR kShowFallbackTimerId = 0x4E525332;  // 'NRS2'
+constexpr UINT kShowFallbackMs = 4000;
+
 // Reads the one physical pixel under the cursor.
 //
 // BitBlt into a 1x1 memory bitmap first, then GetPixel: reading straight from
@@ -349,13 +359,24 @@ bool FlutterWindow::OnCreate() {
   RegisterClipboardChannel();
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
-  flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
-  });
+  // Do not show the window here (the template does, via SetNextFrameCallback).
+  // The window is still at the origin from main.cpp -- (10, 10) -- and its real
+  // size and position are only known once Dart's setupWindow() has run
+  // waitUntilReadyToShow (frameless, 1360x880, centred). Showing on the first
+  // frame puts a window in the top left corner for a hundred milliseconds and
+  // then teleports it to the middle, which reads as a glitch.
+  //
+  // Dart owns the moment of appearance now: window_setup_io.dart calls
+  // windowManager.show() after the geometry is settled. This timer is only a
+  // safety net for the case where that never happens (a Dart-side failure
+  // before the call) -- an invisible-but-alive window is worse than a
+  // misplaced one.
+  ::SetTimer(GetHandle(), kShowFallbackTimerId, kShowFallbackMs, nullptr);
 
-  // Flutter can complete the first frame before the "show window" callback is
-  // registered. The following call ensures a frame is pending to ensure the
-  // window is shown. It is a no-op if the first frame hasn't completed yet.
+  // Flutter can complete the first frame before anything is registered to
+  // observe it. Asking for a frame here keeps the startup path identical to
+  // the template's: one frame is already rendered by the time the window
+  // becomes visible.
   flutter_controller_->ForceRedraw();
 
   return true;
@@ -585,6 +606,14 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
         // A new pick may have started in the meantime; it owns the window.
         if (!collapsed_for_sampling_) {
           ActivateWindow(hwnd);
+        }
+      }
+      if (wparam == kShowFallbackTimerId) {
+        ::KillTimer(hwnd, kShowFallbackTimerId);
+        // Dart normally showed it long ago; this only fires when that path
+        // never ran.
+        if (!::IsWindowVisible(hwnd)) {
+          ::ShowWindow(hwnd, SW_SHOWNORMAL);
         }
       }
       break;

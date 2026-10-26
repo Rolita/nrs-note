@@ -27,8 +27,16 @@ Future<void> setupWindow() async {
     skipTaskbar: false,
   );
   await windowManager.waitUntilReadyToShow(options, () async {
-    await windowManager.show();
-    await windowManager.focus();
+    try {
+      // 窗口此刻才第一次出现在屏幕上。runner 里那句「第一帧就 Show」已经
+      // 去掉（见 windows/runner/flutter_window.cpp）：窗口刚创建时还在
+      // (10, 10)，而真正的尺寸和居中要等上面这串调用做完才知道，第一帧就
+      // 显示会先在左上角闪一下再跳到中间。
+      await windowManager.show();
+      await windowManager.focus();
+    } on Object {
+      // 显示失败也只能继续往下走：这里没有第二种办法让窗口出现。
+    }
     BootTrace.mark('window shown');
   });
 }
