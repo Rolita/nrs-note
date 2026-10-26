@@ -26,7 +26,6 @@ class GraphSettings {
     this.depth = 1,
     this.query = '',
     this.showOrphans = true,
-    this.showArrows = false,
     this.useFolderColors = false,
     this.nodeScale = 1,
     this.linkScale = 1,
@@ -42,13 +41,13 @@ class GraphSettings {
   final String query;
 
   final bool showOrphans;
-  final bool showArrows;
 
-  /// 按文件夹着色。默认关：图谱默认是一张灰度的结构图，
-  /// 颜色留给用户主动打开——不打开的时候，颜色不该暗示任何东西。
+  /// 按文件夹着色。默认关：大多数库的笔记集中在少数几个文件夹里，打开之后
+  /// 整颗球只有一两种颜色，反而不如灰白的点云能看出结构。想要颜色语言时
+  /// 再手动打开。
   final bool useFolderColors;
 
-  /// 节点大小 / 连线距离，0.6–1.6。
+  /// 节点大小 / 连线粗细，0.6–1.6。
   final double nodeScale;
   final double linkScale;
 
@@ -60,7 +59,6 @@ class GraphSettings {
     int? depth,
     String? query,
     bool? showOrphans,
-    bool? showArrows,
     bool? useFolderColors,
     double? nodeScale,
     double? linkScale,
@@ -71,7 +69,6 @@ class GraphSettings {
       depth: depth ?? this.depth,
       query: query ?? this.query,
       showOrphans: showOrphans ?? this.showOrphans,
-      showArrows: showArrows ?? this.showArrows,
       useFolderColors: useFolderColors ?? this.useFolderColors,
       nodeScale: nodeScale ?? this.nodeScale,
       linkScale: linkScale ?? this.linkScale,
@@ -89,7 +86,6 @@ class GraphSettings {
       other.depth == depth &&
       other.query == query &&
       other.showOrphans == showOrphans &&
-      other.showArrows == showArrows &&
       other.useFolderColors == useFolderColors &&
       other.nodeScale == nodeScale &&
       other.linkScale == linkScale &&
@@ -101,7 +97,6 @@ class GraphSettings {
     depth,
     query,
     showOrphans,
-    showArrows,
     useFolderColors,
     nodeScale,
     linkScale,
@@ -222,12 +217,6 @@ class GraphPanel extends StatelessWidget {
                           value: settings.showOrphans,
                           onChanged: (bool v) =>
                               onChanged(settings.copyWith(showOrphans: v)),
-                        ),
-                        _SwitchRow(
-                          label: '连线箭头',
-                          value: settings.showArrows,
-                          onChanged: (bool v) =>
-                              onChanged(settings.copyWith(showArrows: v)),
                         ),
                         _SwitchRow(
                           label: '按文件夹着色',

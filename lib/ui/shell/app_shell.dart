@@ -771,18 +771,26 @@ class _AppShellState extends State<AppShell> {
             // narrow window) as well as on both drag handles.
             body: LayoutBuilder(
               builder: (BuildContext context, BoxConstraints c) {
+                // 图谱要整块画布：右侧那一栏（大纲 / 表格 / 图片）在图谱里
+                // 收起来，退出图谱自动回来——所以这里只做「图谱时不显示」，
+                // 不去改 `settings.*Visible`。改设置会写盘，而且「关掉再打开」
+                // 会把用户原来的选择弄丢。
+                final bool panelAllowed = _mainView != MainView.graph;
                 final bool showOutline =
+                    panelAllowed &&
                     !zen &&
                     settings.outlineVisible &&
                     c.maxWidth >= AppLayout.outlineMinShellWidth;
                 // 大纲与表格共用右侧那一栏：设置层已保证两者不会同时为真，
                 // 这里只负责在窗口太窄时把这一栏让给正文。
                 final bool showTable =
+                    panelAllowed &&
                     !zen &&
                     settings.tablePanelVisible &&
                     c.maxWidth >= AppLayout.outlineMinShellWidth;
                 // 图片列表是这一栏的第三个住户，互斥同样由设置层保证。
                 final bool showImages =
+                    panelAllowed &&
                     !zen &&
                     settings.imagePanelVisible &&
                     c.maxWidth >= AppLayout.outlineMinShellWidth;

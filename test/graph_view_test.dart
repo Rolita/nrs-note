@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -72,13 +74,27 @@ Offset nodeAt(WidgetTester tester, Harness h, String id) {
   return origin + h.view.debugNodeCenter(id)!;
 }
 
-/// 点一下，然后把双击判定那 40ms 走完。
+/// 点一下，然后把动画帧走完。
 ///
-/// 画布上挂着 [DoubleTapGestureRecognizer]，每次按下都会留一个 40ms 的
-/// 计时器；只 `pump()` 不推进时间，测试结束时会报 "Pending timers"。
+/// 画布上的按下/抬起会敲一次重绘、把 Ticker 拉起来；只 `pump()` 不推进时间，
+/// 测试结束时会报 "Pending timers"。
 Future<void> tapAndSettle(WidgetTester tester, Offset at) async {
   await tester.tapAt(at);
   await tester.pump(const Duration(milliseconds: 400));
+}
+
+/// 把鼠标挪到某个位置（不按键 → 发的是 `PointerHoverEvent`）。
+///
+/// 用完必须 `removePointer`，否则下一帧的命中测试还会把这只鼠标算进去。
+Future<TestGesture> hoverAt(WidgetTester tester, Offset at) async {
+  final TestGesture mouse = await tester.createGesture(
+    kind: PointerDeviceKind.mouse,
+  );
+  await mouse.addPointer(location: const Offset(1, 1));
+  addTearDown(mouse.removePointer);
+  await mouse.moveTo(at);
+  await tester.pump(const Duration(milliseconds: 400));
+  return mouse;
 }
 
 void main() {
@@ -110,41 +126,238 @@ void main() {
     });
   });
 
-  group('单击选中，双击跳转', () {
-    testWidgets('单击节点只选中，不跳转', (WidgetTester tester) async {
+  group('悬停高亮，单击打开', () {
+    testWidgets('鼠标停在节点上就高亮，不用点', (WidgetTester tester) async {
+      final Harness h = await pumpGraph(tester);
+
+      expect(h.view.debugHover, isNull);
+      await hoverAt(tester, nodeAt(tester, h, 'c'));
+
+      expect(h.view.debugHover, isNotNull);
+      expect(h.opened, isEmpty, reason: '悬停不该打开任何东西');
+    });
+
+    testWidgets('单击节点直接打开那篇笔记', (WidgetTester tester) async {
       final Harness h = await pumpGraph(tester);
 
       await tapAndSettle(tester, nodeAt(tester, h, 'c'));
-
-      expect(h.view.debugSelected, isNotNull);
-      expect(h.view.debugNodeCount, 5, reason: '选中不该改变图');
-      expect(h.opened, isEmpty);
-    });
-
-    testWidgets('双击节点打开那篇笔记', (WidgetTester tester) async {
-      final Harness h = await pumpGraph(tester);
-
-      final Offset target = nodeAt(tester, h, 'c');
-      await tester.tapAt(target);
-      await tester.pump(const Duration(milliseconds: 40));
-      await tester.tapAt(target);
-      await tester.pumpAndSettle();
 
       expect(h.opened, <String>['c']);
     });
 
-    testWidgets('点空白取消选中', (WidgetTester tester) async {
+    testWidgets('拖动节点只挪位置，不打开', (WidgetTester tester) async {
       final Harness h = await pumpGraph(tester);
 
-      await tapAndSettle(tester, nodeAt(tester, h, 'c'));
-      expect(h.view.debugSelected, isNotNull);
-
-      await tapAndSettle(
-        tester,
-        tester.getTopLeft(find.byKey(h.view.debugStageKey)) +
-            const Offset(12, 12),
+      final TestGesture drag = await tester.startGesture(
+        nodeAt(tester, h, 'c'),
       );
-      expect(h.view.debugSelected, isNull);
+      await drag.moveBy(const Offset(26, 14));
+      await drag.moveBy(const Offset(26, 14));
+      await drag.up();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(h.opened, isEmpty);
+    });
+
+    testWidgets('悬浮的节点钉在原地，别的一点照转', (WidgetTester tester) async {
+      final Harness h = await pumpGraph(tester);
+
+      await hoverAt(tester, nodeAt(tester, h, 'c'));
+      final Offset before = h.view.debugNodeCenter('c')!;
+      final Offset otherBefore = h.view.debugNodeCenter('b')!;
+
+      // 球转了，但 c 被钉住。
+      h.view.debugSpin(0.12, 0.26);
+
+      expect(h.view.debugNodeCenter('c'), before, reason: '钉住的点不该跟着转');
+      expect(
+        h.view.debugNodeCenter('b'),
+        isNot(otherBefore),
+        reason: '其他的点要继续漂',
+      );
+    });
+
+    testWidgets('其他节点是渐变压暗的，不是一下就黑', (WidgetTester tester) async {
+      final Harness h = await pumpGraph(tester);
+
+      // d 连的是 a，和 c 没关系：悬停 c 时它属于「其余节点」。
+      final double calm = h.view.debugAlphaOf('d')!;
+
+      await hoverAt(tester, nodeAt(tester, h, 'c'));
+      final double mid = h.view.debugAlphaOf('d')!;
+      await tester.pumpAndSettle();
+      final double dim = h.view.debugAlphaOf('d')!;
+
+      expect(mid, lessThan(calm), reason: '已经开始暗了');
+      expect(mid, greaterThan(dim), reason: '但还没暗到底——中间得有一帧');
+      expect(dim, closeTo(calm * 0.55, 0.02), reason: '终点是 0.55 倍');
+    });
+
+    testWidgets('点空白取消高亮', (WidgetTester tester) async {
+      final Harness h = await pumpGraph(tester);
+
+      await hoverAt(tester, nodeAt(tester, h, 'c'));
+      expect(h.view.debugHover, isNotNull);
+
+      final Offset empty =
+          tester.getTopLeft(find.byKey(h.view.debugStageKey)) +
+          const Offset(500, 16);
+      await tapAndSettle(tester, empty);
+      expect(h.view.debugHover, isNull);
+      expect(h.opened, isEmpty, reason: '点空白不该打开任何笔记');
+    });
+  });
+
+  group('拖拽：贴着球面滑，顺手拨开邻居', () {
+    testWidgets('拖完之后节点就停在光标下', (WidgetTester tester) async {
+      final Harness h = await pumpGraph(tester);
+
+      // 球是斜着的（进场时会转向最大的一簇），所以「屏幕位移 → 球面切向」
+      // 这一步的基向量取错方向，节点就会朝鼠标的反面跑。这条守着它。
+      final Offset start = nodeAt(tester, h, 'c');
+      const Offset move = Offset(60, -40);
+
+      final TestGesture drag = await tester.startGesture(start);
+      await drag.moveBy(move);
+      await tester.pump(const Duration(milliseconds: 60));
+
+      expect(
+        (nodeAt(tester, h, 'c') - (start + move)).distance,
+        lessThan(3),
+        reason: '节点该跟着光标走，不能反过来',
+      );
+
+      await drag.up();
+      await tester.pump(const Duration(milliseconds: 400));
+    });
+
+    testWidgets('旁边的节点会被拨开，松手弹回原位', (WidgetTester tester) async {
+      // 5 个点的球上邻居本来就离得远，没什么可拨的。要一张够密的图。
+      final List<Note> many = <Note>[
+        for (int i = 0; i < 60; i++)
+          note('n$i', 'N$i', body: '[[n${(i + 1) % 60}]] [[n${(i + 9) % 60}]]'),
+      ];
+      final Harness h = await pumpGraph(tester, notes: many, currentId: 'n0');
+
+      // `debugNodeCenter` 是画布内坐标，手势要的是全局坐标。
+      final Offset origin = tester.getTopLeft(
+        find.byKey(h.view.debugStageKey),
+      );
+      final Size stage = tester.getSize(find.byKey(h.view.debugStageKey));
+      final Offset centre = Offset(stage.width / 2, stage.height / 2);
+
+      // 取最靠中间的那颗当拖拽对象，再取**球面上**离它最近的一颗当邻居。
+      // 不能按屏幕距离挑：边缘被透视压得很密，屏幕上挨着的两颗在球上可能
+      // 隔着半张大陆。
+      String pivot = 'n0';
+      Offset pivotAt = Offset.zero;
+      ({double x, double y, double z}) pivotWorld = (x: 0, y: 0, z: 0);
+      double best = double.infinity;
+      for (final Note n in many) {
+        final Offset? at = h.view.debugNodeCenter(n.id);
+        if (at == null) continue;
+        final double d = (at - centre).distance;
+        if (d < best) {
+          best = d;
+          pivot = n.id;
+          pivotAt = at;
+          pivotWorld = h.view.debugWorldOf(n.id);
+        }
+      }
+      String mate = pivot;
+      double mateD = double.infinity;
+      for (final Note n in many) {
+        if (n.id == pivot) continue;
+        final ({double x, double y, double z}) w = h.view.debugWorldOf(n.id);
+        final double dx = w.x - pivotWorld.x;
+        final double dy = w.y - pivotWorld.y;
+        final double dz = w.z - pivotWorld.z;
+        final double d = dx * dx + dy * dy + dz * dz;
+        if (d < mateD) {
+          mateD = d;
+          mate = n.id;
+        }
+      }
+      mateD = math.sqrt(mateD);
+      expect(mateD, lessThan(0.6), reason: '找的这颗得真的在推开范围里');
+
+      final Offset mateBefore = h.view.debugNodeCenter(mate)!;
+      // 沿着「跟邻居连线垂直」的方向拖：
+      //   * 拖拽距离变了，但它和邻居在球上的距离几乎不变，不会一拖就滑出
+      //     推开范围（那会让断言变成在测别的东西）；
+      //   * 这个方向是绕球心的切线，离球心还是原来那么远，不会触发「拖到
+      //     边缘球自转」——那条是另一组用例。
+      final Offset toMate = mateBefore - pivotAt;
+      final Offset inward = centre - pivotAt;
+      Offset dir = Offset(-toMate.dy, toMate.dx);
+      if (dir.distance < 1e-3) dir = const Offset(1, 0);
+      dir = dir / dir.distance;
+      if (dir.dx * inward.dx + dir.dy * inward.dy < 0) dir = -dir;
+
+      final TestGesture drag = await tester.startGesture(origin + pivotAt);
+      await drag.moveBy(dir * 44);
+      // 推开是 90ms 铺开的，得走够帧数才到满。
+      for (int i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+
+      expect(
+        (h.view.debugNodeCenter(mate)! - mateBefore).distance,
+        greaterThan(4),
+        reason: '被拖的节点旁边该让出一个洞',
+      );
+
+      await drag.up();
+      await tester.pumpAndSettle();
+      expect(
+        (h.view.debugNodeCenter(mate)! - mateBefore).distance,
+        lessThan(0.5),
+        reason: '松手之后邻居要回到原来的位置',
+      );
+    });
+
+    testWidgets('拖出轮廓之后球自己转，把节点带到球的另一侧', (WidgetTester tester) async {
+      final Harness h = await pumpGraph(tester);
+
+      // 屏幕半径上限约 1.02R（R = 700 × 0.30 = 210），所以光标停在 280px
+      // 处时节点根本够不着——不转球的话它只会卡在轮廓上，世界坐标一动不动。
+      final Offset start = nodeAt(tester, h, 'c');
+      final ({double x, double y, double z}) before = h.view.debugWorldOf('c');
+
+      final TestGesture drag = await tester.startGesture(start);
+      await drag.moveTo(start + const Offset(280, 0));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final ({double x, double y, double z}) after = h.view.debugWorldOf('c');
+      final double moved = <double>[
+        after.x - before.x,
+        after.y - before.y,
+        after.z - before.z,
+      ].map((double v) => v * v).reduce((double a, double b) => a + b);
+      expect(
+        moved,
+        greaterThan(0.04),
+        reason: '拖到轮廓外，球该在指下滚起来，节点要绕到球的另一侧',
+      );
+
+      await drag.up();
+      await tester.pump(const Duration(milliseconds: 400));
+    });
+
+    testWidgets('拖拽只挪位置，不算单击', (WidgetTester tester) async {
+      final Harness h = await pumpGraph(tester);
+
+      final Offset start = nodeAt(tester, h, 'c');
+      final TestGesture drag = await tester.startGesture(start);
+      // 慢慢挪：每一帧都不到 1 像素，按「单帧增量」判断就会被当成单击。
+      for (int i = 0; i < 10; i++) {
+        await drag.moveBy(const Offset(1.2, 0.8));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await drag.up();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(h.opened, isEmpty, reason: '挪了 14 像素就不是单击了');
     });
   });
 

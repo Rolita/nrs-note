@@ -1978,6 +1978,34 @@ void main() {
     expect(find.byType(EditorPane), findsOneWidget);
   });
 
+  testWidgets('进图谱收起右侧那一栏，退出图谱自己回来', (WidgetTester tester) async {
+    final ({SettingsController settings, NotesController notes}) app =
+        await pumpShell(tester);
+
+    expect(find.byType(OutlinePanel), findsOneWidget, reason: '默认大纲是开着的');
+
+    await tester.tap(find.byTooltip('关系图谱  ·  Ctrl+G'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(OutlinePanel), findsNothing, reason: '图谱要整块画布');
+    expect(
+      find.byTooltip(RegExp('^大纲')),
+      findsNothing,
+      reason: '面板收起来了，开关也跟着走，不然点了没反应',
+    );
+    expect(
+      app.settings.outlineVisible,
+      isTrue,
+      reason: '只是不显示，不能改用户的选择——退出图谱要原样还回来',
+    );
+
+    await tester.tap(find.text('一篇笔记').first);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(OutlinePanel), findsOneWidget, reason: '退出图谱要还原');
+    expect(find.byTooltip(RegExp('^大纲')), findsOneWidget);
+  });
+
   testWidgets('图谱开着时点文件树里的笔记，主区切回正文', (WidgetTester tester) async {
     final ({SettingsController settings, NotesController notes}) app =
         await pumpShell(

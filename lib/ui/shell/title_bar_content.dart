@@ -134,6 +134,10 @@ class TitleBarLayout extends StatelessWidget {
       ],
     );
 
+    // 图谱里右侧那一栏是收起来的，三颗开关也就没有可指向的面板了——
+    // 留着能点但什么都不发生，比不显示更让人困惑。
+    final bool showPanelToggles = mainView != MainView.graph;
+
     final Widget outlineButton = _BarButton(
       icon: LucideIcons.listTree,
       tooltip: '大纲',
@@ -171,8 +175,9 @@ class TitleBarLayout extends StatelessWidget {
         );
         // Three toggles, one seam: they sit on the left edge of whichever panel
         // is open, so the row lines up with the panel below instead of drifting.
-        final double pairWidth =
-            _kPanelToggleSize * 3 + _kPanelToggleGap * 2;
+        final double pairWidth = showPanelToggles
+            ? _kPanelToggleSize * 3 + _kPanelToggleGap * 2
+            : 0;
         final double pairLeft = math
             .min(width - rightInset, width - captionWidth - pairWidth)
             .clamp(0.0, math.max(0.0, width - captionWidth - pairWidth));
@@ -190,24 +195,25 @@ class TitleBarLayout extends StatelessWidget {
                 ],
               ),
             ),
-            Positioned(
-              left: pairLeft,
-              width: pairWidth,
-              top: 0,
-              bottom: 0,
-              child: Center(
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    outlineButton,
-                    const SizedBox(width: _kPanelToggleGap),
-                    tableButton,
-                    const SizedBox(width: _kPanelToggleGap),
-                    imageButton,
-                  ],
+            if (showPanelToggles)
+              Positioned(
+                left: pairLeft,
+                width: pairWidth,
+                top: 0,
+                bottom: 0,
+                child: Center(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      outlineButton,
+                      const SizedBox(width: _kPanelToggleGap),
+                      tableButton,
+                      const SizedBox(width: _kPanelToggleGap),
+                      imageButton,
+                    ],
+                  ),
                 ),
               ),
-            ),
             Positioned(
               left: tabsLeft,
               right: tabsRight,

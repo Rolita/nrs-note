@@ -1,0 +1,983 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>关系图谱 · 球体</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #04060a; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+  }
+  #stage { position: fixed; inset: 0; display: block; touch-action: none; }
+
+  .hint {
+    position: fixed; left: 30px; bottom: 26px;
+    font-size: 12px; line-height: 2.1; letter-spacing: .02em;
+    color: rgba(150, 172, 205, .40);
+    pointer-events: none;
+    transition: opacity .5s ease;
+  }
+  .hint kbd {
+    font: inherit;
+    color: rgba(196, 214, 240, .62);
+    padding: 0 1px;
+  }
+  .hint .sep { color: rgba(150, 172, 205, .22); margin: 0 9px; }
+
+  .meta {
+    position: fixed; right: 30px; bottom: 26px;
+    font-size: 11px; letter-spacing: .05em;
+    color: rgba(140, 162, 196, .30);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div class="hint">
+  <div><kbd>拖拽空白</kbd> 转动<span class="sep">·</span><kbd>拖拽节点</kbd> 移动<span class="sep">·</span><kbd>点击节点</kbd> 聚焦</div>
+</div>
+<div class="meta" id="meta"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var canvas = document.getElementById('stage');
+  var ctx = canvas.getContext('2d', { alpha: false });
+  var metaEl = document.getElementById('meta');
+
+  /* ─────────────────────────── 布局常量 ─────────────────────────── */
+
+  var W = 0, H = 0, DPR = 1, cx = 0, cy = 0, R = 0, CAM = 0;
+  var bgGrad = null, rimGrad = null;
+
+  var TAU = Math.PI * 2;
+
+  /* ─────────────────────────── 数据 ─────────────────────────── */
+
+  var CLUSTERS = [
+    { name: '设计', rgb: [123, 178, 255] },
+    { name: '工程', rgb: [112, 238, 208] },
+    { name: '写作', rgb: [255, 198, 132] },
+    { name: '研究', rgb: [203, 162, 255] },
+    { name: '生活', rgb: [255, 158, 178] },
+    { name: '归档', rgb: [176, 240, 130] },
+    { name: '杂项', rgb: [158, 178, 214] }
+  ];
+
+  var NOUNS = ['首帧','光栅','缓存','索引','光标','段落','折叠','公式','高亮','拖拽',
+               '回弹','渐隐','描边','留白','间距','层级','焦点','排序','筛选','模板',
+               '变量','快照','回滚','同步','迁移','剪枝','聚类','拓扑','向量','矩阵',
+               '阻尼','惯性','投影','视差','景深','色阶','对比','质感','节奏','呼吸',
+               '密度','边界','路径','权重','收敛','迭代','残差','梯度','核','纤维'];
+
+  var n = 0;
+  var px, py, pz;          // 世界坐标（单位球）
+  var nx, ny, nz;          // 每帧旋转到相机空间
+  var sx, sy, scl, dep;    // 屏幕投影
+  var nodeCluster, nodeDeg, nodeR, nodeTitle;
+  var edgeI, edgeJ, edgeCount;
+  var adj;                 // 邻接表 Array<number[]>
+
+  var ORDER, DEPTHKEY;
+  var na, nr;              // 每帧的绘制 alpha / 屏幕半径
+
+  /* ─────────────────────────── 颜色表 ─────────────────────────── */
+
+  var CLUSTER_CSS = [];
+  var GLOW = [];
+
+  function buildColors() {
+    for (var c = 0; c < CLUSTERS.length; c++) {
+      var rgb = CLUSTERS[c].rgb;
+      CLUSTER_CSS.push('rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')');
+      GLOW.push(makeGlow(rgb));
+    }
+  }
+
+  function makeGlow(rgb) {
+    var S = 64;
+    var cv = document.createElement('canvas');
+    cv.width = cv.height = S;
+    var g = cv.getContext('2d');
+    var grd = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    grd.addColorStop(0.00, 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',1)');
+    grd.addColorStop(0.16, 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',0.55)');
+    grd.addColorStop(0.38, 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',0.18)');
+    grd.addColorStop(0.66, 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',0.045)');
+    grd.addColorStop(1.00, 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',0)');
+    g.fillStyle = grd;
+    g.fillRect(0, 0, S, S);
+    return cv;
+  }
+
+  /* ─────────────────────────── 随机工具 ─────────────────────────── */
+
+  var seed = 20261026;
+  function rnd() {
+    seed = (seed * 1664525 + 1013904223) % 4294967296;
+    return seed / 4294967296;
+  }
+  function gauss() {
+    var u = 0, v = 0;
+    while (u === 0) u = rnd();
+    while (v === 0) v = rnd();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(TAU * v);
+  }
+
+  function basisOf(c) {
+    var x = c[0], y = c[1], z = c[2];
+    var ax = 0, ay = 0, az = 1;
+    if (Math.abs(z) > 0.9) { ax = 1; az = 0; }
+    var ux = y * az - z * ay, uy = z * ax - x * az, uz = x * ay - y * ax;
+    var ul = Math.sqrt(ux * ux + uy * uy + uz * uz) || 1;
+    ux /= ul; uy /= ul; uz /= ul;
+    var vx = y * uz - z * uy, vy = z * ux - x * uz, vz = x * uy - y * ux;
+    return [ux, uy, uz, vx, vy, vz];
+  }
+
+  /* ─────────────────────────── 建图 ─────────────────────────── */
+
+  var NODE_TOTAL = 520;
+  var CLUSTER_W = [0.22, 0.19, 0.15, 0.14, 0.12, 0.10, 0.08];
+
+  function buildGraph() {
+    var K = CLUSTERS.length;
+
+    // 簇中心：斐波那契球面，保证互不重叠
+    var centers = [];
+    for (var i = 0; i < K; i++) {
+      var y = 1 - (i / (K - 1)) * 2;
+      var r = Math.sqrt(Math.max(0, 1 - y * y));
+      var th = i * 2.399963229728653;
+      centers.push([Math.cos(th) * r, y, Math.sin(th) * r]);
+    }
+
+    // 每簇节点数
+    var counts = [], acc = 0;
+    for (var c = 0; c < K; c++) {
+      var cnt = Math.round(NODE_TOTAL * CLUSTER_W[c]);
+      counts.push(cnt); acc += cnt;
+    }
+    counts[K - 1] += NODE_TOTAL - acc;
+
+    n = 0;
+    for (var c2 = 0; c2 < K; c2++) n += counts[c2];
+
+    px = new Float32Array(n); py = new Float32Array(n); pz = new Float32Array(n);
+    nx = new Float32Array(n); ny = new Float32Array(n); nz = new Float32Array(n);
+    sx = new Float32Array(n); sy = new Float32Array(n);
+    scl = new Float32Array(n); dep = new Float32Array(n);
+    nodeCluster = new Int8Array(n);
+    nodeDeg = new Int32Array(n);
+    nodeR = new Float32Array(n);
+    nodeTitle = new Array(n);
+
+    var idx = 0;
+    for (var c3 = 0; c3 < K; c3++) {
+      var ctr = centers[c3];
+      var b = basisOf(ctr);
+      for (var q = 0; q < counts[c3]; q++) {
+        // 球面高斯：绕簇中心撒点
+        var theta = rnd() * TAU;
+        var phi = Math.abs(gauss()) * 0.50 + 0.015;
+        if (phi > 1.15) phi = 1.15;
+        var ct = Math.cos(phi), st = Math.sin(phi);
+        var ca = Math.cos(theta), sa = Math.sin(theta);
+        px[idx] = ctr[0] * ct + (b[0] * ca + b[3] * sa) * st;
+        py[idx] = ctr[1] * ct + (b[1] * ca + b[4] * sa) * st;
+        pz[idx] = ctr[2] * ct + (b[2] * ca + b[5] * sa) * st;
+        nodeCluster[idx] = c3;
+        nodeTitle[idx] = CLUSTERS[c3].name + ' · ' + NOUNS[(idx * 7 + c3) % NOUNS.length];
+        idx++;
+      }
+    }
+
+    normalizeAll();
+
+    // ── 连边 ──
+    var ei = [], ej = [];
+    var seen = Object.create(null);
+
+    function link(a, b2) {
+      if (a === b2) return;
+      var lo = a < b2 ? a : b2, hi = a < b2 ? b2 : a;
+      var key = lo * 4096 + hi;
+      if (seen[key]) return;
+      seen[key] = 1;
+      ei.push(a); ej.push(b2);
+      nodeDeg[a]++; nodeDeg[b2]++;
+    }
+
+    // 簇内最近邻
+    for (var a2 = 0; a2 < n; a2++) {
+      var ca2 = nodeCluster[a2];
+      var best = [-1, -1], bestD = [Infinity, Infinity];
+      for (var b3 = 0; b3 < n; b3++) {
+        if (b3 === a2 || nodeCluster[b3] !== ca2) continue;
+        var dx = px[a2] - px[b3], dy = py[a2] - py[b3], dz = pz[a2] - pz[b3];
+        var d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < bestD[0]) { bestD[1] = bestD[0]; best[1] = best[0]; bestD[0] = d2; best[0] = b3; }
+        else if (d2 < bestD[1]) { bestD[1] = d2; best[1] = b3; }
+      }
+      if (best[0] >= 0) link(a2, best[0]);
+      if (best[1] >= 0) link(a2, best[1]);
+      if (rnd() < 0.26) link(a2, (rnd() * n) | 0);
+      if (rnd() < 0.075) {
+        var other = (rnd() * n) | 0;
+        for (var t = 0; t < 6 && nodeCluster[other] === ca2; t++) other = (rnd() * n) | 0;
+        if (nodeCluster[other] !== ca2) link(a2, other);
+      }
+    }
+
+    edgeCount = ei.length;
+    edgeI = new Int32Array(ei);
+    edgeJ = new Int32Array(ej);
+
+    // 邻接表
+    adj = new Array(n);
+    for (var v = 0; v < n; v++) adj[v] = [];
+    for (var e = 0; e < edgeCount; e++) {
+      adj[edgeI[e]].push(edgeJ[e]);
+      adj[edgeJ[e]].push(edgeI[e]);
+    }
+
+    // 半径按度数：幂次拉开差距，枢纽节点才有存在感
+    for (var u = 0; u < n; u++) {
+      var d = nodeDeg[u];
+      var rr = 0.0060 + 0.0042 * Math.pow(d, 0.62);
+      nodeR[u] = rr > 0.0300 ? 0.0300 : rr;
+    }
+
+    ORDER = new Int32Array(n);
+    DEPTHKEY = new Float32Array(n);
+    na = new Float32Array(n);
+    nr = new Float32Array(n);
+  }
+
+  function normalizeAll() {
+    for (var i = 0; i < n; i++) {
+      var l = Math.sqrt(px[i] * px[i] + py[i] * py[i] + pz[i] * pz[i]) || 1;
+      px[i] /= l; py[i] /= l; pz[i] /= l;
+    }
+  }
+
+  /* ─────────────────────────── 球面松弛 ─────────────────────────── */
+
+  function relax(iterations) {
+    var MIN_D = 0.082, MIN_D2 = MIN_D * MIN_D;
+    var SPRING = 0.165, SPRING2 = SPRING * SPRING;
+    var i, j, e, dx, dy, dz, d2, d, f, l;
+
+    for (var it = 0; it < iterations; it++) {
+      // 斥力
+      for (i = 0; i < n; i++) {
+        for (j = i + 1; j < n; j++) {
+          dx = px[i] - px[j]; dy = py[i] - py[j]; dz = pz[i] - pz[j];
+          d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 < MIN_D2 && d2 > 1e-9) {
+            d = Math.sqrt(d2);
+            f = ((MIN_D - d) / d) * 0.16;
+            px[i] += dx * f; py[i] += dy * f; pz[i] += dz * f;
+            px[j] -= dx * f; py[j] -= dy * f; pz[j] -= dz * f;
+          }
+        }
+      }
+      // 弹簧
+      for (e = 0; e < edgeCount; e++) {
+        i = edgeI[e]; j = edgeJ[e];
+        dx = px[i] - px[j]; dy = py[i] - py[j]; dz = pz[i] - pz[j];
+        d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > SPRING2) {
+          d = Math.sqrt(d2);
+          f = ((d - SPRING) / d) * 0.055;
+          px[i] -= dx * f; py[i] -= dy * f; pz[i] -= dz * f;
+          px[j] += dx * f; py[j] += dy * f; pz[j] += dz * f;
+        }
+      }
+      // 归回球面
+      for (i = 0; i < n; i++) {
+        l = Math.sqrt(px[i] * px[i] + py[i] * py[i] + pz[i] * pz[i]) || 1;
+        px[i] /= l; py[i] /= l; pz[i] /= l;
+      }
+    }
+  }
+
+  /* ─────────────────────────── 相机 ─────────────────────────── */
+
+  var M = new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  var T = new Float64Array(9);
+
+  /// 求一个旋转矩阵，把单位向量 a 转到单位向量 b（Rodrigues 公式）。
+  /// 直接写进 M，替换当前姿态。
+  function alignTo(a, b) {
+    var ax = a[0], ay = a[1], az = a[2];
+    var bx = b[0], by = b[1], bz = b[2];
+    var kx0 = ay * bz - az * by;
+    var ky0 = az * bx - ax * bz;
+    var kz0 = ax * by - ay * bx;
+    var s = Math.sqrt(kx0 * kx0 + ky0 * ky0 + kz0 * kz0);
+    var c = ax * bx + ay * by + az * bz;
+    if (s < 1e-7) return;                       // 已经平行
+    var kx = kx0 / s, ky = ky0 / s, kz = kz0 / s;
+    var t1 = 1 - c;
+
+    M[0] = 1 - t1 * (ky * ky + kz * kz);
+    M[1] = t1 * kx * ky - s * kz;
+    M[2] = t1 * kx * kz + s * ky;
+    M[3] = t1 * kx * ky + s * kz;
+    M[4] = 1 - t1 * (kx * kx + kz * kz);
+    M[5] = t1 * ky * kz - s * kx;
+    M[6] = t1 * kx * kz - s * ky;
+    M[7] = t1 * ky * kz + s * kx;
+    M[8] = 1 - t1 * (kx * kx + ky * ky);
+  }
+
+  function applyRotation(ax, ay) {
+    var ca = Math.cos(ax), sa = Math.sin(ax);
+    var cb = Math.cos(ay), sb = Math.sin(ay);
+
+    // R = Rx(ax) · Ry(ay)
+    // Ry: [ cb 0 sb; 0 1 0; -sb 0 cb ]
+    // Rx: [ 1 0 0; 0 ca -sa; 0 sa ca ]
+    var r0 = cb,            r1 = 0,        r2 = sb;
+    var r3 = sa * sb,       r4 = ca,       r5 = -sa * cb;
+    var r6 = -ca * sb,      r7 = sa,       r8 = ca * cb;
+
+    // T = R · M
+    T[0] = r0 * M[0] + r1 * M[3] + r2 * M[6];
+    T[1] = r0 * M[1] + r1 * M[4] + r2 * M[7];
+    T[2] = r0 * M[2] + r1 * M[5] + r2 * M[8];
+    T[3] = r3 * M[0] + r4 * M[3] + r5 * M[6];
+    T[4] = r3 * M[1] + r4 * M[4] + r5 * M[7];
+    T[5] = r3 * M[2] + r4 * M[5] + r5 * M[8];
+    T[6] = r6 * M[0] + r7 * M[3] + r8 * M[6];
+    T[7] = r6 * M[1] + r7 * M[4] + r8 * M[7];
+    T[8] = r6 * M[2] + r7 * M[5] + r8 * M[8];
+
+    for (var k = 0; k < 9; k++) M[k] = T[k];
+  }
+
+  /* ─────────────────────────── 状态 ─────────────────────────── */
+
+  var velX = 0, velY = 0;             // 角速度（rad/s）
+  var idleTime = 0;                   // 距上次交互的秒数
+  var introT = 0;                     // 入场进度 0..1
+  var clock = 0;
+
+  var hoverIdx = -1;
+  var focusIdx = -1;
+  var dragMode = 0;                   // 0 无 / 1 转球 / 2 拖节点
+  var dragNode = -1;
+  var lastPX = 0, lastPY = 0;
+  var pointerDownX = 0, pointerDownY = 0;
+  var pointerMoved = false;
+
+  var mouseX = -9999, mouseY = -9999, mouseInside = false;
+  var lastCursor = '';
+
+  // 惯性采样
+  var spinSamples = [];
+  var spinAccumX = 0, spinAccumY = 0;
+
+  /* ─────────────────────────── 尺寸 ─────────────────────────── */
+
+  function resize() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+
+    cx = W * 0.5;
+    cy = H * 0.5;
+    R = Math.min(W, H) * 0.355;
+    CAM = R * 5.4;
+
+    bgGrad = ctx.createRadialGradient(
+      cx - W * 0.06, cy - H * 0.10, 0,
+      cx, cy, Math.max(W, H) * 0.78
+    );
+    bgGrad.addColorStop(0, '#101a2c');
+    bgGrad.addColorStop(0.45, '#080d16');
+    bgGrad.addColorStop(1, '#04060a');
+
+    rimGrad = ctx.createRadialGradient(cx, cy, R * 0.965, cx, cy, R * 1.075);
+    rimGrad.addColorStop(0, 'rgba(110,160,235,0)');
+    rimGrad.addColorStop(0.40, 'rgba(110,160,235,0.10)');
+    rimGrad.addColorStop(0.75, 'rgba(110,160,235,0.030)');
+    rimGrad.addColorStop(1, 'rgba(110,160,235,0)');
+  }
+
+  /* ─────────────────────────── 每帧 ─────────────────────────── */
+
+  function update(dt) {
+    clock += dt;
+    idleTime += dt;
+
+    if (introT < 1) introT = Math.min(1, introT + dt / 0.85);
+
+    // ── 聚焦：把目标节点转到正对相机 ──
+    if (focusIdx >= 0) {
+      var tx = nx[focusIdx], ty = ny[focusIdx], tz = nz[focusIdx];
+      var ang = Math.acos(tz > 1 ? 1 : (tz < -1 ? -1 : tz));
+      if (ang > 0.004) {
+        // 旋转向量 ω = (ty, -tx, 0)·(ang/sinθ)，|ω| 恰好等于 ang
+        var sinT = Math.sqrt(tx * tx + ty * ty);
+        if (sinT > 1e-5) {
+          var f = (ang / sinT) * (1 - Math.exp(-dt * 7.5));
+          applyRotation(ty * f, -tx * f);
+        }
+      }
+    }
+
+    // ── 旋转 ──
+    if (dragMode === 1) {
+      // 直接跟手，角速度由采样决定
+    } else if (dragMode === 0) {
+      if (idleTime > 1.4) {
+        // 漂浮：低频噪声驱动目标角速度
+        var tt = clock * 0.135;
+        var tgtY = 0.115 + 0.052 * Math.sin(tt * 1.7) + 0.026 * Math.sin(tt * 3.13 + 1.2);
+        var tgtX = 0.020 * Math.sin(tt * 1.13 + 0.7) + 0.014 * Math.sin(tt * 2.41 + 2.1);
+        var k = 1 - Math.exp(-dt * 0.85);
+        velY += (tgtY - velY) * k;
+        velX += (tgtX - velX) * k;
+      } else {
+        // 松手后的惯性衰减
+        var damp = Math.exp(-dt * 2.6);
+        velX *= damp; velY *= damp;
+      }
+      if (focusIdx < 0) applyRotation(velX * dt, velY * dt);
+      else { var fd = Math.exp(-dt * 9); velX *= fd; velY *= fd; }
+    }
+
+    if (dragMode === 2 && dragNode >= 0) {
+      velX *= Math.exp(-dt * 8);
+      velY *= Math.exp(-dt * 8);
+    }
+  }
+
+  function project() {
+    var m0 = M[0], m1 = M[1], m2 = M[2];
+    var m3 = M[3], m4 = M[4], m5 = M[5];
+    var m6 = M[6], m7 = M[7], m8 = M[8];
+    var scaleIn = 0.93 + 0.07 * easeOut(introT);
+
+    for (var i = 0; i < n; i++) {
+      var x = px[i], y = py[i], z = pz[i];
+      var X = m0 * x + m1 * y + m2 * z;
+      var Y = m3 * x + m4 * y + m5 * z;
+      var Z = m6 * x + m7 * y + m8 * z;
+      nx[i] = X; ny[i] = Y; nz[i] = Z;
+
+      var zw = Z * R;
+      var p = CAM / (CAM - zw);
+      scl[i] = p * scaleIn;
+      sx[i] = cx + X * R * p * scaleIn;
+      sy[i] = cy - Y * R * p * scaleIn;
+      dep[i] = (Z + 1) * 0.5;
+    }
+  }
+
+  function easeOut(t) { return 1 - Math.pow(1 - t, 3); }
+
+  /* ─────────────────────────── 绘制 ─────────────────────────── */
+
+  var NB = 12;
+  var segBuf, segLen, maxEdges;
+
+  function allocEdgeBuffers() {
+    maxEdges = edgeCount + 8;
+    segBuf = new Float32Array(NB * maxEdges * 4);
+    segLen = new Int32Array(NB);
+  }
+
+  var LIGHT = (function () {
+    var v = [-0.42, -0.55, 0.72];
+    var l = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    return [v[0] / l, v[1] / l, v[2] / l];
+  })();
+
+  function render() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, W, H);
+
+    var fade = easeOut(introT);
+
+    // 极淡的球体边缘
+    ctx.globalAlpha = fade;
+    ctx.fillStyle = rimGrad;
+    ctx.fillRect(cx - R * 1.12, cy - R * 1.12, R * 2.24, R * 2.24);
+    ctx.globalAlpha = 1;
+
+    drawEdges(fade);
+    drawNodes(fade);
+    drawLabels(fade);
+  }
+
+  function drawEdges(fade) {
+    var b, e;
+    for (b = 0; b < NB; b++) segLen[b] = 0;
+
+    var hiNode = focusIdx >= 0 ? focusIdx : hoverIdx;
+    var hasHi = hiNode >= 0;
+
+    for (e = 0; e < edgeCount; e++) {
+      var i = edgeI[e], j = edgeJ[e];
+      var d = (dep[i] + dep[j]) * 0.5;
+
+      var a;
+      if (hasHi) {
+        if (i === hiNode || j === hiNode) {
+          a = 0.20 + 0.70 * d * d;
+        } else {
+          a = 0.026 + 0.100 * d * d;
+        }
+      } else {
+        a = 0.060 + 0.42 * d * d * d;
+      }
+
+      if (a < 0.006) continue;
+
+      var bi = (a * NB) | 0;
+      if (bi >= NB) bi = NB - 1;
+      var base = bi * maxEdges * 4;
+      var o = segLen[bi] * 4;
+      if (segLen[bi] >= maxEdges) continue;
+      segBuf[base + o]     = sx[i];
+      segBuf[base + o + 1] = sy[i];
+      segBuf[base + o + 2] = sx[j];
+      segBuf[base + o + 3] = sy[j];
+      segLen[bi]++;
+    }
+
+    ctx.lineWidth = 1;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#93A9C9';
+
+    for (b = 0; b < NB; b++) {
+      var len = segLen[b];
+      if (len === 0) continue;
+      var base2 = b * maxEdges * 4;
+      ctx.globalAlpha = ((b + 0.55) / NB) * fade;
+      ctx.beginPath();
+      for (var k = 0; k < len; k++) {
+        var oo = base2 + k * 4;
+        ctx.moveTo(segBuf[oo], segBuf[oo + 1]);
+        ctx.lineTo(segBuf[oo + 2], segBuf[oo + 3]);
+      }
+      ctx.stroke();
+    }
+
+    // 焦点节点的连线单独描一遍：更粗更亮，读起来是「从中心射出的光」
+    if (hasHi) {
+      var nb = adj[hiNode];
+      ctx.globalAlpha = 0.52 * fade;
+      ctx.strokeStyle = '#C4D6EC';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      for (var m = 0; m < nb.length; m++) {
+        ctx.moveTo(sx[hiNode], sy[hiNode]);
+        ctx.lineTo(sx[nb[m]], sy[nb[m]]);
+      }
+      ctx.stroke();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = '#93A9C9';
+    }
+
+    ctx.globalAlpha = 1;
+  }
+
+  function drawNodes(fade) {
+    var i, q;
+
+    for (i = 0; i < n; i++) ORDER[i] = i;
+    var arr = ORDER;
+    var dz = nz;
+    // TypedArray.sort 自带比较函数支持，别用 Array.prototype.sort.call（泛型路径）
+    arr.sort(function (a, b) { return dz[a] - dz[b]; });
+
+    var hiNode = focusIdx >= 0 ? focusIdx : hoverIdx;
+    var hiSet = hiNode >= 0 ? adj[hiNode] : null;
+
+    // ── 1. 先算好每颗点的亮度与半径 ──
+    // 颜色不做乘法：色相/饱和度固定，明暗全交给 alpha。
+    // 乘 RGB 会同时把饱和度压掉，整张图会糊成灰蓝。
+    for (q = 0; q < n; q++) {
+      i = arr[q];
+
+      var ndl = nx[i] * LIGHT[0] + ny[i] * LIGHT[1] + nz[i] * LIGHT[2];
+      if (ndl < 0) ndl = 0;
+      var lit = 0.56 + 0.44 * Math.pow(ndl, 0.85);          // 0.56 .. 1.00
+
+      var d = dep[i];
+      // 边缘（掠射角）压暗：投影压缩让边缘天然更密，若同亮度就会糊成
+      // 一圈比中心还亮的边。压暗之后轮廓变成渐隐的点线，才像球。
+      var edge = 0.66 + 0.34 * Math.min(1, Math.max(0, (d - 0.42) / 0.50));
+      var a = (0.32 + 0.68 * Math.pow(d, 1.15)) * lit * edge;
+
+      var r = nodeR[i] * R * scl[i];
+      if (r < 1.6) r = 1.6;
+
+      var isHi = i === hiNode;
+      var isNb = false;
+      if (hiSet) {
+        for (var z2 = 0; z2 < hiSet.length; z2++) {
+          if (hiSet[z2] === i) { isNb = true; break; }
+        }
+      }
+
+      if (isHi) { a = 1; r *= 1.5; }
+      else if (hiSet && !isNb) { a *= 0.40; }
+      else if (isNb) { a = Math.min(1, a * 1.2 + 0.34); r *= 1.14; }
+
+      na[i] = a;
+      nr[i] = r;
+    }
+
+    // ── 2. 辉光：加色叠加。整帧只切一次合成模式 ──
+    // 辉光按深度强衰减：球体边缘的点被投影压得很密，若也发光就会叠成
+    // 一圈过曝的「项链」。让边缘退回细密点线，正面才留发光团。
+    ctx.globalCompositeOperation = 'lighter';
+    for (q = 0; q < n; q++) {
+      i = arr[q];
+      if (na[i] < 0.20) continue;
+      var g = nr[i] * (i === hiNode ? 7.0 : 4.6);
+      var dk = Math.pow(dep[i], 1.7);
+      ctx.globalAlpha = Math.min(0.85, na[i] * 0.46 * dk) * fade;
+      ctx.drawImage(GLOW[nodeCluster[i]], sx[i] - g, sy[i] - g, g * 2, g * 2);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+
+    // ── 3. 本体 ──
+    for (q = 0; q < n; q++) {
+      i = arr[q];
+      ctx.globalAlpha = na[i] * fade;
+      ctx.fillStyle = CLUSTER_CSS[nodeCluster[i]];
+      ctx.beginPath();
+      ctx.arc(sx[i], sy[i], nr[i], 0, TAU);
+      ctx.fill();
+    }
+
+    // ── 4. 选中环 ──
+    if (hiNode >= 0) {
+      i = hiNode;
+      ctx.globalAlpha = 0.62 * fade;
+      ctx.strokeStyle = 'rgba(236,245,255,0.9)';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.arc(sx[i], sy[i], nr[i] + 4.5, 0, TAU);
+      ctx.stroke();
+    }
+
+    ctx.globalAlpha = 1;
+  }
+
+  function drawLabels(fade) {
+    var i;
+    // [下标, 字号, 不透明度, 位置模式]  0=节点上方 1=左侧 2=右侧
+    var shown = [];
+
+    // 1. 悬停 / 聚焦的节点
+    var main = hoverIdx >= 0 ? hoverIdx : focusIdx;
+    if (main >= 0) shown.push([main, 13, 0.95, 0]);
+
+    // 2. 聚焦时的一跳邻居：沿辐射方向左右引出，别都堆在节点上方
+    if (focusIdx >= 0) {
+      var nb = adj[focusIdx];
+      for (i = 0; i < nb.length && i < 12; i++) {
+        var j = nb[i];
+        if (j === main) continue;
+        shown.push([j, 12, 0.62, sx[j] >= sx[focusIdx] ? 2 : 1]);
+      }
+    }
+
+    // 3. 静止时的「地标」：度数最高的几颗
+    if (main < 0) {
+      var top = [];
+      for (i = 0; i < n; i++) if (dep[i] > 0.58 && nodeDeg[i] >= 5) top.push(i);
+      top.sort(function (a, b) { return nodeDeg[b] - nodeDeg[a]; });
+      for (i = 0; i < top.length && i < 9; i++) shown.push([top[i], 11.5, 0.34, 0]);
+    }
+
+    if (!shown.length) return;
+
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+
+    for (var s = 0; s < shown.length; s++) {
+      i = shown[s][0];
+      var size = shown[s][1];
+      var op = shown[s][2];
+      var mode = shown[s][3];
+
+      var r = nr[i];
+      if (r < 1.6) r = 1.6;
+
+      var lx, ly;
+      if (mode === 0) {
+        ctx.textAlign = 'center';
+        lx = sx[i];
+        ly = sy[i] - r - 18;
+        if (ly < 16) ly = sy[i] + r + 18;
+      } else if (mode === 1) {
+        ctx.textAlign = 'right';
+        lx = sx[i] - r - 9;
+        ly = sy[i];
+      } else {
+        ctx.textAlign = 'left';
+        lx = sx[i] + r + 9;
+        ly = sy[i];
+      }
+
+      ctx.font = '500 ' + size + 'px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif';
+      var txt = nodeTitle[i];
+
+      // 深色描边代替底板：文字从任何背景上浮出来，又没有块状感
+      ctx.globalAlpha = op * fade;
+      ctx.lineWidth = 3.2;
+      ctx.strokeStyle = 'rgba(3,6,11,0.92)';
+      ctx.strokeText(txt, lx, ly);
+
+      ctx.fillStyle = mode === 0 ? 'rgba(242,248,255,1)' : 'rgba(206,221,242,1)';
+      ctx.fillText(txt, lx, ly);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /* ─────────────────────────── 命中 ─────────────────────────── */
+
+  function pickNode(mx, my) {
+    var best = -1, bestScore = Infinity;
+    for (var i = 0; i < n; i++) {
+      var dx = mx - sx[i], dy = my - sy[i];
+      var r = nodeR[i] * R * scl[i];
+      if (r < 1.55) r = 1.55;
+      var hit = Math.max(r + 6, 9);
+      var d2 = dx * dx + dy * dy;
+      if (d2 > hit * hit) continue;
+      var score = d2 - nz[i] * 600;
+      if (score < bestScore) { bestScore = score; best = i; }
+    }
+    return best;
+  }
+
+  /* ─────────────────────────── 交互 ─────────────────────────── */
+
+  function onDown(e) {
+    canvas.setPointerCapture(e.pointerId);
+    lastPX = e.clientX; lastPY = e.clientY;
+    pointerDownX = e.clientX; pointerDownY = e.clientY;
+    pointerMoved = false;
+    idleTime = 0;
+    spinSamples.length = 0;
+    spinAccumX = 0; spinAccumY = 0;
+
+    var hit = pickNode(e.clientX, e.clientY);
+    if (hit >= 0) {
+      dragMode = 2;
+      dragNode = hit;
+      velX = 0; velY = 0;
+    } else {
+      // 按在空白处就是要转球，先放开聚焦，否则球被锁住转不动
+      focusIdx = -1;
+      dragMode = 1;
+      dragNode = -1;
+    }
+  }
+
+  function onMove(e) {
+    mouseX = e.clientX; mouseY = e.clientY; mouseInside = true;
+
+    if (dragMode === 0) {
+      idleTime = 0;
+      return;
+    }
+
+    var dx = e.clientX - lastPX;
+    var dy = e.clientY - lastPY;
+    if (Math.abs(e.clientX - pointerDownX) + Math.abs(e.clientY - pointerDownY) > 3) {
+      pointerMoved = true;
+    }
+
+    if (dragMode === 1) {
+      idleTime = 0;
+      applyRotation(dy * 0.0062, dx * 0.0062);
+      spinAccumX += dy * 0.0062;
+      spinAccumY += dx * 0.0062;
+      spinSamples.push([dx, dy]);
+      if (spinSamples.length > 6) spinSamples.shift();
+    } else if (dragMode === 2 && dragNode >= 0) {
+      idleTime = 0;
+      var i = dragNode;
+      // 屏幕位移 → 球面切向位移
+      var k = 1 / (R * scl[i]);
+      var rwx = M[0], rwy = M[3], rwz = M[6];   // 相机 x 轴在世界空间
+      var uwx = M[1], uwy = M[4], uwz = M[7];   // 相机 y 轴在世界空间
+
+      var mx2 = rwx * (dx * k) - uwx * (dy * k);
+      var my2 = rwy * (dx * k) - uwy * (dy * k);
+      var mz2 = rwz * (dx * k) - uwz * (dy * k);
+
+      var ax = px[i] + mx2, ay = py[i] + my2, az = pz[i] + mz2;
+      var l = Math.sqrt(ax * ax + ay * ay + az * az) || 1;
+      px[i] = ax / l; py[i] = ay / l; pz[i] = az / l;
+    }
+
+    lastPX = e.clientX; lastPY = e.clientY;
+  }
+
+  function onUp(e) {
+    if (dragMode === 1 && spinSamples.length) {
+      var sxSum = 0, sySum = 0;
+      for (var i = 0; i < spinSamples.length; i++) {
+        sxSum += spinSamples[i][0];
+        sySum += spinSamples[i][1];
+      }
+      var inv = 1 / spinSamples.length;
+      // 换算成角速度：松手瞬间保持拖动时的转速，之后自然衰减
+      velY = sxSum * inv * 0.0062 * 46;
+      velX = sySum * inv * 0.0062 * 46;
+      var mag = Math.sqrt(velX * velX + velY * velY);
+      if (mag > 1.6) { velX *= 1.6 / mag; velY *= 1.6 / mag; }
+      if (mag < 0.02) { velX = 0; velY = 0; }
+      spinSamples.length = 0;
+    }
+
+    if (dragMode === 2 && !pointerMoved) {
+      // 点击节点 → 聚焦切换
+      focusIdx = (focusIdx === dragNode) ? -1 : dragNode;
+      velX = 0; velY = 0;
+    }
+
+    dragMode = 0;
+    dragNode = -1;
+    idleTime = 0;
+    try { canvas.releasePointerCapture(e.pointerId); } catch (err) {}
+  }
+
+  function onLeave() {
+    mouseInside = false;
+    mouseX = -9999; mouseY = -9999;
+  }
+
+  function onWheel(e) {
+    e.preventDefault();
+    // 轻微推拉，克制：只改视野
+    var k = Math.exp(-e.deltaY * 0.0012);
+    CAM *= k;
+    CAM = Math.max(R * 2.4, Math.min(R * 9, CAM));
+    idleTime = 0;
+  }
+
+  /* ─────────────────────────── 主循环 ─────────────────────────── */
+
+  var last = 0;
+
+  function frame(now) {
+    if (!last) last = now;
+    var dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.05) dt = 0.05;
+    if (dt < 0) dt = 0;
+
+    update(dt);
+    project();
+
+    // 悬停检测（球在转，鼠标不动也要更新）
+    var wantCursor = 'default';
+    if (dragMode === 0 && mouseInside) {
+      hoverIdx = pickNode(mouseX, mouseY);
+      wantCursor = hoverIdx >= 0 ? 'grab' : 'default';
+    } else if (dragMode === 1 || dragMode === 2) {
+      wantCursor = 'grabbing';
+    } else {
+      hoverIdx = -1;
+    }
+    if (wantCursor !== lastCursor) {
+      canvas.style.cursor = wantCursor;
+      lastCursor = wantCursor;
+    }
+
+    render();
+    requestAnimationFrame(frame);
+  }
+
+  /* ─────────────────────────── 启动 ─────────────────────────── */
+
+  function boot() {
+    buildColors();
+    buildGraph();
+    relax(26);
+    allocEdgeBuffers();
+    resize();
+
+    metaEl.textContent = n + ' 个节点 · ' + edgeCount + ' 条连接';
+
+    // 初始姿态：把节点最多的簇转到正面。
+    // 球心正好落在簇间空隙时，整张图会显得空——这一步保证第一眼有内容。
+    // 目标方向刻意偏一点，完全正对会把球压平。
+    var bigC = 0, bigN = -1;
+    for (var c = 0; c < CLUSTERS.length; c++) {
+      var cnt = 0;
+      for (var i0 = 0; i0 < n; i0++) if (nodeCluster[i0] === c) cnt++;
+      if (cnt > bigN) { bigN = cnt; bigC = c; }
+    }
+    var vx = 0, vy = 0, vz = 0;
+    for (var i1 = 0; i1 < n; i1++) {
+      if (nodeCluster[i1] !== bigC) continue;
+      vx += px[i1]; vy += py[i1]; vz += pz[i1];
+    }
+    var vl = Math.sqrt(vx * vx + vy * vy + vz * vz) || 1;
+    var tX = 0.17, tY = -0.13, tZ = 0.976;
+    var tl = Math.sqrt(tX * tX + tY * tY + tZ * tZ);
+    alignTo([vx / vl, vy / vl, vz / vl], [tX / tl, tY / tl, tZ / tl]);
+
+    // 设计稿调试：地址带 #focus 直接进入聚焦态，方便核对高亮与标签
+    if (location.hash.indexOf('focus') >= 0) {
+      var b0 = 0;
+      for (var k = 0; k < n; k++) if (nodeDeg[k] > nodeDeg[b0]) b0 = k;
+      focusIdx = b0;
+    }
+
+    // 设计稿调试：地址带 #bench 时同步跑 120 帧，把每帧 CPU 耗时写进标题。
+    // 测的是画布命令提交（不含 GPU 合成），够用来判断 JS 侧有没有瓶颈。
+    if (location.hash.indexOf('bench') >= 0) {
+      project();
+      render();
+      var bt = performance.now();
+      for (var bi = 0; bi < 120; bi++) render();
+      document.title = 'BENCH ' + ((performance.now() - bt) / 120).toFixed(2) + ' ms/frame';
+      return;
+    }
+
+    window.addEventListener('resize', resize);
+    canvas.addEventListener('pointerdown', onDown);
+    canvas.addEventListener('pointermove', onMove);
+    canvas.addEventListener('pointerup', onUp);
+    canvas.addEventListener('pointercancel', onUp);
+    canvas.addEventListener('pointerleave', onLeave);
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+    requestAnimationFrame(frame);
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>
