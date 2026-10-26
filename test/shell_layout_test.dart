@@ -19,6 +19,7 @@ import 'package:nrs/state/settings_controller.dart';
 import 'package:nrs/state/template_settings.dart';
 import 'package:nrs/ui/common/app_widgets.dart';
 import 'package:nrs/ui/common/notices.dart';
+import 'package:nrs/ui/canvas/canvas_board.dart';
 import 'package:nrs/ui/editor/editor_context_menu.dart';
 import 'package:nrs/ui/editor/editor_pane.dart';
 import 'package:nrs/ui/editor/line_layout/line_editable_text.dart';
@@ -60,7 +61,7 @@ class _NoCanvasStore implements CanvasStore {
 
   @override
   Future<String> read(String relativePath) async =>
-      throw UnimplementedError();
+      '{"nodes":[],"edges":[]}';
 
   @override
   Future<void> write(String relativePath, String contents) async {}
@@ -1975,5 +1976,49 @@ void main() {
     await tester.tap(find.text('一篇笔记').first);
     await tester.pumpAndSettle();
     expect(find.byType(EditorPane), findsOneWidget);
+  });
+
+  testWidgets('图谱开着时点文件树里的笔记，主区切回正文', (WidgetTester tester) async {
+    final ({SettingsController settings, NotesController notes}) app =
+        await pumpShell(
+          tester,
+          vault: <Note>[
+            note('a', 'A 笔记', DateTime(2026, 3, 1)),
+            note('b', 'B 笔记', DateTime(2026, 3, 2)),
+          ],
+        );
+
+    await tester.tap(find.byTooltip('关系图谱  ·  Ctrl+G'));
+    await tester.pumpAndSettle();
+    expect(find.byType(GraphView), findsOneWidget);
+
+    await tester.tap(treeRow('A 笔记'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(GraphView), findsNothing, reason: '点笔记要回到正文');
+    expect(find.byType(EditorPane), findsOneWidget);
+    expect(app.notes.selectedId, 'a');
+  });
+
+  testWidgets('白板开着时点文件树里的笔记，主区切回正文', (WidgetTester tester) async {
+    final ({SettingsController settings, NotesController notes}) app =
+        await pumpShell(
+          tester,
+          vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
+          canvases: <CanvasRef>[
+            const CanvasRef(relativePath: '板.nrs', title: '板'),
+          ],
+        );
+
+    await tester.tap(treeRow('板'));
+    await tester.pumpAndSettle();
+    expect(find.byType(CanvasBoard), findsOneWidget);
+
+    await tester.tap(treeRow('A 笔记'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(CanvasBoard), findsNothing, reason: '点笔记要回到正文');
+    expect(find.byType(EditorPane), findsOneWidget);
+    expect(app.notes.selectedId, 'a');
   });
 }

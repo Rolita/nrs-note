@@ -33,6 +33,7 @@ class NoteListPanel extends StatefulWidget {
     required this.onDeleteFolder,
     required this.onSwitchView,
     required this.onRevealOffset,
+    this.onOpenNote,
     this.onOpenCanvas,
     this.onOpenFile,
   });
@@ -45,6 +46,10 @@ class NoteListPanel extends StatefulWidget {
   /// forget the folder and the notes that lived there.
   final Future<bool> Function(String folderPath) onDeleteFolder;
   final ValueChanged<SidebarView> onSwitchView;
+
+  /// 点开一篇笔记。外壳要做的不只是选中：主区可能正停在图谱或白板上，
+  /// 只换选中的那篇而不切视图，用户看到的就是「点了没反应」。
+  final ValueChanged<Note>? onOpenNote;
 
   /// Asks the editor to scroll to a body offset after a search result opened
   /// its note — the panel has no handle on the editor, the shell does.
@@ -271,7 +276,13 @@ class NoteListPanelState extends State<NoteListPanel> {
                   activeCanvasPath: context.watch<CanvasController>().path,
                   onOpenCanvas: widget.onOpenCanvas,
                   onOpenFile: widget.onOpenFile,
-                  onOpenNote: (Note note) => notes.select(note.id),
+                  onOpenNote: (Note note) {
+                    if (widget.onOpenNote != null) {
+                      widget.onOpenNote!(note);
+                    } else {
+                      notes.select(note.id);
+                    }
+                  },
                   onDeleteNotes: widget.onDeleteNotes,
                   onDeleteFolder: widget.onDeleteFolder,
                   onAllExpandedChanged: (bool all) {
@@ -582,7 +593,13 @@ class NoteListPanelState extends State<NoteListPanel> {
           }),
           onOpen: (int offset) {
             notes.setActiveFolder(hit.note.folderPath);
-            notes.select(id);
+            // 搜索结果也要切回正文：否则从图谱 / 白板搜到一篇，点开只有
+            // 侧栏的高亮变了，屏幕上还是那张图。
+            if (widget.onOpenNote != null) {
+              widget.onOpenNote!(hit.note);
+            } else {
+              notes.select(id);
+            }
             widget.onRevealOffset(offset);
           },
         );

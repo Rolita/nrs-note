@@ -288,6 +288,15 @@ class _AppShellState extends State<AppShell> {
     _selectMainView(MainView.note);
   }
 
+  /// 列表里点开一篇笔记：选中它，并把主区切回正文。
+  ///
+  /// 只 `select` 不切视图，就是「点了没反应」——主区还停在图谱或白板上，
+  /// 屏幕上的东西一点没变，用户只能再去找那个标签页。
+  void _openNote(Note note) {
+    _notes.select(note.id);
+    _selectMainView(MainView.note);
+  }
+
   void _toggleSidebar() {
     final SettingsController settings = context.read<SettingsController>();
     settings.sidebarCollapsed = !settings.sidebarCollapsed;
@@ -845,6 +854,7 @@ class _AppShellState extends State<AppShell> {
                                     onDeleteNotes: _confirmDeleteMany,
                                     onDeleteFolder: _confirmDeleteFolder,
                                     onSwitchView: _selectView,
+                                    onOpenNote: _openNote,
                                     onOpenCanvas: _openCanvasFile,
                                     onOpenFile: _openVaultFile,
                                     // 搜索结果先开笔记，正文要等这一帧绑定
