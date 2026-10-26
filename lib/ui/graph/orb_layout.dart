@@ -254,6 +254,43 @@ class OrbLayout {
     pz[i] = z;
   }
 
+  /// 从 [from] 转到 [to] 的那个旋转，作用在 [v] 上。
+  ///
+  /// 三个都是单位方向。轴取叉积、角取夹角，用 Rodrigues 公式转过去——转的
+  /// 是绕球心的轴，所以转完还在球面上，彼此的相对位置也一分不差。
+  static OrbPoint rotateBetween(OrbPoint from, OrbPoint to, OrbPoint v) {
+    final double ax = from.y * to.z - from.z * to.y;
+    final double ay = from.z * to.x - from.x * to.z;
+    final double az = from.x * to.y - from.y * to.x;
+    final double sin = math.sqrt(ax * ax + ay * ay + az * az);
+    // 没挪过（或者正好转到对面，轴退化）就没什么可转的。
+    if (sin < 1e-9) return v;
+    final double cos = (from.x * to.x + from.y * to.y + from.z * to.z).clamp(
+      -1.0,
+      1.0,
+    );
+    final double kx = ax / sin, ky = ay / sin, kz = az / sin;
+    final double dot = kx * v.x + ky * v.y + kz * v.z;
+    final double omc = 1 - cos;
+    return OrbPoint(
+      v.x * cos + (ky * v.z - kz * v.y) * sin + kx * dot * omc,
+      v.y * cos + (kz * v.x - kx * v.z) * sin + ky * dot * omc,
+      v.z * cos + (kx * v.y - ky * v.x) * sin + kz * dot * omc,
+    );
+  }
+
+  /// 把第 [i] 个点沿球面朝 [target] 挪 [ease]（0..1），挪完重新归一化。
+  void easeToward(int i, OrbPoint target, double ease) {
+    double x = px[i] + (target.x - px[i]) * ease;
+    double y = py[i] + (target.y - py[i]) * ease;
+    double z = pz[i] + (target.z - pz[i]) * ease;
+    final double l = math.sqrt(x * x + y * y + z * z);
+    if (l < 1e-9) return;
+    px[i] = x / l;
+    py[i] = y / l;
+    pz[i] = z / l;
+  }
+
   static double _absGauss(math.Random rng) {
     // Box-Muller，取绝对值：只关心「离中心多远」，方位角另外均匀取。
     final double u = 1 - rng.nextDouble();

@@ -130,6 +130,36 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   /// 用 200ms 淡出，看着就像它自己滑回了队伍里。
   double _pinFade = 0;
 
+  /// 右键钉住的一组点：这个节点和它连着的邻居。
+  ///
+  /// 和上面那颗悬停钉住的是两件事：悬停只在鼠标停着的时候管用、移开就淡出；
+  /// 这一组是用户显式钉住的，鼠标移开也钉着，直到再右键一次或者点到空白。
+  /// 所以「把这一小片按住看清楚、其余的大陆继续漂」可以一直看下去。
+  final Set<int> _pinned = <int>{};
+
+  /// 被钉住的点在钉住那一刻的相机空间方向。之后每帧都用这份旧值投影，
+  /// 屏幕位置就冻在原地，边会跟着周围的点在它周围拉长。
+  Float32List _holdX = Float32List(0);
+  Float32List _holdY = Float32List(0);
+  Float32List _holdZ = Float32List(0);
+
+  /// 1 = 钉着，0 = 已经放回。松开时同样走 200ms 淡出。
+  double _holdFade = 0;
+  bool _holdOn = false;
+
+  /// 钉住时留住的那个焦点（被右键的那颗）。
+  ///
+  /// 右键钉住之后鼠标是要移开的，但「它和谁连着」得一直看得见：邻居的标签、
+  /// 主题色连线、其余节点压暗，全都由焦点驱动。所以焦点不能只挂在 [_hover]
+  /// 上，鼠标一走就跟着没了。
+  int? _heldCentre;
+
+  /// 这一帧真正的高亮中心：**钉住的优先**，没钉住才用悬停的那颗。
+  ///
+  /// 钉住之后悬浮到别的节点上，也不该把焦点抢走——用户按住这一片是为了看清
+  /// 它和谁连着，鼠标扫过去只是路过。
+  int? get _focus => _heldCentre ?? _hover;
+
   /// 转速倍率。悬浮节点时降到 0.35，离开再回到 1。
   ///
   /// 走指数逼近而不是直接切换：直接切，松手后一悬停，整个球会「咔」地
@@ -153,6 +183,18 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
 
   int? _dragNode;
   bool _dragMoved = false;
+
+  /// 拖拽时被牵着走的关联节点，以及拖拽开始那一刻的方位快照。
+  ///
+  /// 要的是 Obsidian 那种弹簧感：它们不是和被拖节点锁在一起的整体，而是朝
+  /// 「保持原来相对位置」的目标**追**——快拖的时候明显掉队，手停下来或者
+  /// 松开之后自己再跟上。
+  List<({int i, OrbPoint from})>? _followers;
+  OrbPoint? _followPivot;
+  int? _followIndex;
+
+  /// 松手之后留给弹簧回弹的时间；走到 0 就把跟随状态清掉。
+  double _settleT = 0;
 
   /// 按下的位置。判断「这是拖动还是单击」要看累计位移——看单帧增量的话，
   /// 慢慢挪 5 像素（每帧都不到 0.5）会被当成单击，松手就跳去打开笔记。
@@ -268,8 +310,15 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     _hover = null;
     _pinNode = null;
     _pinFade = 0;
+    _pinned.clear();
+    _holdFade = 0;
+    _holdOn = false;
+    _heldCentre = null;
     _dragNode = null;
     _dragMoved = false;
+    _followers = null;
+    _followPivot = null;
+    _settleT = 0;
     _pushFade = 0;
     if (_graph.isEmpty) {
       _view = _graph;
@@ -358,6 +407,9 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     _pushX = Float32List(n);
     _pushY = Float32List(n);
     _pushZ = Float32List(n);
+    _holdX = Float32List(n);
+    _holdY = Float32List(n);
+    _holdZ = Float32List(n);
     _order = List<int>.generate(n, (int i) => i);
     _recomputeRadii();
     _updatePushSpan(n);
@@ -476,28 +528,40 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       double X = m[0] * x + m[1] * y + m[2] * z;
       double Y = m[3] * x + m[4] * y + m[5] * z;
       double Z = m[6] * x + m[7] * y + m[8] * z;
-      if (i == _pinNode) {
-        // 钉住的点不跟着球转：用钉住那一刻的方向，屏幕位置就冻住了。
-        if (_pinFade >= 1) {
-          X = _pinCam[0];
-          Y = _pinCam[1];
-          Z = _pinCam[2];
-        } else {
-          // 淡出：在「该在的位置」和「冻住的位置」之间插值。两个都是单位
-          // 向量，线性插值后归一化就是球面上那条短弧。
-          double bx = X + (_pinCam[0] - X) * _pinFade;
-          double by = Y + (_pinCam[1] - Y) * _pinFade;
-          double bz = Z + (_pinCam[2] - Z) * _pinFade;
-          final double len = math.sqrt(bx * bx + by * by + bz * bz);
-          if (len > 1e-6) {
-            bx /= len;
-            by /= len;
-            bz /= len;
-          }
-          X = bx;
-          Y = by;
-          Z = bz;
+      // 冻结：右键钉住的一组优先，其次是悬停的那一颗。两种都是「抄下那一刻
+      // 的相机空间方向、之后不再跟着球转」，区别只在谁说了算。
+      double fx = X, fy = Y, fz = Z;
+      double fw = 0;
+      if (_pinned.isNotEmpty && _pinned.contains(i)) {
+        fx = _holdX[i];
+        fy = _holdY[i];
+        fz = _holdZ[i];
+        fw = _holdFade;
+      } else if (i == _pinNode) {
+        fx = _pinCam[0];
+        fy = _pinCam[1];
+        fz = _pinCam[2];
+        fw = _pinFade;
+      }
+      if (fw >= 1) {
+        X = fx;
+        Y = fy;
+        Z = fz;
+      } else if (fw > 0) {
+        // 淡出：在「该在的位置」和「冻住的位置」之间插值。两个都是单位
+        // 向量，线性插值后归一化就是球面上那条短弧。
+        double bx = X + (fx - X) * fw;
+        double by = Y + (fy - Y) * fw;
+        double bz = Z + (fz - Z) * fw;
+        final double len = math.sqrt(bx * bx + by * by + bz * bz);
+        if (len > 1e-6) {
+          bx /= len;
+          by /= len;
+          bz /= len;
         }
+        X = bx;
+        Y = by;
+        Z = bz;
       }
       _camX[i] = X;
       _camY[i] = Y;
@@ -519,7 +583,11 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   /// 只在「鼠标停着、没在拖、没在转」的时候钉：用户主动转球时把点拽住不放
   /// 会像卡住了一样；拖节点本身也在动，更不能钉。
   void _updatePin() {
-    final int? want = (_hover != null && _dragNode == null && _rotateFrom == null)
+    // 已经钉住一片的时候不再钉悬停的那颗：这时鼠标只是路过，把新的一颗拽出
+    // 球面反而会搅乱正在看的关系。
+    final int? want =
+        (_heldCentre == null && _hover != null && _dragNode == null &&
+            _rotateFrom == null)
         ? _hover
         : null;
     // 松手后的淡出由 [_fadePin] 管，这里只管「钉上去」。
@@ -539,7 +607,10 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   void _fadePin(double dt) {
     if (_pinNode == null) return;
     final bool wanted =
-        _hover == _pinNode && _dragNode == null && _rotateFrom == null;
+        _heldCentre == null &&
+        _hover == _pinNode &&
+        _dragNode == null &&
+        _rotateFrom == null;
     if (wanted) {
       _pinFade = 1;
       return;
@@ -551,9 +622,103 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     }
   }
 
+  /// 右键：钉住这个节点和它连着的邻居；再右键一次、或者点到空白，就松开。
+  ///
+  /// 钉住的只是这一小片的**屏幕位置**，球本身照旧漂——所以能盯住「它和谁
+  /// 连着」看，同时其余的大陆继续在惯性里走。
+  void _toggleHold(int? node) {
+    if (node == null) {
+      if (_pinned.isEmpty || !_holdOn) return;
+      _holdOn = false;
+      _heldCentre = null;
+    } else if (_holdOn && _pinned.contains(node)) {
+      _holdOn = false;
+      _heldCentre = null;
+    } else {
+      _pinGroup(node);
+    }
+    _heat();
+  }
+
+  void _pinGroup(int centre) {
+    _pinned
+      ..clear()
+      ..add(centre)
+      ..addAll(_view.nodes[centre].neighbours);
+    // 抄的是**这一帧投影出来的**方向，不是球面坐标：所以钉上去的一刻画面
+    // 一点都不动，只是之后不再跟着球转。
+    for (final int i in _pinned) {
+      _holdX[i] = _camX[i];
+      _holdY[i] = _camY[i];
+      _holdZ[i] = _camZ[i];
+    }
+    _holdFade = 1;
+    _holdOn = true;
+    // 焦点留在它身上：鼠标挪开之后，关联的那一圈仍然亮着、仍然挂着标签。
+    _heldCentre = centre;
+  }
+
+  /// 拖动钉住的那一片时要先整组松开。
+  ///
+  /// 钉住的是屏幕位置，跟着走的是球上的方向——冻着的一层壳会把跟着转的点
+  /// 留在原地，看起来就是「拖不动」。整组放回球面，拖完它们还能一起漂。
+  void _releaseHoldNode(int i) {
+    if (!_pinned.contains(i)) return;
+    _pinned.clear();
+    _holdOn = false;
+    _holdFade = 0;
+    _heldCentre = null;
+  }
+
+  /// 记下拖拽的起点：被拖那颗的方位，以及每个关联节点此刻的方位。
+  ///
+  /// 之后的目标都是由「起点 → 当前」那个旋转算出来的，所以跟随不是按帧累
+  /// 加误差（那样快拖慢拖的手感会完全不同），而是始终朝同一个终点追。
+  void _beginFollow(int pivot) {
+    _followPivot = _layout.pointAt(pivot);
+    _followIndex = pivot;
+    _followers = <({int i, OrbPoint from})>[
+      for (final int j in _view.nodes[pivot].neighbours)
+        if (j >= 0 && j < _layout.length && j != pivot)
+          (i: j, from: _layout.pointAt(j)),
+    ];
+    _settleT = 0;
+  }
+
+  /// 关联节点朝「保持原来相对位置」的方向靠拢。
+  ///
+  /// [tau] 是滞后时间常数：越小越跟手，越大越像弹簧。快拖时它们追不上、边
+  /// 被拉长，手一停就自己贴回去——这就是要的那个手感，而不是整片锁死。
+  void _followDrag(double dt, double tau) {
+    // 松手之后 [_dragNode] 已经清空，但弹簧还要追一会儿，所以位置另记一份。
+    final int? pivot = _dragNode ?? _followIndex;
+    final OrbPoint? p0 = _followPivot;
+    final List<({int i, OrbPoint from})>? followers = _followers;
+    if (pivot == null || p0 == null || followers == null) return;
+    final double ease = 1 - math.exp(-dt / tau);
+    if (ease <= 0) return;
+    final OrbPoint now = _layout.pointAt(pivot);
+    for (final ({int i, OrbPoint from}) f in followers) {
+      _layout.easeToward(f.i, OrbLayout.rotateBetween(p0, now, f.from), ease);
+    }
+  }
+
+  /// 钉住的松紧过渡。和 [_fadePin] 一样线性 200ms，两端都精确落在 0 / 1。
+  void _fadeHold(double dt) {
+    if (_pinned.isEmpty) return;
+    final double want = _holdOn ? 1 : 0;
+    if (_holdFade == want) {
+      if (!_holdOn) _pinned.clear();
+      return;
+    }
+    _holdFade = (_holdFade + (want > _holdFade ? dt : -dt) / 0.20)
+        .clamp(0.0, 1.0);
+    if (_holdFade <= 0 && !_holdOn) _pinned.clear();
+  }
+
   /// 高亮浓度过渡。线性 180ms，两端都能精确落到 0 / 1。
   void _fadeFocus(double dt) {
-    final double want = _hover != null ? 1 : 0;
+    final double want = _focus != null ? 1 : 0;
     if (_focusFade == want) return;
     _focusFade = (_focusFade + (want > _focusFade ? dt : -dt) / 0.18)
         .clamp(0.0, 1.0);
@@ -586,7 +751,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   /// 一旦把颜色乘上亮度，饱和度会跟着掉，整张图糊成一片灰。
   void _computeAlpha(double radius) {
     final int n = _view.nodes.length;
-    final int? hi = _hover;
+    final int? hi = _focus;
     final double f = _focusFade;
     final List<int>? related = hi == null ? null : _view.nodes[hi].neighbours;
 
@@ -660,10 +825,14 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
 
   bool get _isResting =>
       _dragNode == null &&
+      // 松手后的回弹没走完不能停表，否则关联节点会永远停在掉队的位置。
+      _settleT <= 0 &&
       _rotateFrom == null &&
       // 淡出中间不能停表，否则那颗点会僵在半路上。钉住（=1）本身不需要
       // 帧——它就是一帧一帧抄旧值。
       (_pinFade <= 0 || _pinFade >= 1) &&
+      // 右键钉住的那一组松手时同理，停在半路会有一片点僵在球外。
+      (_holdFade <= 0 || _holdFade >= 1) &&
       // 高亮的过渡同理：停在半路，整张图就一直是「压了一半」的样子。
       (_focusFade <= 0 || _focusFade >= 1) &&
       // 拨开的邻居也一样：停在半路，它们就永远歪在那儿回不去。
@@ -675,6 +844,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     _clock += dt;
     _idle += dt;
     _fadePin(dt);
+    _fadeHold(dt);
     _fadeFocus(dt);
     _fadePush(dt);
 
@@ -683,6 +853,18 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     if (_dragNode != null) {
       _stepDrag(dt);
       return;
+    }
+
+    // 松手之后弹簧还在回弹：掉队的关联节点在这段时间里自己贴上队。
+    if (_settleT > 0) {
+      _settleT -= dt;
+      _followDrag(dt, 0.05);
+      if (_settleT <= 0) {
+        _settleT = 0;
+        _followers = null;
+        _followPivot = null;
+        _followIndex = null;
+      }
     }
 
     if (_rotateFrom != null) return;
@@ -724,6 +906,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     _autoTurn(dt);
     _applyDrag();
     _pushAside(_dragNode!);
+    _followDrag(dt, 0.12);
   }
 
   /// 一个节点当前在屏幕上的位置、透视缩放，以及相机空间坐标。
@@ -805,7 +988,10 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     _camera.rotate(s.y * f, -s.x * f);
   }
 
-  /// 把被拖节点周围的邻居拨开，像手指划过水面。
+  /// 把被拖节点周围**不相干**的邻居拨开，像手指划过水面。
+  ///
+  /// 和它有连线的那些点已经被 [_followDrag] 牵着走了，再推只会把这一片
+  /// 拽散，所以跳过它们。
   ///
   /// 位移是**世界空间的偏移**，画的时候加回坐标再归一化（见 [_project]），
   /// 所以点仍然沿球面滑动，不会陷进球里。力度按二次衰减：紧贴的邻居让得
@@ -814,13 +1000,14 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     final int n = _view.nodes.length;
     if (n == 0 || _pushRadius <= 0) return;
 
+    final List<int> related = _view.nodes[pivot].neighbours;
     final double r2 = _pushRadius * _pushRadius;
     final double px0 = _layout.px[pivot];
     final double py0 = _layout.py[pivot];
     final double pz0 = _layout.pz[pivot];
 
     for (int i = 0; i < n; i++) {
-      if (i == pivot) {
+      if (i == pivot || related.contains(i)) {
         _pushX[i] = 0;
         _pushY[i] = 0;
         _pushZ[i] = 0;
@@ -1064,7 +1251,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       alphas: _alphas,
       order: _order,
       lit: _lit,
-      focus: _hover,
+      focus: _focus,
       focusFade: _focusFade,
       useFolderColors: _settings.useFolderColors,
       folderColors: folderColors,
@@ -1185,6 +1372,13 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   // ------------------------------------------------------------------ 指针
 
   void _onPointerDown(PointerDownEvent e) {
+    // 右键要放在最前：它只负责钉住 / 松开，不能顺手把惯性清零——「钉住
+    // 这一片、其他继续漂」正是这个操作的意义。
+    if ((e.buttons & kSecondaryMouseButton) != 0) {
+      _toggleHold(_nodeAt(e.localPosition));
+      return;
+    }
+
     _idle = 0;
     _velX = 0;
     _velY = 0;
@@ -1221,6 +1415,9 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       _pointer = e.localPosition;
       if (!_dragMoved && (e.localPosition - _dragOrigin).distance > 3) {
         _dragMoved = true;
+        // 钉着的那颗粘在屏幕上，根本跟不上光标。真要拖它了就先松开它。
+        _releaseHoldNode(_dragNode!);
+        _beginFollow(_dragNode!);
       }
       _applyDrag();
       _project();
@@ -1267,6 +1464,14 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
         _dragNode = null;
         _dragMoved = false;
       });
+      // 松手之后弹簧再追 220ms：快拖时掉队的关联节点在这里自己贴回去。
+      if (moved && _followers != null) {
+        _settleT = 0.22;
+      } else {
+        _followers = null;
+        _followPivot = null;
+        _followIndex = null;
+      }
       _rotateLast = null;
       _heat();
       // 单击（按下到松开没挪过）= 打开。和 Obsidian 一样，没有双击：
@@ -1552,6 +1757,17 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
 
   @visibleForTesting
   int? get debugHover => _hover;
+
+  /// 右键钉住的节点数（含中心节点与邻居）。
+  @visibleForTesting
+  int get debugPinnedCount => _pinned.length;
+
+  @visibleForTesting
+  bool get debugHoldOn => _holdOn;
+
+  /// 当前的高亮中心（悬停优先，其次是被钉住的那颗）。
+  @visibleForTesting
+  int? get debugFocus => _focus;
 
   /// 某颗点这一帧的最终不透明度。用来验证高亮是「渐变」而不是「硬切」。
   @visibleForTesting

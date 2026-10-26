@@ -208,7 +208,183 @@ void main() {
     });
   });
 
+  group('右键钉住这一片，其余照转', () {
+    Future<void> rightClickAt(WidgetTester tester, Offset at) async {
+      final TestGesture mouse = await tester.startGesture(
+        at,
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await mouse.up();
+      // 鼠标设备要摘掉，否则后面的 hoverAt 新建一只鼠标会撞上 MouseTracker 的断言。
+      await mouse.removePointer();
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('右键节点：它和邻居停在原地，其余继续漂', (WidgetTester tester) async {
+      final Harness h = await pumpGraph(tester);
+
+      await rightClickAt(tester, nodeAt(tester, h, 'a'));
+
+      // A 自己 + 它的两个邻居 B、D。
+      expect(h.view.debugPinnedCount, 3);
+      expect(h.opened, isEmpty, reason: '右键不该打开笔记');
+
+      final Offset beforeA = h.view.debugNodeCenter('a')!;
+      final Offset beforeB = h.view.debugNodeCenter('b')!;
+      final Offset beforeC = h.view.debugNodeCenter('c')!;
+
+      h.view.debugSpin(0.12, 0.26);
+
+      expect(h.view.debugNodeCenter('a'), beforeA, reason: '被钉住的点不该跟着转');
+      expect(h.view.debugNodeCenter('b'), beforeB, reason: '邻居也要一起钉住');
+      expect(
+        h.view.debugNodeCenter('c'),
+        isNot(beforeC),
+        reason: '不在这片里的点要继续漂',
+      );
+    });
+
+    testWidgets('钉住后鼠标移开，焦点和关联节点的高亮还留着', (WidgetTester tester) async {
+      final Harness h = await pumpGraph(tester);
+      // c 和 a 没关系：它暗不暗，直接说明焦点还在不在。
+      final double calmC = h.view.debugAlphaOf('c')!;
+
+      await rightClickAt(tester, nodeAt(tester, h, 'a'));
+      final Offset empty =
+          tester.getTopLeft(find.byKey(h.view.debugStageKey)) +
+          const Offset(500, 16);
+      await hoverAt(tester, empty);
+      await tester.pumpAndSettle();
+
+      expect(h.view.debugHover, isNull, reason: '鼠标确实已经离开所有节点');
+      expect(h.view.debugFocus, isNotNull, reason: '焦点留在被钉住的那颗上');
+      expect(
+        h.view.debugAlphaOf('c'),
+        closeTo(calmC * 0.55, 0.02),
+        reason: '没有焦点的话 c 会回到原亮度',
+      );
+    });
+
+    testWidgets('钉住后悬浮别的节点，焦点仍留在钉住的那颗', (WidgetTester tester) async {
+      final Harness h = await pumpGraph(tester);
+      final double calmC = h.view.debugAlphaOf('c')!;
+
+      await rightClickAt(tester, nodeAt(tester, h, 'a'));
+      // c 和 a 没关系：悬浮它不该把焦点抢过去。
+      await hoverAt(tester, nodeAt(tester, h, 'c'));
+      await tester.pumpAndSettle();
+
+      expect(h.view.debugHover, isNotNull, reason: '鼠标确实停在 c 上');
+      expect(
+        h.view.debugFocus,
+        isNot(h.view.debugHover),
+        reason: '焦点还是钉住的那颗',
+      );
+      expect(
+        h.view.debugAlphaOf('c'),
+        closeTo(calmC * 0.55, 0.02),
+        reason: '路过的不该被提亮',
+      );
+    });
+
+    testWidgets('再右键一次松开，点淡出后回到球面', (WidgetTester tester) async {
+      final Harness h = await pumpGraph(tester);
+
+      await rightClickAt(tester, nodeAt(tester, h, 'a'));
+      h.view.debugSpin(0.30, 0.40);
+      final Offset frozen = h.view.debugNodeCenter('a')!;
+
+      // 钉住的点还在原处，右键它（位置就是冻住的那个坐标）就能松开。
+      await rightClickAt(tester, frozen);
+
+      expect(h.view.debugHoldOn, isFalse);
+      expect(h.view.debugPinnedCount, 0);
+      expect(
+        h.view.debugNodeCenter('a'),
+        isNot(frozen),
+        reason: '松开之后它要回到球面上该在的位置',
+      );
+    });
+
+    testWidgets('右键空白处也能松开', (WidgetTester tester) async {
+      final Harness h = await pumpGraph(tester);
+
+      await rightClickAt(tester, nodeAt(tester, h, 'a'));
+      expect(h.view.debugPinnedCount, 3);
+
+      final Offset empty =
+          tester.getTopLeft(find.byKey(h.view.debugStageKey)) +
+          const Offset(500, 16);
+      await rightClickAt(tester, empty);
+
+      expect(h.view.debugHoldOn, isFalse);
+      expect(h.view.debugPinnedCount, 0);
+      expect(h.opened, isEmpty);
+    });
+  });
+
   group('拖拽：贴着球面滑，顺手拨开邻居', () {
+    testWidgets('拖拽节点，关联节点跟着走但会掉队，松手后再贴回来', (
+      WidgetTester tester,
+    ) async {
+      final Harness h = await pumpGraph(tester);
+
+      final Offset start = nodeAt(tester, h, 'a');
+      final Offset toCentre =
+          tester.getRect(find.byKey(h.view.debugStageKey)).center - start;
+      final Offset dir = toCentre.distance < 1e-3
+          ? const Offset(1, 0)
+          : toCentre / toCentre.distance;
+
+      double angleBetween(String x, String y) {
+        final a = h.view.debugWorldOf(x);
+        final b = h.view.debugWorldOf(y);
+        return math.acos(
+          (a.x * b.x + a.y * b.y + a.z * b.z).clamp(-1.0, 1.0),
+        );
+      }
+
+      final double angleBefore = angleBetween('a', 'b');
+      final Offset bBefore = h.view.debugNodeCenter('b')!;
+      final ({double x, double y, double z}) eBefore = h.view.debugWorldOf('e');
+
+      // 往球心方向拖：不会拖出轮廓，[_autoTurn] 不介入，世界坐标的变化只来自
+      // 这次拖拽本身。少走几帧 = 快拖，关联节点来不及跟上。
+      final TestGesture drag = await tester.startGesture(start);
+      await drag.moveBy(dir * 36);
+      for (int i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+
+      expect(
+        (h.view.debugNodeCenter('b')! - bBefore).distance,
+        greaterThan(8),
+        reason: 'B 是 A 的邻居，得被牵着一起走',
+      );
+      expect(
+        angleBetween('a', 'b') - angleBefore,
+        greaterThan(0.005),
+        reason: '不是锁死的整体：快拖时它会掉队，A–B 的球面距离被拉长',
+      );
+      final ({double x, double y, double z}) eAfter = h.view.debugWorldOf('e');
+      expect(
+        (eAfter.x - eBefore.x).abs() +
+            (eAfter.y - eBefore.y).abs() +
+            (eAfter.z - eBefore.z).abs(),
+        lessThan(1e-6),
+        reason: '不相干的点留在原处',
+      );
+
+      await drag.up();
+      await tester.pumpAndSettle();
+      expect(
+        (angleBetween('a', 'b') - angleBefore).abs(),
+        lessThan(0.01),
+        reason: '松手之后弹簧把拉长的边收回原样',
+      );
+    });
+
     testWidgets('拖完之后节点就停在光标下', (WidgetTester tester) async {
       final Harness h = await pumpGraph(tester);
 
