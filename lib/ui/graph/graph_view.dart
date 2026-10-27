@@ -13,6 +13,7 @@ import '../../core/theme/app_tokens.dart';
 import '../../core/utils/note_graph.dart';
 import '../../core/utils/table_model.dart' show CellColorToken;
 import '../../data/models/note.dart';
+import '../../state/settings_controller.dart';
 import '../common/app_widgets.dart';
 import 'graph_legend.dart';
 import 'graph_panel.dart';
@@ -20,6 +21,20 @@ import 'graph_style.dart';
 import 'orb_layout.dart';
 import 'orb_math.dart';
 import 'orb_painter.dart';
+
+/// 拖拽跟随链上的一颗节点。
+///
+/// [parent] 是它朝向枢轴方向的那颗「父节点」（1 跳的父节点就是被拖的
+/// 节点），[parentFrom] / [from] 是拖拽开始那一刻父子的方位，[baseAngle]
+/// 是建图快照里父子的角距。
+typedef _Follower = ({
+  int i,
+  int parent,
+  OrbPoint from,
+  OrbPoint parentFrom,
+  double baseAngle,
+  int hop,
+});
 
 /// 关系图谱：球面上的点云。
 ///
@@ -45,6 +60,7 @@ class GraphView extends StatefulWidget {
     required this.notes,
     required this.currentId,
     required this.onOpenNote,
+    this.settings,
   });
 
   /// 全库笔记。由外壳传进来，图谱自己不碰 controller，测试才好写。
@@ -55,6 +71,9 @@ class GraphView extends StatefulWidget {
 
   /// 单击某个节点：打开那篇笔记。
   final ValueChanged<String> onOpenNote;
+
+  /// 用来持久化图谱设置。测试里不传，设置就只活在内存里。
+  final SettingsController? settings;
 
   @override
   State<GraphView> createState() => GraphViewState();
@@ -109,8 +128,10 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   Map<String, CellColorToken> _folderTokens = <String, CellColorToken>{};
   Map<String, int> _folderCounts = <String, int>{};
 
-  GraphSettings _settings = const GraphSettings();
-  bool _panelCollapsed = false;
+  late GraphSettings _settings;
+
+  /// 默认收起：图谱设置很大一块，第一次打开时先把球完整露出来。
+  bool _panelCollapsed = true;
 
   /// 鼠标停在哪个节点上。**这就是「选中」**——和 Obsidian 一样，悬浮即高亮，
   /// 不需要先点一下再高亮。
@@ -154,11 +175,22 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   /// 上，鼠标一走就跟着没了。
   int? _heldCentre;
 
-  /// 这一帧真正的高亮中心：**钉住的优先**，没钉住才用悬停的那颗。
+  /// 这一帧的主高亮中心：**钉住的优先**，没钉住才用悬停的那颗。
   ///
-  /// 钉住之后悬浮到别的节点上，也不该把焦点抢走——用户按住这一片是为了看清
-  /// 它和谁连着，鼠标扫过去只是路过。
+  /// 钉住一片之后悬浮到别的节点上，焦点不会把钉住的中心顶掉——主焦点仍是
+  /// 钉住的那颗，它的整圈关联继续亮着（[_secondFocus] 会把悬浮的那颗叠上来）。
   int? get _focus => _heldCentre ?? _hover;
+
+  /// 第二个高亮中心：钉着一颗、又悬浮到另一颗时，两颗的关联圈一起显示。
+  ///
+  /// 拆成两个而不是一个集合，是因为连线高亮要按各自的方向分色；节点亮度
+  /// 则取两套邻居的并集。
+  int? get _secondFocus {
+    final int? held = _heldCentre;
+    final int? hover = _hover;
+    if (held == null || hover == null || hover == held) return null;
+    return hover;
+  }
 
   /// 转速倍率。悬浮节点时降到 0.35，离开再回到 1。
   ///
@@ -187,13 +219,24 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   /// 拖拽时被牵着走的关联节点，以及拖拽开始那一刻的方位快照。
   ///
   /// 要的是 Obsidian 那种弹簧感：它们不是和被拖节点锁在一起的整体，而是朝
-  /// 「保持原来相对位置」的目标**追**——快拖的时候明显掉队，手停下来或者
+  /// 「原距离 × 相对距离」的目标**追**——快拖的时候明显掉队，手停下来或者
   /// 松开之后自己再跟上。
-  List<({int i, OrbPoint from})>? _followers;
+  ///
+  /// [hop] = 1 是直连邻居，2–4 是更外圈；越深跟随越慢，但每一跳都会朝自己的
+  /// 父节点收拢，整片结构一层层向被拖节点塌进去。
+  List<_Follower>? _followers;
   OrbPoint? _followPivot;
   int? _followIndex;
 
-  /// 松手之后留给弹簧回弹的时间；走到 0 就把跟随状态清掉。
+  /// 建图时的位置快照，作为「相对距离」里的原距离基准。
+  ///
+  /// 位置一旦被拖过就回不去了，所以必须单独留一份；否则先调小再调大时，
+  /// 基准也跟着缩小，邻居永远弹不回去。
+  Float64List? _baseX;
+  Float64List? _baseY;
+  Float64List? _baseZ;
+
+  /// 松手之后留给弹簧回弹的时间；走到 0 就停止逐帧追目标。
   double _settleT = 0;
 
   /// 按下的位置。判断「这是拖动还是单击」要看累计位移——看单帧增量的话，
@@ -233,6 +276,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     _ticker = createTicker(_onTick);
     _drift = !WidgetsBinding.instance.runtimeType.toString().contains('Test');
     _signature = _signatureOf(widget.notes);
+    _settings = _restoreSettings();
     _rebuildAll();
     if (_drift) _ticker.start();
   }
@@ -324,6 +368,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       _view = _graph;
       _layout = OrbLayout(0);
       _allocBuffers();
+      _snapshotBase();
       _updateGroups();
       _recomputeLit();
       return;
@@ -340,6 +385,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
         _view = NoteGraph.empty();
         _layout = OrbLayout(0);
         _allocBuffers();
+        _snapshotBase();
         _updateGroups();
         _recomputeLit();
         return;
@@ -366,8 +412,16 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     _view = base;
     _layout = baseLayout;
     _allocBuffers();
+    _snapshotBase();
     _updateGroups();
     _recomputeLit();
+  }
+
+  /// 记一份位置作为「原距离」基准。切图、换筛选时会重来一次。
+  void _snapshotBase() {
+    _baseX = Float64List.fromList(_layout.px);
+    _baseY = Float64List.fromList(_layout.py);
+    _baseZ = Float64List.fromList(_layout.pz);
   }
 
   /// 按 [keep] 切子图，并把位置一起搬过来。
@@ -491,7 +545,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   ///
   /// 0.30 留出的余量是给**标签**的，不是给球的：球本身只占 2×0.30 = 60% 的
   /// 短边，但贴在球顶/球底的标签还要往上/下再走十几个像素，加上缩放上限
-  /// 2.6 倍，太满就会把标签推出画布。
+  /// 5.2 倍，太满就会把标签推出画布。
   static const double _radiusRatio = 0.30;
 
   double get _sphereRadius => math.min(_stageSize.width, _stageSize.height) * _radiusRatio;
@@ -622,18 +676,19 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     }
   }
 
-  /// 右键：钉住这个节点和它连着的邻居；再右键一次、或者点到空白，就松开。
+  /// 右键：钉住这个节点和它连着的邻居；再右键中心那颗、或者点到空白，就松开。
   ///
   /// 钉住的只是这一小片的**屏幕位置**，球本身照旧漂——所以能盯住「它和谁
   /// 连着」看，同时其余的大陆继续在惯性里走。
+  ///
+  /// 右键当前这一片里的**别的**节点，不是松开，而是换钉：上一组先落回球面
+  /// 原位，再把新节点和它的邻居冻住。
   void _toggleHold(int? node) {
     if (node == null) {
       if (_pinned.isEmpty || !_holdOn) return;
-      _holdOn = false;
-      _heldCentre = null;
-    } else if (_holdOn && _pinned.contains(node)) {
-      _holdOn = false;
-      _heldCentre = null;
+      _unpinGroup();
+    } else if (_holdOn && _heldCentre == node) {
+      _unpinGroup();
     } else {
       _pinGroup(node);
     }
@@ -641,6 +696,9 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   }
 
   void _pinGroup(int centre) {
+    // 换钉另一颗时，先把上一组冻住的方向写回球面：松开的那几颗停在原地，
+    // 不会在切换的瞬间弹回球转到的地方。
+    _commitHold();
     _pinned
       ..clear()
       ..add(centre)
@@ -664,43 +722,273 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   /// 留在原地，看起来就是「拖不动」。整组放回球面，拖完它们还能一起漂。
   void _releaseHoldNode(int i) {
     if (!_pinned.contains(i)) return;
+    _unpinGroup();
+  }
+
+  /// 把冻住的相机方向写回球面坐标。
+  ///
+  /// 不写回就直接撤，画面会在松手（或换钉）瞬间弹回球转到的地方；写回之后
+  /// 它们停在原地，然后跟着球自然漂走——也就是取消钉住不再复原位置。
+  void _commitHold() {
+    if (_pinned.isEmpty) return;
+    final Float64List m = _camera.matrix;
+    for (final int i in _pinned) {
+      final double x = _holdX[i];
+      final double y = _holdY[i];
+      final double z = _holdZ[i];
+      // 相机矩阵是正交阵，转置就是逆：world = Mᵀ · camera。
+      _layout.setPoint(
+        i,
+        OrbPoint(
+          m[0] * x + m[3] * y + m[6] * z,
+          m[1] * x + m[4] * y + m[7] * z,
+          m[2] * x + m[5] * y + m[8] * z,
+        ),
+      );
+    }
+  }
+
+  /// 松开钉住的那一片：先把冻结的方向落回球面，再撤掉冻结层。
+  void _unpinGroup() {
+    _commitHold();
     _pinned.clear();
     _holdOn = false;
     _holdFade = 0;
     _heldCentre = null;
   }
 
-  /// 记下拖拽的起点：被拖那颗的方位，以及每个关联节点此刻的方位。
+  /// 收 1–4 跳，并为每一颗记录它的父节点。
   ///
-  /// 之后的目标都是由「起点 → 当前」那个旋转算出来的，所以跟随不是按帧累
-  /// 加误差（那样快拖慢拖的手感会完全不同），而是始终朝同一个终点追。
+  /// 之后的目标都是由「父节点起点 → 父节点当前」那个旋转算出来的，所以跟随
+  /// 不是按帧累加误差（那样快拖慢拖的手感会完全不同），而是始终朝同一个
+  /// 终点追。
+  ///
+  /// 每一跳都只朝自己的父节点收拢，而不是所有点直接奔向被拖节点：父节点在
+  /// 本帧里已经先更新过，于是整片结构一层层往里塌。数量按跳设上限——大枢纽
+  /// 的 2–4 跳可能上百个，跟随本身不贵，但每帧的相互排斥是 O(n²)。
   void _beginFollow(int pivot) {
     _followPivot = _layout.pointAt(pivot);
     _followIndex = pivot;
-    _followers = <({int i, OrbPoint from})>[
-      for (final int j in _view.nodes[pivot].neighbours)
-        if (j >= 0 && j < _layout.length && j != pivot)
-          (i: j, from: _layout.pointAt(j)),
-    ];
+    final Set<int> seen = <int>{pivot};
+    final List<_Follower> out = <_Follower>[];
+
+    List<int> ring = <int>[pivot];
+    List<OrbPoint> ringFrom = <OrbPoint>[_followPivot!];
+    for (int hop = 1; hop <= _maxHop; hop++) {
+      final List<int> next = <int>[];
+      final List<OrbPoint> nextFrom = <OrbPoint>[];
+      final int cap = _hopCap(hop);
+      for (int r = 0; r < ring.length; r++) {
+        if (next.length >= cap) break;
+        final int parent = ring[r];
+        final OrbPoint parentFrom = ringFrom[r];
+        for (final int j in _view.nodes[parent].neighbours) {
+          if (next.length >= cap) break;
+          if (j < 0 || j >= _layout.length || !seen.add(j)) continue;
+          final OrbPoint from = _layout.pointAt(j);
+          out.add((
+            i: j,
+            parent: parent,
+            from: from,
+            parentFrom: parentFrom,
+            baseAngle: _baseAngle(parent, j),
+            hop: hop,
+          ));
+          next.add(j);
+          nextFrom.add(from);
+        }
+      }
+      if (next.isEmpty) break;
+      ring = next;
+      ringFrom = nextFrom;
+    }
+
+    _followers = out;
     _settleT = 0;
   }
 
-  /// 关联节点朝「保持原来相对位置」的方向靠拢。
+  /// 跟随的最多跳数。
+  static const int _maxHop = 4;
+
+  /// 每一跳最多带多少颗。数量再大时，跟随本身不贵，但每帧的相互排斥是
+  /// O(n²)，必须有个上限。
+  static int _hopCap(int hop) => switch (hop) {
+    1 => 200,
+    2 => 140,
+    3 => 90,
+    4 => 60,
+    _ => 0,
+  };
+
+  /// 跟随速度：直连满速，越深越慢。位置目标不打折——松手后慢的也会收拢到
+  /// 父节点上。
+  static double _hopWeight(int hop) => switch (hop) {
+    1 => 1,
+    2 => 0.6,
+    3 => 0.4,
+    4 => 0.28,
+    _ => 0,
+  };
+
+  /// 松手后留给弹簧收敛的时间：跳得越深，慢速的那几层越需要时间走完。
+  double get _settleSpan {
+    int deepest = 1;
+    final List<_Follower>? followers = _followers;
+    if (followers != null) {
+      for (final _Follower f in followers) {
+        if (f.hop > deepest) deepest = f.hop;
+      }
+    }
+    return 0.30 + 0.10 * (deepest - 1);
+  }
+
+  /// 两个节点在建图快照里的角距；没有快照时返回 -1，调用方回落到当前角距。
+  double _baseAngle(int a, int b) {
+    final Float64List? bx = _baseX;
+    final Float64List? by = _baseY;
+    final Float64List? bz = _baseZ;
+    if (bx == null || by == null || bz == null) return -1;
+    if (a >= bx.length || b >= bx.length) return -1;
+    final double dot =
+        (bx[a] * bx[b] + by[a] * by[b] + bz[a] * bz[b]).clamp(-1.0, 1.0);
+    return math.acos(dot);
+  }
+
+  /// 关联节点像被弹簧拴在各自的父节点上（力导向）。
   ///
-  /// [tau] 是滞后时间常数：越小越跟手，越大越像弹簧。快拖时它们追不上、边
-  /// 被拉长，手一停就自己贴回去——这就是要的那个手感，而不是整片锁死。
+  /// 每一颗只朝父节点收拢到「父子原距离 × 连接长度」的静止位置，松紧由弹簧
+  /// 强度与跳数衰减决定；节点之间再按最小间距互相排斥，收拢时不会叠成一团。
+  /// 父节点在同一次循环里先被处理，所以整片结构会一层层向被拖节点塌进去。
   void _followDrag(double dt, double tau) {
     // 松手之后 [_dragNode] 已经清空，但弹簧还要追一会儿，所以位置另记一份。
     final int? pivot = _dragNode ?? _followIndex;
-    final OrbPoint? p0 = _followPivot;
-    final List<({int i, OrbPoint from})>? followers = _followers;
-    if (pivot == null || p0 == null || followers == null) return;
-    final double ease = 1 - math.exp(-dt / tau);
+    final List<_Follower>? followers = _followers;
+    if (pivot == null || _followPivot == null || followers == null) return;
+    final double stiffness = _settings.dragStiffness.clamp(0.2, 2.5);
+    final double ease = 1 - math.exp(-dt / (tau / stiffness));
     if (ease <= 0) return;
-    final OrbPoint now = _layout.pointAt(pivot);
-    for (final ({int i, OrbPoint from}) f in followers) {
-      _layout.easeToward(f.i, OrbLayout.rotateBetween(p0, now, f.from), ease);
+    for (final _Follower f in followers) {
+      final OrbPoint parentNow = _layout.pointAt(f.parent);
+      final OrbPoint rigid =
+          OrbLayout.rotateBetween(f.parentFrom, parentNow, f.from);
+      _layout.easeToward(
+        f.i,
+        _springTarget(parentNow, rigid, f.baseAngle),
+        ease * _hopWeight(f.hop),
+      );
     }
+    _relaxFollowers(_layout.pointAt(pivot), followers, dt);
+  }
+
+  /// 弹簧的静止位置：角距为「父子原距离 × 连接长度」，再按远近做一次加权。
+  ///
+  /// 只用线性映射时，原本跨了大半球的邻居收完还是很远，拖起来像没动。这里
+  /// 让远端额外收：近处几乎只受连接长度影响，90° 附近的邻居最多再多收一份
+  /// 「(1 − 连接长度) × 远端收拢」。
+  OrbPoint _springTarget(OrbPoint centre, OrbPoint rigid, double baseAngle) {
+    final double base = baseAngle > 0 ? baseAngle : _angleBetween(centre, rigid);
+    final double far = (base / (math.pi * 0.5)).clamp(0.0, 1.0);
+    final double pull = _settings.dragFarPull.clamp(0.0, 3.0) * far;
+    final double curved = (_settings.dragLink -
+            (1 - _settings.dragLink) * pull)
+        .clamp(0.1, 1.3);
+    final double want = base * curved;
+    // 连接长度压得再小，也不能穿过「最小间距」：否则邻居会贴到被拖节点身上，
+    // 用户还会觉得「调小了没效果」。
+    final double rest = math
+        .max(want, _settings.dragGap)
+        .clamp(0.02, math.pi);
+    return _atAngle(centre, rigid, rest);
+  }
+
+  /// 把被拖节点的邻居按最小间距推开。
+  ///
+  /// 只处理这一小撮点：整张图参与的话每帧 O(n²) 太重，而且会趁拖拽把远处
+  /// 的布局也搅乱。枢轴只和直连邻居比（更外圈本来就该离枢轴远）；两两比只在
+  /// 同一跳内做，避免跨跳的 O(n²) 爆炸。
+  void _relaxFollowers(
+    OrbPoint pivot,
+    List<_Follower> followers,
+    double dt,
+  ) {
+    final double gap = _settings.dragGap;
+    final double strength = _settings.dragRepel.clamp(0.0, 2.0);
+    if (gap <= 0 || strength <= 0) return;
+    final double cosGap = math.cos(gap);
+    // 和弹簧一样按时间常数算，帧率变化时手感一致。
+    final double alpha = (1 - math.exp(-dt / 0.05)) * strength;
+
+    for (final _Follower f in followers) {
+      if (f.hop > 1) continue;
+      final OrbPoint p = _layout.pointAt(f.i);
+      final double dot = p.dot(pivot).clamp(-1.0, 1.0);
+      if (dot <= cosGap) continue;
+      final double delta = (gap - math.acos(dot)) * alpha;
+      if (delta <= 0) continue;
+      _layout.setPoint(f.i, _moveAway(p, pivot, delta));
+    }
+
+    for (int a = 0; a < followers.length; a++) {
+      for (int b = a + 1; b < followers.length; b++) {
+        if (followers[a].hop != followers[b].hop) continue;
+        final OrbPoint pa = _layout.pointAt(followers[a].i);
+        final OrbPoint pb = _layout.pointAt(followers[b].i);
+        final double dot = pa.dot(pb).clamp(-1.0, 1.0);
+        if (dot <= cosGap) continue;
+        final double delta = (gap - math.acos(dot)) * alpha * 0.5;
+        if (delta <= 0) continue;
+        _layout.setPoint(followers[a].i, _moveAway(pa, pb, delta));
+        _layout.setPoint(followers[b].i, _moveAway(pb, pa, delta));
+      }
+    }
+  }
+
+  /// 从 [p] 沿球面往远离 [other] 的方向走 [angle] 弧度。
+  static OrbPoint _moveAway(OrbPoint p, OrbPoint other, double angle) {
+    final double dot = p.dot(other).clamp(-1.0, 1.0);
+    // 远离 other 的切向：p·dot - other。
+    final double tx = p.x * dot - other.x;
+    final double ty = p.y * dot - other.y;
+    final double tz = p.z * dot - other.z;
+    final double len = math.sqrt(tx * tx + ty * ty + tz * tz);
+    if (len < 1e-9) return p;
+    final double c = math.cos(angle);
+    final double s = math.sin(angle) / len;
+    return OrbPoint(
+      p.x * c + tx * s,
+      p.y * c + ty * s,
+      p.z * c + tz * s,
+    );
+  }
+
+  /// 力导向参数变了：让上一次拖拽的那批邻居按新参数再收敛一下。
+  void _applyDragTuning() {
+    final List<_Follower>? followers = _followers;
+    if (followers == null || _followIndex == null || _followPivot == null) {
+      return;
+    }
+    _settleT = math.max(_settleT, _settleSpan);
+  }
+
+  /// 从 [centre] 朝 [toward] 的切线方向走 [angle] 弧度，落在球面上。
+  static OrbPoint _atAngle(OrbPoint centre, OrbPoint toward, double angle) {
+    final double dot = centre.dot(toward).clamp(-1.0, 1.0);
+    final double tx = toward.x - centre.x * dot;
+    final double ty = toward.y - centre.y * dot;
+    final double tz = toward.z - centre.z * dot;
+    final double len = math.sqrt(tx * tx + ty * ty + tz * tz);
+    if (len < 1e-9) return toward;
+    final double c = math.cos(angle);
+    final double s = math.sin(angle) / len;
+    return OrbPoint(
+      centre.x * c + tx * s,
+      centre.y * c + ty * s,
+      centre.z * c + tz * s,
+    );
+  }
+
+  static double _angleBetween(OrbPoint a, OrbPoint b) {
+    return math.acos(a.dot(b).clamp(-1.0, 1.0));
   }
 
   /// 钉住的松紧过渡。和 [_fadePin] 一样线性 200ms，两端都精确落在 0 / 1。
@@ -752,8 +1040,15 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   void _computeAlpha(double radius) {
     final int n = _view.nodes.length;
     final int? hi = _focus;
+    final int? second = _secondFocus;
     final double f = _focusFade;
-    final List<int>? related = hi == null ? null : _view.nodes[hi].neighbours;
+    // 两套邻居取并集：钉住 1 时悬浮 2，1 和 2 的关联节点同时保持高亮。
+    final Set<int>? related = hi == null
+        ? null
+        : <int>{
+            ..._view.nodes[hi].neighbours,
+            if (second != null) ..._view.nodes[second].neighbours,
+          };
 
     // 光源固定在左上偏前。球转的时候光斑不动，这是立体感的主要来源。
     const double lx = -0.4175, ly = -0.5468, lz = 0.7257;
@@ -774,7 +1069,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
         // 焦点态不是「切过去」，而是从常态**插值**过去：鼠标扫过画布时，
         // 整颗球会跟着一暗一亮，硬切就是一路闪。
         double target;
-        if (i == hi) {
+        if (i == hi || i == second) {
           target = 1;
         } else if (related!.contains(i)) {
           target = math.min(1, base * 1.2 + 0.34);
@@ -789,7 +1084,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       // 半径在这里落地：世界半径 × 球半径 × 透视缩放。
       double r = _worldRadii[i] * radius * _scl[i];
       if (hi != null && f > 0) {
-        if (i == hi) {
+        if (i == hi || i == second) {
           r *= 1 + 0.5 * f;
         } else if (related!.contains(i)) {
           r *= 1 + 0.14 * f;
@@ -861,9 +1156,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       _followDrag(dt, 0.05);
       if (_settleT <= 0) {
         _settleT = 0;
-        _followers = null;
-        _followPivot = null;
-        _followIndex = null;
+        // 跟随状态留着：之后调「相对距离」时还能按同一批邻居重新摆开。
       }
     }
 
@@ -872,11 +1165,14 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     if (_drift && _idle > 1.4) {
       // 漂浮：低频噪声驱动目标角速度。三层正弦叠起来，看起来像悬浮物在
       // 慢慢漂，而不是匀速自转——匀速会像加载动画。
+      final double spin = _settings.spinScale;
       final double t = _clock * 0.135;
       final double tgtY =
-          0.115 + 0.052 * math.sin(t * 1.7) + 0.026 * math.sin(t * 3.13 + 1.2);
+          spin *
+          (0.115 + 0.052 * math.sin(t * 1.7) + 0.026 * math.sin(t * 3.13 + 1.2));
       final double tgtX =
-          0.020 * math.sin(t * 1.13 + 0.7) + 0.014 * math.sin(t * 2.41 + 2.1);
+          spin *
+          (0.020 * math.sin(t * 1.13 + 0.7) + 0.014 * math.sin(t * 2.41 + 2.1));
       final double k = 1 - math.exp(-dt * 0.85);
       _velY += (tgtY - _velY) * k;
       _velX += (tgtX - _velX) * k;
@@ -1252,6 +1548,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       order: _order,
       lit: _lit,
       focus: _focus,
+      secondFocus: _secondFocus,
       focusFade: _focusFade,
       useFolderColors: _settings.useFolderColors,
       folderColors: folderColors,
@@ -1262,6 +1559,8 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       labels: _labels,
       sphereRadius: _sphereRadius,
       zoom: _scale,
+      labelZoomStart: _settings.labelZoomStart,
+      labelZoomFull: _settings.labelZoomFull,
     );
 
     return Stack(
@@ -1339,11 +1638,60 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
 
   // ------------------------------------------------------------- 设置变化
 
+  /// 从持久化存储恢复图谱设置；没存过的项回落到 [GraphSettings] 的默认值，
+  /// 这样默认值只需要在那一处维护。
+  GraphSettings _restoreSettings() {
+    const GraphSettings fallback = GraphSettings();
+    final SettingsController? store = widget.settings;
+    if (store == null) return fallback;
+    return GraphSettings(
+      showOrphans: store.graphShowOrphans ?? fallback.showOrphans,
+      useFolderColors: store.graphUseFolderColors ?? fallback.useFolderColors,
+      nodeScale: store.graphNodeScale ?? fallback.nodeScale,
+      linkScale: store.graphLinkScale ?? fallback.linkScale,
+      labelZoomStart: store.graphLabelZoomStart ?? fallback.labelZoomStart,
+      labelZoomFull: store.graphLabelZoomFull ?? fallback.labelZoomFull,
+      spinScale: store.graphSpinScale ?? fallback.spinScale,
+      spinFalloff: store.graphSpinFalloff ?? fallback.spinFalloff,
+      dragLink: store.graphDragLink ?? fallback.dragLink,
+      dragFarPull: store.graphDragFarPull ?? fallback.dragFarPull,
+      dragStiffness: store.graphDragStiffness ?? fallback.dragStiffness,
+      dragRepel: store.graphDragRepel ?? fallback.dragRepel,
+      dragGap: store.graphDragGap ?? fallback.dragGap,
+    );
+  }
+
+  void _saveSettings(GraphSettings value) {
+    final SettingsController? store = widget.settings;
+    if (store == null) return;
+    store
+      ..graphShowOrphans = value.showOrphans
+      ..graphUseFolderColors = value.useFolderColors
+      ..graphNodeScale = value.nodeScale
+      ..graphLinkScale = value.linkScale
+      ..graphLabelZoomStart = value.labelZoomStart
+      ..graphLabelZoomFull = value.labelZoomFull
+      ..graphSpinScale = value.spinScale
+      ..graphSpinFalloff = value.spinFalloff
+      ..graphDragLink = value.dragLink
+      ..graphDragFarPull = value.dragFarPull
+      ..graphDragStiffness = value.dragStiffness
+      ..graphDragRepel = value.dragRepel
+      ..graphDragGap = value.dragGap;
+  }
+
   void _onSettings(GraphSettings next) {
+    _saveSettings(next);
     final bool structureChanged =
         next.scope != _settings.scope ||
         next.depth != _settings.depth ||
         next.showOrphans != _settings.showOrphans;
+    final bool tuningChanged =
+        next.dragLink != _settings.dragLink ||
+        next.dragFarPull != _settings.dragFarPull ||
+        next.dragStiffness != _settings.dragStiffness ||
+        next.dragRepel != _settings.dragRepel ||
+        next.dragGap != _settings.dragGap;
     setState(() {
       _settings = next;
       _recomputeRadii();
@@ -1351,6 +1699,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
         _rebuildView();
       } else {
         _recomputeLit();
+        if (tuningChanged) _applyDragTuning();
       }
     });
     _project();
@@ -1429,10 +1778,16 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       final Offset delta = e.localPosition - (_rotateLast ?? e.localPosition);
       if (delta.distance > 0) {
         _rotated = true;
-        _camera.rotate(delta.dy * 0.0062, delta.dx * 0.0062);
+        // 每像素转多少角度随倍率衰减：指数由「放大减速」控制，0 表示
+        // 不减速，1 是转速与倍率成反比。倍率不足 100% 时不补偿，免得
+        // 缩小后一转就飞。
+        final double zoom = _scale > 1 ? _scale : 1;
+        final double k =
+            0.0062 / math.pow(zoom, _settings.spinFalloff);
+        _camera.rotate(delta.dy * k, delta.dx * k);
         // 记下瞬时角速度，松手后当惯性用。
-        _velX = delta.dy * 0.0062 * 46;
-        _velY = delta.dx * 0.0062 * 46;
+        _velX = delta.dy * k * 46;
+        _velY = delta.dx * k * 46;
         _velX = _velX.clamp(-1.6, 1.6);
         _velY = _velY.clamp(-1.6, 1.6);
         _project();
@@ -1464,9 +1819,10 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
         _dragNode = null;
         _dragMoved = false;
       });
-      // 松手之后弹簧再追 220ms：快拖时掉队的关联节点在这里自己贴回去。
+      // 松手之后弹簧再追一会儿：快拖时掉队的关联节点在这里自己贴回去，
+      // 同时斥力把挤在一起的邻居推开。跳得越深，慢速的那几层需要的时间越长。
       if (moved && _followers != null) {
-        _settleT = 0.22;
+        _settleT = _settleSpan;
       } else {
         _followers = null;
         _followPivot = null;
@@ -1500,7 +1856,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
 
   void _onPointerSignal(PointerSignalEvent e) {
     if (e is! PointerScrollEvent) return;
-    final double next = (_scale * math.exp(-e.scrollDelta.dy * 0.0016)).clamp(0.45, 2.6);
+    final double next = (_scale * math.exp(-e.scrollDelta.dy * 0.0016)).clamp(0.45, 5.2);
     if (next == _scale) return;
     setState(() => _scale = next);
     _project();
@@ -1587,7 +1943,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   }
 
   void _zoomBy(double factor) {
-    final double next = (_scale * factor).clamp(0.45, 2.6);
+    final double next = (_scale * factor).clamp(0.45, 5.2);
     if (next == _scale) return;
     setState(() => _scale = next);
     _project();
@@ -1765,9 +2121,13 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   @visibleForTesting
   bool get debugHoldOn => _holdOn;
 
-  /// 当前的高亮中心（悬停优先，其次是被钉住的那颗）。
+  /// 当前的主高亮中心：钉住的那颗优先，没钉住时是悬停的那颗。
   @visibleForTesting
   int? get debugFocus => _focus;
+
+  /// 第二个高亮中心：钉着一颗时悬停到的另一颗，两圈关联一起亮。
+  @visibleForTesting
+  int? get debugSecondFocus => _secondFocus;
 
   /// 某颗点这一帧的最终不透明度。用来验证高亮是「渐变」而不是「硬切」。
   @visibleForTesting

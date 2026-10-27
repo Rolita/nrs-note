@@ -57,6 +57,8 @@ class TitleBarLayout extends StatelessWidget {
     required this.onCreateNote,
     required this.mainView,
     required this.onSelectMainView,
+    required this.graphOpen,
+    required this.onCloseGraph,
     required this.grip,
     required this.leftInset,
     required this.rightInset,
@@ -72,6 +74,13 @@ class TitleBarLayout extends StatelessWidget {
   /// Whether the pane under the tabs shows a note or the graph.
   final MainView mainView;
   final ValueChanged<MainView> onSelectMainView;
+
+  /// 图谱开过一次之后就有一页标签，和笔记标签一样常驻：切到笔记时它还在，
+  /// 点它可以切回来，× 才真正关掉。
+  final bool graphOpen;
+
+  /// 关掉图谱页：主区若正停在那里就退回正文。
+  final VoidCallback onCloseGraph;
 
   /// The window's drag surface. Handed in rather than created here because only
   /// the desktop build may talk to `window_manager`.
@@ -249,9 +258,18 @@ class TitleBarLayout extends StatelessWidget {
                                   onClose: () => notes.closeTab(note.id),
                                 ),
                               ),
-                            // 图谱和白板曾经也钉在这里，但它们不是文档、没有
-                            // ×，占着标签条只会让真正的笔记标签被挤窄。现在
-                            // 两个入口都在左侧功能栏（见 AppRail）。
+                            // 图谱页和一页笔记长得一样：有标题、有下划线、
+                            // 有 ×。点它切到图谱，点 × 才关掉。
+                            if (graphOpen)
+                              Flexible(
+                                child: _TitleTab(
+                                  label: '关系图谱',
+                                  active: mainView == MainView.graph,
+                                  onTap: () =>
+                                      onSelectMainView(MainView.graph),
+                                  onClose: onCloseGraph,
+                                ),
+                              ),
                           ],
                         ),
                       ),

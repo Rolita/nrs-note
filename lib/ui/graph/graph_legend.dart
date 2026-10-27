@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
@@ -28,7 +29,10 @@ class GraphGroup {
 /// 它同时是**筛选器**：点一项就把别的分组淡掉，再点取消。图上光有颜色没有
 /// 图例，等于让人猜；有了图例还能顺手当开关用，比在设置面板里再列一遍文件夹
 /// 省一半地方。
-class GraphLegend extends StatelessWidget {
+///
+/// 默认收起：分组多的时候这块能占掉小半屏，而大部分时候读者只是在看球。
+/// 点标题展开，展开/收起只影响自己，不写进设置。
+class GraphLegend extends StatefulWidget {
   const GraphLegend({
     super.key,
     required this.groups,
@@ -44,9 +48,16 @@ class GraphLegend extends StatelessWidget {
   final ValueChanged<String?> onSelect;
 
   @override
+  State<GraphLegend> createState() => _GraphLegendState();
+}
+
+class _GraphLegendState extends State<GraphLegend> {
+  bool _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
-    if (groups.length < 2) return const SizedBox.shrink();
+    if (widget.groups.length < 2) return const SizedBox.shrink();
 
     // IntrinsicWidth：图例挂在 Positioned 里，宽度无界，而里面每一行都要
     // 用 Flexible 把计数推到右边。不给它一个「按最宽那一行收」的宽度，Row
@@ -75,25 +86,49 @@ class GraphLegend extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            Padding(
-              padding: const EdgeInsets.only(left: 2, bottom: AppSpace.xs + 1),
-              child: Text(
-                '分组 · 文件夹',
-                style: TextStyle(
-                  fontSize: AppText.caption - 1,
-                  letterSpacing: 0.4,
-                  color: p.textTertiary,
+            GestureDetector(
+              onTap: () => setState(() => _expanded = !_expanded),
+              behavior: HitTestBehavior.opaque,
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 2,
+                  bottom: _expanded ? AppSpace.xs + 1 : 0,
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Text(
+                      '分组 · 文件夹',
+                      style: TextStyle(
+                        fontSize: AppText.caption - 1,
+                        letterSpacing: 0.4,
+                        color: p.textTertiary,
+                      ),
+                    ),
+                    const SizedBox(width: AppSpace.xs),
+                    Icon(
+                      _expanded
+                          ? LucideIcons.chevronDown
+                          : LucideIcons.chevronRight,
+                      size: 12,
+                      color: p.textTertiary,
+                    ),
+                  ],
                 ),
               ),
             ),
-            for (final GraphGroup group in groups)
-              _LegendRow(
-                group: group,
-                selected: selected == group.folder,
-                dimmed: selected != null && selected != group.folder,
-                onTap: () =>
-                    onSelect(selected == group.folder ? null : group.folder),
-              ),
+            if (_expanded)
+              for (final GraphGroup group in widget.groups)
+                _LegendRow(
+                  group: group,
+                  selected: widget.selected == group.folder,
+                  dimmed:
+                      widget.selected != null &&
+                      widget.selected != group.folder,
+                  onTap: () => widget.onSelect(
+                    widget.selected == group.folder ? null : group.folder,
+                  ),
+                ),
           ],
         ),
       ),

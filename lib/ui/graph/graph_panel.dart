@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
@@ -27,8 +29,17 @@ class GraphSettings {
     this.query = '',
     this.showOrphans = true,
     this.useFolderColors = false,
-    this.nodeScale = 1,
-    this.linkScale = 1,
+    this.nodeScale = 0.6,
+    this.linkScale = 1.6,
+    this.labelZoomStart = 2.25,
+    this.labelZoomFull = 5.2,
+    this.spinScale = 1,
+    this.spinFalloff = 1.5,
+    this.dragLink = 0.7,
+    this.dragFarPull = 1.2,
+    this.dragStiffness = 1.2,
+    this.dragRepel = 1,
+    this.dragGap = 0.16,
     this.folder,
   });
 
@@ -51,6 +62,36 @@ class GraphSettings {
   final double nodeScale;
   final double linkScale;
 
+  /// 标签随缩放的淡入区间：缩到 [labelZoomStart] 以下不显示，放大到
+  /// [labelZoomFull] 以上完全显示，中间平滑过渡。
+  final double labelZoomStart;
+  final double labelZoomFull;
+
+  /// 空闲自转速度倍数：0 = 不转，1 = 默认，2 = 两倍速。
+  final double spinScale;
+
+  /// 拖动转动随放大倍率减速的强度：0 = 不减速，1 = 转速与倍率成反比，
+  /// 越大放大后转得越慢。
+  ///
+  /// 放大之后球面在屏幕上变大，同样的角度会让球面滑出很远；这个指数
+  /// 把转速按倍率的幂次压下来，用户自己调到手感合适。
+  final double spinFalloff;
+
+  /// 拖拽力导向的参数。
+  ///
+  /// 邻居像被弹簧拴在被拖节点上：连接长度决定它们最终隔多远（相对建图时的
+  /// 原距离），远端收拢让原本很远的邻居额外向中心靠，弹簧强度决定跟手的
+  /// 快慢，斥力与最小间距负责把挤到一起的节点推开。
+  final double dragLink;
+
+  /// 远端收拢：0 = 只按连接长度等比例缩放；越大，原来角距越远的邻居被拉得
+  /// 越靠中心。默认 1.2，近处几乎不变，跨半球的边会明显缩短。
+  final double dragFarPull;
+
+  final double dragStiffness;
+  final double dragRepel;
+  final double dragGap;
+
   /// 图例点选的分组（顶层文件夹名），`null` 表示不筛。
   final String? folder;
 
@@ -62,6 +103,15 @@ class GraphSettings {
     bool? useFolderColors,
     double? nodeScale,
     double? linkScale,
+    double? labelZoomStart,
+    double? labelZoomFull,
+    double? spinScale,
+    double? spinFalloff,
+    double? dragLink,
+    double? dragFarPull,
+    double? dragStiffness,
+    double? dragRepel,
+    double? dragGap,
     Object? folder = _keep,
   }) {
     return GraphSettings(
@@ -72,6 +122,15 @@ class GraphSettings {
       useFolderColors: useFolderColors ?? this.useFolderColors,
       nodeScale: nodeScale ?? this.nodeScale,
       linkScale: linkScale ?? this.linkScale,
+      labelZoomStart: labelZoomStart ?? this.labelZoomStart,
+      labelZoomFull: labelZoomFull ?? this.labelZoomFull,
+      spinScale: spinScale ?? this.spinScale,
+      spinFalloff: spinFalloff ?? this.spinFalloff,
+      dragLink: dragLink ?? this.dragLink,
+      dragFarPull: dragFarPull ?? this.dragFarPull,
+      dragStiffness: dragStiffness ?? this.dragStiffness,
+      dragRepel: dragRepel ?? this.dragRepel,
+      dragGap: dragGap ?? this.dragGap,
       // 用哨兵而不是 `??`：`null` 本身是「不筛分组」这个有意义的值。
       folder: identical(folder, _keep) ? this.folder : folder as String?,
     );
@@ -89,6 +148,15 @@ class GraphSettings {
       other.useFolderColors == useFolderColors &&
       other.nodeScale == nodeScale &&
       other.linkScale == linkScale &&
+      other.labelZoomStart == labelZoomStart &&
+      other.labelZoomFull == labelZoomFull &&
+      other.spinScale == spinScale &&
+      other.spinFalloff == spinFalloff &&
+      other.dragLink == dragLink &&
+      other.dragFarPull == dragFarPull &&
+      other.dragStiffness == dragStiffness &&
+      other.dragRepel == dragRepel &&
+      other.dragGap == dragGap &&
       other.folder == folder;
 
   @override
@@ -100,6 +168,15 @@ class GraphSettings {
     useFolderColors,
     nodeScale,
     linkScale,
+    labelZoomStart,
+    labelZoomFull,
+    spinScale,
+    spinFalloff,
+    dragLink,
+    dragFarPull,
+    dragStiffness,
+    dragRepel,
+    dragGap,
     folder,
   );
 }
@@ -252,6 +329,121 @@ class GraphPanel extends StatelessWidget {
                           onChanged: (double v) =>
                               onChanged(settings.copyWith(linkScale: v)),
                         ),
+                        _SliderRow(
+                          label: '标签起始',
+                          value: settings.labelZoomStart,
+                          min: 0.45,
+                          max: 5.1,
+                          divisions: 93,
+                          display: '${(settings.labelZoomStart * 100).round()}',
+                          onChanged: (double v) => onChanged(
+                            settings.copyWith(
+                              labelZoomStart: v,
+                              // 起始不能越过完整，拖过头时把另一头一起推走。
+                              labelZoomFull: v + 0.05 > settings.labelZoomFull
+                                  ? v + 0.05
+                                  : settings.labelZoomFull,
+                            ),
+                          ),
+                        ),
+                        _SliderRow(
+                          label: '标签完整',
+                          value: settings.labelZoomFull,
+                          min: 0.5,
+                          max: 5.2,
+                          divisions: 94,
+                          display: '${(settings.labelZoomFull * 100).round()}',
+                          onChanged: (double v) => onChanged(
+                            settings.copyWith(
+                              labelZoomFull: v,
+                              labelZoomStart:
+                                  v - 0.05 < settings.labelZoomStart
+                                  ? v - 0.05
+                                  : settings.labelZoomStart,
+                            ),
+                          ),
+                        ),
+                        _Hint(
+                          '${(settings.labelZoomStart * 100).round()}% 开始出现，'
+                          '${(settings.labelZoomFull * 100).round()}% 完全显示',
+                        ),
+                        _SliderRow(
+                          label: '旋转速度',
+                          value: settings.spinScale,
+                          min: 0,
+                          max: 2,
+                          divisions: 40,
+                          display: '${(settings.spinScale * 100).round()}',
+                          onChanged: (double v) =>
+                              onChanged(settings.copyWith(spinScale: v)),
+                        ),
+                        _SliderRow(
+                          label: '放大减速',
+                          value: settings.spinFalloff,
+                          min: 0,
+                          max: 2.5,
+                          divisions: 25,
+                          display:
+                              '${(settings.spinFalloff * 100).round()}%',
+                          onChanged: (double v) =>
+                              onChanged(settings.copyWith(spinFalloff: v)),
+                        ),
+                        _Hint('越大，放大后拖动转动越慢；0% 不减速'),
+                        _SliderRow(
+                          label: '连接长度',
+                          value: settings.dragLink,
+                          min: 0.4,
+                          max: 1.3,
+                          divisions: 18,
+                          display: '${(settings.dragLink * 100).round()}%',
+                          onChanged: (double v) =>
+                              onChanged(settings.copyWith(dragLink: v)),
+                        ),
+                        _SliderRow(
+                          label: '远端收拢',
+                          value: settings.dragFarPull,
+                          min: 0,
+                          max: 2,
+                          divisions: 40,
+                          display:
+                              '${(settings.dragFarPull * 100).round()}%',
+                          onChanged: (double v) =>
+                              onChanged(settings.copyWith(dragFarPull: v)),
+                        ),
+                        _SliderRow(
+                          label: '弹簧强度',
+                          value: settings.dragStiffness,
+                          min: 0.3,
+                          max: 2,
+                          divisions: 34,
+                          display:
+                              '${(settings.dragStiffness * 100).round()}%',
+                          onChanged: (double v) => onChanged(
+                            settings.copyWith(dragStiffness: v),
+                          ),
+                        ),
+                        _SliderRow(
+                          label: '斥力',
+                          value: settings.dragRepel,
+                          min: 0,
+                          max: 2,
+                          divisions: 40,
+                          display: '${(settings.dragRepel * 100).round()}%',
+                          onChanged: (double v) =>
+                              onChanged(settings.copyWith(dragRepel: v)),
+                        ),
+                        _SliderRow(
+                          label: '最小间距',
+                          value: settings.dragGap,
+                          min: 0.08,
+                          max: 0.36,
+                          divisions: 14,
+                          display:
+                              '${(settings.dragGap * 180 / math.pi).round()}°',
+                          onChanged: (double v) =>
+                              onChanged(settings.copyWith(dragGap: v)),
+                        ),
+                        _Hint('越远的邻居收得越多；最小间距防止挤成一团'),
                       ],
                     ),
                   ),

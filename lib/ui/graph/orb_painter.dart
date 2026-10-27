@@ -27,6 +27,7 @@ class OrbPaintData {
     required this.order,
     required this.lit,
     required this.focus,
+    required this.secondFocus,
     required this.focusFade,
     required this.useFolderColors,
     required this.folderColors,
@@ -37,6 +38,8 @@ class OrbPaintData {
     required this.labels,
     required this.sphereRadius,
     required this.zoom,
+    required this.labelZoomStart,
+    required this.labelZoomFull,
   });
 
   final NoteGraph graph;
@@ -69,8 +72,14 @@ class OrbPaintData {
   /// 是否通过筛选（搜索 / 文件夹 / 孤立）。没通过就压到很淡，但不删。
   final List<bool> lit;
 
-  /// 高亮的那个节点（鼠标悬停）。悬停即选中，所以这里只有这一个状态。
+  /// 主高亮的那个节点。钉住时是钉住的中心，否则是鼠标悬停的那颗。
   final int? focus;
+
+  /// 第二焦点：钉住一颗时，鼠标又悬浮到另一颗，两颗的关联圈一起显示。
+  ///
+  /// 和 [focus] 分开而不是合并成一个集合，是因为边的高亮要按「方向」分色，
+  /// 两套连线各自从自己的中心出发画。为空表示只有一个焦点。
+  final int? secondFocus;
 
   /// 高亮浓度 0~1。0 = 没有焦点，1 = 完全聚焦。
   ///
@@ -98,6 +107,10 @@ class OrbPaintData {
   /// 的），但外光圈画的是球的轮廓，必须跟着一起缩放——不然放大时点散开了、
   /// 圈还留在原地。
   final double zoom;
+
+  /// 标签淡入区间，来自图谱设置。
+  final double labelZoomStart;
+  final double labelZoomFull;
 }
 
 /// 球体图谱的配色。从 [AppPalette] 解析一次，painter 不碰 context。
@@ -141,8 +154,9 @@ class OrbStyle {
 
 /// 标签的 TextPainter 缓存。
 ///
-/// 一帧最多十几条标签，但每条都要 layout 一次。缓存键带上整份 [TextStyle]
-/// 的哈希（含颜色与透明度），换主题、换字号档位都会自然失效。
+/// 键按「文字 + 字号 + 字重 + 颜色 + 描边与否」建，而不是整份 [TextStyle]
+/// 的哈希：`foreground` 里的 [Paint] 是每帧新建的，按对象身份哈希会导致
+/// 永远不命中——放大时上百条标签每帧都重新 layout，就是卡顿的根源。
 class OrbLabelCache {
   final Map<String, TextPainter> _painters = <String, TextPainter>{};
   TextScaler _scaler = TextScaler.noScaling;
@@ -164,7 +178,10 @@ class OrbLabelCache {
       clear();
       _scaler = scaler;
     }
-    final String key = '$text|$fontSize|${style.hashCode}';
+    final Color color =
+        style.foreground?.color ?? style.color ?? const Color(0xFF000000);
+    final String key = '$text|$fontSize|${style.fontWeight}|'
+        '${style.foreground != null}|${color.hashCode}';
     final TextPainter? hit = _painters[key];
     if (hit != null) return hit;
 
@@ -201,6 +218,12 @@ class OrbPainter extends CustomPainter {
   final Paint _stroke = Paint()
     ..isAntiAlias = true
     ..style = PaintingStyle.stroke;
+
+  /// 焦点弧环专用：圆头笔帽，和连线的平头笔分开。
+  final Paint _ringStroke = Paint()
+    ..isAntiAlias = true
+    ..style = PaintingStyle.stroke
+    ..strokeCap = StrokeCap.round;
   final Paint _glow = Paint()
     ..isAntiAlias = true
     ..filterQuality = FilterQuality.low
@@ -216,7 +239,7 @@ class OrbPainter extends CustomPainter {
     _paintEdges(canvas);
     _paintGlow(canvas);
     _paintNodes(canvas);
-    _paintLabels(canvas);
+    _paintLabels(canvas, size);
   }
 
   // ------------------------------------------------------------------ 底
@@ -262,6 +285,7 @@ class OrbPainter extends CustomPainter {
   void _paintEdges(Canvas canvas) {
     final NoteGraph graph = data.graph;
     final int? focus = data.focus;
+    final int? second = data.secondFocus;
 
     // 按 alpha 分 12 桶，每桶一条 Path 一次 drawPath。
     // 逐条 drawLine 是 900 次原生调用，分桶之后是 12 次。
@@ -269,9 +293,13 @@ class OrbPainter extends CustomPainter {
     final List<Path> paths = List<Path>.generate(buckets, (_) => Path());
     final List<int> counts = List<int>.filled(buckets, 0);
 
-    final List<int>? related = focus == null
+    // 两个焦点的关联圈取并集：钉住 1 时悬浮 2，1 和 2 的邻居都要亮着。
+    final Set<int>? related = focus == null
         ? null
-        : graph.nodes[focus].neighbours;
+        : <int>{
+            ...graph.nodes[focus].neighbours,
+            if (second != null) ...graph.nodes[second].neighbours,
+          };
     final double f = data.focusFade;
 
     for (final GraphEdge e in graph.edges) {
@@ -283,7 +311,7 @@ class OrbPainter extends CustomPainter {
       double alpha = calm;
       if (focus != null && f > 0) {
         double target;
-        if (a == focus || b == focus) {
+        if (a == focus || b == focus || a == second || b == second) {
           // 焦点那几条线换成主题色的弧（见 [_paintFocusEdges]），这条白的
           // 让位：同时画会变成「彩色弧压在白光上」。
           target = 0;
@@ -319,6 +347,10 @@ class OrbPainter extends CustomPainter {
     // 焦点节点的连线单独画：主题色的弧 + 箭头 + 沿出链流动的粒子。
     if (focus != null && f > 0.02 && related != null && related.isNotEmpty) {
       _paintFocusEdges(canvas, focus, f);
+      // 第二焦点和主焦点相连的那条边已经画过了，跳过，免得两种方向色叠在一起。
+      if (second != null) {
+        _paintFocusEdges(canvas, second, f, skip: focus);
+      }
     }
   }
 
@@ -339,7 +371,7 @@ class OrbPainter extends CustomPainter {
   /// 逐条画而不是合成一条 Path：只有焦点那几条（最多十几条），但每条都要
   /// 按两端深度单独压暗——背面的邻居要是也画得一样亮，弧线会「穿」过球体，
   /// 立体感立刻塌掉。
-  void _paintFocusEdges(Canvas canvas, int focus, double f) {
+  void _paintFocusEdges(Canvas canvas, int focus, double f, {int? skip}) {
     final Color accent = data.style.ring;
     final Color neutral = data.style.edge;
     final Color flowIn = data.style.flowIn;
@@ -347,6 +379,7 @@ class OrbPainter extends CustomPainter {
 
     for (final GraphEdge e in data.graph.edges) {
       if (e.a != focus && e.b != focus) continue;
+      if (skip != null && (e.a == skip || e.b == skip)) continue;
       if (!data.lit[e.a] || !data.lit[e.b]) continue;
       final int other = e.a == focus ? e.b : e.a;
       final Offset p2 = Offset(data.screenX[other], data.screenY[other]);
@@ -466,6 +499,7 @@ class OrbPainter extends CustomPainter {
     if (data.glowSprites.isEmpty) return;
 
     final int? focus = data.focus;
+    final int? second = data.secondFocus;
     for (final int i in data.order) {
       final double a = data.alphas[i];
       if (a < 0.20) continue;
@@ -475,8 +509,8 @@ class OrbPainter extends CustomPainter {
       // 辉光按深度强衰减。球体边缘的点被投影压得很密，若也发光就会叠成
       // 一圈过曝的「项链」，比中心还亮。
       final double dk = math.pow(data.depth[i], 1.7).toDouble();
-      final double r =
-          data.radii[i] * (i == focus ? 4.6 + 2.4 * data.focusFade : 4.6);
+      final double r = data.radii[i] *
+          (i == focus || i == second ? 4.6 + 2.4 * data.focusFade : 4.6);
       final double alpha = math.min(0.85, a * 0.46 * dk);
       if (alpha <= 0.004) continue;
 
@@ -492,6 +526,7 @@ class OrbPainter extends CustomPainter {
 
   void _paintNodes(Canvas canvas) {
     final int? focus = data.focus;
+    final int? second = data.secondFocus;
 
     for (final int i in data.order) {
       final double a = data.alphas[i];
@@ -504,17 +539,23 @@ class OrbPainter extends CustomPainter {
         _fill,
       );
 
-      if (i == focus) {
-        _stroke
-          ..strokeWidth = 1.1
-          ..color = data.style.ring.withValues(
-            alpha: 0.62 * data.focusFade,
+      if (i == focus || i == second) {
+        // 两段 124° 圆弧留在左右：上下让给标签和连线，不再是一整圈
+        // 浮在节点外面的硬边。圆头和 55% 透明度让它像取景框，而不是
+        // 一个高亮圆圈。
+        final double fade = data.focusFade;
+        if (fade > 0.01) {
+          final Rect arc = Rect.fromCircle(
+            center: Offset(data.screenX[i], data.screenY[i]),
+            radius: data.radii[i] + 5.5,
           );
-        canvas.drawCircle(
-          Offset(data.screenX[i], data.screenY[i]),
-          data.radii[i] + 4.5,
-          _stroke,
-        );
+          _ringStroke
+            ..strokeWidth = 1.5
+            ..color = data.style.ring.withValues(alpha: 0.55 * fade);
+          const double span = 124 * math.pi / 180;
+          canvas.drawArc(arc, -62 * math.pi / 180, span, false, _ringStroke);
+          canvas.drawArc(arc, 118 * math.pi / 180, span, false, _ringStroke);
+        }
       }
     }
   }
@@ -527,10 +568,17 @@ class OrbPainter extends CustomPainter {
 
   // ------------------------------------------------------------------ 标签
 
-  void _paintLabels(Canvas canvas) {
+  void _paintLabels(Canvas canvas, Size size) {
     final int? focus = data.focus;
     final List<({int index, double size, double alpha, int mode})> shown =
         <({int index, double size, double alpha, int mode})>[];
+    // 静止标签共用同一套透明度，淡入时整批套一个图层。这样 TextPainter
+    // 只按固定颜色建键，缩放时不会每帧重建、重排上百条文字。
+    bool batched = false;
+    double batchAlpha = 0;
+    // 完全显示时的不透明度。颜色直接按它烘焙进 TextStyle，图层只在淡入
+    // 过程中用一下；静止时不再每帧开一整张离屏图层。
+    const double maxBatchAlpha = 0.58;
 
     // 0 = 节点上方居中，1 = 左侧，2 = 右侧
     //
@@ -538,57 +586,103 @@ class OrbPainter extends CustomPainter {
     // 整张图已经压到一半，换标签看不出跳。
     if (focus != null && data.focusFade >= 0.5) {
       final double f = data.focusFade;
-      shown.add((index: focus, size: 13, alpha: 0.95 * f, mode: 0));
-      final List<int> nb = data.graph.nodes[focus].neighbours;
-      final double fx = data.screenX[focus];
-      for (int k = 0; k < nb.length && k < 12; k++) {
-        final int j = nb[k];
-        if (!data.lit[j]) continue;
-        shown.add((
-          index: j,
-          size: 12,
-          alpha: 0.62 * f,
-          mode: data.screenX[j] >= fx ? 2 : 1,
-        ));
+      final int? second = data.secondFocus;
+      // 先把两个中心都按主标签放进去，再补各自的邻居：这样第二焦点即使
+      // 本身就是主焦点的邻居，也不会被降成邻居字号。
+      final List<int> centres = <int>[focus, ?second];
+      final Set<int> seen = centres.toSet();
+      for (final int c in centres) {
+        shown.add((index: c, size: 13, alpha: 0.95 * f, mode: 0));
+      }
+      // 一个焦点的邻居可能很多（日记这类枢纽常有二三十条边）。原先只贴
+      // 前 12 个邻居，剩下的连线都在、就是没有名字——看起来像「标签丢了」。
+      // 文字有缓存，多排十几条不贵；这里留 72 条的总上限，防止超大枢纽
+      // 一次性排上百条。
+      const int maxFocusLabels = 72;
+      for (final int c in centres) {
+        if (shown.length >= maxFocusLabels) break;
+        final List<int> nb = data.graph.nodes[c].neighbours;
+        final double fx = data.screenX[c];
+        for (final int j in nb) {
+          if (shown.length >= maxFocusLabels) break;
+          if (!data.lit[j] || !seen.add(j)) continue;
+          shown.add((
+            index: j,
+            size: 12,
+            alpha: 0.62 * f,
+            mode: data.screenX[j] >= fx ? 2 : 1,
+          ));
+        }
       }
     } else {
-      // 静止时只给度数最高的几颗挂「地标」，否则满屏小字。
-      // 选的时候要求互相离得够远：度最高的那几颗往往挤在同一片大陆上，
-      // 只按排名取会让标签叠成一团白雾。
-      final List<int> candidates = <int>[];
-      for (int i = 0; i < data.graph.nodes.length; i++) {
-        if (!data.lit[i]) continue;
-        if (data.depth[i] > 0.58 && data.graph.nodes[i].degree >= 2) {
-          candidates.add(i);
-        }
-      }
-      candidates.sort(
-        (int a, int b) =>
-            data.graph.nodes[b].degree.compareTo(data.graph.nodes[a].degree),
-      );
+      // 静止时按**缩放级别**决定显隐，和节点连了多少边无关。
+      //
+      // 缩小时每个字都会糊成一个噪点，所以整片标签随缩放一起淡出；放大到
+      // 一定程度才逐颗浮现。透明度做平滑过渡，避免在阈值附近来回闪。
+      // 放大后节点间距被拉开，能同时容纳的标签自然变多——这就是 Obsidian
+      // 图谱那种「越放大看到的字越多」的效果。
+      // 阈值来自图谱设置。两个值被拖反时留一点最小跨度兜底，别让淡入反向。
+      final double zoomStart = data.labelZoomStart;
+      final double zoomFull = math.max(data.labelZoomFull, zoomStart + 0.02);
+      final double t = ((data.zoom - zoomStart) / (zoomFull - zoomStart))
+          .clamp(0.0, 1.0);
+      final double alpha = maxBatchAlpha * t * t * (3 - 2 * t);
+      if (alpha > 0.01) {
+        batched = true;
+        batchAlpha = alpha;
 
-      const double minGap = 78;
-      final List<int> picked = <int>[];
-      for (final int cand in candidates) {
-        bool crowded = false;
-        for (final int other in picked) {
-          final double dx = data.screenX[cand] - data.screenX[other];
-          final double dy = data.screenY[cand] - data.screenY[other];
-          if (dx * dx + dy * dy < minGap * minGap) {
-            crowded = true;
-            break;
+        // 从近到远挑：近处的点先占位，远处的字让开，避免背面标签透上来。
+        // 还要互相离得够远，否则密集处会叠成一团白雾。
+        const double minGap = 64;
+        // 硬上限：文字绘制不便宜，即便视口还有空间也不一次画上百条。
+        const int maxLabels = 120;
+        final List<int> picked = <int>[];
+        for (int k = data.order.length - 1; k >= 0; k--) {
+          if (picked.length >= maxLabels) break;
+          final int i = data.order[k];
+          if (!data.lit[i] || data.depth[i] <= 0.58) continue;
+          // 画布外的标签看不见，先剔掉——放大后这类点占大多数。
+          final double sx = data.screenX[i];
+          final double sy = data.screenY[i];
+          if (sx < -40 ||
+              sx > size.width + 40 ||
+              sy < -40 ||
+              sy > size.height + 40) {
+            continue;
           }
+          bool crowded = false;
+          for (final int other in picked) {
+            final double dx = data.screenX[i] - data.screenX[other];
+            final double dy = data.screenY[i] - data.screenY[other];
+            if (dx * dx + dy * dy < minGap * minGap) {
+              crowded = true;
+              break;
+            }
+          }
+          if (crowded) continue;
+          picked.add(i);
         }
-        if (crowded) continue;
-        picked.add(cand);
-        if (picked.length >= 6) break;
-      }
-      for (final int i in picked) {
-        shown.add((index: i, size: 11.5, alpha: 0.44, mode: 0));
+        for (final int i in picked) {
+          shown.add((index: i, size: 11.5, alpha: alpha, mode: 0));
+        }
       }
     }
 
     if (shown.isEmpty) return;
+
+    final bool layered = batched && batchAlpha < maxBatchAlpha - 0.001;
+    if (layered) {
+      canvas.saveLayer(
+        Offset.zero & size,
+        Paint()
+          ..color = Color.fromRGBO(
+            255,
+            255,
+            255,
+            (batchAlpha / maxBatchAlpha).clamp(0.0, 1.0),
+          ),
+      );
+    }
 
     for (final ({int index, double size, double alpha, int mode}) item in shown) {
       final int i = item.index;
@@ -621,6 +715,18 @@ class OrbPainter extends CustomPainter {
       // 先用画布底色描一圈再填字：任何背景上都能读，又没有「标签底板」的
       // 块状感。这就是 canvas 版 strokeText 的等价做法——TextStyle 的
       // foreground 和 color 互斥，所以描边那遍要单独建一份样式。
+      //
+      // 批量那批把固定透明度烘进颜色，淡入阶段再整体乘一层图层；逐条
+      // 那批（焦点附近十几条）各自带 alpha。
+      final Color haloColor = batched
+          ? data.style.labelHalo.withValues(alpha: maxBatchAlpha * 0.92)
+          : data.style.labelHalo.withValues(alpha: item.alpha * 0.92);
+      final Color fillBase =
+          item.mode == 0 ? data.style.labelFocus : data.style.label;
+      final Color fillColor = batched
+          ? fillBase.withValues(alpha: maxBatchAlpha)
+          : fillBase.withValues(alpha: item.alpha);
+
       final TextPainter halo = data.labels.painter(
         title,
         item.size,
@@ -630,7 +736,7 @@ class OrbPainter extends CustomPainter {
             ..style = PaintingStyle.stroke
             ..strokeWidth = 3.2
             ..strokeJoin = StrokeJoin.round
-            ..color = data.style.labelHalo.withValues(alpha: item.alpha * 0.92),
+            ..color = haloColor,
           fontWeight: FontWeight.w500,
         ),
       );
@@ -638,11 +744,7 @@ class OrbPainter extends CustomPainter {
         title,
         item.size,
         data.textScaler,
-        TextStyle(
-          color: (item.mode == 0 ? data.style.labelFocus : data.style.label)
-              .withValues(alpha: item.alpha),
-          fontWeight: FontWeight.w500,
-        ),
+        TextStyle(color: fillColor, fontWeight: FontWeight.w500),
       );
 
       final double dx = switch (align) {
@@ -655,6 +757,8 @@ class OrbPainter extends CustomPainter {
       halo.paint(canvas, Offset(dx, dy));
       fill.paint(canvas, Offset(dx, dy));
     }
+
+    if (layered) canvas.restore();
   }
 
   @override

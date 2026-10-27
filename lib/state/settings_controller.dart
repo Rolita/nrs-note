@@ -39,6 +39,19 @@ class SettingsController extends ChangeNotifier {
     'nrs.imagePanelWidth',
   ];
   static const String _kProseSize = 'nrs.proseSize';
+  static const String _kGraphOrphans = 'nrs.graph.showOrphans';
+  static const String _kGraphFolderColors = 'nrs.graph.useFolderColors';
+  static const String _kGraphNodeScale = 'nrs.graph.nodeScale';
+  static const String _kGraphLinkScale = 'nrs.graph.linkScale';
+  static const String _kGraphLabelStart = 'nrs.graph.labelZoomStart';
+  static const String _kGraphLabelFull = 'nrs.graph.labelZoomFull';
+  static const String _kGraphSpin = 'nrs.graph.spinScale';
+  static const String _kGraphSpinFalloff = 'nrs.graph.spinFalloff';
+  static const String _kGraphDragLink = 'nrs.graph.dragLink';
+  static const String _kGraphDragFarPull = 'nrs.graph.dragFarPull';
+  static const String _kGraphDragStiffness = 'nrs.graph.dragStiffness';
+  static const String _kGraphDragRepel = 'nrs.graph.dragRepel';
+  static const String _kGraphDragGap = 'nrs.graph.dragGap';
   static const String _kFocus = 'nrs.focusMode';
   static const String _kSessionTabs = 'nrs.sessionTabs';
   static const String _kSessionSelected = 'nrs.sessionSelected';
@@ -338,6 +351,115 @@ class SettingsController extends ChangeNotifier {
     final double clamped = value.clamp(13, 22);
     if ((proseSize - clamped).abs() < 0.05) return;
     _prefs.setDouble(_kProseSize, clamped);
+    notifyListeners();
+  }
+
+  // ------------------------------------------------------------------ graph
+
+  /// 图谱设置。读取返回 `null` 表示从未存过，调用方回落到
+  /// [GraphSettings] 的默认值——默认值只在那一处维护，不在这里再抄一遍。
+  bool? get graphShowOrphans => _prefs.getBool(_kGraphOrphans);
+
+  set graphShowOrphans(bool value) {
+    if (_prefs.getBool(_kGraphOrphans) == value) return;
+    _prefs.setBool(_kGraphOrphans, value);
+    notifyListeners();
+  }
+
+  bool? get graphUseFolderColors => _prefs.getBool(_kGraphFolderColors);
+
+  set graphUseFolderColors(bool value) {
+    if (_prefs.getBool(_kGraphFolderColors) == value) return;
+    _prefs.setBool(_kGraphFolderColors, value);
+    notifyListeners();
+  }
+
+  double? get graphNodeScale => _prefs.getDouble(_kGraphNodeScale);
+
+  set graphNodeScale(double value) {
+    if (_prefs.getDouble(_kGraphNodeScale) == value) return;
+    _prefs.setDouble(_kGraphNodeScale, value);
+    notifyListeners();
+  }
+
+  double? get graphLinkScale => _prefs.getDouble(_kGraphLinkScale);
+
+  set graphLinkScale(double value) {
+    if (_prefs.getDouble(_kGraphLinkScale) == value) return;
+    _prefs.setDouble(_kGraphLinkScale, value);
+    notifyListeners();
+  }
+
+  double? get graphLabelZoomStart => _prefs.getDouble(_kGraphLabelStart);
+
+  set graphLabelZoomStart(double value) {
+    if (_prefs.getDouble(_kGraphLabelStart) == value) return;
+    _prefs.setDouble(_kGraphLabelStart, value);
+    notifyListeners();
+  }
+
+  double? get graphLabelZoomFull => _prefs.getDouble(_kGraphLabelFull);
+
+  set graphLabelZoomFull(double value) {
+    if (_prefs.getDouble(_kGraphLabelFull) == value) return;
+    _prefs.setDouble(_kGraphLabelFull, value);
+    notifyListeners();
+  }
+
+  double? get graphSpinScale => _prefs.getDouble(_kGraphSpin);
+
+  set graphSpinScale(double value) {
+    if (_prefs.getDouble(_kGraphSpin) == value) return;
+    _prefs.setDouble(_kGraphSpin, value);
+    notifyListeners();
+  }
+
+  /// 拖动转动随放大倍率减速的强度（指数）。
+  double? get graphSpinFalloff => _prefs.getDouble(_kGraphSpinFalloff);
+
+  set graphSpinFalloff(double value) {
+    if (_prefs.getDouble(_kGraphSpinFalloff) == value) return;
+    _prefs.setDouble(_kGraphSpinFalloff, value);
+    notifyListeners();
+  }
+
+  double? get graphDragLink => _prefs.getDouble(_kGraphDragLink);
+
+  set graphDragLink(double value) {
+    if (_prefs.getDouble(_kGraphDragLink) == value) return;
+    _prefs.setDouble(_kGraphDragLink, value);
+    notifyListeners();
+  }
+
+  double? get graphDragFarPull => _prefs.getDouble(_kGraphDragFarPull);
+
+  set graphDragFarPull(double value) {
+    if (_prefs.getDouble(_kGraphDragFarPull) == value) return;
+    _prefs.setDouble(_kGraphDragFarPull, value);
+    notifyListeners();
+  }
+
+  double? get graphDragStiffness => _prefs.getDouble(_kGraphDragStiffness);
+
+  set graphDragStiffness(double value) {
+    if (_prefs.getDouble(_kGraphDragStiffness) == value) return;
+    _prefs.setDouble(_kGraphDragStiffness, value);
+    notifyListeners();
+  }
+
+  double? get graphDragRepel => _prefs.getDouble(_kGraphDragRepel);
+
+  set graphDragRepel(double value) {
+    if (_prefs.getDouble(_kGraphDragRepel) == value) return;
+    _prefs.setDouble(_kGraphDragRepel, value);
+    notifyListeners();
+  }
+
+  double? get graphDragGap => _prefs.getDouble(_kGraphDragGap);
+
+  set graphDragGap(double value) {
+    if (_prefs.getDouble(_kGraphDragGap) == value) return;
+    _prefs.setDouble(_kGraphDragGap, value);
     notifyListeners();
   }
 

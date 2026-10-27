@@ -188,6 +188,19 @@ class _AppShellState extends State<AppShell> {
     }
   }
 
+  /// 关掉「关系图谱」页。
+  ///
+  /// 和笔记标签一样，只有点 × 才算关：主区若正停在图谱就退回正文，并且
+  /// 把 [GraphView] 从树上摘掉；下次再打开会是一张重新建好的图。
+  void _closeGraph() {
+    if (!_graphOpened) return;
+    setState(() {
+      _graphOpened = false;
+      if (_mainView == MainView.graph) _mainView = MainView.note;
+    });
+    _shellFocus.requestFocus();
+  }
+
   /// 功能栏 / `Ctrl+Shift+B` / 页签：打开白板。
   ///
   /// 已经打开着就直接切过去；否则列出 vault 里的 `.nrs` 让用户挑，
@@ -820,6 +833,8 @@ class _AppShellState extends State<AppShell> {
                       onCreateNote: _createNote,
                       mainView: _mainView,
                       onSelectMainView: _selectMainView,
+                      graphOpen: _graphOpened,
+                      onCloseGraph: _closeGraph,
                       leftInset: leftInset,
                       rightInset: rightInset,
                     ),
@@ -918,6 +933,7 @@ class _AppShellState extends State<AppShell> {
                                               .watch<NotesController>()
                                               .selectedId,
                                           onOpenNote: _openFromGraph,
+                                          settings: _settings,
                                         ),
                                       ),
                                     // 白板同理：懒建 + Offstage。视口和滚动位置

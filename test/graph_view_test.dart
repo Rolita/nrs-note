@@ -266,12 +266,15 @@ void main() {
       );
     });
 
-    testWidgets('钉住后悬浮别的节点，焦点仍留在钉住的那颗', (WidgetTester tester) async {
+    testWidgets('钉住后悬浮别的节点，两圈关联同时亮', (WidgetTester tester) async {
       final Harness h = await pumpGraph(tester);
-      final double calmC = h.view.debugAlphaOf('c')!;
 
       await rightClickAt(tester, nodeAt(tester, h, 'a'));
-      // c 和 a 没关系：悬浮它不该把焦点抢过去。
+      final Offset pinnedA = h.view.debugNodeCenter('a')!;
+      // d 是 a 的另一颗邻居。悬浮 c 之后它必须还亮着。
+      final double litD = h.view.debugAlphaOf('d')!;
+
+      // c 和 a 没有直连：悬浮它应该叠出第二圈，而不是把 a 那圈顶掉。
       await hoverAt(tester, nodeAt(tester, h, 'c'));
       await tester.pumpAndSettle();
 
@@ -279,16 +282,33 @@ void main() {
       expect(
         h.view.debugFocus,
         isNot(h.view.debugHover),
-        reason: '焦点还是钉住的那颗',
+        reason: '主焦点仍是钉住的 a',
+      );
+      expect(
+        h.view.debugSecondFocus,
+        h.view.debugHover,
+        reason: '悬浮的 c 成为第二焦点',
       );
       expect(
         h.view.debugAlphaOf('c'),
-        closeTo(calmC * 0.55, 0.02),
-        reason: '路过的不该被提亮',
+        closeTo(1, 0.02),
+        reason: '第二焦点也按主焦点提亮',
+      );
+      expect(
+        h.view.debugAlphaOf('d'),
+        closeTo(litD, 0.02),
+        reason: 'a 的关联节点没有被 c 的焦点压暗',
+      );
+
+      h.view.debugSpin(0.12, 0.26);
+      expect(
+        h.view.debugNodeCenter('a'),
+        pinnedA,
+        reason: '悬浮别的节点不该松开原来钉住的那颗',
       );
     });
 
-    testWidgets('再右键一次松开，点淡出后回到球面', (WidgetTester tester) async {
+    testWidgets('再右键一次松开，点停在原地不弹回', (WidgetTester tester) async {
       final Harness h = await pumpGraph(tester);
 
       await rightClickAt(tester, nodeAt(tester, h, 'a'));
@@ -301,9 +321,48 @@ void main() {
       expect(h.view.debugHoldOn, isFalse);
       expect(h.view.debugPinnedCount, 0);
       expect(
+        (h.view.debugNodeCenter('a')! - frozen).distance,
+        lessThan(0.5),
+        reason: '松开之后停在原地，不再回到球面上原来的位置',
+      );
+    });
+
+    testWidgets('右键钉住片里的关联节点，钉住换成新的那颗', (WidgetTester tester) async {
+      final Harness h = await pumpGraph(tester);
+
+      await rightClickAt(tester, nodeAt(tester, h, 'a'));
+      expect(h.view.debugPinnedCount, 3, reason: 'a 自己和 b、d');
+
+      // b 是 a 的邻居。右键 b 不是松开，而是换钉成 b + 它的邻居 a、c。
+      await rightClickAt(tester, nodeAt(tester, h, 'b'));
+      expect(h.view.debugPinnedCount, 3);
+      expect(h.view.debugHoldOn, isTrue);
+      expect(
+        h.view.debugAlphaOf('b'),
+        closeTo(1, 0.02),
+        reason: '焦点落在新钉住的 b 上',
+      );
+
+      final Offset beforeA = h.view.debugNodeCenter('a')!;
+      final Offset beforeC = h.view.debugNodeCenter('c')!;
+      final Offset beforeD = h.view.debugNodeCenter('d')!;
+
+      h.view.debugSpin(0.12, 0.26);
+
+      expect(
         h.view.debugNodeCenter('a'),
-        isNot(frozen),
-        reason: '松开之后它要回到球面上该在的位置',
+        beforeA,
+        reason: 'a 也是 b 的邻居，继续钉住',
+      );
+      expect(
+        h.view.debugNodeCenter('c'),
+        beforeC,
+        reason: 'c 进入新的钉住组，停在原地',
+      );
+      expect(
+        h.view.debugNodeCenter('d'),
+        isNot(beforeD),
+        reason: 'd 只属于上一组，已经松开并继续漂',
       );
     });
 
@@ -325,7 +384,7 @@ void main() {
   });
 
   group('拖拽：贴着球面滑，顺手拨开邻居', () {
-    testWidgets('拖拽节点，关联节点跟着走但会掉队，松手后再贴回来', (
+    testWidgets('拖拽时关联节点被拉近，松手后保持收拢', (
       WidgetTester tester,
     ) async {
       final Harness h = await pumpGraph(tester);
@@ -350,7 +409,7 @@ void main() {
       final ({double x, double y, double z}) eBefore = h.view.debugWorldOf('e');
 
       // 往球心方向拖：不会拖出轮廓，[_autoTurn] 不介入，世界坐标的变化只来自
-      // 这次拖拽本身。少走几帧 = 快拖，关联节点来不及跟上。
+      // 这次拖拽本身。
       final TestGesture drag = await tester.startGesture(start);
       await drag.moveBy(dir * 36);
       for (int i = 0; i < 4; i++) {
@@ -362,10 +421,16 @@ void main() {
         greaterThan(8),
         reason: 'B 是 A 的邻居，得被牵着一起走',
       );
+      final double angleDuring = angleBetween('a', 'b');
       expect(
-        angleBetween('a', 'b') - angleBefore,
-        greaterThan(0.005),
-        reason: '不是锁死的整体：快拖时它会掉队，A–B 的球面距离被拉长',
+        angleDuring,
+        lessThan(angleBefore - 0.005),
+        reason: '拖拽期间关联节点被收向被拖节点，A–B 的球面距离变短',
+      );
+      expect(
+        angleDuring,
+        greaterThanOrEqualTo(math.min(angleBefore, 0.16) - 1e-3),
+        reason: '收拢有下限：B 不能挤到 A 身上',
       );
       final ({double x, double y, double z}) eAfter = h.view.debugWorldOf('e');
       expect(
@@ -378,10 +443,16 @@ void main() {
 
       await drag.up();
       await tester.pumpAndSettle();
+      final double angleAfter = angleBetween('a', 'b');
       expect(
-        (angleBetween('a', 'b') - angleBefore).abs(),
-        lessThan(0.01),
-        reason: '松手之后弹簧把拉长的边收回原样',
+        angleAfter,
+        lessThan(angleBefore - 0.005),
+        reason: '松手后保持收拢，不恢复原来的球面距离',
+      );
+      expect(
+        angleAfter,
+        greaterThanOrEqualTo(math.min(angleBefore, 0.16) - 1e-3),
+        reason: '收拢有下限',
       );
     });
 
@@ -542,6 +613,8 @@ void main() {
       final Harness h = await pumpGraph(tester);
       expect(h.view.debugNodeCount, 5);
 
+      await tester.tap(find.text('图谱设置'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('局部'));
       await tester.pumpAndSettle();
 
@@ -553,6 +626,8 @@ void main() {
     testWidgets('深度滑块拉到底，子图跟着扩大', (WidgetTester tester) async {
       final Harness h = await pumpGraph(tester);
 
+      await tester.tap(find.text('图谱设置'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('局部'));
       await tester.pumpAndSettle();
       expect(h.view.debugNodeCount, 3);
@@ -572,6 +647,8 @@ void main() {
     testWidgets('没有选中笔记时局部图谱是空态，不是崩溃', (WidgetTester tester) async {
       final Harness h = await pumpGraph(tester, currentId: null);
 
+      await tester.tap(find.text('图谱设置'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('局部'));
       await tester.pumpAndSettle();
 
@@ -593,6 +670,8 @@ void main() {
       final Harness h = await pumpGraph(tester);
       expect(h.view.debugNodeCount, 5);
 
+      await tester.tap(find.text('图谱设置'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('孤立笔记'));
       await tester.pumpAndSettle();
 
@@ -603,6 +682,8 @@ void main() {
     testWidgets('搜索只让命中的亮着，不删节点', (WidgetTester tester) async {
       final Harness h = await pumpGraph(tester);
 
+      await tester.tap(find.text('图谱设置'));
+      await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField).first, 'c');
       await tester.pumpAndSettle();
 
@@ -612,6 +693,11 @@ void main() {
 
     testWidgets('点图例筛一个文件夹，再点取消', (WidgetTester tester) async {
       final Harness h = await pumpGraph(tester);
+
+      // 图例默认收起，先点标题展开。
+      await tester.tap(find.text('分组 · 文件夹'));
+      await tester.pumpAndSettle();
+      expect(find.text('项目'), findsOneWidget);
 
       await tester.tap(find.text('项目'));
       await tester.pumpAndSettle();
@@ -642,14 +728,19 @@ void main() {
       expect(h.view.debugNodeCenter('a'), isNot(before));
     });
 
-    testWidgets('面板可以整块收起', (WidgetTester tester) async {
+    testWidgets('图谱设置默认收起，点标题展开再收起', (
+      WidgetTester tester,
+    ) async {
       await pumpGraph(tester);
-      expect(find.text('孤立笔记'), findsOneWidget);
+      expect(find.text('孤立笔记'), findsNothing, reason: '默认收起');
 
       await tester.tap(find.text('图谱设置'));
       await tester.pumpAndSettle();
+      expect(find.text('孤立笔记'), findsOneWidget, reason: '点标题展开');
 
-      expect(find.text('孤立笔记'), findsNothing);
+      await tester.tap(find.text('图谱设置'));
+      await tester.pumpAndSettle();
+      expect(find.text('孤立笔记'), findsNothing, reason: '再点收起');
       expect(find.text('图谱设置'), findsOneWidget);
     });
   });

@@ -27,6 +27,8 @@ class AppTitleBar extends StatefulWidget {
     required this.onCreateNote,
     required this.mainView,
     required this.onSelectMainView,
+    required this.graphOpen,
+    required this.onCloseGraph,
     required this.leftInset,
     required this.rightInset,
   });
@@ -39,6 +41,8 @@ class AppTitleBar extends StatefulWidget {
   /// Whether the pane under the tabs shows a note or the graph.
   final MainView mainView;
   final ValueChanged<MainView> onSelectMainView;
+  final bool graphOpen;
+  final VoidCallback onCloseGraph;
 
   /// Distance from the window's left edge to the editor's left edge.
   final double leftInset;
@@ -99,6 +103,8 @@ class _AppTitleBarState extends State<AppTitleBar> with WindowListener {
         onCreateNote: widget.onCreateNote,
         mainView: widget.mainView,
         onSelectMainView: widget.onSelectMainView,
+        graphOpen: widget.graphOpen,
+        onCloseGraph: widget.onCloseGraph,
         leftInset: widget.leftInset,
         rightInset: widget.rightInset,
         grip: const DragToMoveArea(child: SizedBox.expand()),

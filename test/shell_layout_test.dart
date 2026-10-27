@@ -3,6 +3,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -1939,13 +1940,13 @@ void main() {
     await tester.pump(const Duration(seconds: 3));
   });
 
-  testWidgets('图谱和白板不再是标签页，入口都在左侧功能栏', (
+  testWidgets('没打开图谱时标签条里只有笔记，两个入口都在左侧功能栏', (
     WidgetTester tester,
   ) async {
     await pumpShell(tester);
 
-    // 标签条里只剩笔记：两个视图不是文档，占着标签只会把笔记挤窄。
-    expect(find.text('图谱'), findsNothing);
+    // 图谱页只在打开时出现；没打开时标签条里只剩笔记。
+    expect(find.text('关系图谱'), findsNothing);
     expect(find.text('白板'), findsNothing);
 
     final Finder graph = find.byTooltip('关系图谱  ·  Ctrl+G');
@@ -1975,6 +1976,49 @@ void main() {
 
     await tester.tap(find.text('一篇笔记').first);
     await tester.pumpAndSettle();
+    expect(find.byType(EditorPane), findsOneWidget);
+  });
+
+  testWidgets('打开图谱时新增关系图谱页，点 × 才关掉它', (
+    WidgetTester tester,
+  ) async {
+    await pumpShell(tester);
+
+    expect(find.text('关系图谱'), findsNothing, reason: '没打开时没有这一页');
+
+    await tester.tap(find.byTooltip('关系图谱  ·  Ctrl+G'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('关系图谱'),
+      findsOneWidget,
+      reason: '打开图谱时新增这一页',
+    );
+
+    // 和笔记页一样：切到笔记它还在，点它可以切回图谱。
+    await tester.tap(find.text('一篇笔记').first);
+    await tester.pumpAndSettle();
+    expect(find.byType(EditorPane), findsOneWidget);
+    expect(
+      find.text('关系图谱'),
+      findsOneWidget,
+      reason: '切走只是不显示，不等于关掉',
+    );
+
+    await tester.tap(find.text('关系图谱'));
+    await tester.pumpAndSettle();
+    expect(find.byType(GraphView), findsOneWidget, reason: '点页切回图谱');
+
+    // 图谱页现在选中，× 可点；笔记页的 × 排在它前面。
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AppTitleBar),
+        matching: find.byIcon(LucideIcons.x),
+      ).last,
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(GraphView), findsNothing, reason: '× 关掉图谱');
+    expect(find.text('关系图谱'), findsNothing, reason: '关掉后这一页也消失');
     expect(find.byType(EditorPane), findsOneWidget);
   });
 
