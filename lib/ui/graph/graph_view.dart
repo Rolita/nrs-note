@@ -1162,7 +1162,8 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
 
     if (_rotateFrom != null) return;
 
-    if (_drift && _idle > 1.4) {
+    // 点击后先停 1 秒再重新漂：刚放下的东西要先稳住。
+    if (_drift && _idle > 1.0) {
       // 漂浮：低频噪声驱动目标角速度。三层正弦叠起来，看起来像悬浮物在
       // 慢慢漂，而不是匀速自转——匀速会像加载动画。
       final double spin = _settings.spinScale;
@@ -1728,10 +1729,6 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       return;
     }
 
-    _idle = 0;
-    _velX = 0;
-    _velY = 0;
-
     final int? hit = _nodeAt(e.localPosition);
     if (hit != null) {
       // 记下起点：拖拽要靠它判断「这是拖动还是单击」，也要靠它给第一帧
@@ -1778,6 +1775,8 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       final Offset delta = e.localPosition - (_rotateLast ?? e.localPosition);
       if (delta.distance > 0) {
         _rotated = true;
+        // 拖动才是真的在转：从这一刻起停掉空闲自转，松手后 1 秒再恢复。
+        _idle = 0;
         // 每像素转多少角度随倍率衰减：指数由「放大减速」控制，0 表示
         // 不减速，1 是转速与倍率成反比。倍率不足 100% 时不补偿，免得
         // 缩小后一转就飞。
@@ -1842,10 +1841,8 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       _rotateLast = null;
       _rotated = false;
       if (!rotated) {
-        // 点空白：清掉高亮，同时停掉自转的惯性。
+        // 点空白只清高亮：单击不打断正在进行的自转。
         setState(() => _hover = null);
-        _velX = 0;
-        _velY = 0;
         _heat();
       } else {
         _idle = 0;
