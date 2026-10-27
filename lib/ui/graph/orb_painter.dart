@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../../core/utils/note_graph.dart';
+import 'cosmos_field.dart';
 import 'orb_layout.dart';
 
 /// 一帧的绘制输入。
@@ -40,6 +41,7 @@ class OrbPaintData {
     required this.zoom,
     required this.labelZoomStart,
     required this.labelZoomFull,
+    this.cosmos,
   });
 
   final NoteGraph graph;
@@ -111,6 +113,10 @@ class OrbPaintData {
   /// 标签淡入区间，来自图谱设置。
   final double labelZoomStart;
   final double labelZoomFull;
+
+  /// 球外的星场与流星。浅色主题传 null：那套画布是亮底的，星云压上去
+  /// 会糊成脏灰，深色专属。
+  final CosmosField? cosmos;
 }
 
 /// 球体图谱的配色。从 [AppPalette] 解析一次，painter 不碰 context。
@@ -239,6 +245,9 @@ class OrbPainter extends CustomPainter {
     _paintEdges(canvas);
     _paintGlow(canvas);
     _paintNodes(canvas);
+    // 流星压在节点上、标签下：它是从球面上甩出去的，盖住节点才对；
+    // 标签必须永远最高，不然流星会从字上划过去。
+    data.cosmos?.paintMeteors(canvas, size);
     _paintLabels(canvas, size);
   }
 
@@ -262,6 +271,9 @@ class OrbPainter extends CustomPainter {
           <double>[0, 1],
         ),
     );
+
+    // 星空垫在底色上、大气层下。暗角也跟着它画，所以必须在大气层之前。
+    data.cosmos?.paintSky(canvas, size, radius: radius);
 
     // 大气层：一比一照 `design/graph-drag-variants.html`。
     //

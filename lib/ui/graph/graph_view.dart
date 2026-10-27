@@ -15,6 +15,7 @@ import '../../core/utils/table_model.dart' show CellColorToken;
 import '../../data/models/note.dart';
 import '../../state/settings_controller.dart';
 import '../common/app_widgets.dart';
+import 'cosmos_field.dart';
 import 'graph_legend.dart';
 import 'graph_panel.dart';
 import 'graph_style.dart';
@@ -84,6 +85,9 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   final _Repaint _repaint = _Repaint();
   final OrbLabelCache _labels = OrbLabelCache();
   final OrbCamera _camera = OrbCamera();
+
+  /// 球外的星场与流星。浅色主题不画，但状态照走，切回深色不用重新点火。
+  late final CosmosField _cosmos;
 
   /// 每种文件夹色一张预渲染的辉光贴图。
   ///
@@ -275,6 +279,12 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     super.initState();
     _ticker = createTicker(_onTick);
     _drift = !WidgetsBinding.instance.runtimeType.toString().contains('Test');
+    // 测试环境不生成星云图：没有真实光栅线程，异步图片会把
+    // `pumpAndSettle` 拖住；星点和流星不受影响。
+    _cosmos = CosmosField(allowArt: _drift)
+      ..onArtReady = () {
+        if (mounted) _repaint.tick();
+      };
     _signature = _signatureOf(widget.notes);
     _settings = _restoreSettings();
     _rebuildAll();
@@ -308,6 +318,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     for (final ui.Image img in _glow.values) {
       img.dispose();
     }
+    _cosmos.dispose();
     super.dispose();
   }
 
@@ -1107,6 +1118,14 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     }
     _lastElapsed = elapsed;
     _step(dt);
+    // 星场挂在同一个 Ticker 上：没有自己的 Timer，静止停表时一起停。
+    _cosmos.update(
+      dt,
+      velX: _velX,
+      velY: _velY,
+      dragging: _dragNode != null || _rotateFrom != null,
+      radius: _sphereRadius * _scale,
+    );
     _project();
     _repaint.tick();
 
@@ -1188,7 +1207,10 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     // 去会让人读不清它和邻居的关系。0.35 是「明显变慢、但还看得出在动」。
     final double wantSlow = _hover != null ? 0.35 : 1;
     _slow += (wantSlow - _slow) * (1 - math.exp(-dt * 6));
-    _camera.rotate(_velX * dt * _slow, _velY * dt * _slow);
+    final double pitch = _velX * dt * _slow;
+    final double yaw = _velY * dt * _slow;
+    _camera.rotate(pitch, yaw);
+    _cosmos.advance(pitch, yaw);
   }
 
   // ------------------------------------------------------------- 拖拽手感
@@ -1283,6 +1305,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     // 绕「屏幕上垂直于半径」的那根轴转，把节点往球心方向带。
     final s = _screenOf(_dragNode!);
     _camera.rotate(s.y * f, -s.x * f);
+    _cosmos.advance(s.y * f, -s.x * f);
   }
 
   /// 把被拖节点周围**不相干**的邻居拨开，像手指划过水面。
@@ -1427,6 +1450,10 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
                 // 不需要 setState 绕一圈——绕了会多一帧空白。
                 _stageSize = size;
                 _project();
+                // 星场按舞台尺寸重撒（固定种子），星云图也只在这个尺寸
+                // 变化超过十几像素时才重做。浅色主题不生成。
+                _cosmos.resize(size, _sphereRadius);
+                if (p.isDark) _cosmos.ensureArt();
                 return _stage(
                   context,
                   p,
@@ -1563,6 +1590,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       zoom: _scale,
       labelZoomStart: _settings.labelZoomStart,
       labelZoomFull: _settings.labelZoomFull,
+      cosmos: p.isDark ? _cosmos : null,
     );
 
     return Stack(
@@ -1784,7 +1812,12 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
         final double zoom = _scale > 1 ? _scale : 1;
         final double k =
             0.0062 / math.pow(zoom, _settings.spinFalloff);
-        _camera.rotate(delta.dy * k, delta.dx * k);
+        final double pitch = delta.dy * k;
+        final double yaw = delta.dx * k;
+        _camera.rotate(pitch, yaw);
+        _cosmos.advance(pitch, yaw);
+        // 每甩过 96px 从球缘甩出一颗流星；星轨也跟着拖起来。
+        _cosmos.drag(delta.dx, delta.dy, _sphereRadius * _scale);
         // 记下瞬时角速度，松手后当惯性用。
         _velX = delta.dy * k * 46;
         _velY = delta.dx * k * 46;
@@ -1847,6 +1880,8 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
         _heat();
       } else {
         _idle = 0;
+        // 甩得够猛就在松手那一刻炸一圈流星，方向沿用最后的速度。
+        _cosmos.release(_velX, _velY, _sphereRadius * _scale);
         _heat();
       }
     }
@@ -2141,8 +2176,12 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   @visibleForTesting
   void debugSpin(double ax, double ay) {
     _camera.rotate(ax, ay);
+    _cosmos.advance(ax, ay);
     _project();
   }
+
+  @visibleForTesting
+  CosmosField get debugCosmos => _cosmos;
 
   @visibleForTesting
   final GlobalKey debugStageKey = GlobalKey();
