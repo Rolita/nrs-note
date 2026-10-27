@@ -68,7 +68,7 @@ void main() {
     const String text =
         '![](a.png)\n前 ![](b.png) 后\n![](c.png) 尾\n尾 ![](d.png)\n![](e.png)';
     final LiveImageBlocks live = LiveImageBlocks(
-      palette: AppPalette.light,
+      palette: AppPalette.midnight,
       text: () => text,
       selection: () => const TextSelection.collapsed(offset: -1),
       imageProviderFor: (_) => null,
@@ -100,7 +100,7 @@ void main() {
         '![](e.png)\n'
         '```';
     final LiveImageBlocks live = LiveImageBlocks(
-      palette: AppPalette.light,
+      palette: AppPalette.midnight,
       text: () => text,
       selection: () => const TextSelection.collapsed(offset: -1),
       imageProviderFor: (_) => null,
@@ -125,7 +125,7 @@ void main() {
     final SourceLine line = scanSourceLines(text)[1];
     TextSelection selection = const TextSelection.collapsed(offset: -1);
     final LiveImageBlocks live = LiveImageBlocks(
-      palette: AppPalette.light,
+      palette: AppPalette.midnight,
       text: () => text,
       selection: () => selection,
       imageProviderFor: (_) => null,
@@ -173,7 +173,7 @@ void main() {
     final _TestImageProvider provider = _TestImageProvider(source);
     const String text = '![图](a.png)';
     final LiveImageBlocks live = LiveImageBlocks(
-      palette: AppPalette.light,
+      palette: AppPalette.midnight,
       text: () => text,
       selection: () => const TextSelection.collapsed(offset: -1),
       imageProviderFor: (_) => provider,
@@ -204,7 +204,7 @@ void main() {
     final _TestImageProvider provider = _TestImageProvider(source);
     const String text = '![长图](a.png)';
     final LiveImageBlocks live = LiveImageBlocks(
-      palette: AppPalette.light,
+      palette: AppPalette.midnight,
       text: () => text,
       selection: () => const TextSelection.collapsed(offset: -1),
       imageProviderFor: (_) => provider,
@@ -227,7 +227,7 @@ void main() {
 
     Future<ImageLineBlock> blockFor(String text, double width) async {
       final LiveImageBlocks live = LiveImageBlocks(
-        palette: AppPalette.light,
+        palette: AppPalette.midnight,
         text: () => text,
         selection: () => const TextSelection.collapsed(offset: -1),
         imageProviderFor: (_) => provider,
@@ -264,7 +264,7 @@ void main() {
     final _TestImageProvider tallProvider = _TestImageProvider(portrait);
     const String tall = '<img src="b.png" width="300">';
     final LiveImageBlocks tallLive = LiveImageBlocks(
-      palette: AppPalette.light,
+      palette: AppPalette.midnight,
       text: () => tall,
       selection: () => const TextSelection.collapsed(offset: -1),
       imageProviderFor: (_) => tallProvider,
@@ -283,7 +283,7 @@ void main() {
     final _TestImageProvider provider = _TestImageProvider(source);
     const String text = '![图](a.png)';
     final LiveImageBlocks live = LiveImageBlocks(
-      palette: AppPalette.light,
+      palette: AppPalette.midnight,
       text: () => text,
       selection: () => const TextSelection.collapsed(offset: -1),
       imageProviderFor: (_) => provider,
@@ -313,7 +313,7 @@ void main() {
   ) async {
     const String text = '![坏图](missing.png)';
     final LiveImageBlocks live = LiveImageBlocks(
-      palette: AppPalette.light,
+      palette: AppPalette.midnight,
       text: () => text,
       selection: () => const TextSelection.collapsed(offset: -1),
       imageProviderFor: (_) => null,
@@ -349,7 +349,7 @@ void main() {
     const String text = '![图](a.png)';
     final List<int> invalidated = <int>[];
     final LiveImageBlocks live = LiveImageBlocks(
-      palette: AppPalette.light,
+      palette: AppPalette.midnight,
       text: () => text,
       selection: () => const TextSelection.collapsed(offset: -1),
       imageProviderFor: (_) => provider,
@@ -374,7 +374,7 @@ void main() {
     const String broken = '![坏图](broken.png)';
     final List<int> failures = <int>[];
     final LiveImageBlocks failing = LiveImageBlocks(
-      palette: AppPalette.light,
+      palette: AppPalette.midnight,
       text: () => broken,
       selection: () => const TextSelection.collapsed(offset: -1),
       imageProviderFor: (_) => _FailingImageProvider(),
@@ -398,7 +398,7 @@ void main() {
     final _TestImageProvider provider = _TestImageProvider(source);
     const String text = '![图](a.png)';
     final LiveImageBlocks live = LiveImageBlocks(
-      palette: AppPalette.light,
+      palette: AppPalette.midnight,
       text: () => text,
       selection: () => const TextSelection.collapsed(offset: -1),
       imageProviderFor: (_) => provider,
@@ -433,7 +433,7 @@ void main() {
     final _TestImageProvider provider = _TestImageProvider(source);
     const String text = '![图](a.png)';
     final LiveImageBlocks live = LiveImageBlocks(
-      palette: AppPalette.light,
+      palette: AppPalette.midnight,
       text: () => text,
       selection: () => const TextSelection.collapsed(offset: -1),
       imageProviderFor: (_) => provider,
@@ -463,7 +463,7 @@ void main() {
     final List<String> asked = <String>[];
     String text = '![图](a.png)';
     final LiveImageBlocks live = LiveImageBlocks(
-      palette: AppPalette.light,
+      palette: AppPalette.midnight,
       text: () => text,
       selection: () => const TextSelection.collapsed(offset: -1),
       imageProviderFor: (String src) {
@@ -510,7 +510,7 @@ void main() {
     const String text = '![图](a.png)';
     int? editing;
     final LiveImageBlocks live = LiveImageBlocks(
-      palette: AppPalette.light,
+      palette: AppPalette.midnight,
       text: () => text,
       selection: () => const TextSelection.collapsed(offset: -1),
       editingLine: () => editing,

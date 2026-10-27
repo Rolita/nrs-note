@@ -23,7 +23,7 @@ Future<void> pumpCard(
 
   await tester.pumpWidget(
     MaterialApp(
-      theme: AppTheme.build(AppPalette.dark),
+      theme: AppTheme.build(AppPalette.midnight),
       home: Scaffold(
         body: Center(
           child: SizedBox(
@@ -110,7 +110,7 @@ void main() {
       final BoxDecoration d =
           tester.widget<DecoratedBox>(find.byType(DecoratedBox).first).decoration
               as BoxDecoration;
-      expect(d.color, AppPalette.dark.surfaceRaised);
+      expect(d.color, AppPalette.midnight.surfaceRaised);
     });
 
     testWidgets('设了色就用那个色的底色和墨色', (WidgetTester tester) async {
@@ -121,13 +121,13 @@ void main() {
               as BoxDecoration;
       expect(
         d.color,
-        tableFillColor(AppPalette.dark, const CellColor.token(CellColorToken.red)),
+        tableFillColor(AppPalette.midnight, const CellColor.token(CellColorToken.red)),
       );
 
       final Text label = tester.widget<Text>(find.text('红卡片'));
       expect(
         label.style!.color,
-        tableInkColor(AppPalette.dark, const CellColor.token(CellColorToken.red)),
+        tableInkColor(AppPalette.midnight, const CellColor.token(CellColorToken.red)),
       );
     });
 
@@ -137,7 +137,7 @@ void main() {
       final BoxDecoration d =
           tester.widget<DecoratedBox>(find.byType(DecoratedBox).first).decoration
               as BoxDecoration;
-      expect(d.border!.top.color, AppPalette.dark.accent);
+      expect(d.border!.top.color, AppPalette.midnight.accent);
       expect(d.border!.top.width, 1.5);
     });
 

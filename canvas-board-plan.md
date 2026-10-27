@@ -47,7 +47,7 @@
 
 ### 1.3 与已有功能的关系
 
-- 白板**不是笔记**：不进 `_openIds`、不进 `allNotes`、不参与关系图谱抽边、不进回收站（一期）。
+- 白板**不是笔记**：不进 `_openIds`、不进 `allNotes`、不参与关系图谱抽边。删除后进回收站（和笔记共用 `.nrs-trash/`，2026-10-27 起；恢复是把文件搬回原位，不是写成一篇 `.md`）。
 - 白板**引用**笔记：文件卡片存的是笔记的 `relativePath`（`Note.relativePath`），笔记改名/移动后卡片会失效——一期只在打开白板时提示「N 张卡片指向的笔记不存在」，不做自动重写（见 §12 风险）。
 
 ---
@@ -517,15 +517,17 @@ _RailButton(
 ),
 ```
 
-点击行为：
+点击行为（2026-10-27 调整）：**按钮就是「新建」**，不弹选择器。
 
 ```
-有 .nrs 文件？
-├─ 有  → 弹「打开白板」选择器（列表 + 「新建白板」按钮）
-└─ 没有 → 直接在当前笔记的文件夹里新建一块，打开
+点白板按钮
+└─ 在当前笔记的文件夹里新建一块「未命名白板.nrs」（重名自动 ` 2`），打开
 ```
 
-选择器复用现有弹窗风格（`data_safety_dialogs.dart` 里的对话框是现成样板）。
+原来的「打开白板」选择器（`canvas_open_picker.dart`）已删除：白板是 vault
+里的一份文件，已有的那几块本来就在文件树里列着，点它就能打开；再弹一个框
+问「打开还是新建」，等于每次新建都多一步。文件树里右键白板行可以删除
+（确认 → 移入回收站 → 提示条撤销），和 `.md` 是同一套。
 
 ### 8.4 主区接线
 
@@ -561,7 +563,6 @@ _RailButton(
 | `lib/ui/canvas/canvas_chrome_painter.dart` | 新增 | 手柄、选框、悬停圆点、对齐辅助线 |
 | `lib/ui/canvas/canvas_card.dart` | 新增 | 单张卡片 Widget（只读态 + 编辑态） |
 | `lib/ui/canvas/canvas_toolbar.dart` | 新增 | 悬浮工具条（缩放百分比 / 适应窗口 / 新建卡片） |
-| `lib/ui/canvas/canvas_picker.dart` | 新增 | 「打开白板」选择器 |
 | `lib/ui/shell/function_rail.dart` | 改 | 加白板按钮 |
 | `lib/ui/shell/main_view.dart` | 改 | `MainView` 加 `canvas` |
 | `lib/ui/shell/app_shell.dart` | 改 | 第三个 `Offstage` + 懒建 + `Ctrl+Shift+B` |
@@ -694,7 +695,6 @@ flutter test --exclude-tags perf          # 全量回归
 | 交互 | `lib/ui/canvas/canvas_board.dart` | 状态机、命中顺序、拖动 / 缩放 / 连线 / 框选 / 编辑 / 剪贴板 / 撤销 |
 | 交互 | `lib/ui/canvas/canvas_history.dart` | 50 步字符串快照栈 |
 | 交互 | `lib/ui/canvas/canvas_pickers.dart` | 文件选择器、链接对话框、URL 归一化 |
-| 交互 | `lib/ui/canvas/canvas_open_picker.dart` | 「打开哪块白板」 |
 | 外壳 | `lib/ui/shell/app_shell.dart` 等 5 处 | `MainView.canvas`、页签条白板位、`Ctrl+Shift+B`、打开/新建链路 |
 
 ### 15.2 提交

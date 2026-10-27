@@ -1,10 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
-import '../common/app_widgets.dart';
-import 'screen_eyedropper.dart';
 
 /// A self-contained colour picker: swatch, HSV bars, optional alpha, hex field.
 ///
@@ -51,14 +48,6 @@ class _AppColorPickerState extends State<AppColorPicker> {
   final FocusNode _hexFocus = FocusNode();
   String? _hexError;
 
-  /// 正在跑的那一枪吸管。取色期间整窗都被覆盖层挡着，只有 Esc 或单击能结束，
-  /// 所以这一路上不可能同时冒出第二枪。
-  EyedropSession? _session;
-  bool _sampling = false;
-
-  /// 吸管用不了时留在取色器上的一句话。下一枪或下一次改动颜色就撤掉。
-  String? _eyedropNotice;
-
   /// A just-noticeable difference. Anything smaller is our own rounding coming
   /// back around, not the user (or the caller) picking a different colour.
   static const double _eps = 0.5 / 255;
@@ -82,9 +71,6 @@ class _AppColorPickerState extends State<AppColorPicker> {
 
   @override
   void dispose() {
-    // 取色还没结束就被收掉（比如整个编辑器关了）：会话会把盖在窗口上的
-    // 那一层一并摘走，不留下一个吃掉所有点击的透明罩。
-    _session?.end();
     _hexFocus.removeListener(_onHexFocusChanged);
     _hexFocus.dispose();
     _hexController.dispose();
@@ -95,8 +81,6 @@ class _AppColorPickerState extends State<AppColorPicker> {
     _hsv = HSVColor.fromColor(color);
     _alpha = (color.a * 255).round();
     _hexError = null;
-    // 换了令牌（或颜色被别处改了）就把上一句吸管提示收掉。
-    _eyedropNotice = null;
     _syncHexText();
   }
 
@@ -147,68 +131,6 @@ class _AppColorPickerState extends State<AppColorPicker> {
 
   void _applyAlpha(double a) =>
       _preview(_hsv.toColor().withValues(alpha: a));
-
-  /// 吸管：取屏幕上任意位置的颜色。
-  ///
-  /// 屏幕像素是不透明的，所以带 alpha 的令牌保留自己原来的字节 ——
-  /// 否则取一次色就把「选区」「投影」「遮罩」变成实心色块了。
-  Future<void> _sampleScreen() async {
-    if (_session != null) return;
-    // 取色途中会把扫到的颜色实时写进预览（并让整个应用一起跟着变），取消
-    // 时得退回这一枪之前的颜色，否则 Esc 会留下一个没人确认过的配色。
-    final Color before = _current;
-    setState(() => _eyedropNotice = null);
-    final EyedropSession? session = startScreenEyedrop(context);
-    if (session == null) return;
-
-    setState(() {
-      _session = session;
-      _sampling = true;
-    });
-    // 光标走到哪，预览跟到哪。取色期间窗口被压成屏幕底部一条，这条路是
-    // 唯一还能看见「现在指着的是什么颜色」的地方；窗口没被压时（非
-    // Windows）就是取色器里的色块和三条色带跟着走。
-    void followLive() {
-      final Color? live = session.live.value;
-      if (!mounted || live == null) return;
-      _previewLive(live);
-    }
-
-    session.live.addListener(followLive);
-    final Color? picked = await session.done;
-    session.live.removeListener(followLive);
-    if (!mounted) return;
-    setState(() {
-      _session = null;
-      _sampling = false;
-      // 原生没回应（例如跑的还是没带这个通道的旧构建）时说一句，别闪一下
-      // 就没了 —— 用户会以为是点了没反应。按 Esc 取消则什么都不说。
-      if (picked == null && session.unavailable) {
-        _eyedropNotice = '吸管需要 Windows 桌面版的原生通道，当前进程没有回应。';
-      }
-    });
-    if (picked == null) {
-      if (!_nearly(before, _current)) _preview(before);
-      return;
-    }
-
-    _preview(
-      widget.showAlpha ? picked.withValues(alpha: _alpha / 255) : picked,
-      commit: true,
-    );
-  }
-
-  /// 取色过程中的预览：进界面、不落盘，也不动 alpha。
-  ///
-  /// 和 [_preview] 的区别只有一点：屏幕像素永远不透明，若照搬它，带 alpha
-  /// 的令牌会在光标移动时先变成实心块，直到松手才跳回半透明。
-  void _previewLive(Color picked) {
-    final Color next = widget.showAlpha
-        ? picked.withValues(alpha: _alpha / 255)
-        : picked;
-    if (_nearly(next, _current)) return;
-    _preview(next);
-  }
 
   void _submitHex(String raw) {
     final Color? parsed = parseHex(raw);
@@ -273,39 +195,8 @@ class _AppColorPickerState extends State<AppColorPicker> {
                   ],
                 ),
               ),
-              const SizedBox(width: AppSpace.sm),
-              AppIconButton(
-                key: const Key('eyedropper'),
-                icon: LucideIcons.pipette,
-                tooltip: '吸管取色 · 取屏幕上任意位置的颜色',
-                active: _sampling,
-                onPressed: _sampleScreen,
-              ),
             ],
           ),
-          if (_eyedropNotice != null) ...<Widget>[
-            const SizedBox(height: AppSpace.sm),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Icon(
-                  LucideIcons.info,
-                  size: AppIconSize.xs,
-                  color: p.warning,
-                ),
-                const SizedBox(width: AppSpace.xs + 2),
-                Expanded(
-                  child: Text(
-                    _eyedropNotice!,
-                    style: TextStyle(
-                      fontSize: AppText.caption - 1,
-                      color: p.textTertiary,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
           const SizedBox(height: AppSpace.md),
           _ChannelBar(
             value: _hsv.hue / 360,

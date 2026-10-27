@@ -14,7 +14,7 @@ import 'package:nrs/ui/editor/markdown_editor.dart';
 ///
 /// 每个用例都拿「同一份新文本跑一次全量 `layoutLines`」做对照：增量结果必须
 /// 与全量逐行逐字段一致。性能断言只看重建行数——单字符编辑不该碰到整篇。
-const AppPalette palette = AppPalette.light;
+const AppPalette palette = AppPalette.midnight;
 const TextStyle base = TextStyle(fontSize: 15.5, height: 1.78);
 const double width = 680;
 
@@ -571,7 +571,7 @@ void main() {
       );
       await tester.pumpWidget(
         MaterialApp(
-          theme: AppTheme.build(AppPalette.light),
+          theme: AppTheme.build(AppPalette.midnight),
           home: Scaffold(
             body: Align(
               alignment: Alignment.topLeft,

@@ -94,7 +94,7 @@ void main() {
       addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(
         MaterialApp(
-          theme: AppTheme.build(AppPalette.light),
+          theme: AppTheme.build(AppPalette.midnight),
           home: Scaffold(
             body: Align(
               alignment: Alignment.topLeft,

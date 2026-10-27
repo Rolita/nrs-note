@@ -1,11 +1,11 @@
-/// Cell fills and text colors, resolved against the current theme.
+/// Cell fills and text colors.
 ///
 /// A directive stores a **name** (`amber`) or a literal (`#RRGGBB`). Names are
-/// resolved here so a filled cell stays readable when the app switches to dark
-/// mode; a literal is painted exactly as written, because that is what the user
-/// asked for. The one exception is text: a custom fill with no explicit text
-/// color gets black or white picked from the fill's actual lightness, so the
-/// cell cannot end up unreadable.
+/// resolved here against the one dark board the app ships; a literal is painted
+/// exactly as written, because that is what the user asked for. The one
+/// exception is text: a custom fill with no explicit text color gets black or
+/// white picked from the fill's actual lightness, so the cell cannot end up
+/// unreadable.
 library;
 
 import 'package:flutter/material.dart' show Color;
@@ -14,11 +14,10 @@ import '../utils/table_model.dart'
     show CellColor, CellColorToken, TableCellStyle;
 import 'app_palette.dart';
 
-/// Every dark board shares one hand-mixed fill set: each colour carries enough
-/// pigment to read as a highlighter on a near-black paper, instead of the
-/// palette's soft surfaces, which sank into the page (gray and red were darker
-/// than the paper itself). Keeping the six values theme-independent also keeps
-/// a table looking the same across the three dark presets.
+/// One hand-mixed fill set: each colour carries enough pigment to read as a
+/// highlighter on a near-black paper, instead of the palette's soft surfaces,
+/// which sank into the page (gray and red were darker than the paper itself).
+/// These six values stay independent of the palette on purpose.
 const Map<CellColorToken, Color> _darkFills = <CellColorToken, Color>{
   CellColorToken.gray: Color(0xFF36383F),
   CellColorToken.amber: Color(0xFF634A12),
@@ -39,40 +38,18 @@ const Map<CellColorToken, Color> _darkInks = <CellColorToken, Color>{
 };
 
 /// The background a fill token paints with.
-///
-/// In light mode the four tokens the palette already has use its soft
-/// surfaces; blue and purple are table-only and sit at the same quiet
-/// saturation. Dark mode uses [_darkFills] for all six.
 Color tableFillColor(AppPalette palette, CellColor color) {
   final int? custom = color.custom;
   if (custom != null) return Color(custom);
-  final CellColorToken token = color.token!;
-  if (palette.isDark) return _darkFills[token]!;
-  return switch (token) {
-    CellColorToken.gray => palette.surfaceSunken,
-    CellColorToken.amber => palette.warningSoft,
-    CellColorToken.green => palette.successSoft,
-    CellColorToken.blue => const Color(0xFFE4EBF3),
-    CellColorToken.purple => const Color(0xFFEDE7F3),
-    CellColorToken.red => palette.dangerSoft,
-  };
+  return _darkFills[color.token!]!;
 }
 
-/// The text color a `fg` token paints with — the palette's full-strength
-/// counterpart of [tableFillColor].
+/// The text color a `fg` token paints with — the lifted counterpart of
+/// [tableFillColor], the same hue nudged until it clears 4.5:1 on its fill.
 Color tableInkColor(AppPalette palette, CellColor color) {
   final int? custom = color.custom;
   if (custom != null) return Color(custom);
-  final CellColorToken token = color.token!;
-  if (palette.isDark) return _darkInks[token]!;
-  return switch (token) {
-    CellColorToken.gray => palette.textSecondary,
-    CellColorToken.amber => palette.warning,
-    CellColorToken.green => palette.success,
-    CellColorToken.blue => const Color(0xFF2F6690),
-    CellColorToken.purple => const Color(0xFF6B4E8E),
-    CellColorToken.red => palette.danger,
-  };
+  return _darkInks[color.token!]!;
 }
 
 /// The cell's background, or `null` when it has none.

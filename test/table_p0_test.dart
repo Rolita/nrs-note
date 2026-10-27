@@ -463,7 +463,7 @@ void main() {
 
       await tester.pumpWidget(
         MaterialApp(
-          theme: AppTheme.build(AppPalette.light),
+          theme: AppTheme.build(AppPalette.midnight),
           home: Scaffold(
             body: MarkdownEditor(
               controller: controller,
@@ -1050,7 +1050,7 @@ void main() {
 
       await tester.pumpWidget(
         MaterialApp(
-          theme: AppTheme.build(AppPalette.light),
+          theme: AppTheme.build(AppPalette.midnight),
           home: NoticeScope(
             controller: notices,
             child: Scaffold(
@@ -1329,7 +1329,7 @@ Future<MarkdownSourceController> pumpEditor(
   addTearDown(focus.dispose);
   await tester.pumpWidget(
     MaterialApp(
-      theme: AppTheme.build(AppPalette.light),
+      theme: AppTheme.build(AppPalette.midnight),
       home: Scaffold(
         body: MarkdownEditor(
           controller: controller,

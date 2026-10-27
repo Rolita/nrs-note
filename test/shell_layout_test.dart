@@ -48,6 +48,11 @@ class _NoCanvasStore implements CanvasStore {
 
   final List<CanvasRef> canvases;
 
+  /// 内存回收站：白板删除用例要能验证「删掉 → 撤销 → 回来」这条路，
+  /// 所以这里和桌面端一样留一份，而不是删了就没了。
+  final Map<String, CanvasRef> trashed = <String, CanvasRef>{};
+  int _nextTrashId = 0;
+
   @override
   Future<void> init() async {}
 
@@ -69,8 +74,51 @@ class _NoCanvasStore implements CanvasStore {
 
   @override
   Future<String> create(String folderPath, {String? title}) async {
-    final String name = canvasFileName(title);
-    return folderPath.isEmpty ? '$name.nrs' : '$folderPath/$name.nrs';
+    final String folder = folderPath
+        .replaceAll('\\', '/')
+        .replaceAll(RegExp(r'^/+|/+$'), '');
+    final String base = canvasFileName(title);
+    final Set<String> taken = <String>{
+      for (final CanvasRef ref in canvases) ref.relativePath,
+      ..._created,
+    };
+    for (int n = 1; n < 1000; n++) {
+      final String name = n == 1 ? '$base.nrs' : '$base $n.nrs';
+      final String relative = folder.isEmpty ? name : '$folder/$name';
+      if (taken.contains(relative)) continue;
+      _created.add(relative);
+      return relative;
+    }
+    throw CanvasPathTaken('$base.nrs');
+  }
+
+  /// 建过但还没被 `createNew` 记进清单的路径，重名判断要用。
+  final Set<String> _created = <String>{};
+
+  @override
+  Future<TrashEntry?> delete(String relativePath) async {
+    final int index = canvases.indexWhere(
+      (CanvasRef ref) => ref.relativePath == relativePath,
+    );
+    if (index < 0) return null;
+    final CanvasRef board = canvases.removeAt(index);
+    final String id = 'canvas-trash-${_nextTrashId++}';
+    trashed[id] = board;
+    return TrashEntry(
+      id: id,
+      originalPath: board.relativePath,
+      title: board.title,
+      deletedAt: DateTime(2026, 1, 2),
+      size: 0,
+    );
+  }
+
+  @override
+  Future<bool> restoreTrash(String entryId) async {
+    final CanvasRef? board = trashed.remove(entryId);
+    if (board == null) return false;
+    canvases.add(board);
+    return true;
   }
 }
 
@@ -190,6 +238,16 @@ void main() {
   Finder treeRow(String title) =>
       find.descendant(of: find.byType(VaultTree), matching: find.text(title));
 
+  /// 一行现在填的是什么颜色。选中就是 `accentSoft`，没选中是透明或悬停色
+  /// ——高亮只有这一处，所以量这个就等于量「选中了没有」。
+  Color? rowFill(WidgetTester tester, String title) {
+    final Finder container = find
+        .ancestor(of: treeRow(title), matching: find.byType(Container))
+        .first;
+    final Container row = tester.widget<Container>(container);
+    return (row.decoration as BoxDecoration?)?.color;
+  }
+
   /// 树在启动时是全折叠的，所以要看、要拖文件夹里的东西，先得把它打开。
   ///
   /// 走工具栏那个按钮而不是逐个点文件夹：它和用户的第一反应一致，也不用
@@ -225,9 +283,6 @@ void main() {
 
     SharedPreferences.setMockInitialValues(<String, Object>{
       'nrs.sort': sort.name,
-      // Deliberately not the default board: the shell must hold up on the new
-      // `paletteFor` path, not just on 曜石.
-      'nrs.themePreset': 'vivid',
     });
     final SettingsController settings = await SettingsController.load();
     final Note note = Note(
@@ -250,7 +305,10 @@ void main() {
     // 文件树会读白板清单，外壳也会在白板视图里读当前打开的那份，所以这里
     // 必须有个 CanvasController。它不落盘：这些用例只关心布局。
     final CanvasController canvas = CanvasController(
-      store: _NoCanvasStore(canvases: canvases ?? const <CanvasRef>[]),
+      // 可变的一份：删除用例要把白板从清单里拿走，再从回收站放回来。
+      store: _NoCanvasStore(
+        canvases: List<CanvasRef>.of(canvases ?? const <CanvasRef>[]),
+      ),
     );
     addTearDown(canvas.dispose);
     await canvas.refreshCanvases();
@@ -263,7 +321,7 @@ void main() {
           ChangeNotifierProvider<CanvasController>.value(value: canvas),
         ],
         child: MaterialApp(
-          theme: AppTheme.build(settings.paletteFor(Brightness.light)),
+          theme: AppTheme.build(settings.palette),
           home: const AppShell(),
         ),
       ),
@@ -1714,6 +1772,136 @@ void main() {
 
     // 笔记是默认格式，行尾不加 MD —— 和 Obsidian 一致。
     expect(treeRow('MD'), findsNothing);
+  });
+
+  testWidgets('右键白板行可以删除，删掉的能从回收站撤销回来', (WidgetTester tester) async {
+    await pumpShell(
+      tester,
+      sort: SortMode.titleAsc,
+      vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
+      canvases: <CanvasRef>[
+        const CanvasRef(relativePath: '未命名白板.nrs', title: '未命名白板'),
+      ],
+    );
+
+    await tester.tap(treeRow('未命名白板'), buttons: kSecondaryMouseButton);
+    await tester.pumpAndSettle();
+    expect(find.text('删除白板'), findsOneWidget);
+
+    await tester.tap(find.text('删除白板'));
+    await tester.pumpAndSettle();
+    expect(find.text('删除这块白板？'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, '删除'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    // 和笔记那张确认卡片一样：删除和提示条在遮罩淡出期间就跑完了，
+    // 再补一帧让导航栈把遮罩撤掉，才点得到提示条上的「撤销」。
+    await tester.pump();
+
+    expect(treeRow('未命名白板'), findsNothing);
+    // 和笔记一样：先落进回收站，提示条上给一次撤销。
+    expect(find.text('已移入回收站'), findsOneWidget);
+
+    await tester.tap(find.text('撤销'));
+    await tester.pumpAndSettle();
+    expect(treeRow('未命名白板'), findsOneWidget);
+  });
+
+  testWidgets('点一下白板行就高亮，用的和笔记行是同一种高亮', (WidgetTester tester) async {
+    await pumpShell(
+      tester,
+      sort: SortMode.titleAsc,
+      vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
+      canvases: <CanvasRef>[
+        const CanvasRef(relativePath: '白板一.nrs', title: '白板一'),
+      ],
+    );
+
+    // 启动时正文里那篇笔记是选中的，先拿它的底色当基准。
+    final Color? noteFill = rowFill(tester, 'A 笔记');
+    expect(noteFill, isNotNull, reason: '打开着的笔记应该已经高亮');
+
+    await tester.tap(treeRow('白板一'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(CanvasBoard), findsOneWidget, reason: '点一下也要把它打开');
+    expect(rowFill(tester, '白板一'), noteFill, reason: '白板的高亮和笔记是同一块色');
+    expect(
+      rowFill(tester, 'A 笔记'),
+      isNot(noteFill),
+      reason: '白板亮着的时候笔记不该还亮着——同时亮两行，没人知道删除删哪个',
+    );
+  });
+
+  testWidgets('Shift 连选能跨笔记和白板，删除只作用于选中的白板', (
+    WidgetTester tester,
+  ) async {
+    await pumpShell(
+      tester,
+      sort: SortMode.titleAsc,
+      vault: <Note>[
+        note('a', 'A 笔记', DateTime(2026, 3, 1)),
+        note('b', 'B 笔记', DateTime(2026, 2, 1)),
+      ],
+      canvases: <CanvasRef>[
+        const CanvasRef(relativePath: '白板一.nrs', title: '白板一'),
+        const CanvasRef(relativePath: '白板二.nrs', title: '白板二'),
+      ],
+    );
+
+    // 锚点在 A 笔记，Shift 点到白板二：中间四行全进选中。
+    await tester.tap(treeRow('A 笔记'));
+    await tester.pumpAndSettle();
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.tap(treeRow('白板二'));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pumpAndSettle();
+
+    final Color? fill = rowFill(tester, '白板一');
+    expect(fill, isNotNull);
+    expect(rowFill(tester, '白板二'), fill);
+    expect(rowFill(tester, 'A 笔记'), fill);
+    expect(rowFill(tester, 'B 笔记'), fill, reason: '整段一起亮');
+
+    // 右键白板：删除作用于选中的两块白板，笔记不掺进来。
+    await tester.tap(treeRow('白板二'), buttons: kSecondaryMouseButton);
+    await tester.pumpAndSettle();
+    expect(find.text('删除 2 块白板'), findsOneWidget);
+
+    await tester.tap(find.text('删除 2 块白板'));
+    await tester.pumpAndSettle();
+    expect(find.text('删除这 2 块白板？'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, '删除'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump();
+
+    expect(treeRow('白板一'), findsNothing);
+    expect(treeRow('白板二'), findsNothing);
+    expect(treeRow('A 笔记'), findsOneWidget, reason: '笔记不该被一起删掉');
+    expect(treeRow('B 笔记'), findsOneWidget);
+    expect(find.text('已移入回收站'), findsOneWidget);
+    expect(find.text('2 块白板'), findsOneWidget);
+  });
+
+  testWidgets('功能栏的白板按钮直接新建一块未命名白板，不弹选择框', (
+    WidgetTester tester,
+  ) async {
+    await pumpShell(tester);
+
+    await tester.tap(find.byTooltip('白板  ·  Ctrl+Shift+B'));
+    await tester.pumpAndSettle();
+
+    // 一块都没有时也能一步到位：按钮就是「新建」，不是「先挑再新建」。
+    expect(treeRow('未命名白板'), findsOneWidget);
+    expect(find.byType(CanvasBoard), findsOneWidget);
+
+    // 再点一次是再要一块，重名自己加 2。
+    await tester.tap(find.byTooltip('白板  ·  Ctrl+Shift+B'));
+    await tester.pumpAndSettle();
+    expect(treeRow('未命名白板 2'), findsOneWidget);
   });
 
   testWidgets('Ctrl+P 打开模板选择器，Enter 把模板插进当前笔记', (

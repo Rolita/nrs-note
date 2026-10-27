@@ -5,9 +5,8 @@ import 'package:flutter/material.dart';
 /// Semantic colour tokens for the whole application.
 ///
 /// Instead of sprinkling raw hex values through the widget tree, every surface
-/// and text colour is named by *role*. Every palette — built-in preset or a
-/// user's custom one — implements the exact same contract, so a widget never
-/// needs to know which one is active.
+/// and text colour is named by *role*. There is exactly **one** board — 午夜靛,
+/// dark — so a widget never needs to know which palette is active.
 ///
 /// Five clearly separated neutral steps (canvas → sidebar → surface →
 /// surfaceRaised, plus surfaceSunken below the canvas), one accent, and no
@@ -15,17 +14,12 @@ import 'package:flutter/material.dart';
 /// apart on purpose — that gap is what lets the four shell regions separate
 /// with a hairline instead of a border and a shadow fighting each other.
 ///
-/// ⛔ **Team rule: only [AppPaletteContext.palette] and
-/// `ThemePresets.resolve` decide which palette is in force.** New code must go
-/// through `context.palette`; do not call [AppPalette.of] to pick a palette
-/// yourself. It survives only as "the palette that has nothing to do with the
-/// theme" and is used by test fixtures, which need one arbitrary light and one
-/// arbitrary dark board to render against.
-///
-/// The accent is no longer a fixed amber. [light] and [dark] now hold the
-/// *石墨素白 / Graphite* preset — the shipped default — and every other
-/// preset (or a user's custom colours) arrives through the very same 25 colour
-/// tokens.
+/// ⛔ **Team rule: only [AppPaletteContext.palette] decides which palette is in
+/// force.** New code must go through `context.palette`. There is no second
+/// board to pick from and no user-editable one: the app ships dark-only since
+/// 2026-10-27 (light themes and the colour editor were removed), so a colour
+/// that reads badly here has to be fixed here rather than worked around by a
+/// second palette.
 @immutable
 class AppPalette extends ThemeExtension<AppPalette> {
   const AppPalette({
@@ -144,152 +138,41 @@ class AppPalette extends ThemeExtension<AppPalette> {
 
   bool get isDark => brightness == Brightness.dark;
 
-  /// 石墨素白 / Graphite, light face: neutral paper grey, near-black accent.
+  /// 午夜靛 — the only board the app ships.
   ///
-  /// 默认预设。测试夹具把它当作「一个亮色板」用，不关心它具体是哪一套方案。
-  static const AppPalette light = AppPalette(
-    brightness: Brightness.light,
-    canvas: Color(0xFFF7F7F5),
-    sidebar: Color(0xFFF1F1EF),
-    surface: Color(0xFFFCFCFB),
-    surfaceRaised: Color(0xFFFFFFFF),
-    surfaceSunken: Color(0xFFEFEFED),
-    outline: Color(0xFFDCDCD9),
-    outlineSoft: Color(0xFFE9E9E6),
-    rule: Color(0xFFD5D5D1),
-    textPrimary: Color(0xFF1B1B1A),
-    textSecondary: Color(0xFF5C5C59),
-    textTertiary: Color(0xFF8C8C88),
-    accent: Color(0xFF2A2A28),
-    accentHover: Color(0xFF111110),
-    accentSoft: Color(0xFFE9E9E6),
-    onAccent: Color(0xFFFFFFFF),
-    success: Color(0xFF2E8B62),
-    successSoft: Color(0xFFE3F0E8),
-    warning: Color(0xFFB06B1B),
-    warningSoft: Color(0xFFF7EADA),
-    danger: Color(0xFFC0392B),
-    dangerSoft: Color(0xFFFAE7E4),
-    selection: Color(0x282A2A28),
-    selectionEdge: Color(0xFF2A2A28),
-    shadow: Color(0x14000000),
-    overlay: Color(0x33000000),
-  );
-
-  /// 石墨素白 / Graphite, dark face: neutral graphite ladder, near-white accent.
+  /// 深色、偏冷的靛蓝：画布 `#0E0F13`、侧栏 `#131419`、编辑区 `#17181E`、
+  /// 浮层 `#1F2027`、下沉 `#0A0B0E`；强调色是一支偏紫的靛蓝 `#8B94F2`，
+  /// 在近黑的纸面上够亮又不刺眼。
   ///
-  /// 灰阶取自 Trae / VS Code 暗色：画布 `#171717`、侧栏 `#262626`、编辑区
-  /// `#1C1C1E`、浮层 `#303030`、下沉 `#141414`。侧栏比编辑区亮一档，是这组
-  /// 灰阶的特征；文字同样去掉暖色偏移，保持纯中性。
-  static const AppPalette dark = AppPalette(
+  /// [selectionEdge] 是 [accent] 降一档亮度（×0.86）的结果：1px 的强调色
+  /// 在深色板上读起来是发光而不是描边，压暗一点才收得住。
+  static const AppPalette midnight = AppPalette(
     brightness: Brightness.dark,
-    canvas: Color(0xFF171717),
-    sidebar: Color(0xFF262626),
-    surface: Color(0xFF1C1C1E),
-    surfaceRaised: Color(0xFF303030),
-    surfaceSunken: Color(0xFF141414),
-    outline: Color(0xFF363638),
-    outlineSoft: Color(0xFF2A2A2C),
-    rule: Color(0xFF3E3E40),
-    textPrimary: Color(0xFFE8E8E8),
-    textSecondary: Color(0xFFA1A1A1),
-    textTertiary: Color(0xFF737373),
-    accent: Color(0xFFEDEDED),
-    accentHover: Color(0xFFFFFFFF),
-    accentSoft: Color(0xFF333333),
-    onAccent: Color(0xFF141414),
-    success: Color(0xFF6FC29A),
-    successSoft: Color(0xFF17281F),
-    warning: Color(0xFFE0964A),
-    warningSoft: Color(0xFF33240F),
-    danger: Color(0xFFE5796B),
-    dangerSoft: Color(0xFF2E1A17),
-    selection: Color(0x38EDEDED),
-    // `ThemePresets` derives this from `accent` (lightness × 0.86) at runtime;
-    // it is copied here as a literal only to keep this palette `const`.
-    selectionEdge: Color(0xFFCCCCCC),
+    canvas: Color(0xFF0E0F13),
+    sidebar: Color(0xFF131419),
+    surface: Color(0xFF17181E),
+    surfaceRaised: Color(0xFF1F2027),
+    surfaceSunken: Color(0xFF0A0B0E),
+    outline: Color(0xFF2A2C36),
+    outlineSoft: Color(0xFF1E2028),
+    rule: Color(0xFF32343F),
+    textPrimary: Color(0xFFE6E8EF),
+    textSecondary: Color(0xFF9AA0B0),
+    textTertiary: Color(0xFF6A7080),
+    accent: Color(0xFF8B94F2),
+    accentHover: Color(0xFFA0A8F7),
+    accentSoft: Color(0xFF23263A),
+    onAccent: Color(0xFF10122A),
+    success: Color(0xFF5FC79A),
+    successSoft: Color(0xFF13251D),
+    warning: Color(0xFFE0A24A),
+    warningSoft: Color(0xFF2E2413),
+    danger: Color(0xFFE4797F),
+    dangerSoft: Color(0xFF2C1A1F),
+    selection: Color(0x4D8B94F2),
+    selectionEdge: Color(0xFF5B68ED),
     shadow: Color(0x66000000),
     overlay: Color(0x99000000),
-  );
-
-  /// The palette that has nothing to do with the current theme.
-  ///
-  /// ⛔ Not "the palette the app is using" — that is
-  /// [AppPaletteContext.palette]. See the team rule in this file's header.
-  static AppPalette of(Brightness brightness) =>
-      brightness == Brightness.dark ? dark : light;
-
-  /// Reads one token by name. The 25 branches are exhaustive on purpose: adding
-  /// a token makes this fail to compile until it is wired up.
-  Color colorOf(AppPaletteToken token) => switch (token) {
-    AppPaletteToken.canvas => canvas,
-    AppPaletteToken.sidebar => sidebar,
-    AppPaletteToken.surface => surface,
-    AppPaletteToken.surfaceRaised => surfaceRaised,
-    AppPaletteToken.surfaceSunken => surfaceSunken,
-    AppPaletteToken.outline => outline,
-    AppPaletteToken.outlineSoft => outlineSoft,
-    AppPaletteToken.rule => rule,
-    AppPaletteToken.textPrimary => textPrimary,
-    AppPaletteToken.textSecondary => textSecondary,
-    AppPaletteToken.textTertiary => textTertiary,
-    AppPaletteToken.accent => accent,
-    AppPaletteToken.accentHover => accentHover,
-    AppPaletteToken.accentSoft => accentSoft,
-    AppPaletteToken.onAccent => onAccent,
-    AppPaletteToken.success => success,
-    AppPaletteToken.successSoft => successSoft,
-    AppPaletteToken.warning => warning,
-    AppPaletteToken.warningSoft => warningSoft,
-    AppPaletteToken.danger => danger,
-    AppPaletteToken.dangerSoft => dangerSoft,
-    AppPaletteToken.selection => selection,
-    AppPaletteToken.selectionEdge => selectionEdge,
-    AppPaletteToken.shadow => shadow,
-    AppPaletteToken.overlay => overlay,
-  };
-
-  /// Returns a copy with one token replaced.
-  AppPalette withToken(AppPaletteToken token, Color value) =>
-      withTokens(<AppPaletteToken, Color>{token: value});
-
-  /// Returns a copy where every token present in [values] is replaced; tokens
-  /// the map leaves out keep their current colour.
-  AppPalette withTokens(Map<AppPaletteToken, Color> values) {
-    if (values.isEmpty) return this;
-    return _rebuild(<AppPaletteToken, Color>{
-      for (final AppPaletteToken t in AppPaletteToken.values)
-        t: values[t] ?? colorOf(t),
-    });
-  }
-
-  AppPalette _rebuild(Map<AppPaletteToken, Color> v) => AppPalette(
-    brightness: brightness,
-    canvas: v[AppPaletteToken.canvas]!,
-    sidebar: v[AppPaletteToken.sidebar]!,
-    surface: v[AppPaletteToken.surface]!,
-    surfaceRaised: v[AppPaletteToken.surfaceRaised]!,
-    surfaceSunken: v[AppPaletteToken.surfaceSunken]!,
-    outline: v[AppPaletteToken.outline]!,
-    outlineSoft: v[AppPaletteToken.outlineSoft]!,
-    rule: v[AppPaletteToken.rule]!,
-    textPrimary: v[AppPaletteToken.textPrimary]!,
-    textSecondary: v[AppPaletteToken.textSecondary]!,
-    textTertiary: v[AppPaletteToken.textTertiary]!,
-    accent: v[AppPaletteToken.accent]!,
-    accentHover: v[AppPaletteToken.accentHover]!,
-    accentSoft: v[AppPaletteToken.accentSoft]!,
-    onAccent: v[AppPaletteToken.onAccent]!,
-    success: v[AppPaletteToken.success]!,
-    successSoft: v[AppPaletteToken.successSoft]!,
-    warning: v[AppPaletteToken.warning]!,
-    warningSoft: v[AppPaletteToken.warningSoft]!,
-    danger: v[AppPaletteToken.danger]!,
-    dangerSoft: v[AppPaletteToken.dangerSoft]!,
-    selection: v[AppPaletteToken.selection]!,
-    selectionEdge: v[AppPaletteToken.selectionEdge]!,
-    shadow: v[AppPaletteToken.shadow]!,
-    overlay: v[AppPaletteToken.overlay]!,
   );
 
   /// Black or white — whichever reads better on [background].
@@ -389,102 +272,8 @@ class AppPalette extends ThemeExtension<AppPalette> {
   }
 }
 
-/// What a [AppPaletteToken] is for, in the editor's own grouping language.
-enum TokenGroup {
-  surface('表面'),
-  line('线条'),
-  text('文字'),
-  accent('强调'),
-  status('状态'),
-  overlayLayer('选区与浮层');
-
-  const TokenGroup(this.label);
-
-  final String label;
-}
-
-/// The 25 editable colour tokens, one per colour field of [AppPalette].
-///
-/// `brightness` is deliberately **not** here: it is a [Brightness], not a
-/// colour, and it is chosen by the 明暗模式 axis rather than by a picker.
-///
-/// The enum carries what a picker needs (a Chinese [label], a [group], whether
-/// the colour has a meaningful alpha), [name] doubles as the stable key of the
-/// on-disk format, and tests can iterate [values]. Adding a token therefore
-/// breaks the reader, the writer and the codec at compile time — which is
-/// exactly the guarantee that "a new token must be handled explicitly" needs.
-enum AppPaletteToken {
-  canvas('画布', TokenGroup.surface),
-  sidebar('侧栏', TokenGroup.surface),
-  surface('内容面', TokenGroup.surface),
-  surfaceRaised('浮起层', TokenGroup.surface),
-  surfaceSunken('凹陷层', TokenGroup.surface),
-  outline('边界线', TokenGroup.line),
-  outlineSoft('弱分隔线', TokenGroup.line),
-  rule('内容横线', TokenGroup.line),
-  textPrimary('正文', TokenGroup.text),
-  textSecondary('次级文字', TokenGroup.text),
-  textTertiary('三级文字', TokenGroup.text),
-  accent('强调色', TokenGroup.accent),
-  accentHover('强调悬停', TokenGroup.accent),
-  accentSoft('强调淡底', TokenGroup.accent),
-  onAccent('强调上文字', TokenGroup.accent),
-  success('成功', TokenGroup.status),
-  successSoft('成功淡底', TokenGroup.status),
-  warning('警告', TokenGroup.status),
-  warningSoft('警告淡底', TokenGroup.status),
-  danger('危险', TokenGroup.status),
-  dangerSoft('危险淡底', TokenGroup.status),
-  selection('文本选区', TokenGroup.overlayLayer),
-  selectionEdge('选区描边', TokenGroup.overlayLayer),
-  shadow('投影', TokenGroup.overlayLayer),
-  overlay('遮罩', TokenGroup.overlayLayer);
-
-  const AppPaletteToken(this.label, this.group);
-
-  final String label;
-  final TokenGroup group;
-
-  /// Only the three translucent tokens get an alpha slider in the picker.
-  bool get hasAlpha =>
-      this == AppPaletteToken.selection ||
-      this == AppPaletteToken.shadow ||
-      this == AppPaletteToken.overlay;
-
-  /// The 6 tokens 「简单」 shows: the colours a person can picture by name —
-  /// the two background planes, the content plane, the two text weights, and
-  /// the accent. A strict subset of [normal], so going up a tier never takes
-  /// an option away.
-  static const List<AppPaletteToken> simple = <AppPaletteToken>[
-    canvas,
-    sidebar,
-    surface,
-    textPrimary,
-    textSecondary,
-    accent,
-  ];
-
-  /// The 12 tokens 「普通」 shows: surface 5 + line 3 + text 3 + the accent
-  /// itself — the colours that actually change how the app looks. The 6 status
-  /// colours and the 4 floating-layer colours belong to 「高级」.
-  static const List<AppPaletteToken> normal = <AppPaletteToken>[
-    canvas,
-    sidebar,
-    surface,
-    surfaceRaised,
-    surfaceSunken,
-    outline,
-    outlineSoft,
-    rule,
-    textPrimary,
-    textSecondary,
-    textTertiary,
-    accent,
-  ];
-}
-
 /// Ergonomic access: `context.palette.accent`.
 extension AppPaletteContext on BuildContext {
   AppPalette get palette =>
-      Theme.of(this).extension<AppPalette>() ?? AppPalette.light;
+      Theme.of(this).extension<AppPalette>() ?? AppPalette.midnight;
 }

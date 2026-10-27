@@ -72,6 +72,10 @@ class CosmosField {
   static const Color _starGlowColor = Color(0xFFDAEAFF);
   static const Color _warmGlowColor = Color(0xFFFFC692);
 
+  /// 前景冷雾的两种色：冷蓝占多数，暖橘只有一两团，用来打破整片蓝。
+  static const Color _hazeCoolColor = Color(0xFF6096D6);
+  static const Color _hazeWarmColor = Color(0xFFFFCAA8);
+
   // ------------------------------------------------------------ 随机
 
   int _seed = _seedBase;
@@ -114,6 +118,7 @@ class CosmosField {
     _maxRad = _diag * 0.5;
 
     _buildStars();
+    _buildHaze();
 
     // 星云图是方形的，尺寸跟屏幕对角线走；差十几像素不值得重做。
     if (_artDiag <= 0 || (_diag - _artDiag).abs() > 16) {
@@ -170,6 +175,44 @@ class CosmosField {
           : sumAlpha / layer.stars.length;
       layer.avgSize = layer.stars.isEmpty ? 1 : sumSize / layer.stars.length;
       _layers.add(layer);
+    }
+  }
+
+  // ------------------------------------------------------------ 前景冷雾
+
+  /// 镜头前那层空气：五团极大的柔雾压在对角。
+  ///
+  /// 参数来自 `design/graph-bokeh-variants.html` 的 D 档（冷雾光晕）。它不
+  /// 成形——没有环、没有圆斑边界，只在一角压一点厚度，把球和星空隔开。
+  ///
+  /// 独立种子，不动 [_seed]：星场每改一次星点数量都会重新随机，冷雾若
+  /// 共用种子会跟着换脸。
+  final List<_Haze> _haze = <_Haze>[];
+
+  @visibleForTesting
+  int get debugHazeCount => _haze.length;
+
+  void _buildHaze() {
+    _haze.clear();
+    if (_maxRad <= 0) return;
+    int seed = 9137;
+    double rnd() {
+      seed = (seed * 1664525 + 1013904223) & 0xFFFFFFFF;
+      return seed / 4294967296.0;
+    }
+
+    for (int i = 0; i < 5; i++) {
+      _haze.add(
+        _Haze(
+          angle: _tau * i / 5 + math.pi * 0.25 + rnd() * 0.35,
+          r: _maxRad * (0.80 + rnd() * 0.30),
+          size: 90 + rnd() * 150,
+          alpha: 0.026 + rnd() * 0.020,
+          warm: rnd() < 0.22,
+          drift: (0.001 + rnd() * 0.0025) * (rnd() < 0.5 ? -1 : 1),
+          phase: rnd() * _tau,
+        ),
+      );
     }
   }
 
@@ -771,6 +814,9 @@ class CosmosField {
   final Paint _meteorFill = Paint()
     ..isAntiAlias = true
     ..blendMode = BlendMode.plus;
+  final Paint _hazeFill = Paint()
+    ..isAntiAlias = true
+    ..blendMode = BlendMode.plus;
   final Paint _meteorStroke = Paint()
     ..isAntiAlias = true
     ..style = PaintingStyle.stroke
@@ -1224,6 +1270,49 @@ class CosmosField {
     }
   }
 
+  /// 前景冷雾。画在脉冲光晕之后、标签之前：它离镜头最近，压在球和连线上
+  /// 才像一层空气，但绝不能糊住标签。
+  ///
+  /// [radius] 是当前球半径（已含缩放），冷雾的呼吸幅度按它走，缩放时不会
+  /// 和球脱节。
+  void paintHaze(Canvas canvas, Size size, {required double radius}) {
+    if (_disposed || _haze.isEmpty) return;
+    final double fade = _introEase;
+    if (fade <= 0.002) return;
+
+    final Offset centre = Offset(size.width / 2, size.height / 2);
+    for (final _Haze h in _haze) {
+      final double a = h.angle + _skyShown * 0.45 + _clock * h.drift;
+      final double r = h.r + math.sin(_clock * 0.05 + h.phase) * radius * 0.03;
+      final double x = centre.dx + math.cos(a) * r;
+      final double y = centre.dy + math.sin(a) * r;
+      final double s =
+          h.size * (1 + 0.06 * math.sin(_clock * 0.06 + h.phase));
+      if (x < -s || x > size.width + s || y < -s || y > size.height + s) {
+        continue;
+      }
+
+      final double alpha =
+          h.alpha * fade * (0.82 + 0.18 * math.sin(_clock * 0.075 + h.phase));
+      final Color c = h.warm ? _hazeWarmColor : _hazeCoolColor;
+      _hazeFill.shader = ui.Gradient.radial(
+        Offset(x, y),
+        s,
+        <Color>[
+          c.withValues(alpha: alpha * 0.35),
+          c.withValues(alpha: alpha * 0.32),
+          c.withValues(alpha: alpha * 0.23),
+          c.withValues(alpha: alpha * 0.125),
+          c.withValues(alpha: alpha * 0.04),
+          c.withValues(alpha: 0),
+        ],
+        <double>[0, 0.30, 0.55, 0.75, 0.90, 1],
+      );
+      canvas.drawRect(Rect.fromLTWH(x - s, y - s, s * 2, s * 2), _hazeFill);
+    }
+    _hazeFill.shader = null;
+  }
+
   Path _meteorPath(int from, int to) {
     final Path path = Path()..moveTo(_pts[from * 2], _pts[from * 2 + 1]);
     for (int k = from + 1; k <= to; k++) {
@@ -1365,6 +1454,26 @@ class _Spark {
   final double alpha;
   final bool warm;
   double t = 0;
+}
+
+class _Haze {
+  const _Haze({
+    required this.angle,
+    required this.r,
+    required this.size,
+    required this.alpha,
+    required this.warm,
+    required this.drift,
+    required this.phase,
+  });
+
+  final double angle;
+  final double r;
+  final double size;
+  final double alpha;
+  final bool warm;
+  final double drift;
+  final double phase;
 }
 
 class _CosmosArt {

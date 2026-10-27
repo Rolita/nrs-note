@@ -69,7 +69,7 @@ void main() {
     addTearDown(controller.dispose);
     await tester.pumpWidget(
       MaterialApp(
-        theme: AppTheme.build(AppPalette.light),
+        theme: AppTheme.build(AppPalette.midnight),
         home: Scaffold(
           body: MarkdownEditor(
             controller: controller,
@@ -331,7 +331,7 @@ void main() {
     expect(field.decoration?.enabledBorder, InputBorder.none);
     expect(field.decoration?.filled, isFalse, reason: '不能在纸色上再铺一层白');
     // 这一行是 HTML，不是链接：底色用正文色，具体每个词由词法着色决定。
-    expect(field.style?.color, AppPalette.light.textPrimary);
+    expect(field.style?.color, AppPalette.midnight.textPrimary);
     // 光标落在行尾而不是全选：整行被选区染色就是一根紫条，看着又像面板了。
     expect(field.controller!.selection.isCollapsed, isTrue);
     expect(field.controller!.selection.baseOffset, imageLine.length);
@@ -380,19 +380,19 @@ void main() {
         .where((TextSpan s) => s.style?.color == color)
         .map((TextSpan s) => s.text);
 
-    expect(ofColor(AppPalette.light.danger), contains('img'), reason: '标签名');
+    expect(ofColor(AppPalette.midnight.danger), contains('img'), reason: '标签名');
     expect(
-      ofColor(AppPalette.light.warning),
+      ofColor(AppPalette.midnight.warning),
       containsAll(<String>['src', 'width', 'alt']),
       reason: '属性名',
     );
     expect(
-      ofColor(AppPalette.light.success),
+      ofColor(AppPalette.midnight.success),
       containsAll(<String>['a.png', '200', '图']),
       reason: '属性值',
     );
     expect(
-      ofColor(AppPalette.light.accent),
+      ofColor(AppPalette.midnight.accent),
       isEmpty,
       reason: '整行染成链接色会让人以为点它能跳转',
     );
@@ -998,7 +998,7 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        theme: AppTheme.build(AppPalette.light),
+        theme: AppTheme.build(AppPalette.midnight),
         home: Scaffold(
           body: Row(
             children: <Widget>[

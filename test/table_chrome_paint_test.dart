@@ -42,14 +42,14 @@ void main() {
     final GlobalKey boundaryKey = GlobalKey();
     await tester.pumpWidget(
       MaterialApp(
-        theme: AppTheme.build(AppPalette.dark),
+        theme: AppTheme.build(AppPalette.midnight),
         home: Scaffold(
           body: RepaintBoundary(
             key: boundaryKey,
             child: Padding(
               padding: const EdgeInsets.only(left: 200, top: 120),
               child: ColoredBox(
-                color: AppPalette.dark.surface,
+                color: AppPalette.midnight.surface,
                 child: MarkdownEditor(
                   controller: controller,
                   focusNode: focus,
@@ -145,12 +145,12 @@ void main() {
 
     // 指针停在第一枚抓手上：只有那一枚反相成 accent，另一枚根本不露。
     expect(
-      countIn(grips.first.rect, AppPalette.dark.accent),
+      countIn(grips.first.rect, AppPalette.midnight.accent),
       greaterThan(120),
       reason: '被指的抓手按钮反相画在全局矩形里',
     );
     expect(
-      countIn(grips.last.rect, AppPalette.dark.surfaceRaised),
+      countIn(grips.last.rect, AppPalette.midnight.surfaceRaised),
       0,
       reason: '指针不在的那一行不该露抓手',
     );
@@ -159,7 +159,7 @@ void main() {
     int outside = 0;
     for (int y = 0; y < height; y++) {
       for (int x = 0; x < width; x++) {
-        if (!isColor(x, y, AppPalette.dark.surfaceRaised)) continue;
+        if (!isColor(x, y, AppPalette.midnight.surfaceRaised)) continue;
         final Offset p = Offset(x / scale, y / scale);
         if (grips.any((TableChromeTarget g) => g.rect.contains(p))) continue;
         outside++;
@@ -190,12 +190,12 @@ void main() {
       image.dispose();
     });
     expect(
-      countIn(grips.last.rect, AppPalette.dark.surfaceRaised),
+      countIn(grips.last.rect, AppPalette.midnight.surfaceRaised),
       0,
       reason: '上一枚抓手的按钮底色不得残留',
     );
     expect(
-      countIn(grips.last.rect, AppPalette.dark.accent),
+      countIn(grips.last.rect, AppPalette.midnight.accent),
       0,
       reason: '上一枚抓手也不得反相残留',
     );

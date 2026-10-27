@@ -129,11 +129,10 @@ void main() {
     late MarkdownSourceController b;
 
     setUp(() {
-      // 主题实例必须跨 pump 复用：`MaterialApp` 换一份新的 `ThemeData` 会重新
-      // 播放主题过渡，过渡期间 `context.palette` 是 lerp 出来的新实例，
-      // 编辑器会误判「主题变了」而重建表块、清空布局池（真实应用只在切换
-      // 主题时重建 `MaterialApp`，换笔记不会）。
-      theme = AppTheme.build(AppPalette.light);
+      // 同一份 `ThemeData` 跨 pump 复用，换笔记时只有 `documentId` 变；
+      // 换一份新的 `ThemeData` 会重放主题过渡，过渡期间 `context.palette`
+      // 是 lerp 出来的新实例，编辑器会误判样式变了而清空布局池。
+      theme = AppTheme.build(AppPalette.midnight);
       focus = FocusNode();
       scroll = ScrollController();
       a = MarkdownSourceController(text: documentOf(40));
@@ -152,13 +151,9 @@ void main() {
       String documentId, {
       double fieldWidth = 720,
       double fontSize = 15.5,
-      ThemeData? themeOverride,
     }) {
       return MaterialApp(
-        theme: themeOverride ?? theme,
-        // 主题过渡会把两份配色 lerp 成中间值：第一帧的调色板仍等于旧主题，
-        // 池会被误命中。真实切换主题不用动画，这里是同一语义。
-        themeAnimationDuration: Duration.zero,
+        theme: theme,
         home: Scaffold(
           body: Align(
             alignment: Alignment.topLeft,
@@ -188,7 +183,6 @@ void main() {
       String documentId, {
       double fieldWidth = 720,
       double fontSize = 15.5,
-      ThemeData? themeOverride,
     }) async {
       await tester.pumpWidget(
         app(
@@ -196,7 +190,6 @@ void main() {
           documentId,
           fieldWidth: fieldWidth,
           fontSize: fontSize,
-          themeOverride: themeOverride,
         ),
       );
       await tester.pumpAndSettle();
@@ -307,20 +300,22 @@ void main() {
       expect(bigger.debugFullLayouts, greaterThanOrEqualTo(1));
     });
 
-    testWidgets('主题变了：切回不命中', (WidgetTester tester) async {
+    testWidgets('正文字号变了：切回不命中', (WidgetTester tester) async {
       await tester.binding.setSurfaceSize(const Size(1000, 700));
       addTearDown(() => tester.binding.setSurfaceSize(null));
 
       await pump(tester, a, 'note-a#1');
       await pump(tester, b, 'note-b#1');
+      // 池键里带着 `_baseStyle`：字号一变，旧的几何就不能再沿用。
+      // （应用只有一块色板，墨色不会再变，这条键的其余部分靠字号来守。）
       final RenderLineEditable back = await pump(
         tester,
         a,
         'note-a#1',
-        themeOverride: AppTheme.build(AppPalette.dark),
+        fontSize: 17,
       );
 
-      expect(back.debugLayoutPoolHits, 0, reason: '正文墨色变了，旧布局不能沿用');
+      expect(back.debugLayoutPoolHits, 0, reason: '正文样式变了，旧布局不能沿用');
       expect(back.debugFullLayouts, greaterThanOrEqualTo(1));
     });
 

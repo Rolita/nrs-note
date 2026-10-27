@@ -84,14 +84,14 @@ void main() {
       const HtmlToken(start: 0, end: text.length, kind: HtmlTokenKind.plain),
     ]);
     expect(
-      htmlSourceSpan(text, const TextStyle(), AppPalette.light).toPlainText(),
+      htmlSourceSpan(text, const TextStyle(), AppPalette.midnight).toPlainText(),
       text,
     );
   });
 
   test('着色的结果逐字符等于原文，颜色按角色分开', () {
     const TextStyle base = TextStyle(fontSize: 15.5);
-    final AppPalette p = AppPalette.light;
+    final AppPalette p = AppPalette.midnight;
     final TextSpan span = htmlSourceSpan(line, base, p);
 
     expect(span.toPlainText(), line, reason: '着色不能动字');

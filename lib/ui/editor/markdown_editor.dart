@@ -16,7 +16,6 @@ import 'package:flutter/material.dart' hide TableCell, TableRow;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
-import 'package:provider/provider.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 
 import '../../core/platform/drop_support.dart';
@@ -30,7 +29,6 @@ import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/markdown_outline.dart';
 import '../../core/utils/table_model.dart';
 import '../../core/utils/table_selection.dart';
-import '../../state/settings_controller.dart';
 import '../common/notices.dart';
 import 'code_block_painter.dart';
 import 'editor_context_menu.dart';
@@ -4356,7 +4354,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     if (widget.readOnly || _imageEdit != null) return;
     final ({int from, int to, String text})? line = _sourceLineAt(lineStart);
     if (line == null) return;
-    final AppPalette palette = _palette ?? AppPalette.light;
+    final AppPalette palette = _palette ?? AppPalette.midnight;
 
     // 先让这一行把浮层的位置算出来（块自己知道输入框该摆在哪），下一帧再摆。
     setState(() {
@@ -4991,17 +4989,10 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
   @override
   Widget build(BuildContext context) {
-    final AppPalette themed = context.palette;
-    // 切换配色时 `MaterialApp` 会逐帧补间 `ThemeData`，`ThemeData.lerp` 连
-    // `AppPalette` 一起补间；而按行排版把配色算进语义键（`LiveLineStyle`），
-    // 跟着逐帧的配色走等于在 180ms 里把整篇正文重排十几遍——切换主题的卡顿
-    // 就来自这里。正文取设置里已经落定的目标配色，只换一次布局；外壳的补间
-    // 不受影响。没有设置控制器时（组件测试直接挂编辑器）照旧用主题里的配色。
-    final SettingsController? settings = Provider.of<SettingsController?>(
-      context,
-      listen: false,
-    );
-    final AppPalette p = settings?.paletteFor(themed.brightness) ?? themed;
+    // 只有一块色板，`MaterialApp` 也不再补间主题，所以正文直接用上下文里
+    // 那一个——以前要绕开 `ThemeData.lerp` 去设置里取「目标配色」，是因为
+    // 逐帧补间会让按行排版把整篇重排十几遍；那条路随主题切换一起删掉了。
+    final AppPalette p = context.palette;
     _palette = p;
     final TextStyle style = editorProseStyle(p, widget.fontSize);
     // 按行排版：每行按源码种类取样式与行高，列表标记由渲染层画。

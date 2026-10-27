@@ -11,7 +11,7 @@ import 'package:nrs/ui/editor/markdown_editor.dart';
 void main() {
   Widget build(MarkdownSourceController controller, List<String> opened) {
     return MaterialApp(
-      theme: AppTheme.build(AppPalette.light),
+      theme: AppTheme.build(AppPalette.midnight),
       home: Scaffold(
         body: MarkdownEditor(
           controller: controller,

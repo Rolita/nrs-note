@@ -2,7 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import '../../core/utils/canvas_document.dart' show canvasExtension;
 import '../models/note.dart';
+import 'canvas_store.dart' show canvasTitleOf;
 import 'note_store.dart';
 
 /// A trashed note with its contents, ready to be written back.
@@ -40,6 +42,16 @@ class TrashStore {
   String _sep() => Platform.pathSeparator;
 
   String _baseName(String path) => path.split(RegExp(r'[\\/]')).last;
+
+  /// 条目在回收站里显示的名字：去掉后缀。
+  ///
+  /// 笔记是 `.md`，白板是 `.nrs`，两者在同一个回收站里并排——名字里留着
+  /// 后缀，读起来像两种不同的东西，而它们对用户来说都是「我删掉的那份」。
+  static String _titleOf(String fileName) {
+    final String lower = fileName.toLowerCase();
+    if (lower.endsWith(canvasExtension)) return canvasTitleOf(fileName);
+    return Note.titleOfFileName(fileName);
+  }
 
   String _normalizeRelative(String raw) =>
       raw.replaceAll('\\', '/').replaceFirst(RegExp(r'^/+'), '');
@@ -79,7 +91,7 @@ class TrashStore {
     return TrashEntry(
       id: _baseName(dir.path),
       originalPath: originalPath,
-      title: Note.titleOfFileName(fileName),
+      title: _titleOf(fileName),
       deletedAt: now,
       size: size,
     );
@@ -221,7 +233,7 @@ class TrashStore {
     final TrashEntry entry = TrashEntry(
       id: _baseName(dir.path),
       originalPath: originalPath,
-      title: Note.titleOfFileName(fileName),
+      title: _titleOf(fileName),
       deletedAt: deletedAt,
       size: size,
     );

@@ -1097,11 +1097,10 @@ double _panelHeight(List<MenuNode> nodes) =>
 
 /// The hover / "this submenu is open" fill for a row.
 ///
-/// Derived from the palette rather than written out in hex: the same few per
-/// cent of the text colour lifts a dark panel *and* deepens a light one, so both
-/// themes get their highlight from one rule instead of two literals that drift.
+/// Derived from the palette rather than written out in hex: a few per cent of
+/// the text colour lifts the panel without a second literal that would drift.
 Color _menuRowFill(AppPalette p) => Color.alphaBlend(
-  p.textPrimary.withValues(alpha: p.isDark ? 0.07 : 0.06),
+  p.textPrimary.withValues(alpha: 0.07),
   p.surfaceRaised,
 );
 

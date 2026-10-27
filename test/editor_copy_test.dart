@@ -56,7 +56,7 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        theme: AppTheme.build(AppPalette.dark),
+        theme: AppTheme.build(AppPalette.midnight),
         home: Scaffold(
           body: MarkdownEditor(
             controller: controller,

@@ -11,7 +11,7 @@ import 'package:nrs/ui/editor/live_markdown.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  const AppPalette palette = AppPalette.light;
+  const AppPalette palette = AppPalette.midnight;
   const TextStyle base = TextStyle(fontSize: 15.5, height: 1.78);
   const LineBlockContext context = LineBlockContext(
     contentWidth: 680,

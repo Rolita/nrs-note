@@ -2,7 +2,9 @@ import 'package:flutter/material.dart' hide TableCell, TableRow;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/core/theme/app_theme.dart';
+import 'package:nrs/core/theme/table_colors.dart';
 import 'package:nrs/core/utils/markdown_actions.dart';
+import 'package:nrs/core/utils/table_model.dart' show CellColor, CellColorToken;
 import 'package:nrs/ui/editor/table_panel.dart';
 import 'package:nrs/ui/theme/app_color_picker.dart';
 
@@ -46,7 +48,7 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        theme: AppTheme.build(AppPalette.light),
+        theme: AppTheme.build(AppPalette.midnight),
         home: Scaffold(
           // The real shell pins the column to the right edge; the palette has
           // to be clamped there, not just where the test happens to start.
@@ -390,7 +392,10 @@ void main() {
     );
     expect(
       (bar.decoration! as BoxDecoration).color,
-      AppPalette.light.warningSoft,
+      tableFillColor(
+        AppPalette.midnight,
+        const CellColor.token(CellColorToken.amber),
+      ),
     );
 
     await tester.tap(find.byTooltip('文字颜色'));

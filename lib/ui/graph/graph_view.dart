@@ -22,6 +22,7 @@ import 'graph_style.dart';
 import 'orb_layout.dart';
 import 'orb_math.dart';
 import 'orb_painter.dart';
+import 'orb_pulse.dart';
 
 /// 拖拽跟随链上的一颗节点。
 ///
@@ -88,6 +89,9 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
 
   /// 球外的星场与流星。浅色主题不画，但状态照走，切回深色不用重新点火。
   late final CosmosField _cosmos;
+
+  /// 信号脉冲：悬浮或钉住的节点沿每条连线送出光点，静止时也会自发几颗。
+  final OrbPulseField _pulse = OrbPulseField();
 
   /// 每种文件夹色一张预渲染的辉光贴图。
   ///
@@ -375,6 +379,8 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     _followPivot = null;
     _settleT = 0;
     _pushFade = 0;
+    // 换了一张视图，光点的下标就是另一批节点了，全部作废。
+    _pulse.clear();
     if (_graph.isEmpty) {
       _view = _graph;
       _layout = OrbLayout(0);
@@ -1127,6 +1133,8 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       radius: _sphereRadius * _scale,
     );
     _project();
+    // 脉冲要用这一帧的屏幕坐标算行程，所以排在投影之后。
+    _tickPulse(dt);
     _repaint.tick();
 
     // 测试环境不自转，所以「静止」是可以到达的状态——到了就停表，
@@ -1151,6 +1159,8 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       (_focusFade <= 0 || _focusFade >= 1) &&
       // 拨开的邻居也一样：停在半路，它们就永远歪在那儿回不去。
       (_pushFade <= 0 || _pushFade >= 1) &&
+      // 信号光点还在飞：停在半路会留下几颗僵住的珠子。
+      _pulse.isIdle &&
       _velX.abs() < 0.004 &&
       _velY.abs() < 0.004;
 
@@ -1211,6 +1221,37 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     final double yaw = _velY * dt * _slow;
     _camera.rotate(pitch, yaw);
     _cosmos.advance(pitch, yaw);
+  }
+
+  /// 信号脉冲的节奏：换焦点立刻发一轮，停留久了再补一轮；没有焦点时
+  /// 每隔一两秒自己挑一颗正面节点自发一次。
+  ///
+  /// 拖节点、转球期间不发——连线正被拎着走，光点追上去只会显得在打滑。
+  void _tickPulse(double dt) {
+    if (_view.isEmpty || _dragNode != null || _rotateFrom != null) {
+      _pulse.source = -1;
+      _pulse.update(dt);
+      return;
+    }
+
+    final int? focus = _focus;
+    if (focus != null) {
+      if (_pulse.source != focus) {
+        _pulse.source = focus;
+        _pulse.lastAt = _clock;
+        _pulse.ring(focus);
+        _pulse.emit(_view, _sx, _sy, focus, 1);
+      } else if (_drift && _clock - _pulse.lastAt > 1.8) {
+        // 停留时补一轮，不然「这一圈连着谁」只闪一下就静了。测试环境
+        // 不自转，补轮会让 `pumpAndSettle` 永远等下去，所以只在真实环境跑。
+        _pulse.lastAt = _clock;
+        _pulse.emit(_view, _sx, _sy, focus, 0.85);
+      }
+    } else {
+      _pulse.source = -1;
+      _pulse.tickIdle(dt, _view, _sx, _sy, _camZ, enabled: _drift);
+    }
+    _pulse.update(dt);
   }
 
   // ------------------------------------------------------------- 拖拽手感
@@ -1422,12 +1463,16 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     edge: p.isDark ? const Color(0xFF93A9C9) : const Color(0xFF5A6B85),
     node: p.isDark ? const Color(0xFFC2C5CC) : const Color(0xFF7A7A7A),
     ring: p.accent,
-    // 逆方向粒子用琥珀：主题色在「石墨素白」这套默认主题里是近黑/近白，
-    // 拿它当第二个方向等于没有方向。琥珀在深浅两套底上都跳得出来。
-    flowIn: groupColor(p, CellColorToken.amber),
+    // 焦点连线照设计稿重描一条冷白线；浅色底上换成深蓝，近白线在纸白
+    // 底上等于没画。
+    focusEdge: p.isDark ? const Color(0xFFC4D6EC) : const Color(0xFF425E82),
     label: p.isDark ? const Color(0xFFCEDCF2) : p.textSecondary,
     labelFocus: p.isDark ? const Color(0xFFF2F8FF) : p.textPrimary,
     labelHalo: p.isDark ? const Color(0xFF03060B) : const Color(0xFFF2F4F8),
+    // 深色底上用设计稿的近白冷光，浅色底上换成深蓝：同样的白点在白底上
+    // 根本看不见，加色混合也只会把画面推白。
+    pulse: p.isDark ? const Color(0xFFEAF5FF) : const Color(0xFF2E5FA6),
+    pulseAdditive: p.isDark,
   );
 
   // ------------------------------------------------------------------ 构建
@@ -1590,6 +1635,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       zoom: _scale,
       labelZoomStart: _settings.labelZoomStart,
       labelZoomFull: _settings.labelZoomFull,
+      pulse: _pulse,
       cosmos: p.isDark ? _cosmos : null,
     );
 
@@ -1618,11 +1664,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
               onPointerCancel: _onPointerUp,
               onPointerSignal: _onPointerSignal,
               child: CustomPaint(
-                painter: OrbPainter(
-                  data: data,
-                  repaint: _repaint,
-                  clock: () => _clock,
-                ),
+                painter: OrbPainter(data: data, repaint: _repaint),
                 child: const SizedBox.expand(),
               ),
             ),
@@ -1660,8 +1702,6 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
             ),
           ),
         Positioned(right: AppSpace.md, bottom: AppSpace.md, child: _hud(p)),
-        if (_hover != null && _dragNode == null)
-          _tooltip(p, _view.nodes[_hover!], folderColors),
       ],
     );
   }
@@ -2050,89 +2090,6 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     );
   }
 
-  Widget _tooltip(AppPalette p, GraphNode node, Map<String, Color> colors) {
-    const double w = 216;
-    final double left = (_pointer.dx + 16).clamp(
-      8.0,
-      math.max(8.0, _stageSize.width - w - 8),
-    );
-    final double top = (_pointer.dy + 16).clamp(
-      8.0,
-      math.max(8.0, _stageSize.height - 84),
-    );
-    final Color dot = colors[node.folder] ?? p.textSecondary;
-
-    return Positioned(
-      left: left,
-      top: top,
-      child: IgnorePointer(
-        child: Container(
-          constraints: const BoxConstraints(maxWidth: w),
-          padding: const EdgeInsets.fromLTRB(
-            AppSpace.sm + 2,
-            AppSpace.sm,
-            AppSpace.sm + 2,
-            AppSpace.sm,
-          ),
-          decoration: BoxDecoration(
-            color: p.surfaceRaised,
-            borderRadius: AppRadius.mdAll,
-            border: Border.all(color: p.outline),
-            boxShadow: <BoxShadow>[
-              BoxShadow(color: p.shadow, blurRadius: 16, offset: const Offset(0, 6)),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Text(
-                node.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: AppText.label,
-                  fontWeight: FontWeight.w600,
-                  color: p.textPrimary,
-                ),
-              ),
-              const SizedBox(height: 3),
-              Row(
-                children: <Widget>[
-                  Container(
-                    width: 6,
-                    height: 6,
-                    decoration: BoxDecoration(color: dot, shape: BoxShape.circle),
-                  ),
-                  const SizedBox(width: 5),
-                  Flexible(
-                    child: Text(
-                      node.folder.isEmpty ? '根目录' : node.folder,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: AppText.caption - 1,
-                        color: p.textTertiary,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    '出 ${node.outDegree} · 入 ${node.inDegree}',
-                    style: TextStyle(
-                      fontSize: AppText.caption - 1,
-                      color: p.textTertiary,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
   // ------------------------------------------------------- 测试用只读快照
 
   @visibleForTesting
@@ -2168,6 +2125,14 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     final int? i = _view.indexOfId(noteId);
     return i == null ? null : _alphas[i];
   }
+
+  /// 还活着的信号光点数。悬停、钉住和自发脉冲都会往里加。
+  @visibleForTesting
+  int get debugPulseCount => _pulse.pulses.length;
+
+  /// 还活着的源节点光晕圈数。
+  @visibleForTesting
+  int get debugPulseRingCount => _pulse.rings.length;
 
   /// 手动把球转一点，再重投影。
   ///

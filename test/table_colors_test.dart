@@ -24,18 +24,19 @@ void main() {
   group('resolution', () {
     test('fill tokens follow the palette', () {
       expect(
-        tableCellFill(AppPalette.light, amberFill),
-        AppPalette.light.warningSoft,
-      );
-      expect(
-        tableCellFill(AppPalette.dark, amberFill),
+        tableCellFill(AppPalette.midnight, amberFill),
         const Color(0xFF634A12),
       );
       expect(
-        tableCellFill(AppPalette.light, customFill),
+        tableCellFill(AppPalette.midnight, amberFill),
+        isNot(AppPalette.midnight.warningSoft),
+        reason: '高亮底色是专用的深底，不是面板的浅软色',
+      );
+      expect(
+        tableCellFill(AppPalette.midnight, customFill),
         const Color(0xFF111111),
       );
-      expect(tableCellFill(AppPalette.light, const TableCellStyle()), isNull);
+      expect(tableCellFill(AppPalette.midnight, const TableCellStyle()), isNull);
     });
 
     test('dark fills and inks are one highlighter set that clears AA', () {
@@ -54,17 +55,17 @@ void main() {
         final CellColor token = CellColor.token(entry.key);
         final (Color fill, Color ink) = entry.value;
         expect(
-          tableCellFill(AppPalette.dark, TableCellStyle(fill: token)),
+          tableCellFill(AppPalette.midnight, TableCellStyle(fill: token)),
           fill,
           reason: '${entry.key.name} 的深色底',
         );
         expect(
-          tableCellInk(AppPalette.dark, TableCellStyle(text: token)),
+          tableCellInk(AppPalette.midnight, TableCellStyle(text: token)),
           ink,
           reason: '${entry.key.name} 的深色彩字',
         );
         expect(
-          tableCellInk(AppPalette.dark, TableCellStyle(fill: token)),
+          tableCellInk(AppPalette.midnight, TableCellStyle(fill: token)),
           isNull,
           reason: '令牌填充保留正文色，只有 fg 才换彩字',
         );
@@ -74,7 +75,7 @@ void main() {
           reason: '${entry.key.name} 的彩字在该填充上低于 AA',
         );
         expect(
-          AppPalette.contrastRatio(AppPalette.dark.textPrimary, fill),
+          AppPalette.contrastRatio(AppPalette.midnight.textPrimary, fill),
           greaterThanOrEqualTo(4.5),
           reason: '${entry.key.name} 的正文在该填充上低于 AA',
         );
@@ -85,21 +86,22 @@ void main() {
       'text tokens are full strength; unfilled cells keep the prose ink',
       () {
         expect(
-          tableCellInk(AppPalette.light, redText),
-          AppPalette.light.danger,
+          tableCellInk(AppPalette.midnight, redText),
+          const Color(0xFFF09288),
+          reason: '彩字取那一档在深底上够 AA 的提亮版，不是 palette.danger 本身',
         );
-        expect(tableCellInk(AppPalette.light, amberFill), isNull);
-        expect(tableCellInk(AppPalette.light, const TableCellStyle()), isNull);
+        expect(tableCellInk(AppPalette.midnight, amberFill), isNull);
+        expect(tableCellInk(AppPalette.midnight, const TableCellStyle()), isNull);
       },
     );
 
     test('a literal fill picks readable text from its composited color', () {
       final Color over = Color.alphaBlend(
         const Color(0xFF111111),
-        AppPalette.light.surface,
+        AppPalette.midnight.surface,
       );
       expect(
-        tableCellInk(AppPalette.light, customFill),
+        tableCellInk(AppPalette.midnight, customFill),
         AppPalette.readableOn(over),
       );
 
@@ -108,7 +110,7 @@ void main() {
         text: CellColor.token(CellColorToken.blue),
       );
       expect(
-        tableCellInk(AppPalette.light, explicit),
+        tableCellInk(AppPalette.midnight, explicit),
         isNot(AppPalette.readableOn(over)),
         reason: '显式文字色优先于自动对比色',
       );
@@ -116,7 +118,7 @@ void main() {
   });
 
   group('renderer', () {
-    const AppPalette palette = AppPalette.light;
+    const AppPalette palette = AppPalette.midnight;
     const TextStyle base = TextStyle(fontSize: 15.5, height: 1.78);
     const LineBlockContext context = LineBlockContext(
       contentWidth: 680,
@@ -149,15 +151,20 @@ void main() {
       return span.style?.color;
     }
 
+    Color? redInk() =>
+        tableInkColor(palette, const CellColor.token(CellColorToken.red));
+    Color? greenInk() =>
+        tableInkColor(palette, const CellColor.token(CellColorToken.green));
+
     test('the directive ink is painted, and a new ink rebuilds that cell', () {
       final LineBlockView block = blocks.blockFor(headerLine(), context)!;
-      expect(inkOf(block, 0), palette.danger);
-      expect(inkOf(block, 1), isNot(palette.danger));
+      expect(inkOf(block, 0), redInk());
+      expect(inkOf(block, 1), isNot(redInk()));
       final int builds = blocks.debugCellSpanBuilds;
 
       text = text.replaceFirst('fg=red', 'fg=green');
       final LineBlockView recolored = blocks.blockFor(headerLine(), context)!;
-      expect(inkOf(recolored, 0), palette.success);
+      expect(inkOf(recolored, 0), greenInk());
       expect(
         blocks.debugCellSpanBuilds,
         builds + 1,

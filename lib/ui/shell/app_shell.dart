@@ -28,7 +28,6 @@ import '../common/delete_dialog.dart';
 import '../common/notices.dart';
 import '../../state/canvas_controller.dart';
 import '../canvas/canvas_board.dart';
-import '../canvas/canvas_open_picker.dart';
 import '../editor/editor_pane.dart';
 import '../editor/image_panel.dart';
 import '../editor/outline_panel.dart';
@@ -160,9 +159,9 @@ class _AppShellState extends State<AppShell> {
   void _selectMainView(MainView view) {
     if (_mainView == view) return;
     // 白板是一份文件，没有「空白的白板」这种状态：点进来之前得先有一份。
-    // 这里只做「还没打开过就打开」，已经打开过就直接切过去。
+    // 这里只做「还没打开过就新建一块」，已经打开过就直接切过去。
     if (view == MainView.canvas && !context.read<CanvasController>().hasDocument) {
-      unawaited(_openCanvas());
+      unawaited(_newCanvasBoard());
       return;
     }
     final SettingsController settings = context.read<SettingsController>();
@@ -201,53 +200,34 @@ class _AppShellState extends State<AppShell> {
     _shellFocus.requestFocus();
   }
 
-  /// 功能栏 / `Ctrl+Shift+B` / 页签：打开白板。
+  /// 功能栏的白板按钮：新建一块「未命名白板.nrs」并切过去。
   ///
-  /// 已经打开着就直接切过去；否则列出 vault 里的 `.nrs` 让用户挑，
-  /// 一块都没有就直接新建——「点白板按钮 → 再点一次新建」是多余的一步。
-  Future<void> _openCanvas() async {
+  /// 这里不弹选择框。白板是 vault 里的一份文件，已有的那几块本来就在文件
+  /// 树里列着，要打开点它就行；按钮只做「再来一块」——和「新建笔记」是同
+  /// 一个动作，只是产物是 `.nrs`。先弹一个框问「打开还是新建」，等于每次
+  /// 新建都多一步。
+  Future<void> _newCanvasBoard() async {
     final CanvasController canvas = context.read<CanvasController>();
-    if (!canvas.hasDocument) {
-      final List<CanvasRef> refs = await canvas.list();
-      if (!mounted) return;
-      if (refs.isEmpty) {
-        await _newCanvas(canvas);
-      } else {
-        final CanvasPickerResult? choice = await showCanvasPicker(
-          context,
-          canvases: refs,
-        );
-        if (!mounted || choice == null) return;
-        switch (choice) {
-          case OpenCanvas(:final String relativePath):
-            if (!await canvas.open(relativePath)) {
-              if (mounted && canvas.error != null) {
-                _toast('白板打不开', kind: NoticeKind.error, detail: canvas.error);
-              }
-              return;
-            }
-          case NewCanvas():
-            await _newCanvas(canvas);
-        }
-      }
-      if (!mounted) return;
-    }
+    if (!await _newCanvas(canvas)) return;
+    if (!mounted) return;
     _selectMainView(MainView.canvas);
   }
 
   /// 在当前笔记所在的文件夹里新建一块白板（没有当前笔记就落根目录）。
-  Future<void> _newCanvas(CanvasController canvas) async {
+  Future<bool> _newCanvas(CanvasController canvas) async {
     final Note? open = _notes.draft ?? _notes.selectedNote;
     if (!await canvas.createNew(open?.folderPath ?? '')) {
-      if (!mounted) return;
+      if (!mounted) return false;
       _toast('新建白板失败', kind: NoticeKind.error, detail: canvas.error);
+      return false;
     }
+    return true;
   }
 
   /// 文件树里点开一块白板：读进来，再切到白板视图。
   ///
-  /// 和功能栏那个入口的区别只在「挑哪一块」——这里用户已经挑好了，不该再
-  /// 弹一次选择框。
+  /// 这是「打开已有的那块」唯一的入口——功能栏那个按钮只负责新建。
+  /// 用户已经挑好了是哪一块，这里不该再问一遍。
   Future<void> _openCanvasFile(CanvasRef board) async {
     final CanvasController canvas = context.read<CanvasController>();
     if (canvas.path != board.relativePath) {
@@ -472,6 +452,90 @@ class _AppShellState extends State<AppShell> {
       onAction: undoable ? undo : null,
     );
     return outcome.deleted > 0;
+  }
+
+  /// 文件树里右键白板点了「删除白板」。
+  ///
+  /// 和删笔记走同一张确认卡片、同一个回收站：白板也是 vault 里的一份文件，
+  /// 删错了应该能用同一套办法找回来。区别只在恢复——白板是把文件搬回去，
+  /// 笔记是把正文写成一篇新的 `.md`（见回收站里的分流）。
+  ///
+  /// 传进来的可能是一段多选：一次确认、一次「撤销」把整段都放回去。
+  Future<void> _confirmDeleteCanvas(List<CanvasRef> boards) async {
+    if (boards.isEmpty) return;
+    final CanvasController canvas = context.read<CanvasController>();
+    String titleOf(CanvasRef board) =>
+        board.title.trim().isEmpty ? '未命名白板' : board.title.trim();
+    final bool single = boards.length == 1;
+    const int listed = 5;
+
+    final bool? confirmed = await showDeleteDialog(
+      context,
+      title: single ? '删除这块白板？' : '删除这 ${boards.length} 块白板？',
+      message: single
+          ? '「${titleOf(boards.single)}」将移入回收站，可在左侧功能栏的回收站中恢复。'
+          : '将移入回收站，可在左侧功能栏的回收站中恢复。',
+      targets: <DeleteTarget>[
+        for (final CanvasRef board in boards.take(listed))
+          DeleteTarget(
+            name: titleOf(board),
+            meta: board.relativePath,
+            icon: LucideIcons.layoutDashboard,
+          ),
+      ],
+      overflowLabel: boards.length > listed
+          ? '…还有 ${boards.length - listed} 块'
+          : null,
+    );
+
+    if (confirmed != true || !mounted) return;
+    // 删之前记下主区正开着哪一块：删的要是它，画布上就没东西可画了。
+    final String? openPath = canvas.path;
+    final List<TrashEntry> receipts = <TrashEntry>[];
+    int failed = 0;
+    for (final CanvasRef board in boards) {
+      final ({bool ok, TrashEntry? entry}) result = await canvas.deleteCanvas(
+        board.relativePath,
+      );
+      if (!result.ok) {
+        failed++;
+        continue;
+      }
+      final TrashEntry? entry = result.entry;
+      if (entry != null) receipts.add(entry);
+    }
+    if (!mounted) return;
+
+    final bool deletedOpen =
+        openPath != null &&
+        boards.any((CanvasRef board) => board.relativePath == openPath);
+    // 删掉的就是屏幕上这一块：主区已经没有东西可画了，退回正文，而不是
+    // 留一块空白板让人以为「白板坏了」。
+    if (deletedOpen && _mainView == MainView.canvas) {
+      _selectMainView(MainView.note);
+    }
+
+    if (failed > 0 && receipts.isEmpty) {
+      _toast('删除白板失败', kind: NoticeKind.error, detail: canvas.error);
+      return;
+    }
+    if (receipts.isEmpty) {
+      // 浏览器端没有回收站，没有可撤销的东西，就别提「回收站」。
+      _toast(single ? '已删除白板' : '已删除 ${boards.length} 块白板');
+      return;
+    }
+    _toast(
+      failed == 0
+          ? '已移入回收站'
+          : '${receipts.length} 块白板移入回收站',
+      detail: single ? titleOf(boards.single) : '${receipts.length} 块白板',
+      actionLabel: '撤销',
+      onAction: () {
+        for (final TrashEntry entry in receipts) {
+          unawaited(canvas.restoreTrash(entry.id));
+        }
+      },
+    );
   }
 
   void _createNote() {
@@ -855,7 +919,7 @@ class _AppShellState extends State<AppShell> {
                                   onOpenTemplates: _openTemplatePicker,
                                   onOpenGraph: () =>
                                       _selectMainView(MainView.graph),
-                                  onOpenCanvas: _openCanvas,
+                                  onOpenCanvas: _newCanvasBoard,
                                   onOpenTrash: () => showTrashDialog(context),
                                   onOpenSettings: () =>
                                       showSettingsDialog(context),
@@ -879,6 +943,7 @@ class _AppShellState extends State<AppShell> {
                                     onSwitchView: _selectView,
                                     onOpenNote: _openNote,
                                     onOpenCanvas: _openCanvasFile,
+                                    onDeleteCanvas: _confirmDeleteCanvas,
                                     onOpenFile: _openVaultFile,
                                     // 搜索结果先开笔记，正文要等这一帧绑定
                                     // 完才可用，所以跳转挂到帧末。

@@ -18,7 +18,7 @@ import 'package:nrs/ui/editor/live_markdown.dart';
 /// 只在源码变化时重建，测的才是编辑时的真实开销。
 ///
 /// 单独跑：`flutter test --tags perf test/live_markdown_reuse_perf_test.dart`。
-const AppPalette palette = AppPalette.light;
+const AppPalette palette = AppPalette.midnight;
 const TextStyle base = TextStyle(fontSize: 15.5, height: 1.78);
 const int fixtureLines = 1867;
 

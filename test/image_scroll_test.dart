@@ -64,7 +64,7 @@ void main() {
     addTearDown(scroll.dispose);
     await tester.pumpWidget(
       MaterialApp(
-        theme: AppTheme.build(AppPalette.light),
+        theme: AppTheme.build(AppPalette.midnight),
         home: Scaffold(
           body: MarkdownEditor(
             controller: controller,

@@ -29,8 +29,13 @@ import 'data_safety_dialogs.dart';
 /// Files select like a file manager: a plain click opens one, Shift+click takes
 /// the visible range from the anchor, and a right-click offers the per-file
 /// actions. The multi-selection is local to the tree — the editor still edits
-/// the one note that was opened last. Boards and other files are shown for
-/// orientation, not for bulk actions: they have no trash and no tags.
+/// the one note that was opened last.
+///
+/// Boards (`.nrs`) are selectable on exactly those terms: same highlight, same
+/// Shift range, even across the two kinds. They are only *stored* apart, so a
+/// menu acts on its own kind — a note row's 「删除」 takes notes, a board row's
+/// takes boards — because deleting a note rebuilds markdown while deleting a
+/// board moves a file.
 class VaultTree extends StatefulWidget {
   const VaultTree({
     super.key,
@@ -42,6 +47,7 @@ class VaultTree extends StatefulWidget {
     this.files = const <VaultFile>[],
     this.activeCanvasPath,
     this.onOpenCanvas,
+    this.onDeleteCanvas,
     this.onOpenFile,
     this.onAllExpandedChanged,
   });
@@ -61,6 +67,12 @@ class VaultTree extends StatefulWidget {
   final String? activeCanvasPath;
 
   final ValueChanged<CanvasRef>? onOpenCanvas;
+
+  /// 右键「删除白板」。确认、移入回收站、撤销都由外壳负责，树只负责问。
+  ///
+  /// 传的是整段选中（可能不止一块），和 [onDeleteNotes] 一个形状。
+  final ValueChanged<List<CanvasRef>>? onDeleteCanvas;
+
   final ValueChanged<VaultFile>? onOpenFile;
 
   /// Deletes a folder after the shell's confirmation. True means the folder or
@@ -77,8 +89,21 @@ class VaultTree extends StatefulWidget {
 
 class VaultTreeState extends State<VaultTree> {
   final Set<String> _expanded = <String>{};
+
+  /// 选中的笔记（id）。
   final Set<String> _selected = <String>{};
+
+  /// 选中的白板（相对路径）。
+  ///
+  /// 和笔记分开存，是因为「多选之后按删除」两边走的是两套确认卡片和两套
+  /// 恢复：笔记要重建正文，白板要搬文件。混在一个集合里，每个用到的地方
+  /// 都得先问一句「这个 key 是哪种文件」。高亮和 Shift 连选是共用一套。
+  final Set<String> _selectedBoards = <String>{};
+
+  /// Shift 连选的锚点：笔记 id，或者白板相对路径，两者互斥。
   String? _anchorId;
+  String? _anchorBoardPath;
+
   bool _seeded = false;
   String? _lastSelectedId;
 
@@ -164,6 +189,10 @@ class VaultTreeState extends State<VaultTree> {
       for (final Note n in notes.allNotes) n.id,
     };
     _selected.removeWhere((String id) => !existing.contains(id));
+    final Set<String> boards = <String>{
+      for (final CanvasRef b in widget.canvases) b.relativePath,
+    };
+    _selectedBoards.removeWhere((String path) => !boards.contains(path));
 
     final String? selected = notes.selectedId;
     if (selected != null &&
@@ -172,9 +201,13 @@ class VaultTreeState extends State<VaultTree> {
       _selected
         ..clear()
         ..add(selected);
+      // 正文换了，说明用户是从别处打开了一篇笔记：白板那半边的高亮就不该
+      // 继续挂着，否则屏幕上同时亮着两行，没人知道删除会删哪个。
+      _selectedBoards.clear();
       _anchorId = selected;
+      _anchorBoardPath = null;
     }
-    if (_selected.isEmpty && selected != null) {
+    if (_selected.isEmpty && _selectedBoards.isEmpty && selected != null) {
       _selected.add(selected);
       _anchorId ??= selected;
     }
@@ -241,6 +274,48 @@ class VaultTreeState extends State<VaultTree> {
         .toList(growable: false);
   }
 
+  /// 屏幕上能点选的行，按从上到下的顺序：笔记和白板，图片不算。
+  ///
+  /// Shift 连选要的是「这一行和那一行之间」，所以必须和渲染用的是同一份
+  /// 顺序（[build] 里的 `rows`），不能各自排一遍。
+  List<({Note? note, CanvasRef? board})> _selectableRows() {
+    final List<({Note? note, CanvasRef? board})> out =
+        <({Note? note, CanvasRef? board})>[];
+    for (final _TreeRow row in _rows(widget.notes)) {
+      final _FileEntry? entry = row.entry;
+      if (entry == null) continue;
+      if (entry.note != null) {
+        out.add((note: entry.note, board: null));
+      } else if (entry.canvas != null) {
+        out.add((note: null, board: entry.canvas));
+      }
+    }
+    return out;
+  }
+
+  List<CanvasRef> _visibleBoards() {
+    return _rows(widget.notes)
+        .map((_TreeRow row) => row.entry?.canvas)
+        .whereType<CanvasRef>()
+        .toList(growable: false);
+  }
+
+  /// 锚点落在第几行；锚点被折叠或删掉了就是 -1。
+  int _anchorIndex(List<({Note? note, CanvasRef? board})> rows) {
+    final String? id = _anchorId;
+    if (id != null) {
+      final int i = rows.indexWhere(
+        (({Note? note, CanvasRef? board}) r) => r.note?.id == id,
+      );
+      if (i >= 0) return i;
+    }
+    final String? path = _anchorBoardPath;
+    if (path == null) return -1;
+    return rows.indexWhere(
+      (({Note? note, CanvasRef? board}) r) => r.board?.relativePath == path,
+    );
+  }
+
   /// Keeps only files that are actually on screen, so a collapsed folder cannot
   /// leave a hidden note in a bulk delete.
   void _pruneToVisible() {
@@ -248,6 +323,10 @@ class VaultTreeState extends State<VaultTree> {
       for (final Note n in _visibleFiles()) n.id,
     };
     _selected.removeWhere((String id) => !visible.contains(id));
+    final Set<String> boards = <String>{
+      for (final CanvasRef b in _visibleBoards()) b.relativePath,
+    };
+    _selectedBoards.removeWhere((String path) => !boards.contains(path));
   }
 
   void _selectOnly(Note note) {
@@ -255,24 +334,61 @@ class VaultTreeState extends State<VaultTree> {
       _selected
         ..clear()
         ..add(note.id);
+      _selectedBoards.clear();
       _anchorId = note.id;
+      _anchorBoardPath = null;
     });
   }
 
-  void _selectRangeTo(Note target) {
-    final List<Note> files = _visibleFiles();
-    final int anchor = files.indexWhere((Note n) => n.id == _anchorId);
-    final int index = files.indexWhere((Note n) => n.id == target.id);
+  void _selectOnlyBoard(CanvasRef board) {
+    setState(() {
+      _selected.clear();
+      _selectedBoards
+        ..clear()
+        ..add(board.relativePath);
+      _anchorId = null;
+      _anchorBoardPath = board.relativePath;
+    });
+  }
+
+  /// Shift 连选：从锚点到 [note] / [board] 之间，屏幕上看得见的每一行都选中。
+  ///
+  /// 跨类型也照选：一段里既有笔记又有白板时，两边各自记各自的，右键哪一类
+  /// 就只对哪一类生效。
+  void _selectRangeTo({Note? note, CanvasRef? board}) {
+    final List<({Note? note, CanvasRef? board})> rows = _selectableRows();
+    final int anchor = _anchorIndex(rows);
+    final int index = rows.indexWhere(
+      (({Note? note, CanvasRef? board}) r) =>
+          note != null ? r.note?.id == note.id : r.board?.relativePath == board?.relativePath,
+    );
     if (anchor < 0 || index < 0) {
-      _selectOnly(target);
+      // 锚点不见了（文件夹被折叠、那篇笔记被删）：退化成单选，别让整段
+      // 高亮凭空消失。
+      if (note != null) {
+        _selectOnly(note);
+      } else if (board != null) {
+        _selectOnlyBoard(board);
+      }
       return;
     }
     final int start = math.min(anchor, index);
     final int end = math.max(anchor, index);
+    final List<({Note? note, CanvasRef? board})> range = rows.sublist(
+      start,
+      end + 1,
+    );
     setState(() {
       _selected
         ..clear()
-        ..addAll(files.sublist(start, end + 1).map((Note n) => n.id));
+        ..addAll(range.map((({Note? note, CanvasRef? board}) r) => r.note?.id).whereType<String>());
+      _selectedBoards
+        ..clear()
+        ..addAll(
+          range
+              .map((({Note? note, CanvasRef? board}) r) => r.board?.relativePath)
+              .whereType<String>(),
+        );
     });
   }
 
@@ -280,17 +396,31 @@ class VaultTreeState extends State<VaultTree> {
   /// anchor instead — it changes *what a delete would take*, so it deliberately
   /// leaves the editor where it was rather than swapping the document out from
   /// under someone who is still picking the end of the range.
-  void _tapFile(Note note) {
+  ///
+  /// 白板走同一条路：点一下选中并打开，Shift+click 只改选中范围。区别只在
+  /// 打开的是白板视图而不是正文。
+  void _tapRow({Note? note, CanvasRef? board}) {
     _treeFocus.requestFocus();
-    widget.notes.setActiveFolder(note.folderPath);
-    _focusNoteId = note.id;
-    _focusFolderPath = null;
-    if (HardwareKeyboard.instance.isShiftPressed && _anchorId != null) {
-      _selectRangeTo(note);
+    if (note != null) {
+      widget.notes.setActiveFolder(note.folderPath);
+      _focusNoteId = note.id;
+      _focusFolderPath = null;
+    } else {
+      _focusNoteId = null;
+      _focusFolderPath = null;
+    }
+    if (HardwareKeyboard.instance.isShiftPressed &&
+        _anchorIndex(_selectableRows()) >= 0) {
+      _selectRangeTo(note: note, board: board);
       return;
     }
-    _selectOnly(note);
-    widget.onOpenNote(note);
+    if (note != null) {
+      _selectOnly(note);
+      widget.onOpenNote(note);
+      return;
+    }
+    _selectOnlyBoard(board!);
+    widget.onOpenCanvas?.call(board);
   }
 
   Future<void> _showFileMenu(Note note, Offset position) async {
@@ -847,7 +977,7 @@ class VaultTreeState extends State<VaultTree> {
       badge: entry.badge,
       trailing: _TaskBadge(noteId: note.id),
       renameField: renaming ? _renameField() : null,
-      onTap: () => _tapFile(note),
+      onTap: () => _tapRow(note: note),
       onSecondaryTapDown: (TapDownDetails d) =>
           _showFileMenu(note, d.globalPosition),
     );
@@ -865,16 +995,18 @@ class VaultTreeState extends State<VaultTree> {
     );
   }
 
-  /// 白板和图片行：能看、能点开，但不参与多选、拖动和右键批量操作。
+  /// 白板行：能点选、能打开，右键能删。
   ///
-  /// 它们不进回收站，混进笔记的多选里只会让人以为删掉的东西还能找回来。
+  /// 选中和 Shift 连选与笔记完全一致（同一套高亮、同一份行顺序），但多选
+  /// 之后按删除时各走各的确认卡片：笔记那套会重建正文，白板那套搬文件。
   Widget _plainFileRow(_TreeRow row, _FileEntry entry) {
     final CanvasRef? board = entry.canvas;
     return _FileRow(
       title: entry.title,
       tooltip: entry.path,
       depth: row.depth,
-      selected: false,
+      selected:
+          board != null && _selectedBoards.contains(board.relativePath),
       active: board != null && board.relativePath == widget.activeCanvasPath,
       icon: board != null
           ? LucideIcons.layoutDashboard
@@ -882,11 +1014,60 @@ class VaultTreeState extends State<VaultTree> {
       badge: entry.badge,
       onTap: () {
         if (board != null) {
-          widget.onOpenCanvas?.call(board);
+          _tapRow(board: board);
         } else if (entry.file != null) {
           widget.onOpenFile?.call(entry.file!);
         }
       },
+      onSecondaryTapDown: board == null
+          ? null
+          : (TapDownDetails d) => _showCanvasMenu(board, d.globalPosition),
+    );
+  }
+
+  /// 右键一块白板：打开，或者删掉。
+  ///
+  /// 菜单和笔记行是同一块面板（[showAppMenu]），只是条目更少——白板没有
+  /// 标签、没有大纲、没有版本历史，能对它做的事本来就只有这两件。选中的
+  /// 白板有好几块时，「删除」作用于整段选中，和笔记那边一个口径。
+  Future<void> _showCanvasMenu(CanvasRef board, Offset position) async {
+    _treeFocus.requestFocus();
+    _focusNoteId = null;
+    _focusFolderPath = null;
+    if (!_selectedBoards.contains(board.relativePath)) _selectOnlyBoard(board);
+    final Set<String> visible = <String>{
+      for (final CanvasRef b in _visibleBoards()) b.relativePath,
+    };
+    final List<CanvasRef> affected = _visibleBoards()
+        .where(
+          (CanvasRef b) =>
+              _selectedBoards.contains(b.relativePath) &&
+              visible.contains(b.relativePath),
+        )
+        .toList(growable: false);
+    final List<CanvasRef> targets = affected.isEmpty
+        ? <CanvasRef>[board]
+        : affected;
+    final String deleteLabel = targets.length > 1
+        ? '删除 ${targets.length} 块白板'
+        : '删除白板';
+    await showAppMenu(
+      context,
+      globalPosition: position,
+      entries: <MenuNode>[
+        MenuAction(
+          label: '打开',
+          icon: LucideIcons.externalLink,
+          onPressed: () => widget.onOpenCanvas?.call(board),
+        ),
+        const MenuSeparator(),
+        MenuAction(
+          label: deleteLabel,
+          icon: LucideIcons.trash2,
+          danger: true,
+          onPressed: () => widget.onDeleteCanvas?.call(targets),
+        ),
+      ],
     );
   }
 

@@ -28,7 +28,7 @@ double _contrast(Color a, Color b) {
 }
 
 void main() {
-  group('分组配色跟着主题走', () {
+  group('分组配色', () {
     test('色名按名字排序分配，根目录固定拿第一个', () {
       final Map<String, CellColorToken> tokens = assignFolderTokens(
         <String>['项目', '', '日记'],
@@ -59,56 +59,38 @@ void main() {
       expect(tokens['f0'], tokens['f6']);
     });
 
-    test('浅色主题下每个分组色在浅色画布上都读得清', () {
-      final GraphStyle style = GraphStyle.from(AppPalette.light);
-      expect(AppPalette.light.isDark, isFalse);
+    test('每个分组色在午夜靛的画布上都读得清', () {
+      final GraphStyle style = GraphStyle.from(AppPalette.midnight);
 
       for (final CellColorToken token in GraphStyle.groupTokens) {
         expect(
-          _contrast(groupColor(AppPalette.light, token), style.canvas),
-          greaterThan(2.4),
-          reason: '$token 在浅色画布上太淡了',
-        );
-      }
-    });
-
-    test('深色主题同样读得清', () {
-      final GraphStyle style = GraphStyle.from(AppPalette.dark);
-
-      for (final CellColorToken token in GraphStyle.groupTokens) {
-        expect(
-          _contrast(groupColor(AppPalette.dark, token), style.canvas),
+          _contrast(groupColor(AppPalette.midnight, token), style.canvas),
           greaterThan(2.4),
           reason: '$token 在深色画布上太淡了',
         );
       }
     });
 
-    test('浅色主题的分组色不是深色那一套', () {
-      expect(
-        groupColor(AppPalette.light, CellColorToken.gray),
-        isNot(groupColor(AppPalette.dark, CellColorToken.gray)),
-      );
+    test('六个分组色互不相同，灰度那档不跟节点灰撞色', () {
+      final Set<Color> seen = <Color>{
+        for (final CellColorToken token in GraphStyle.groupTokens)
+          groupColor(AppPalette.midnight, token),
+      };
+      expect(seen, hasLength(GraphStyle.groupTokens.length));
     });
   });
 
   group('图谱就是一张灰度结构图', () {
-    test('画布在浅色主题下是浅的，在深色主题下是深的', () {
-      final GraphStyle light = GraphStyle.from(AppPalette.light);
-      final GraphStyle dark = GraphStyle.from(AppPalette.dark);
-
-      expect(_luminance(light.canvas), greaterThan(_luminance(dark.canvas)));
-      expect(_luminance(light.canvas), greaterThan(0.8));
-      expect(_luminance(dark.canvas), lessThan(0.05));
+    test('画布是深的，不是白底', () {
+      final GraphStyle style = GraphStyle.from(AppPalette.midnight);
+      expect(_luminance(style.canvas), lessThan(0.05));
     });
 
     test('默认的节点灰在画布上看得见，但不刺眼', () {
-      for (final AppPalette p in <AppPalette>[AppPalette.light, AppPalette.dark]) {
-        final GraphStyle s = GraphStyle.from(p);
-        final double c = _contrast(s.node, s.canvas);
-        expect(c, greaterThan(3.5), reason: '${p.isDark}: 太淡就看不出是颗点');
-        expect(c, lessThan(9), reason: '${p.isDark}: 太白就变成一片灯泡');
-      }
+      final GraphStyle s = GraphStyle.from(AppPalette.midnight);
+      final double c = _contrast(s.node, s.canvas);
+      expect(c, greaterThan(3.5), reason: '太淡就看不出是颗点');
+      expect(c, lessThan(9), reason: '太白就变成一片灯泡');
     });
 
     test('连线五档逐级递减，焦点那档明显跳出来', () {
@@ -126,11 +108,8 @@ void main() {
     });
 
     test('标签投影和画布同一档亮度，不会出现刺眼白边', () {
-      final GraphStyle light = GraphStyle.from(AppPalette.light);
-      final GraphStyle dark = GraphStyle.from(AppPalette.dark);
-
-      expect(_contrast(light.labelHalo, light.canvas), lessThan(1.3));
-      expect(_contrast(dark.labelHalo, dark.canvas), lessThan(1.6));
+      final GraphStyle s = GraphStyle.from(AppPalette.midnight);
+      expect(_contrast(s.labelHalo, s.canvas), lessThan(1.6));
     });
   });
 }

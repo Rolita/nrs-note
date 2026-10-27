@@ -35,6 +35,7 @@ class NoteListPanel extends StatefulWidget {
     required this.onRevealOffset,
     this.onOpenNote,
     this.onOpenCanvas,
+    this.onDeleteCanvas,
     this.onOpenFile,
   });
 
@@ -58,6 +59,10 @@ class NoteListPanel extends StatefulWidget {
   /// 文件树里点开一块白板 / 一个附件。白板要切到白板视图，附件交给系统，
   /// 两件事都只有外壳能做。
   final ValueChanged<CanvasRef>? onOpenCanvas;
+
+  /// 文件树里右键白板点了「删除」。确认与移入回收站都在外壳里做。
+  final ValueChanged<List<CanvasRef>>? onDeleteCanvas;
+
   final ValueChanged<VaultFile>? onOpenFile;
 
   @override
@@ -275,6 +280,7 @@ class NoteListPanelState extends State<NoteListPanel> {
                   files: notes.files,
                   activeCanvasPath: context.watch<CanvasController>().path,
                   onOpenCanvas: widget.onOpenCanvas,
+                  onDeleteCanvas: widget.onDeleteCanvas,
                   onOpenFile: widget.onOpenFile,
                   onOpenNote: (Note note) {
                     if (widget.onOpenNote != null) {

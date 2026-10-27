@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../../core/utils/note_graph.dart';
 import 'cosmos_field.dart';
 import 'orb_layout.dart';
+import 'orb_pulse.dart';
 
 /// 一帧的绘制输入。
 ///
@@ -41,6 +42,7 @@ class OrbPaintData {
     required this.zoom,
     required this.labelZoomStart,
     required this.labelZoomFull,
+    required this.pulse,
     this.cosmos,
   });
 
@@ -114,6 +116,10 @@ class OrbPaintData {
   final double labelZoomStart;
   final double labelZoomFull;
 
+  /// 信号脉冲。和 [cosmos] 不同，它挂在状态里逐帧推进，painter 只读当前
+  /// 快照——重绘靠 `repaint` 通知，build 不会每帧发生。
+  final OrbPulseField pulse;
+
   /// 球外的星场与流星。浅色主题传 null：那套画布是亮底的，星云压上去
   /// 会糊成脏灰，深色专属。
   final CosmosField? cosmos;
@@ -128,10 +134,12 @@ class OrbStyle {
     required this.edge,
     required this.node,
     required this.ring,
-    required this.flowIn,
+    required this.focusEdge,
     required this.label,
     required this.labelFocus,
     required this.labelHalo,
+    required this.pulse,
+    required this.pulseAdditive,
   });
 
   /// 画布底色：中心稍亮、边缘更暗的径向渐变。
@@ -148,14 +156,20 @@ class OrbStyle {
   final Color node;
   final Color ring;
 
-  /// 焦点连线上「逆着箭头」那颗粒子的颜色。
+  /// 焦点连线的重描色。照设计稿只做一条更亮的线，不分方向。
   ///
-  /// 顺方向那颗用 [ring]（主题色），这颗必须**换一个色相**：只靠亮度差，
-  /// 在暗背景上两颗点看起来是同一件事，方向读不出来。
-  final Color flowIn;
+  /// 深色底上是冷白；浅色底上必须换成深蓝——近白线在纸白底上等于没画。
+  final Color focusEdge;
   final Color label;
   final Color labelFocus;
   final Color labelHalo;
+
+  /// 信号脉冲的芯色。深色底上是近白的冷光，浅色底上换成深蓝——
+  /// 同一颗近白光点在浅底上会直接消失。
+  final Color pulse;
+
+  /// 脉冲用加色混合。浅色底上必须关掉：加色只会把画面推白，光点反而更淡。
+  final bool pulseAdditive;
 }
 
 /// 标签的 TextPainter 缓存。
@@ -204,20 +218,10 @@ class OrbLabelCache {
 
 /// 球体图谱的画笔。
 class OrbPainter extends CustomPainter {
-  OrbPainter({
-    required this.data,
-    required this.clock,
-    required Listenable repaint,
-  }) : super(repaint: repaint);
+  OrbPainter({required this.data, required Listenable repaint})
+    : super(repaint: repaint);
 
   final OrbPaintData data;
-
-  /// 动画时钟（秒），**画的时候才读**。
-  ///
-  /// ⛔ 不能把它塞进 [OrbPaintData]：那份数据是 build 时建的，而重绘是靠
-  /// `repaint` 通知器驱动的——一帧之内可能画好几次，但 build 一次都不做。
-  /// 塞进去的话粒子时间被冻在最后一次 build 的时刻，看起来就是「没有粒子」。
-  final ValueGetter<double> clock;
 
   // 复用 Paint：每帧新建 500 个 Paint 是没必要的开销。
   final Paint _fill = Paint()..isAntiAlias = true;
@@ -243,11 +247,21 @@ class OrbPainter extends CustomPainter {
     if (data.graph.nodes.isEmpty) return;
 
     _paintEdges(canvas);
+    _paintPulses(canvas);
     _paintGlow(canvas);
     _paintNodes(canvas);
     // 流星压在节点上、标签下：它是从球面上甩出去的，盖住节点才对；
     // 标签必须永远最高，不然流星会从字上划过去。
     data.cosmos?.paintMeteors(canvas, size);
+    // 脉冲光晕比节点更高一层：它是从节点身上震出来的一圈，晚一点才扩散到
+    // 邻居那边，压在节点上也读得出「从这里出发」。
+    _paintPulseRings(canvas);
+    // 前景冷雾：离镜头最近的一层空气，压在球和连线上，但必须在标签之下。
+    data.cosmos?.paintHaze(
+      canvas,
+      size,
+      radius: data.sphereRadius * data.zoom,
+    );
     _paintLabels(canvas, size);
   }
 
@@ -314,13 +328,7 @@ class OrbPainter extends CustomPainter {
     final List<Path> paths = List<Path>.generate(buckets, (_) => Path());
     final List<int> counts = List<int>.filled(buckets, 0);
 
-    // 两个焦点的关联圈取并集：钉住 1 时悬浮 2，1 和 2 的邻居都要亮着。
-    final Set<int>? related = focus == null
-        ? null
-        : <int>{
-            ...graph.nodes[focus].neighbours,
-            if (second != null) ...graph.nodes[second].neighbours,
-          };
+    // 焦点淡入比例：节点和边共用同一条曲线，切焦点时不会一边先亮。
     final double f = data.focusFade;
 
     for (final GraphEdge e in graph.edges) {
@@ -331,16 +339,14 @@ class OrbPainter extends CustomPainter {
       final double calm = 0.060 + 0.42 * d * d * d;
       double alpha = calm;
       if (focus != null && f > 0) {
-        double target;
-        if (a == focus || b == focus || a == second || b == second) {
-          // 焦点那几条线换成主题色的弧（见 [_paintFocusEdges]），这条白的
-          // 让位：同时画会变成「彩色弧压在白光上」。
-          target = 0;
-        } else if (related!.contains(a) || related.contains(b)) {
-          target = 0.055 + 0.16 * d * d;
-        } else {
-          target = 0.026 + 0.100 * d * d;
-        }
+        // 和设计稿 `graph-cosmos-extra.html` 的 `drawEdges` 一样：
+        // 直接相连的那几条更亮，其余压暗。没有方向色——连线只表达
+        // 「连着」，方向交给信号脉冲去回答。
+        final bool incident =
+            a == focus || b == focus || a == second || b == second;
+        final double target = incident
+            ? 0.24 + 0.68 * d * d
+            : 0.022 + 0.09 * d * d;
         // 和节点一起插值：边有 900 条，硬切是最显眼的那一下。
         alpha = calm + (target - calm) * f;
       }
@@ -365,153 +371,118 @@ class OrbPainter extends CustomPainter {
       canvas.drawPath(paths[i], _stroke);
     }
 
-    // 焦点节点的连线单独画：主题色的弧 + 箭头 + 沿出链流动的粒子。
-    if (focus != null && f > 0.02 && related != null && related.isNotEmpty) {
-      _paintFocusEdges(canvas, focus, f);
-      // 第二焦点和主焦点相连的那条边已经画过了，跳过，免得两种方向色叠在一起。
-      if (second != null) {
-        _paintFocusEdges(canvas, second, f, skip: focus);
+    // 焦点连线再压一条更亮的冷白线：没有箭头、没有方向色、没有粒子，
+    // 和设计稿一致——它只回答「这一圈和谁连着」。
+    if (focus != null && f > 0.02) {
+      final Path lit2 = Path();
+      for (final GraphEdge e in graph.edges) {
+        if (e.a != focus &&
+            e.b != focus &&
+            e.a != second &&
+            e.b != second) {
+          continue;
+        }
+        if (!data.lit[e.a] || !data.lit[e.b]) continue;
+        lit2
+          ..moveTo(data.screenX[e.a], data.screenY[e.a])
+          ..lineTo(data.screenX[e.b], data.screenY[e.b]);
       }
+      _stroke
+        ..strokeWidth = 1.6 * data.edgeScale
+        ..strokeCap = StrokeCap.round
+        ..color = data.style.focusEdge.withValues(alpha: 0.54 * f);
+      canvas.drawPath(lit2, _stroke);
     }
   }
 
-  /// 焦点节点的连线：带方向的弧、箭头、一个方向一颗粒子。
+  // ------------------------------------------------------------------ 脉冲
+
+  /// 信号脉冲：一条半透明的光尾 + 一颗亮芯。
   ///
-  /// 照 `design/graph-obsidian-variants.html` 的「流向」方案，但颜色按
-  /// **这条边相对焦点的方向**分，而不是按粒子：
-  ///
-  /// * **出链**（焦点 → 邻居）一个颜色，**入链**（邻居 → 焦点）另一个颜色。
-  ///   这是「谁引用谁」最直接的读法：同色的边指向同一个方向。
-  /// * 弧是二次贝塞尔，弧度只有 ±6px，**由这条边的两个 id 哈希决定**——
-  ///   同一条边永远同一个弯，不随帧抖；不是所有边统一朝一侧（那样会围成
-  ///   一个风车，看起来像装饰）。
-  /// * 箭头是**实心三角**，箭尖停在节点边缘外 2px，方向取曲线在终点处的切线。
-  /// * 粒子每边只有一颗，**朝着这条边真正的方向走**——不是两颗对开。
-  /// * 互链（双向）没有方向：中性色、无箭头、无粒子。
-  ///
-  /// 逐条画而不是合成一条 Path：只有焦点那几条（最多十几条），但每条都要
-  /// 按两端深度单独压暗——背面的邻居要是也画得一样亮，弧线会「穿」过球体，
-  /// 立体感立刻塌掉。
-  void _paintFocusEdges(Canvas canvas, int focus, double f, {int? skip}) {
-    final Color accent = data.style.ring;
-    final Color neutral = data.style.edge;
-    final Color flowIn = data.style.flowIn;
-    final Offset p0 = Offset(data.screenX[focus], data.screenY[focus]);
+  /// 端点每帧从 [OrbPaintData.screenX] / [OrbPaintData.screenY] 重算，所以
+  /// 球转起来时脉冲贴着连线走，不会留在原地。去程拖一条半条边的尾巴，隔着
+  /// 半屏也看得见；回程只有一颗小珠子——方向读起来才是「去一趟、回来一下」。
+  void _paintPulses(Canvas canvas) {
+    final List<OrbPulse> pulses = data.pulse.pulses;
+    if (pulses.isEmpty) return;
 
-    for (final GraphEdge e in data.graph.edges) {
-      if (e.a != focus && e.b != focus) continue;
-      if (skip != null && (e.a == skip || e.b == skip)) continue;
-      if (!data.lit[e.a] || !data.lit[e.b]) continue;
-      final int other = e.a == focus ? e.b : e.a;
-      final Offset p2 = Offset(data.screenX[other], data.screenY[other]);
-      final double dx = p2.dx - p0.dx;
-      final double dy = p2.dy - p0.dy;
-      final double len = math.sqrt(dx * dx + dy * dy);
-      if (len < 10) continue;
+    final Color tint = data.style.pulse;
+    _stroke
+      ..shader = null
+      ..strokeCap = StrokeCap.round
+      ..blendMode = data.style.pulseAdditive
+          ? BlendMode.plus
+          : BlendMode.srcOver;
+    _fill.blendMode = _stroke.blendMode;
 
-      final double dep = (data.depth[e.a] + data.depth[e.b]) * 0.5;
-      final double k = (0.35 + 0.65 * dep) * f;
+    for (final OrbPulse p in pulses) {
+      if (p.wait > 0) continue;
+      final double ax = data.screenX[p.a], ay = data.screenY[p.a];
+      final double bx = data.screenX[p.b], by = data.screenY[p.b];
+      final double dx = bx - ax, dy = by - ay;
+      final double hx = ax + dx * p.p, hy = ay + dy * p.p;
+      // 尾巴顺着来路往回拖；方向取反，离开时尾在后、回来时尾在前。
+      final double q = (p.p - p.dir * (p.ret ? 0.22 : 0.45)).clamp(0.0, 1.0);
+      final double tx = ax + dx * q, ty = ay + dy * q;
 
-      final bool twoWay = e.isBidirectional;
-      final bool out = !twoWay && e.from == focus;
-      // 出链 / 入链 / 互链，三种颜色。
-      final Color tint = twoWay ? neutral : (out ? accent : flowIn);
-
-      // 弧度：±6px，由两端 id 哈希。同一条边永远同一个弯。
-      final double bend =
-          (_hash('${data.graph.nodes[e.a].id}>${data.graph.nodes[e.b].id}') %
-              13) -
-          6;
-      final Offset c = Offset(
-        (p0.dx + p2.dx) / 2 - dy / len * bend,
-        (p0.dy + p2.dy) / 2 + dx / len * bend,
-      );
+      final double d = (data.depth[p.a] + data.depth[p.b]) * 0.5;
+      final double amp = p.amp * (0.45 + 0.55 * d * d);
+      if (amp < 0.01) continue;
 
       _stroke
-        ..strokeWidth = 1.4 * data.edgeScale
-        ..strokeCap = StrokeCap.round
-        ..color = tint.withValues(alpha: (twoWay ? 0.5 : 0.72) * k);
-      canvas.drawPath(
-        Path()
-          ..moveTo(p0.dx, p0.dy)
-          ..quadraticBezierTo(c.dx, c.dy, p2.dx, p2.dy),
-        _stroke,
+        ..shader = ui.Gradient.linear(
+          Offset(tx, ty),
+          Offset(hx, hy),
+          <Color>[
+            tint.withValues(alpha: 0),
+            tint.withValues(alpha: 0.72 * amp),
+          ],
+        )
+        ..strokeWidth = (p.ret ? 1.0 : 1.7) * data.edgeScale;
+      canvas.drawLine(Offset(tx, ty), Offset(hx, hy), _stroke);
+
+      final Offset head = Offset(hx, hy);
+      // 柔光用一个低透明度的圆代替位图星芒：脉冲只有几十颗，画霜圈比
+      // 每帧缩放一张贴图便宜，也不会在缩放时糊边。
+      _fill.color = tint.withValues(alpha: (amp * 0.20).clamp(0.0, 1.0));
+      canvas.drawCircle(head, p.ret ? 4.0 : 6.5, _fill);
+      _fill.color = tint.withValues(alpha: math.min(1.0, amp * 1.15));
+      canvas.drawCircle(head, p.ret ? 1.05 : 1.9, _fill);
+    }
+
+    _stroke
+      ..shader = null
+      ..blendMode = BlendMode.srcOver;
+    _fill.blendMode = BlendMode.srcOver;
+  }
+
+  /// 源节点上扩散的一圈光晕，0.8 秒走完。
+  void _paintPulseRings(Canvas canvas) {
+    final List<OrbPulseRing> rings = data.pulse.rings;
+    if (rings.isEmpty) return;
+
+    final Color tint = data.style.pulse;
+    _ringStroke
+      ..blendMode = data.style.pulseAdditive
+          ? BlendMode.plus
+          : BlendMode.srcOver
+      ..strokeWidth = 1.2;
+
+    for (final OrbPulseRing r in rings) {
+      final double k = r.t / 0.8;
+      final double nodeR = math.max(data.radii[r.i], 1.6);
+      final double ease = 1 - math.pow(1 - k, 3).toDouble();
+      _ringStroke.color = tint.withValues(
+        alpha: (1 - k) * (1 - k) * 0.38,
       );
-
-      // 箭头：双向链接没有「谁引用谁」，不画。
-      if (!twoWay) {
-        // 尖端方向（箭头指向）与尖端位置。终点是 `e.to`，被指向的那一头。
-        double ax, ay;
-        Offset tip;
-        if (e.to == focus) {
-          // 入链：曲线从 p0 出发，箭头却指向 p0，方向与曲线走向相反。
-          final double vx = c.dx - p0.dx, vy = c.dy - p0.dy;
-          final double vl = math.sqrt(vx * vx + vy * vy);
-          if (vl < 1e-6) continue;
-          ax = -vx / vl;
-          ay = -vy / vl;
-          final double back = data.radii[focus] + 2;
-          tip = Offset(p0.dx - ax * back, p0.dy - ay * back);
-        } else {
-          final double vx = p2.dx - c.dx, vy = p2.dy - c.dy;
-          final double vl = math.sqrt(vx * vx + vy * vy);
-          if (vl < 1e-6) continue;
-          ax = vx / vl;
-          ay = vy / vl;
-          final double back = data.radii[other] + 2;
-          tip = Offset(p2.dx - ax * back, p2.dy - ay * back);
-        }
-        const double size = 6;
-        final double px = -ay, py = ax;
-        _fill.color = tint.withValues(alpha: math.min(0.85, 1.2 * k));
-        canvas.drawPath(
-          Path()
-            ..moveTo(tip.dx, tip.dy)
-            ..lineTo(
-              tip.dx - ax * size + px * size * 0.5,
-              tip.dy - ay * size + py * size * 0.5,
-            )
-            ..lineTo(
-              tip.dx - ax * size - px * size * 0.5,
-              tip.dy - ay * size - py * size * 0.5,
-            )
-            ..close(),
-          _fill,
-        );
-
-        // 粒子：一颗，朝这条边真正的方向走。出链往外，入链往里。
-        if (k > 0.2) {
-          final double phase =
-              (_hash(
-                        '${data.graph.nodes[e.b].id}<${data.graph.nodes[e.a].id}',
-                      ) %
-                      1000) /
-                  1000;
-          final double t = (clock() / 1.4 + phase) % 1.0;
-          _fill.color = tint.withValues(alpha: 0.95 * k);
-          canvas.drawCircle(_quad(p0, c, p2, out ? t : 1 - t), 1.7, _fill);
-        }
-      }
+      canvas.drawCircle(
+        Offset(data.screenX[r.i], data.screenY[r.i]),
+        nodeR + 2 + ease * 26,
+        _ringStroke,
+      );
     }
-  }
 
-  /// FNV-1a。只用来给「这条边弯多少」「粒子什么时候出发」取一个稳定的数。
-  static int _hash(String s) {
-    int h = 2166136261;
-    for (int i = 0; i < s.length; i++) {
-      h ^= s.codeUnitAt(i);
-      h = (h * 16777619) & 0xFFFFFFFF;
-    }
-    return h;
-  }
-
-  /// 二次贝塞尔上的一点。
-  static Offset _quad(Offset p0, Offset c, Offset p2, double u) {
-    final double w = 1 - u;
-    return Offset(
-      w * w * p0.dx + 2 * w * u * c.dx + u * u * p2.dx,
-      w * w * p0.dy + 2 * w * u * c.dy + u * u * p2.dy,
-    );
+    _ringStroke.blendMode = BlendMode.srcOver;
   }
 
   // ------------------------------------------------------------------ 节点

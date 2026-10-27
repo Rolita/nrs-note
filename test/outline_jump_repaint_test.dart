@@ -81,6 +81,12 @@ class _NoCanvasStore implements CanvasStore {
 
   @override
   Future<String> create(String folderPath, {String? title}) async => '';
+
+  @override
+  Future<TrashEntry?> delete(String relativePath) async => null;
+
+  @override
+  Future<bool> restoreTrash(String entryId) async => false;
 }
 
 void main() {
@@ -119,7 +125,7 @@ void main() {
           ChangeNotifierProvider<CanvasController>.value(value: canvas),
         ],
         child: MaterialApp(
-          theme: AppTheme.build(settings.paletteFor(Brightness.light)),
+          theme: AppTheme.build(settings.palette),
           home: const AppShell(),
         ),
       ),
@@ -197,7 +203,7 @@ void main() {
           ChangeNotifierProvider<CanvasController>.value(value: canvas),
         ],
         child: MaterialApp(
-          theme: AppTheme.build(settings.paletteFor(Brightness.light)),
+          theme: AppTheme.build(settings.palette),
           home: const AppShell(),
         ),
       ),

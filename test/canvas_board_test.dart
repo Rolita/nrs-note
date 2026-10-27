@@ -69,7 +69,7 @@ Future<Harness> pumpBoard(
   final GlobalKey<CanvasBoardState> key = GlobalKey<CanvasBoardState>();
   await tester.pumpWidget(
     MaterialApp(
-      theme: AppTheme.build(AppPalette.dark),
+      theme: AppTheme.build(AppPalette.midnight),
       home: Scaffold(
         body: CanvasBoard(
           key: key,

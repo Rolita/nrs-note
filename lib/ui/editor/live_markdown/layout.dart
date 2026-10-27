@@ -111,7 +111,7 @@ double textHeightAbove({
   // under a long snippet lands short. The opening fence is a 16px header row,
   // the closing one collapses, and only the code between them is a code row —
   // counting all of them as code rows overshoots by more than a line per block.
-  final double codeRow = _lineHeightOf(_codeLine(base, p));
+  final double codeRow = _lineHeightOf(_codeLine(base));
   for (final CodeBlockRange fence in codeBlockRanges(text)) {
     final int startLine = _lineOf(text, fence.start);
     final int endLine = _lineOf(

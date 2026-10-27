@@ -38,7 +38,7 @@ void main() {}
 ''';
 
 void main() {
-  const AppPalette palette = AppPalette.light;
+  const AppPalette palette = AppPalette.midnight;
   const TextStyle base = TextStyle(fontSize: 15.5, height: 1.78);
   const TextSelection idleSelection = TextSelection.collapsed(offset: -1);
 
@@ -271,7 +271,7 @@ void main() {
       expect(span.style!.fontFamily, AppFonts.mono);
       expect(
         span.children!.whereType<TextSpan>().any(
-          (TextSpan t) => t.style?.color == CodePalette.light.keyword,
+          (TextSpan t) => t.style?.color == CodePalette.dark.keyword,
         ),
         isTrue,
         reason: '`void` 应按关键字着色',

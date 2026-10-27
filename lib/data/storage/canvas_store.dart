@@ -8,6 +8,8 @@
 /// 大纲、关系图谱、回收站版本这些索引，硬塞进去只会让两边都变脏。
 library;
 
+import 'note_store.dart' show TrashEntry;
+
 /// 一块白板在磁盘上的身份。
 class CanvasRef {
   const CanvasRef({
@@ -65,6 +67,18 @@ abstract class CanvasStore {
   ///
   /// 重名会自己加 ` 2`、` 3`，不会覆盖已有的白板。
   Future<String> create(String folderPath, {String? title});
+
+  /// 删除一块白板。
+  ///
+  /// 桌面端把它移进回收站并返回条目——白板和笔记共用一个 `.nrs-trash/`，
+  /// 用户只有一个回收站，白板不该另立门户。浏览器端没有回收站，删了就是
+  /// 删了，返回 null。
+  Future<TrashEntry?> delete(String relativePath);
+
+  /// 把回收站里的一条白板搬回原来的位置，重名时用 ` 2`。
+  ///
+  /// 只处理白板条目；笔记的恢复走 `NoteStore.restoreTrash`。
+  Future<bool> restoreTrash(String entryId);
 }
 
 /// 把用户输入的名字收拾成一个能当文件名的东西。

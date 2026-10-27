@@ -93,7 +93,7 @@ Future<({SettingsController settings, NotesController notes})> pumpSettings(
         ChangeNotifierProvider<NotesController>.value(value: notes),
       ],
       child: MaterialApp(
-        theme: AppTheme.build(settings.paletteFor(Brightness.light)),
+        theme: AppTheme.build(settings.palette),
         home: Scaffold(
           body: Builder(
             builder: (BuildContext context) => TextButton(

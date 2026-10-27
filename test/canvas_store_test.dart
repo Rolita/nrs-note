@@ -5,6 +5,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/core/utils/canvas_document.dart';
 import 'package:nrs/data/storage/canvas_store.dart';
 import 'package:nrs/data/storage/canvas_store_io.dart';
+import 'package:nrs/data/storage/note_store.dart' show TrashEntry;
+
+/// 一张带文字的卡片：用来验证「删了再恢复，内容没变」。
+CanvasDocument oneCard() => CanvasDocument(
+  nodes: <CanvasNode>[
+    TextNode(id: 'a', x: 0, y: 0, width: 250, height: 120, text: '一张'),
+  ],
+  edges: <CanvasEdge>[],
+);
 
 void main() {
   group('文件名', () {
@@ -129,6 +138,70 @@ void main() {
       final IoCanvasStore store = IoCanvasStore(rootPath: root.path);
       await store.write('深/几/层/a.nrs', encodeCanvas(CanvasDocument()));
       expect(File('${root.path}/深/几/层/a.nrs').existsSync(), isTrue);
+    });
+
+    test('删除是移进回收站，不是抹掉', () async {
+      final IoCanvasStore store = IoCanvasStore(rootPath: root.path);
+      final String path = await store.create('项目', title: '计划');
+      await store.write(path, encodeCanvas(oneCard()));
+
+      final TrashEntry? entry = await store.delete(path);
+
+      expect(entry, isNotNull);
+      expect(entry!.originalPath, '项目/计划.nrs');
+      // 回收站里显示的名字不带后缀，和笔记条目一个样子。
+      expect(entry.title, '计划');
+      expect(File('${root.path}/项目/计划.nrs').existsSync(), isFalse);
+      expect(await store.list(), isEmpty);
+      // 原文件还在 vault 里，只是换了位置：不开 NRS 也能在资源管理器里找回。
+      expect(
+        Directory('${root.path}/.nrs-trash')
+            .listSync(recursive: true)
+            .whereType<File>()
+            .map((File f) => f.uri.pathSegments.last),
+        contains('计划.nrs'),
+      );
+    });
+
+    test('恢复回到原文件夹，内容一个字节都不少', () async {
+      final IoCanvasStore store = IoCanvasStore(rootPath: root.path);
+      final String path = await store.create('项目', title: '计划');
+      await store.write(path, encodeCanvas(oneCard()));
+      final TrashEntry entry = (await store.delete(path))!;
+
+      expect(await store.restoreTrash(entry.id), isTrue);
+
+      expect(File('${root.path}/项目/计划.nrs').existsSync(), isTrue);
+      final CanvasDocument back = parseCanvas(await store.read('项目/计划.nrs'));
+      expect((back.nodes.single as TextNode).text, '一张');
+      // 条目搬回来了就该从回收站消失，否则会留下「已经回来的一份副本」。
+      expect(
+        Directory('${root.path}/.nrs-trash').listSync().whereType<Directory>(),
+        isEmpty,
+      );
+    });
+
+    test('恢复时原位置被占了，退到「 2」，不覆盖新的那块', () async {
+      final IoCanvasStore store = IoCanvasStore(rootPath: root.path);
+      final String path = await store.create('', title: '白板');
+      await store.write(path, encodeCanvas(oneCard()));
+      final TrashEntry entry = (await store.delete(path))!;
+      // 删完之后又建了一块同名的。
+      await store.create('', title: '白板');
+      await store.write('白板.nrs', encodeCanvas(CanvasDocument()));
+
+      expect(await store.restoreTrash(entry.id), isTrue);
+
+      final List<String> paths = (await store.list())
+          .map((CanvasRef ref) => ref.relativePath)
+          .toList();
+      expect(paths, <String>['白板 2.nrs', '白板.nrs']);
+      // 新那块没被动过。
+      expect(parseCanvas(await store.read('白板.nrs')).nodes, isEmpty);
+      expect(
+        (parseCanvas(await store.read('白板 2.nrs')).nodes.single as TextNode).text,
+        '一张',
+      );
     });
   });
 }

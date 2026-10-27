@@ -2,6 +2,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'core/theme/app_palette.dart';
 import 'core/theme/app_theme.dart';
 import 'state/canvas_controller.dart';
 import 'state/notes_controller.dart';
@@ -20,6 +21,10 @@ class NrsApp extends StatelessWidget {
   final NotesController notes;
   final CanvasController canvas;
 
+  /// 只有一块色板，所以主题只建一次：没有明暗切换、没有配色方案、没有
+  /// 自定义配色，`MaterialApp` 也就没有理由跟着设置重建。
+  static final ThemeData _theme = AppTheme.build(AppPalette.midnight);
+
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
@@ -28,56 +33,17 @@ class NrsApp extends StatelessWidget {
         ChangeNotifierProvider<NotesController>.value(value: notes),
         ChangeNotifierProvider<CanvasController>.value(value: canvas),
       ],
-      child: Consumer<SettingsController>(
-        builder: (BuildContext context, SettingsController s, Widget? _) {
-          final String signature = s.themeSignature;
-          return MaterialApp(
-            title: 'NRS · Markdown 笔记',
-            debugShowCheckedModeBanner: false,
-            theme: _themeMemo.of(
-              Brightness.light,
-              signature,
-              () => AppTheme.build(s.paletteFor(Brightness.light)),
-            ),
-            darkTheme: _themeMemo.of(
-              Brightness.dark,
-              signature,
-              () => AppTheme.build(s.paletteFor(Brightness.dark)),
-            ),
-            themeMode: s.theme.mode,
-            // Switching schemes should cross-fade, but *editing* one must not:
-            // dragging a colour fires a notification per frame, and a fresh
-            // tween every frame leaves the colour lagging behind the pointer.
-            themeAnimationDuration: s.themeEditing
-                ? Duration.zero
-                : const Duration(milliseconds: 180),
-            scrollBehavior: const NrsScrollBehavior(),
-            home: const AppShell(),
-          );
-        },
+      child: MaterialApp(
+        title: 'NRS · Markdown 笔记',
+        debugShowCheckedModeBanner: false,
+        theme: _theme,
+        // 深色是唯一的一面。显式写 `dark`：系统切到浅色时，留空会让
+        // Material 去挑另一套按 brightness 推导的默认值，界面就会半亮半暗。
+        themeMode: ThemeMode.dark,
+        scrollBehavior: const NrsScrollBehavior(),
+        home: const AppShell(),
       ),
     );
-  }
-}
-
-/// Two slots of memoised [ThemeData], keyed by `(theme signature, brightness)`.
-///
-/// [AppTheme.build] runs `ColorScheme.fromSeed` plus twenty-odd component
-/// themes, and this `Consumer` rebuilds `MaterialApp` on *every* notification —
-/// including each frame of a colour drag. Reusing the last build per brightness
-/// keeps that at one rebuild instead of two full theme constructions per frame.
-final _ThemeMemo _themeMemo = _ThemeMemo();
-
-class _ThemeMemo {
-  final Map<Brightness, (String, ThemeData)> _slots =
-      <Brightness, (String, ThemeData)>{};
-
-  ThemeData of(Brightness brightness, String key, ThemeData Function() build) {
-    final (String, ThemeData)? hit = _slots[brightness];
-    if (hit != null && hit.$1 == key) return hit.$2;
-    final ThemeData theme = build();
-    _slots[brightness] = (key, theme);
-    return theme;
   }
 }
 

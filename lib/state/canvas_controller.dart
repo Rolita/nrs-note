@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../core/utils/canvas_document.dart';
 import '../data/storage/canvas_store_factory.dart';
+import '../data/storage/note_store.dart' show TrashEntry;
 
 /// 白板的状态：现在打开的是哪一份、脏没脏、什么时候落盘。
 ///
@@ -158,6 +159,52 @@ class CanvasController extends ChangeNotifier {
       return true;
     } catch (e) {
       _fail('新建白板失败', e);
+      return false;
+    }
+  }
+
+  /// 删除一块白板，返回「删掉了吗」和回收站条目。
+  ///
+  /// 删的正好是当前打开的那块时，先把内存里的那份放下：文件已经不在了，
+  /// 还留着文档只会让白板视图继续画一块不存在的板子，而且下一次自动保存
+  /// 会把它原样写回磁盘——那等于删不掉。
+  ///
+  /// 浏览器端没有回收站，`entry` 是 null，但 `ok` 仍然是 true。
+  Future<({bool ok, TrashEntry? entry})> deleteCanvas(
+    String relativePath,
+  ) async {
+    // 先取消待写的定时器，免得删完又写回去。
+    if (relativePath == _path) {
+      _timer?.cancel();
+      _timer = null;
+      _dirty = false;
+    }
+    try {
+      final TrashEntry? entry = await store.delete(relativePath);
+      if (relativePath == _path) {
+        _document = null;
+        _path = null;
+      }
+      _canvases = _canvases
+          .where((CanvasRef ref) => ref.relativePath != relativePath)
+          .toList(growable: false);
+      _error = null;
+      notifyListeners();
+      return (ok: true, entry: entry);
+    } catch (e) {
+      _fail('删除白板失败', e);
+      return (ok: false, entry: null);
+    }
+  }
+
+  /// 从回收站里把一块白板搬回来。成功后清单立刻多一行。
+  Future<bool> restoreTrash(String entryId) async {
+    try {
+      final bool restored = await store.restoreTrash(entryId);
+      if (restored) await refreshCanvases();
+      return restored;
+    } catch (e) {
+      _fail('恢复白板失败', e);
       return false;
     }
   }

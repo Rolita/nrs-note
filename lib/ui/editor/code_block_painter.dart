@@ -27,13 +27,9 @@ const double kCodeSlabLabelRight = 13;
 
 /// The block's fill: the step that makes the card read as its own surface.
 ///
-/// The reference draws the boundary with the fill alone and no border, and in
-/// dark that step goes *up* — `surfaceRaised` is what separates the card from
-/// the page. In light nothing sits above the page but pure white, a
-/// four-level step that vanishes on screen; the step has to go *down* instead,
-/// into the same well the inline chip sits in.
-Color codeSlabFill(AppPalette p) =>
-    p.isDark ? p.surfaceRaised : p.surfaceSunken;
+/// The reference draws the boundary with the fill alone and no border, and the
+/// step goes *up*: `surfaceRaised` is what separates the card from the page.
+Color codeSlabFill(AppPalette p) => p.surfaceRaised;
 
 /// Paints one rounded slab behind every fenced code block, plus its language
 /// label.

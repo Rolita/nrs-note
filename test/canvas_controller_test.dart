@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:nrs/core/utils/canvas_document.dart';
 import 'package:nrs/data/storage/canvas_store_factory.dart';
+import 'package:nrs/data/storage/note_store.dart' show TrashEntry;
 import 'package:nrs/state/canvas_controller.dart';
 
 /// 内存里的假存储。`write` 可以按需失败，用来测「写不进去时脏标记不能丢」。
@@ -46,6 +47,16 @@ class FakeStore implements CanvasStore {
     files[path] = encodeCanvas(CanvasDocument());
     return path;
   }
+
+  /// 内存里没有回收站：删掉就是删掉，和浏览器端一个口径。
+  @override
+  Future<TrashEntry?> delete(String relativePath) async {
+    files.remove(relativePath);
+    return null;
+  }
+
+  @override
+  Future<bool> restoreTrash(String entryId) async => false;
 }
 
 CanvasDocument oneCard() => CanvasDocument(
@@ -208,6 +219,57 @@ void main() {
 
       c.markDirty();
       expect(notified, 1, reason: '每敲一个字都通知会把整棵外壳重建');
+    });
+  });
+
+  group('删除', () {
+    test('删掉正在看的那块，文档一起放下，清单也少一行', () async {
+      final FakeStore store = FakeStore();
+      final CanvasController c = CanvasController(store: store);
+      await c.createNew('');
+      final String path = c.path!;
+
+      final ({bool ok, TrashEntry? entry}) result = await c.deleteCanvas(path);
+
+      expect(result.ok, isTrue);
+      expect(c.hasDocument, isFalse);
+      expect(c.path, isNull);
+      expect(store.files.containsKey(path), isFalse);
+      expect(c.canvases, isEmpty);
+    });
+
+    test('删的是别的白板，正在看的那份不动', () async {
+      final FakeStore store = FakeStore();
+      final CanvasController c = CanvasController(store: store);
+      await c.createNew('');
+      final String other = c.path!;
+      await c.createNew('项目');
+      final String open = c.path!;
+
+      await c.deleteCanvas(other);
+
+      expect(c.path, open);
+      expect(c.hasDocument, isTrue);
+      expect(
+        c.canvases.map((CanvasRef ref) => ref.relativePath),
+        <String>[open],
+      );
+    });
+
+    test('删之前排着的自动保存不会把文件写回来', () async {
+      final FakeStore store = FakeStore();
+      final CanvasController c = CanvasController(
+        store: store,
+        autosaveDelay: const Duration(milliseconds: 20),
+      );
+      await c.createNew('');
+      final String path = c.path!;
+      c.markDirty();
+
+      await c.deleteCanvas(path);
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      expect(store.files.containsKey(path), isFalse);
     });
   });
 }

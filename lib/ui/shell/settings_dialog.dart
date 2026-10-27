@@ -5,7 +5,6 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../core/app_enums.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
-import '../../core/theme/theme_presets.dart';
 import '../../data/models/note.dart';
 import '../../state/notes_controller.dart';
 import '../../state/settings_controller.dart';
@@ -13,8 +12,6 @@ import '../../state/template_settings.dart';
 import '../../templates/template_service.dart';
 import '../common/app_widgets.dart';
 import '../templates/template_hotkeys_dialog.dart';
-import '../theme/preset_picker.dart';
-import '../theme/theme_editor_dialog.dart';
 
 /// Preferences, vault status and a keyboard reference in one dialog.
 Future<void> showSettingsDialog(BuildContext context) {
@@ -131,57 +128,9 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                                 _section(
                                   _Section.appearance,
                                   title: '外观',
-                                  desc:
-                                      '整个应用共用一套色板。三套预设都可以直接改：'
-                                      '点任意一套右上角的铅笔，就能逐个颜色调整，'
-                                      '每套的改动互不影响。',
+                                  desc: '整个应用共用一块深色色板（午夜靛），'
+                                      '没有明暗切换，也没有自定义配色。',
                                   children: <Widget>[
-                                    _SettingRow(
-                                      label: '配色方案',
-                                      stretch: true,
-                                      control: ThemePresetPicker(
-                                        value: settings.themePreset,
-                                        brightness: Theme.of(
-                                          context,
-                                        ).brightness,
-                                        overrides: settings.overrideFor,
-                                        // Tapping a cell only switches schemes;
-                                        // the pencil is the way into editing.
-                                        onChanged: (ThemePresetId v) =>
-                                            settings.themePreset = v,
-                                        onEdit: (ThemePresetId v) {
-                                          settings.themePreset = v;
-                                          showThemeEditorDialog(
-                                            context,
-                                            preset: v,
-                                          );
-                                        },
-                                      ),
-                                    ),
-                                    _SettingRow(
-                                      label: '明暗模式',
-                                      control: SegmentedToggle<ThemePreference>(
-                                        value: settings.theme,
-                                        onChanged: (ThemePreference v) =>
-                                            settings.theme = v,
-                                        items:
-                                            <
-                                              ({
-                                                ThemePreference value,
-                                                IconData icon,
-                                                String label,
-                                              })
-                                            >[
-                                              for (final ThemePreference t
-                                                  in ThemePreference.values)
-                                                (
-                                                  value: t,
-                                                  icon: t.icon,
-                                                  label: t.label,
-                                                ),
-                                            ],
-                                      ),
-                                    ),
                                     _SettingRow(
                                       label: '侧边栏',
                                       hint: 'Ctrl + \\',

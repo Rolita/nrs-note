@@ -14,7 +14,7 @@ Future<void> pumpPicker(WidgetTester tester, Widget child) async {
 
   await tester.pumpWidget(
     MaterialApp(
-      theme: AppTheme.build(AppPalette.dark),
+      theme: AppTheme.build(AppPalette.midnight),
       home: Scaffold(body: Builder(builder: (_) => child)),
     ),
   );

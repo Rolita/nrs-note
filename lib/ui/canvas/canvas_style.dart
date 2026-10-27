@@ -40,7 +40,7 @@ class CanvasStyle {
   });
 
   factory CanvasStyle.of(AppPalette p) {
-    final double dot = p.isDark ? 0.08 : 0.12;
+    const double dot = 0.08;
     return CanvasStyle(
       background: p.canvas,
       gridDot: p.textPrimary.withValues(alpha: dot),

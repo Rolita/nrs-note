@@ -14,19 +14,13 @@ import '../../core/utils/table_model.dart' show CellColor, CellColorToken;
 /// 而它什么也不表示。
 class GraphStyle {
   GraphStyle.from(AppPalette palette)
-    : canvas = palette.isDark
-          ? const Color(0xFF1E1E1E)
-          : const Color(0xFFF4F4F2),
-      node = palette.isDark ? const Color(0xFF9D9D9D) : const Color(0xFF7A7A7A),
-      edgeTint = palette.isDark
-          ? const Color(0xFFFFFFFF)
-          : const Color(0xFF1E1E1E),
+    : canvas = const Color(0xFF1E1E1E),
+      node = const Color(0xFF9D9D9D),
+      edgeTint = const Color(0xFFFFFFFF),
       ring = palette.accent,
-      label = palette.isDark ? const Color(0xFFDADADA) : palette.textPrimary,
-      labelFocus = palette.isDark ? const Color(0xFFFFFFFF) : palette.textPrimary,
-      labelHalo = palette.isDark
-          ? const Color(0xFF1E1E1E)
-          : const Color(0xFFF4F4F2);
+      label = const Color(0xFFDADADA),
+      labelFocus = const Color(0xFFFFFFFF),
+      labelHalo = const Color(0xFF1E1E1E);
 
   /// 画布底色。**纯色，没有渐变**：Obsidian 的图谱就是主题底色，
   /// 加一层径向渐变只会让画布看起来像个装饰品。
@@ -35,8 +29,7 @@ class GraphStyle {
   /// 节点色。没开「按文件夹着色」时全图一个灰。
   final Color node;
 
-  /// 连线色。深色主题下是白，浅色主题下反相成近黑——
-  /// 连线永远靠「比底色亮/暗一点」表达，不靠彩度。
+  /// 连线色。黑底上是白——连线靠「比底色亮一点」表达，不靠彩度。
   final Color edgeTint;
 
   /// 选中节点的环，以及选中节点的填充色。
@@ -62,8 +55,8 @@ class GraphStyle {
 
   /// 分组调色板：表格高亮那六个色名，顺序固定，前六个文件夹各得一色。
   ///
-  /// 这里存的是**色名**不是色值。浅色主题下同一批色名会解析成另一组深色值
-  /// （`tableInkColor` 的浅色分支），所以在浅色画布上不会糊成一片。
+  /// 这里存的是**色名**不是色值，解析交给 `groupColor`——建图发生在
+  /// `initState`，那时还读不到 `Theme`。
   static const List<CellColorToken> groupTokens = <CellColorToken>[
     CellColorToken.gray,
     CellColorToken.amber,
@@ -74,11 +67,10 @@ class GraphStyle {
   ];
 }
 
-/// 色名 → 当前主题下的实际颜色。
+/// 色名 → 实际颜色。
 ///
-/// 直接复用 `tableInkColor`：深色主题给 `_darkInks` 那六个提亮过的色，
-/// 浅色主题给 `textSecondary / warning / success / #2F6690 / #6B4E8E / danger`。
-/// 图谱和表格因此真的是同一套颜色语言，而不是只在深色下碰巧一致。
+/// 直接复用 `tableInkColor` 那六个提亮过的色：图谱和表格因此真的是同一套
+/// 颜色语言，而不是两套碰巧看着像的色值。
 Color groupColor(AppPalette palette, CellColorToken token) =>
     tableInkColor(palette, CellColor.token(token));
 

@@ -19,7 +19,7 @@ void main() {
   Future<void> pumpHost(WidgetTester tester) async {
     await tester.pumpWidget(
       MaterialApp(
-        theme: AppTheme.build(AppPalette.light),
+        theme: AppTheme.build(AppPalette.midnight),
         home: Scaffold(
           body: NoticeScope(
             controller: notices,

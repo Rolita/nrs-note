@@ -7,6 +7,7 @@ import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../data/models/note.dart';
 import '../../data/storage/note_store.dart';
+import '../../state/canvas_controller.dart';
 import '../../state/notes_controller.dart';
 import '../common/app_widgets.dart';
 import '../common/delete_dialog.dart';
@@ -77,9 +78,26 @@ class _TrashDialogState extends State<_TrashDialog> {
       _busy = true;
       _error = null;
     });
-    final int restored = await _notes.restoreTrashEntries(<String>[
-      for (final TrashEntry entry in entries) entry.id,
-    ]);
+    // 回收站里混着白板（`.nrs`）。它们不是笔记，恢复是「把文件搬回去」而
+    // 不是「把正文写成一篇新笔记」——交给笔记那边会写出一篇内容是 JSON 的
+    // `.md`，两边都坏了。所以按后缀分流，各走各的恢复。
+    final List<String> boards = <String>[
+      for (final TrashEntry entry in entries)
+        if (_isBoard(entry)) entry.id,
+    ];
+    final List<String> notes = <String>[
+      for (final TrashEntry entry in entries)
+        if (!_isBoard(entry)) entry.id,
+    ];
+    int restored = 0;
+    if (boards.isNotEmpty) {
+      final CanvasController canvas = context.read<CanvasController>();
+      for (final String id in boards) {
+        if (await canvas.restoreTrash(id)) restored++;
+      }
+      if (!mounted) return;
+    }
+    if (notes.isNotEmpty) restored += await _notes.restoreTrashEntries(notes);
     if (!mounted) return;
     setState(() {
       _busy = false;
@@ -87,6 +105,10 @@ class _TrashDialogState extends State<_TrashDialog> {
     });
     if (restored > 0) await _load();
   }
+
+  /// 这条回收站记录是一块白板。
+  static bool _isBoard(TrashEntry entry) =>
+      entry.originalPath.toLowerCase().endsWith('.nrs');
 
   Future<void> _purge(List<TrashEntry> entries) async {
     if (_busy || entries.isEmpty) return;
@@ -155,8 +177,9 @@ class _TrashDialogState extends State<_TrashDialog> {
     return result ?? false;
   }
 
-  String _displayTitle(TrashEntry entry) =>
-      entry.title.trim().isEmpty ? '未命名笔记' : entry.title.trim();
+  String _displayTitle(TrashEntry entry) => entry.title.trim().isEmpty
+      ? (_isBoard(entry) ? '未命名白板' : '未命名笔记')
+      : entry.title.trim();
 
   @override
   Widget build(BuildContext context) {

@@ -1,0 +1,2259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>关系图谱 · 再添三味</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #04060a; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+  }
+  #stage { position: fixed; inset: 0; display: block; touch-action: none; cursor: grab; }
+  #stage.dragging { cursor: grabbing; }
+
+  .scrim-top, .scrim-bottom {
+    position: fixed; left: 0; right: 0; z-index: 2; pointer-events: none;
+  }
+  .scrim-top {
+    top: 0; height: 190px;
+    background: linear-gradient(rgba(3, 5, 9, .55), rgba(3, 5, 9, 0));
+  }
+  .scrim-bottom {
+    bottom: 0; height: 300px;
+    background: linear-gradient(rgba(3, 5, 9, 0), rgba(3, 5, 9, .62));
+  }
+
+  .top { position: fixed; left: 30px; top: 26px; z-index: 3; pointer-events: none; }
+  .top h1 {
+    font-size: 13px; font-weight: 600; letter-spacing: .06em;
+    color: rgba(214, 230, 250, .82);
+  }
+  .top p {
+    margin-top: 7px;
+    font-size: 11.5px; line-height: 1.9; letter-spacing: .02em;
+    color: rgba(150, 172, 205, .44);
+  }
+  .top kbd { font: inherit; color: rgba(196, 214, 240, .64); }
+  .top .nowrap { white-space: nowrap; }
+
+  .panel { position: fixed; left: 30px; bottom: 26px; z-index: 3; width: 348px; }
+  .panel .cap {
+    font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase;
+    color: rgba(140, 162, 196, .32);
+    margin: 0 0 8px 10px;
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  .panel .cap em {
+    font-style: normal; letter-spacing: .04em; text-transform: none;
+    color: rgba(150, 172, 205, .22);
+  }
+
+  .row {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 8px 11px;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background .18s ease;
+  }
+  .row:hover { background: rgba(120, 160, 220, .055); }
+  .row.on { background: rgba(120, 160, 220, .105); }
+  .row .no {
+    flex: 0 0 12px;
+    font-size: 11px; line-height: 1.72;
+    color: rgba(150, 172, 205, .34);
+    font-variant-numeric: tabular-nums;
+  }
+  .row.on .no { color: #8FB6EE; }
+  .row .bd { flex: 1 1 auto; min-width: 0; }
+  .row .nm {
+    font-size: 12.5px; line-height: 1.72; letter-spacing: .02em;
+    color: rgba(196, 214, 240, .56);
+    display: flex; align-items: center; gap: 7px;
+  }
+  .row.on .nm { color: #EAF2FF; }
+  .row .ds {
+    font-size: 11px; line-height: 1.68;
+    color: rgba(150, 172, 205, .32);
+    margin-top: 1px;
+  }
+  .row.on .ds { color: rgba(168, 190, 220, .58); }
+  .tag {
+    font-size: 9.5px; letter-spacing: .04em;
+    padding: 1px 5px; border-radius: 3px;
+    background: rgba(123, 178, 255, .16);
+    color: #9CC2F7;
+  }
+  .tag.dim { background: rgba(150, 172, 205, .10); color: rgba(170, 190, 216, .55); }
+
+  .row .sw {
+    flex: 0 0 18px; width: 18px; height: 10px; margin-top: 6px;
+    border-radius: 5px; position: relative;
+    background: rgba(150, 172, 205, .14);
+    transition: background .18s ease;
+  }
+  .row .sw::after {
+    content: ''; position: absolute; left: 1px; top: 1px;
+    width: 8px; height: 8px; border-radius: 4px;
+    background: rgba(190, 210, 240, .5);
+    transition: transform .18s ease, background .18s ease;
+  }
+  .row.on .sw { background: rgba(123, 178, 255, .32); }
+  .row.on .sw::after { transform: translateX(8px); background: #cfe2ff; }
+
+  .acts { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0 10px; }
+  .acts .fling { margin: 0; }
+
+  .fling {
+    appearance: none;
+    margin: 10px 0 0 10px;
+    display: inline-flex; align-items: center; gap: 9px;
+    border: 1px solid rgba(132, 160, 205, .22);
+    background: rgba(14, 20, 31, .55);
+    color: rgba(198, 216, 242, .72);
+    font: inherit; font-size: 11.5px;
+    padding: 6px 11px;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: border-color .18s ease, background .18s ease, color .18s ease;
+  }
+  .fling:hover {
+    border-color: rgba(132, 170, 225, .42);
+    background: rgba(20, 30, 46, .7);
+    color: #EAF2FF;
+  }
+  .fling kbd {
+    font: inherit; font-size: 10px;
+    color: rgba(150, 178, 214, .42);
+    border: 1px solid rgba(132, 160, 205, .16);
+    border-radius: 4px;
+    padding: 0 4px;
+  }
+
+  .meta {
+    position: fixed; right: 30px; bottom: 26px; z-index: 3;
+    font-size: 11px; letter-spacing: .05em;
+    color: rgba(140, 162, 196, .30);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    text-align: right;
+    line-height: 1.8;
+  }
+  .meta b { font-weight: 500; color: rgba(168, 192, 226, .58); }
+
+  .no-ui .top, .no-ui .panel, .no-ui .meta, .no-ui .scrim-top, .no-ui .scrim-bottom {
+    display: none !important;
+  }
+
+  @media (max-width: 760px) {
+    .panel { width: calc(100vw - 60px); max-width: 348px; }
+    .top p .wide { display: none; }
+    .meta { display: none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div class="scrim-top"></div>
+<div class="scrim-bottom"></div>
+
+<div class="top">
+  <h1>关系图谱 · 再添三味</h1>
+  <p>
+    球体不动，只在边缘和交互里加三层
+    <span class="wide"><span style="color:rgba(150,172,205,.2)"> · </span><kbd>1–3</kbd> 开关 · 悬停节点看脉冲</span>
+    <span class="wide"><span style="color:rgba(150,172,205,.2)"> · </span><kbd>C</kbd> 对比现行</span>
+    <span class="nowrap"><span style="color:rgba(150,172,205,.2)"> · </span><kbd>Space</kbd> 甩一下</span>
+  </p>
+</div>
+
+<div class="panel">
+  <div class="cap"><span>Extra layers</span><em>球体不动</em></div>
+  <div id="rows"></div>
+  <div class="acts">
+    <button class="fling" id="compare" type="button">对比现行 <kbd>C</kbd></button>
+    <button class="fling" id="pulseBtn" type="button">脉冲演示 <kbd>P</kbd></button>
+    <button class="fling" id="fling" type="button">甩一下 <kbd>Space</kbd></button>
+  </div>
+</div>
+
+<div class="meta" id="meta"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var canvas = document.getElementById('stage');
+  var ctx = canvas.getContext('2d', { alpha: false });
+  var metaEl = document.getElementById('meta');
+  var rowsEl = document.getElementById('rows');
+  var flingBtn = document.getElementById('fling');
+  var compareBtn = document.getElementById('compare');
+  var pulseBtn = document.getElementById('pulseBtn');
+
+  var TAU = Math.PI * 2;
+  var CAM = 5.4;
+
+  var APP = {
+    inner: '#101a2c',
+    outer: '#04060a',
+    rim: '#6ea0eb',
+    edge: '#93a9c9',
+    node: '#c2c5cc',
+    ring: '#8fb6ee',
+    label: '#cedcf2',
+    labelFocus: '#f2f8ff',
+    halo: '#03060b',
+    glow: [194, 197, 204],
+    starGlow: [218, 234, 255]
+  };
+
+  function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+  function smooth(a, b, v) {
+    var t = clamp((v - a) / (b - a), 0, 1);
+    return t * t * (3 - 2 * t);
+  }
+  function easeOut(t) { return 1 - Math.pow(1 - t, 3); }
+
+  function hexA(hex, a) {
+    var v = hex.replace('#', '');
+    var r = parseInt(v.slice(0, 2), 16);
+    var g = parseInt(v.slice(2, 4), 16);
+    var b = parseInt(v.slice(4, 6), 16);
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
+  }
+
+  var _seed = 20261027;
+  function rnd() {
+    _seed = (_seed * 1664525 + 1013904223) >>> 0;
+    return _seed / 4294967296;
+  }
+  function gauss() {
+    var u = 0, v = 0;
+    while (u === 0) u = rnd();
+    while (v === 0) v = rnd();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(TAU * v);
+  }
+
+  /* ─────────────────────────── 图谱数据 ─────────────────────────── */
+
+  var CLUSTER_NAMES = ['设计', '工程', '写作', '研究', '生活', '归档', '杂项'];
+  var WEIGHTS = [1.25, 1.15, 1.0, .95, .9, .8, .7];
+  var NOUNS = ['首帧','光栅','缓存','索引','光标','段落','折叠','公式','高亮','拖拽',
+               '回弹','渐隐','描边','留白','间距','层级','焦点','排序','筛选','模板',
+               '变量','快照','回滚','同步','迁移','剪枝','聚类','拓扑','向量','矩阵',
+               '阻尼','惯性','投影','视差','景深','色阶','对比','质感','节奏','呼吸',
+               '密度','边界','路径','权重','收敛','迭代','残差','梯度','核心','纤维'];
+
+  var nodes = [];
+  var edgeA = [];
+  var edgeB = [];
+  var adj = [];
+
+  function norm3(x, y, z) {
+    var l = Math.sqrt(x * x + y * y + z * z) || 1;
+    return [x / l, y / l, z / l];
+  }
+
+  function buildGraph() {
+    var NODE_COUNT = 420;
+    var centers = [];
+    for (var k = 0; k < CLUSTER_NAMES.length; k++) {
+      var y = 1 - (2 * (k + 0.5)) / CLUSTER_NAMES.length;
+      var r = Math.sqrt(Math.max(0, 1 - y * y));
+      var phi = k * 2.399963229728653;
+      centers.push([Math.cos(phi) * r, y, Math.sin(phi) * r]);
+    }
+
+    var bases = centers.map(function (c) {
+      var up = [0, 1, 0];
+      if (Math.abs(c[0] * up[0] + c[1] * up[1] + c[2] * up[2]) > 0.92) up = [1, 0, 0];
+      var u = norm3(
+        up[1] * c[2] - up[2] * c[1],
+        up[2] * c[0] - up[0] * c[2],
+        up[0] * c[1] - up[1] * c[0]
+      );
+      var v = [
+        c[1] * u[2] - c[2] * u[1],
+        c[2] * u[0] - c[0] * u[2],
+        c[0] * u[1] - c[1] * u[0]
+      ];
+      return [u, v];
+    });
+
+    var totalW = WEIGHTS.reduce(function (a, b) { return a + b; }, 0);
+    var sizes = WEIGHTS.map(function (w) {
+      return Math.max(1, Math.round((w / totalW) * NODE_COUNT));
+    });
+    var diff = NODE_COUNT - sizes.reduce(function (a, b) { return a + b; }, 0);
+    sizes[0] += diff;
+
+    for (var c = 0; c < CLUSTER_NAMES.length; c++) {
+      var centre = centers[c];
+      var basis = bases[c];
+      for (var j = 0; j < sizes[c]; j++) {
+        var du = gauss() * 0.38;
+        var dv = gauss() * 0.38;
+        var p = norm3(
+          centre[0] + basis[0][0] * du + basis[1][0] * dv,
+          centre[1] + basis[0][1] * du + basis[1][1] * dv,
+          centre[2] + basis[0][2] * du + basis[1][2] * dv
+        );
+        nodes.push({
+          p: p,
+          cluster: c,
+          title: CLUSTER_NAMES[c] + '·' + NOUNS[Math.floor(rnd() * NOUNS.length)],
+          degree: 0
+        });
+      }
+    }
+
+    var seen = Object.create(null);
+    function link(a, b) {
+      if (a === b) return;
+      var key = a < b ? a + '_' + b : b + '_' + a;
+      if (seen[key]) return;
+      seen[key] = 1;
+      edgeA.push(a);
+      edgeB.push(b);
+      nodes[a].degree++;
+      nodes[b].degree++;
+    }
+
+    var byCluster = CLUSTER_NAMES.map(function () { return []; });
+    nodes.forEach(function (n, i) { byCluster[n.cluster].push(i); });
+
+    byCluster.forEach(function (list) {
+      list.forEach(function (i) {
+        var pi = nodes[i].p;
+        var near = list
+          .filter(function (j) { return j !== i; })
+          .map(function (j) {
+            var pj = nodes[j].p;
+            return { j: j, d: pi[0] * pj[0] + pi[1] * pj[1] + pi[2] * pj[2] };
+          })
+          .sort(function (a, b) { return b.d - a.d; })
+          .slice(0, 2);
+        near.forEach(function (o) { link(i, o.j); });
+      });
+    });
+
+    for (var b = 0; b < 74; b++) {
+      var a2 = Math.floor(rnd() * nodes.length);
+      var b2 = Math.floor(rnd() * nodes.length);
+      for (var tries = 0; nodes[a2].cluster === nodes[b2].cluster && tries < 12; tries++) {
+        b2 = Math.floor(rnd() * nodes.length);
+      }
+      link(a2, b2);
+    }
+
+    nodes.forEach(function (n) {
+      n.wr = 0.007 + Math.min(n.degree, 10) * 0.0021;
+    });
+
+    adj = nodes.map(function () { return []; });
+    for (var e = 0; e < edgeA.length; e++) {
+      adj[edgeA[e]].push(edgeB[e]);
+      adj[edgeB[e]].push(edgeA[e]);
+    }
+  }
+
+  /* ─────────────────────────── 相机与投影 ─────────────────────────── */
+
+  var M = new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  var T = new Float64Array(9);
+
+  function applyRotation(ax, ay) {
+    var ca = Math.cos(ax), sa = Math.sin(ax);
+    var cb = Math.cos(ay), sb = Math.sin(ay);
+
+    var r0 = cb,       r1 = 0,   r2 = sb;
+    var r3 = sa * sb,  r4 = ca,  r5 = -sa * cb;
+    var r6 = -ca * sb, r7 = sa,  r8 = ca * cb;
+
+    T[0] = r0 * M[0] + r1 * M[3] + r2 * M[6];
+    T[1] = r0 * M[1] + r1 * M[4] + r2 * M[7];
+    T[2] = r0 * M[2] + r1 * M[5] + r2 * M[8];
+    T[3] = r3 * M[0] + r4 * M[3] + r5 * M[6];
+    T[4] = r3 * M[1] + r4 * M[4] + r5 * M[7];
+    T[5] = r3 * M[2] + r4 * M[5] + r5 * M[8];
+    T[6] = r6 * M[0] + r7 * M[3] + r8 * M[6];
+    T[7] = r6 * M[1] + r7 * M[4] + r8 * M[7];
+    T[8] = r6 * M[2] + r7 * M[5] + r8 * M[8];
+
+    for (var k = 0; k < 9; k++) M[k] = T[k];
+  }
+
+  /* ─────────────────────────── 自适应尺寸 ─────────────────────────── */
+
+  var W = 0, H = 0, DPR = 1, cx = 0, cy = 0, R = 0, maxRad = 0;
+  var bgGrad = null, rimGrad = null, vignette = null;
+
+  var sx, sy, scl, dep, camZ, shadeAlpha, shadeRad;
+  var order;
+
+  function allocProjection() {
+    var N = nodes.length;
+    sx = new Float32Array(N);
+    sy = new Float32Array(N);
+    scl = new Float32Array(N);
+    dep = new Float32Array(N);
+    camZ = new Float32Array(N);
+    shadeAlpha = new Float32Array(N);
+    shadeRad = new Float32Array(N);
+    order = new Int32Array(N);
+    for (var i = 0; i < N; i++) order[i] = i;
+  }
+
+  function project() {
+    var m0 = M[0], m1 = M[1], m2 = M[2];
+    var m3 = M[3], m4 = M[4], m5 = M[5];
+    var m6 = M[6], m7 = M[7], m8 = M[8];
+
+    for (var i = 0; i < nodes.length; i++) {
+      var p = nodes[i].p;
+      var X = m0 * p[0] + m1 * p[1] + m2 * p[2];
+      var Y = m3 * p[0] + m4 * p[1] + m5 * p[2];
+      var Z = m6 * p[0] + m7 * p[1] + m8 * p[2];
+
+      var pr = CAM / (CAM - Z);
+      scl[i] = pr;
+      sx[i] = cx + X * R * pr;
+      sy[i] = cy - Y * R * pr;
+      camZ[i] = Z;
+      dep[i] = (Z + 1) * 0.5;
+    }
+  }
+
+  /* ─────────────────────────── 星场 / 星云 / 星尘 ─────────────────────────── */
+
+  var starLayers = [];
+  var dust = [];
+  var starGlowSprite = null;
+  var nodeGlowSprite = null;
+
+  function makeGlowSprite(rgb) {
+    var S = 64;
+    var cv = document.createElement('canvas');
+    cv.width = cv.height = S;
+    var g = cv.getContext('2d');
+    var grd = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    var c = function (a) { return 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + a + ')'; };
+    grd.addColorStop(0, c(1));
+    grd.addColorStop(0.16, c(0.55));
+    grd.addColorStop(0.38, c(0.18));
+    grd.addColorStop(0.66, c(0.045));
+    grd.addColorStop(1, c(0));
+    g.fillStyle = grd;
+    g.fillRect(0, 0, S, S);
+    return cv;
+  }
+
+  var STAR_COLORS = [
+    [207, 226, 255],
+    [178, 205, 250],
+    [232, 241, 255],
+    [255, 228, 196]
+  ];
+
+  function buildStars() {
+    starLayers = [];
+    maxRad = Math.sqrt(W * W + H * H) * 0.5;
+
+    var cfg = [
+      { factor: 0.16, count: 380, sizeMin: 0.45, sizeMax: 1.25,
+        aMin: 0.16, aMax: 0.62, trail: 10.0, bright: 0.04 },
+      { factor: 0.31, count: 150, sizeMin: 0.65, sizeMax: 1.65,
+        aMin: 0.24, aMax: 0.80, trail: 15.0, bright: 0.10 },
+      { factor: 0.52, count: 40, sizeMin: 0.9, sizeMax: 2.0,
+        aMin: 0.32, aMax: 0.88, trail: 20.0, bright: 0.24 }
+    ];
+
+    var rMin = R * 1.08;
+    var rMax = maxRad * 1.06;
+
+    cfg.forEach(function (c, li) {
+      var arr = [];
+      for (var i = 0; i < c.count; i++) {
+        var r = Math.sqrt(rMin * rMin + rnd() * (rMax * rMax - rMin * rMin));
+        var col = STAR_COLORS[(rnd() * STAR_COLORS.length) | 0];
+        arr.push({
+          angle: rnd() * TAU,
+          r: r,
+          size: c.sizeMin + Math.pow(rnd(), 1.6) * (c.sizeMax - c.sizeMin),
+          alpha: c.aMin + Math.pow(rnd(), 1.4) * (c.aMax - c.aMin),
+          twSpeed: 0.25 + rnd() * 1.15,
+          twPhase: rnd() * TAU,
+          color: 'rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')',
+          bright: rnd() < c.bright
+        });
+      }
+      starLayers.push({ factor: c.factor, stars: arr, trailGain: c.trail });
+    });
+
+    dust = [];
+    for (var d = 0; d < 18; d++) {
+      dust.push({
+        angle: rnd() * TAU,
+        r: R * (1.06 + rnd() * 1.15),
+        size: 0.55 + rnd() * 1.1,
+        alpha: 0.05 + rnd() * 0.15,
+        phase: rnd() * TAU,
+        speed: 0.3 + rnd() * 0.8
+      });
+    }
+
+    // 旧静止层的取数保留：星云接着这条随机序列生成，删掉会换一张星云。
+    buildIdleMotes();
+    buildRingDust();
+  }
+
+  // 静止星尘：沿切向极慢漂移，不是整片跟着球转——这两层运动叠在一起，
+  // 看起来才像浮在空气里，而不是贴在图上的噪点。
+  // 星尘缓流 / 尘埃环的取样函数：本页不画，只用来维持随机序列，
+  // 让星云和上一版方案页长得一模一样。
+  var motes = [];
+  var ringDust = [];
+
+  function buildIdleMotes() {
+    motes = [];
+    for (var i = 0; i < 64; i++) {
+      motes.push({
+        angle: rnd() * TAU,
+        r: R * (1.10 + Math.pow(rnd(), 0.85) * 0.82),
+        size: 0.5 + Math.pow(rnd(), 1.7) * 0.9,
+        alpha: 0.05 + Math.pow(rnd(), 1.5) * 0.16,
+        spin: (0.004 + rnd() * 0.010) * (rnd() < 0.5 ? -1 : 1),
+        twSpeed: 0.12 + rnd() * 0.5,
+        twPhase: rnd() * TAU,
+        glow: rnd() < 0.08
+      });
+    }
+  }
+
+  // 尘埃环：整个椭圆都落在 1.12R 之外，不会从球面上穿过去。
+  function buildRingDust() {
+    ringDust = [];
+    // 几个疏密团，环带才不会像一条均匀画出来的线。
+    var clumps = [];
+    for (var c = 0; c < 6; c++) clumps.push(rnd() * TAU);
+    for (var i = 0; i < 200; i++) {
+      var angle = rnd() * TAU;
+      if (i >= 48) {
+        angle = clumps[i % 6] + (rnd() + rnd() + rnd() - 1.5) * 0.55;
+      }
+      ringDust.push({
+        angle: angle,
+        rj: (rnd() * 2 - 1) * 0.035,
+        size: 0.55 + Math.pow(rnd(), 1.6) * 1.15,
+        alpha: 0.08 + Math.pow(rnd(), 1.5) * 0.22,
+        speed: 0.018 + rnd() * 0.042,
+        twSpeed: 0.2 + rnd() * 0.6,
+        twPhase: rnd() * TAU,
+        glow: rnd() < 0.10
+      });
+    }
+  }
+
+  var nebulaCv = null;
+  var nebulaSize = 0;
+
+  function buildNebula() {
+    var S = Math.ceil(Math.sqrt(W * W + H * H) * 1.12);
+    nebulaSize = S;
+    nebulaCv = document.createElement('canvas');
+    nebulaCv.width = nebulaCv.height = S;
+    var g = nebulaCv.getContext('2d');
+    var mid = S / 2;
+    var axis = -0.42;
+    var ax = Math.cos(axis), ay = Math.sin(axis);
+    var px = -ay, py = ax;
+
+    var palette = [
+      [74, 108, 196],
+      [52, 142, 168],
+      [112, 78, 178],
+      [70, 110, 190],
+      [46, 126, 154],
+      [96, 70, 168],
+      [180, 136, 104]
+    ];
+
+    g.globalCompositeOperation = 'lighter';
+
+    for (var i = 0; i < 92; i++) {
+      var along = (rnd() * 2 - 1) * S * 0.40;
+      var perp = gauss() * S * (0.055 + rnd() * 0.055);
+      var x = mid + ax * along + px * perp;
+      var y = mid + ay * along + py * perp;
+      var rad = S * (0.035 + Math.pow(rnd(), 1.8) * 0.13);
+      var col = palette[(rnd() * palette.length) | 0];
+      var alpha = 0.032 + rnd() * 0.052;
+
+      var grd = g.createRadialGradient(x, y, 0, x, y, rad);
+      grd.addColorStop(0, 'rgba(' + col[0] + ',' + col[1] + ',' + col[2] + ',' + alpha + ')');
+      grd.addColorStop(0.45, 'rgba(' + col[0] + ',' + col[1] + ',' + col[2] + ',' + alpha * 0.55 + ')');
+      grd.addColorStop(1, 'rgba(' + col[0] + ',' + col[1] + ',' + col[2] + ',0)');
+      g.fillStyle = grd;
+      g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+    }
+
+    // 几处更亮的云核，让星云有落点，不是一条均匀的带子。
+    for (var n = 0; n < 9; n++) {
+      var na = (rnd() * 2 - 1) * S * 0.30;
+      var np = gauss() * S * 0.04;
+      var nx = mid + ax * na + px * np;
+      var ny = mid + ay * na + py * np;
+      var nr = S * (0.022 + rnd() * 0.04);
+      var ncol = palette[(rnd() * 3) | 0];
+      var nAlpha = 0.052 + rnd() * 0.058;
+      var ng = g.createRadialGradient(nx, ny, 0, nx, ny, nr);
+      ng.addColorStop(0, 'rgba(' + ncol[0] + ',' + ncol[1] + ',' + ncol[2] + ',' + nAlpha + ')');
+      ng.addColorStop(1, 'rgba(' + ncol[0] + ',' + ncol[1] + ',' + ncol[2] + ',0)');
+      g.fillStyle = ng;
+      g.fillRect(nx - nr, ny - nr, nr * 2, nr * 2);
+    }
+
+    // 暗尘带：挖掉几条低透明度，让星云不是一团均匀的雾。
+    g.globalCompositeOperation = 'destination-out';
+    for (var k = 0; k < 14; k++) {
+      var la = (rnd() * 2 - 1) * S * 0.22;
+      var lp = gauss() * S * 0.03;
+      var lx = mid + ax * la + px * lp;
+      var ly = mid + ay * la + py * lp;
+      var lr = S * (0.025 + rnd() * 0.06);
+      var lg = g.createRadialGradient(lx, ly, 0, lx, ly, lr);
+      lg.addColorStop(0, 'rgba(0,0,0,0.18)');
+      lg.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = lg;
+      g.fillRect(lx - lr, ly - lr, lr * 2, lr * 2);
+    }
+
+    // 星云里的细碎微光，放大时也不至于空。
+    g.globalCompositeOperation = 'lighter';
+    for (var q = 0; q < 380; q++) {
+      var along2 = (rnd() * 2 - 1) * S * 0.44;
+      var perp2 = gauss() * S * 0.085;
+      var xs = mid + ax * along2 + px * perp2;
+      var ys = mid + ay * along2 + py * perp2;
+      g.globalAlpha = 0.018 + rnd() * 0.05;
+      g.fillStyle = 'rgb(196,218,255)';
+      g.beginPath();
+      g.arc(xs, ys, 0.5 + rnd() * 0.8, 0, TAU);
+      g.fill();
+    }
+    g.globalAlpha = 1;
+  }
+
+  var starSprite, nodeSprite, warmSprite;
+
+  function ensureSprites() {
+    if (!starSprite) starSprite = makeGlowSprite(APP.starGlow);
+    if (!nodeSprite) nodeSprite = makeGlowSprite(APP.glow);
+    if (!warmSprite) warmSprite = makeGlowSprite([255, 198, 146]);
+    if (!bokehCoolSprite) bokehCoolSprite = makeBokehSprite([186, 214, 255]);
+    if (!bokehWarmSprite) bokehWarmSprite = makeBokehSprite([255, 214, 170]);
+  }
+
+  /* ─────────────────────────── 状态 ─────────────────────────── */
+
+  var velX = 0, velY = 0;
+  var idleTime = 0;
+  var introT = 0;
+  var clock = 0;
+
+  var dragMode = 0;
+  var lastPX = 0, lastPY = 0;
+  var spinSamples = [];
+
+  var mouseX = -9999, mouseY = -9999, mouseInside = false;
+  var hoverIdx = -1;
+  var hoverMask = null;
+  var lastCursor = '';
+
+  // 背景与球体共用的自转角。星场分三层，各乘不同的比例做视差。
+  var skySpin = 0;
+  var skyShown = 0;
+  var prevSkySpinRate = 0;
+  var skyRateS = 0;
+  var trailKick = 0;
+  var trailDir = 1;
+
+  var interacted = false;
+
+  /* ─────────────────────────── 模式 ─────────────────────────── */
+
+  var MODES = {
+    a: {
+      key: 'a', name: '星轨', tag: '长曝光',
+      ds: '星场按角速度分层视差转动；甩得越猛，星点拖出的弧越长，停手后慢慢收回成点。',
+      trail: 1.0, meteor: 0, ambient: 0, nebula: 0.72, dust: 0
+    },
+    b: {
+      key: 'b', name: '离心流星', tag: '',
+      ds: '甩动时球缘沿切线甩出一圈流星，方向跟着甩动走；静止时偶有冷色流星擦过外圈。',
+      trail: 0.34, meteor: 1, ambient: 0.7, nebula: 0.55, dust: 0
+    },
+    c: {
+      key: 'c', name: '星海 · 全开', tag: '推荐',
+      ds: '星轨、离心流星、星云和前景星尘一起上。分量最足，不动时也有缓慢星流。',
+      trail: 1.0, meteor: 1, ambient: 1.0, nebula: 1.0, dust: 1
+    }
+  };
+  var modeKey = 'b';
+
+  // 再添三味：球体、星场、流星都不动，只加交互与空间的三层。
+  var LAYERS = {
+    pulse: {
+      name: '信号脉冲',
+      ds: '悬停节点时，光点沿每条连线奔向邻居，到达后回一条更淡的波；不悬停时也有节点每隔一两秒随缘发几颗，只去不回。'
+    },
+    lens: {
+      name: '引力透镜',
+      ds: '贴球缘的星点被质量推离、拉成短弧，外圈隐约多一层爱因斯坦环；只动星光。'
+    },
+    bokeh: {
+      name: '前景散景',
+      ds: '七片极虚的大光斑贴着画面边缘漂，视差比最近的星层还快，补镜头前的空气。'
+    }
+  };
+  var layerKeys = ['pulse', 'lens', 'bokeh'];
+  for (var lk = 0; lk < layerKeys.length; lk++) {
+    LAYERS[layerKeys[lk]].on = true;
+    LAYERS[layerKeys[lk]].mix = 1;
+  }
+  var allOff = false;
+
+  /* ─────────────────────────── 流星 ─────────────────────────── */
+
+  var meteors = [];
+  var ambients = [];
+  var sparks = [];
+  var spawnAcc = 0;
+  var ambientIn = 2.8;
+  var idleCometIn = 5.0;
+  var meteorDragAcc = 0;
+  var bigCometIn = 4.5;
+
+  function spawnOrbital(opt) {
+    opt = opt || {};
+    var dir = opt.dir == null ? 1 : opt.dir;
+    var slow = !!opt.slow;
+    meteors.push({
+      theta: opt.theta == null ? rnd() * TAU : opt.theta,
+      radius: R * (opt.radius != null ? opt.radius : (slow ? 1.13 + rnd() * 0.06 : 1.085 + rnd() * 0.15)),
+      spin: dir * (slow ? 0.24 : (0.48 + rnd() * 0.85)),
+      drift: opt.drift == null ? (slow ? 1 : 10 + rnd() * 34) : opt.drift,
+      t: 0,
+      life: opt.life == null ? (0.9 + rnd() * 0.55) : opt.life,
+      width: opt.width == null ? (0.8 + rnd() * 1.0) : opt.width,
+      warm: opt.warm == null ? rnd() < 0.11 : opt.warm,
+      alpha: opt.alpha == null ? 1 : opt.alpha,
+      sparkAcc: 0
+    });
+    if (meteors.length > 90) meteors.shift();
+  }
+
+  function spawnBurst(power, dir) {
+    if (!MODES[modeKey].meteor) return;
+    power = power == null ? 1 : power;
+    dir = dir == null ? trailDir : dir;
+
+    // 贴着球缘的一圈短火星：交代「从球上甩出来」。
+    var closeCount = Math.round(clamp(4 + power * 3, 4, 8));
+    for (var k = 0; k < closeCount; k++) {
+      spawnOrbital({
+        theta: rnd() * TAU,
+        dir: dir,
+        radius: 1.055 + rnd() * 0.07,
+        drift: 16 + rnd() * 34,
+        life: 0.55 + rnd() * 0.35,
+        width: 0.55 + rnd() * 0.5,
+        alpha: 0.7 + rnd() * 0.3,
+        warm: rnd() < 0.10
+      });
+    }
+
+    // 外围流星：半径拉开到 1.35–2.25R，从球体旁边掠过，
+    // 不贴着轮廓走，才不会读成「第二圈大气层」。
+    var outerCount = Math.round(clamp(5 + power * 6, 5, 12));
+    for (var j = 0; j < outerCount; j++) {
+      spawnOrbital({
+        theta: rnd() * TAU,
+        dir: dir,
+        radius: 1.35 + rnd() * 0.90,
+        drift: -8 + rnd() * 32,
+        life: 1.0 + rnd() * 0.8,
+        width: 0.65 + rnd() * 0.9,
+        alpha: 0.5 + rnd() * 0.45,
+        warm: rnd() < 0.12
+      });
+    }
+
+    trailKick = Math.min(1, trailKick + 0.55 + power * 0.35);
+  }
+
+  function spawnAmbient() {
+    if (!MODES[modeKey].ambient) return;
+    var a = rnd() * TAU;
+    var dist = R * (1.35 + rnd() * 0.85);
+    var dir = rnd() < 0.5 ? 1 : -1;
+    var speed = 480 + rnd() * 320;
+    var ux = -Math.sin(a) * dir;
+    var uy = Math.cos(a) * dir;
+    var back = Math.max(W, H) * (0.35 + rnd() * 0.10);
+    var startX = cx + Math.cos(a) * dist - ux * back;
+    var startY = cy + Math.sin(a) * dist - uy * back;
+    var warm = rnd() < 0.10;
+    ambients.push({
+      x: startX, y: startY,
+      vx: ux * speed, vy: uy * speed,
+      t: 0,
+      life: 1.7 + rnd() * 0.9,
+      len: 110 + rnd() * 160,
+      width: 0.8 + rnd() * 0.9,
+      warm: warm,
+      alpha: 0.45 + rnd() * 0.4
+    });
+    if (ambients.length > 8) ambients.shift();
+  }
+
+  // 远景大彗星：速度慢、尾巴长、头很小，从画面外斜穿过去。
+  function spawnBigComet() {
+    var a = rnd() * TAU;
+    var dist = R * (1.45 + rnd() * 0.75);
+    var dir = rnd() < 0.5 ? 1 : -1;
+    var speed = 165 + rnd() * 75;
+    var ux = -Math.sin(a) * dir;
+    var uy = Math.cos(a) * dir;
+    var back = Math.max(W, H) * (0.25 + rnd() * 0.10);
+    ambients.push({
+      x: cx + Math.cos(a) * dist - ux * back,
+      y: cy + Math.sin(a) * dist - uy * back,
+      vx: ux * speed,
+      vy: uy * speed,
+      t: 0,
+      life: 4.8 + rnd() * 1.2,
+      len: 450 + rnd() * 220,
+      width: 1.8 + rnd() * 0.9,
+      warm: rnd() < 0.25,
+      alpha: 0.46 + rnd() * 0.12,
+      big: true
+    });
+    if (ambients.length > 10) ambients.shift();
+  }
+
+  function spawnSpark(x, y, vx, vy, warm, alpha) {
+    if (sparks.length > 150) return;
+    sparks.push({
+      x: x, y: y,
+      vx: vx + (rnd() * 2 - 1) * 24,
+      vy: vy + (rnd() * 2 - 1) * 24,
+      t: 0,
+      life: 0.28 + rnd() * 0.5,
+      size: 0.5 + rnd() * 1.1,
+      warm: warm,
+      alpha: alpha
+    });
+  }
+
+  function updateMeteors(dt) {
+    var mode = MODES[modeKey];
+
+    if (mode.meteor) {
+      var w = Math.abs(velY) + Math.abs(velX) * 0.5;
+      if (dragMode === 0 && w > 0.42) {
+        spawnAcc += dt * (w * 10);
+        while (spawnAcc >= 1) {
+          spawnAcc -= 1;
+          spawnOrbital({
+            dir: (velY < 0 ? -1 : 1),
+            radius: 1.18 + rnd() * 0.95,
+            drift: -4 + rnd() * 26,
+            life: 0.9 + rnd() * 0.55,
+            width: 0.6 + rnd() * 0.75,
+            alpha: 0.45 + rnd() * 0.4
+          });
+        }
+      } else {
+        spawnAcc = 0;
+      }
+
+      idleCometIn -= dt;
+      if (idleCometIn <= 0) {
+        idleCometIn = 8 + rnd() * 9;
+        spawnOrbital({
+          theta: rnd() * TAU,
+          dir: rnd() < 0.5 ? -1 : 1,
+          slow: true,
+          life: 2.5 + rnd() * 0.7,
+          width: 0.55,
+          alpha: 0.55,
+          drift: 0.6,
+          warm: false
+        });
+      }
+
+      ambientIn -= dt;
+      if (ambientIn <= 0) {
+        ambientIn = (2.8 + rnd() * 4.6) / mode.ambient;
+        spawnAmbient();
+      }
+    }
+
+    bigCometIn -= dt;
+    if (bigCometIn <= 0) {
+      bigCometIn = 26 + rnd() * 18;
+      spawnBigComet();
+    }
+
+    for (var i = meteors.length - 1; i >= 0; i--) {
+      var m = meteors[i];
+      m.t += dt;
+      m.theta += m.spin * dt;
+      m.radius += m.drift * dt;
+      m.sparkAcc += dt * (mode.key === 'c' ? 16 : 9);
+      if (m.sparkAcc >= 1) {
+        m.sparkAcc -= 1;
+        var hx = cx + Math.cos(m.theta) * m.radius;
+        var hy = cy + Math.sin(m.theta) * m.radius;
+        var outward = (rnd() - 0.5) * 30;
+        var tx = -Math.sin(m.theta) * m.spin;
+        var ty = Math.cos(m.theta) * m.spin;
+        spawnSpark(
+          hx, hy,
+          Math.cos(m.theta) * outward + tx * 18,
+          Math.sin(m.theta) * outward + ty * 18,
+          m.warm, 0.5 * m.alpha
+        );
+      }
+      if (m.t >= m.life) meteors.splice(i, 1);
+    }
+
+    for (var a = ambients.length - 1; a >= 0; a--) {
+      var am = ambients[a];
+      am.t += dt;
+      am.x += am.vx * dt;
+      am.y += am.vy * dt;
+      if (am.t >= am.life) ambients.splice(a, 1);
+    }
+
+    for (var s = sparks.length - 1; s >= 0; s--) {
+      var sp = sparks[s];
+      sp.t += dt;
+      sp.x += sp.vx * dt;
+      sp.y += sp.vy * dt;
+      sp.vx *= Math.exp(-dt * 2.4);
+      sp.vy *= Math.exp(-dt * 2.4);
+      if (sp.t >= sp.life) sparks.splice(s, 1);
+    }
+  }
+
+  /* ─────────────────────────── 交互惯性 ─────────────────────────── */
+
+  function markInteracted() {
+    interacted = true;
+  }
+
+  function applyDragRotation(dy, dx) {
+    applyRotation(dy * 0.0062, dx * 0.0062);
+    skySpin += (dx * 0.0062) * 0.86 + (dy * 0.0062) * 0.30;
+    var dir = dx !== 0 ? (dx > 0 ? 1 : -1) : trailDir;
+    if (dx !== 0) trailDir = dir;
+    trailKick = Math.min(1, trailKick + Math.abs(dx) * 0.007 + Math.abs(dy) * 0.002);
+  }
+
+  function doFling(power, dir) {
+    markInteracted();
+    power = power == null ? 1 : power;
+    dir = dir == null ? (trailDir || 1) : dir;
+    trailDir = dir;
+    velY = 1.08 * power * dir;
+    velX = (rnd() * 2 - 1) * 0.09 * power;
+    idleTime = 0;
+    trailKick = Math.min(1, trailKick + 0.85 * power);
+    spawnBurst(power, dir);
+  }
+
+  function update(dt) {
+    clock += dt;
+    idleTime += dt;
+    if (introT < 1) introT = Math.min(1, introT + dt / 1.1);
+
+    if (dragMode === 0) {
+      if (idleTime > 1.4) {
+        var tt = clock * 0.135;
+        var tgtY = 0.105 + 0.048 * Math.sin(tt * 1.7) + 0.024 * Math.sin(tt * 3.13 + 1.2);
+        var tgtX = 0.018 * Math.sin(tt * 1.13 + 0.7) + 0.012 * Math.sin(tt * 2.41 + 2.1);
+        var k = 1 - Math.exp(-dt * 0.85);
+        velY += (tgtY - velY) * k;
+        velX += (tgtX - velX) * k;
+      } else {
+        var damp = Math.exp(-dt * 2.6);
+        velX *= damp;
+        velY *= damp;
+      }
+
+      applyRotation(velX * dt, velY * dt);
+      skySpin += velY * dt * 0.86 + velX * dt * 0.30;
+      if (Math.abs(velY) > 0.22) {
+        trailDir = velY > 0 ? 1 : -1;
+      }
+    }
+
+    var rawRate = (skySpin - prevSkySpinRate) / Math.max(dt, 0.0001);
+    prevSkySpinRate = skySpin;
+    skyRateS += (rawRate - skyRateS) * (1 - Math.exp(-dt * 8));
+    skyRateS = clamp(skyRateS, -2.6, 2.6);
+    skyShown += (skySpin - skyShown) * (1 - Math.exp(-dt * 15));
+
+    trailKick *= Math.exp(-dt * 3.1);
+    if (trailKick < 0.002) trailKick = 0;
+
+    for (var mi = 0; mi < layerKeys.length; mi++) {
+      var lv = LAYERS[layerKeys[mi]];
+      lv.mix += ((lv.on ? 1 : 0) - lv.mix) * (1 - Math.exp(-dt * 3.2));
+    }
+
+    updatePulses(dt);
+    tickIdlePulse(dt);
+    updateMeteors(dt);
+  }
+
+  /* ─────────────────────────── 尺寸 / 渐变 ─────────────────────────── */
+
+  function resize() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+
+    cx = W * 0.5;
+    cy = H * 0.5;
+    R = Math.min(W, H) * 0.30;
+    maxRad = Math.sqrt(W * W + H * H) * 0.5;
+
+    bgGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.78);
+    bgGrad.addColorStop(0, APP.inner);
+    bgGrad.addColorStop(1, APP.outer);
+
+    rimGrad = ctx.createRadialGradient(cx, cy, R * 0.965, cx, cy, R * 1.075);
+    rimGrad.addColorStop(0, 'rgba(110,160,235,0)');
+    rimGrad.addColorStop(0.40, 'rgba(110,160,235,0.10)');
+    rimGrad.addColorStop(0.75, 'rgba(110,160,235,0.030)');
+    rimGrad.addColorStop(1, 'rgba(110,160,235,0)');
+
+    var vigR = maxRad * 1.02;
+    vignette = ctx.createRadialGradient(cx, cy, R * 0.55, cx, cy, vigR);
+    vignette.addColorStop(0, 'rgba(2,4,8,0)');
+    vignette.addColorStop(0.55, 'rgba(2,4,8,0.06)');
+    vignette.addColorStop(0.82, 'rgba(2,4,8,0.24)');
+    vignette.addColorStop(1, 'rgba(2,4,8,0.46)');
+
+    buildStars();
+    buildNebula();
+    ensureSprites();
+    buildBokeh();
+
+    // 初始化时还没有投影缓冲。
+    if (!sx) allocProjection();
+  }
+
+  /* ─────────────────────────── 渲染：背景 ─────────────────────────── */
+
+  function drawNebula(fade) {
+    if (!nebulaCv) return;
+    var mode = MODES[modeKey];
+    if (mode.nebula <= 0) return;
+
+    var ang = skyShown * 0.026 - 0.06;
+    var alpha = fade * 0.95 * mode.nebula;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(ang);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = alpha;
+    var S = nebulaSize;
+    ctx.drawImage(nebulaCv, -S / 2, -S / 2, S, S);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  function drawStars(fade) {
+    if (!starSprite) return;
+    var mode = MODES[modeKey];
+    var t = clock;
+    var kickSpeed = Math.abs(skyRateS) * 1.15 + trailKick * 1.5;
+    var dpr = DPR;
+    var lensMix = LAYERS.lens.mix;
+
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+
+    for (var li = 0; li < starLayers.length; li++) {
+      var layer = starLayers[li];
+      var stars = layer.stars;
+      var offset = skyShown * layer.factor;
+
+      var layerRate = kickSpeed * layer.factor;
+      var trail = clamp((layerRate - 0.042) * 0.90, 0, 0.30) * mode.trail;
+      var trailAlpha = clamp((layerRate - 0.038) * 3.0, 0, 0.70) * mode.trail;
+      var dotDim = 1 - 0.22 * clamp(layerRate * 1.2, 0, 1);
+
+      for (var i = 0; i < stars.length; i++) {
+        var st = stars[i];
+        var a = st.angle + offset;
+
+        // 引力透镜：越靠球缘，星点被质量推得越远，切向拉成一小段弧。
+        var lensW = 0;
+        var sr = st.r;
+        if (lensMix > 0.01) {
+          var rn = st.r / R;
+          if (rn < LENS_MAX) {
+            var lt = 1 - smooth(LENS_MIN, LENS_MAX, rn);
+            lensW = lt * lt * lensMix;
+            sr = st.r + lensW * R * 0.085;
+          }
+        }
+
+        var x = cx + Math.cos(a) * sr;
+        var y = cy + Math.sin(a) * sr;
+        if (x < -30 || x > W + 30 || y < -30 || y > H + 30) continue;
+
+        var tw = 0.74 + 0.26 * Math.sin(t * st.twSpeed + st.twPhase);
+        var alpha = st.alpha * tw * fade * (1 + 0.30 * lensW);
+
+        if (lensW > 0.03) {
+          var arcSpan = lensW * 0.10;
+          ctx.globalAlpha = Math.min(0.85, alpha * (0.32 + 0.68 * lensW));
+          ctx.strokeStyle = st.color;
+          ctx.lineWidth = st.size * (0.62 + 0.62 * lensW);
+          ctx.beginPath();
+          ctx.arc(cx, cy, sr, a - arcSpan * 0.5, a + arcSpan * 0.5);
+          ctx.stroke();
+        }
+
+        if (trail > 0.0012 && trailAlpha > 0.005) {
+          ctx.globalAlpha = Math.min(0.8, alpha * trailAlpha);
+          ctx.strokeStyle = st.color;
+          ctx.lineWidth = st.size * 0.82;
+          ctx.beginPath();
+          if (trailDir >= 0) ctx.arc(cx, cy, sr, a - trail, a);
+          else ctx.arc(cx, cy, sr, a, a + trail);
+          ctx.stroke();
+        }
+
+        var size = st.size * (dpr > 1.5 ? 1.05 : 1);
+        ctx.globalAlpha = Math.min(0.92, alpha * dotDim * (1 - 0.55 * lensW));
+        ctx.fillStyle = st.color;
+        if (size < 1.15) {
+          ctx.fillRect(x - size / 2, y - size / 2, size, size);
+        } else {
+          ctx.beginPath();
+          ctx.arc(x, y, size * 0.62, 0, TAU);
+          ctx.fill();
+        }
+
+        if (st.bright) {
+          var gr = size * 8.5;
+          ctx.globalAlpha = Math.min(0.6, alpha * 0.5);
+          ctx.drawImage(starSprite, x - gr, y - gr, gr * 2, gr * 2);
+        }
+      }
+    }
+
+    // 前景星尘：只在全开模式出现，飘在球的前面，给画面一层景深。
+    if (mode.dust) {
+      for (var d = 0; d < dust.length; d++) {
+        var du = dust[d];
+        var da = du.angle + skyShown * 0.55 + Math.sin(t * 0.05 + du.phase) * 0.05;
+        var dx = cx + Math.cos(da) * du.r;
+        var dy = cy + Math.sin(da) * du.r;
+        var dtw = 0.65 + 0.35 * Math.sin(t * du.speed + du.phase);
+        ctx.globalAlpha = du.alpha * dtw * fade;
+        ctx.fillStyle = '#dbe9ff';
+        ctx.beginPath();
+        ctx.arc(dx, dy, du.size, 0, TAU);
+        ctx.fill();
+      }
+    }
+
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* ────────────────── 新层：信号脉冲 / 引力透镜 / 前景散景 ────────────────── */
+
+  // 透镜作用区：从大气层外缘一直到 1.46R，再远几乎不动。
+  var LENS_MIN = 1.10;
+  var LENS_MAX = 1.46;
+
+  // 信号脉冲：悬停源节点后，沿每条相邻连线送一颗光点，抵达再回一条更淡的。
+  // 位置每帧从 sx/sy 重算——球在转、连线在动，脉冲也不能离线。
+  var pulses = [];
+  var pulseRings = [];
+  var pulseSource = -1;
+  var pulseAt = -10;
+  var idlePulseIn = 2.2;
+
+  function addPulseRing(idx) {
+    pulseRings.push({ i: idx, t: 0 });
+    if (pulseRings.length > 8) pulseRings.shift();
+  }
+
+  function emitPulses(idx, strength) {
+    var nb = adj[idx];
+    if (!nb || !nb.length) return;
+    var step = Math.max(1, Math.ceil(nb.length / 14));
+    var k = 0;
+    for (var i = 0; i < nb.length; i += step) {
+      if (pulses.length > 44) break;
+      var j = nb[i];
+      var len = Math.hypot(sx[j] - sx[idx], sy[j] - sy[idx]);
+      var dur = clamp(len / 430, 0.26, 0.85);
+      pulses.push({
+        a: idx, b: j, p: 0, dir: 1, dur: dur,
+        wait: k * 0.035, amp: strength, ret: 0
+      });
+      pulses.push({
+        a: idx, b: j, p: 1, dir: -1, dur: dur * 1.3,
+        wait: dur + 0.30 + k * 0.03, amp: strength * 0.34, ret: 1
+      });
+      k++;
+    }
+  }
+
+  // 演示和截图都挑球面中心、邻居最多的正面节点，保证脉冲不会缩在边上。
+  function frontNode() {
+    var rad = Math.min(W, H) * 0.34;
+    var best = -1, bestN = -1, bestD = 1e18;
+    for (var i = 0; i < nodes.length; i++) {
+      if (camZ[i] <= 0.35 || !adj[i] || adj[i].length < 3) continue;
+      var dx = sx[i] - W * 0.5, dy = sy[i] - H * 0.5;
+      var d = Math.sqrt(dx * dx + dy * dy);
+      if (d > rad) continue;
+      if (adj[i].length > bestN || (adj[i].length === bestN && d < bestD)) {
+        bestN = adj[i].length; bestD = d; best = i;
+      }
+    }
+    return best;
+  }
+
+  function pulseDemo() {
+    if (!LAYERS.pulse.on) {
+      LAYERS.pulse.on = true;
+      LAYERS.pulse.mix = 1;
+      syncRows();
+    } else if (LAYERS.pulse.mix < 0.4) {
+      LAYERS.pulse.mix = 1;
+    }
+    var idx = frontNode();
+    if (idx < 0) {
+      for (var k = 0; k < 16; k++) {
+        var i = (rnd() * nodes.length) | 0;
+        if (camZ[i] > 0.05 && adj[i] && adj[i].length) { idx = i; break; }
+      }
+    }
+    if (idx < 0) return;
+    addPulseRing(idx);
+    emitPulses(idx, 1);
+  }
+
+  function maybePing() {
+    if (dragMode !== 0 || hoverIdx < 0 || LAYERS.pulse.mix < 0.05) {
+      pulseSource = -1;
+      return;
+    }
+    if (hoverIdx !== pulseSource) {
+      pulseSource = hoverIdx;
+      pulseAt = clock;
+      addPulseRing(hoverIdx);
+      emitPulses(hoverIdx, 1);
+    } else if (clock - pulseAt > 1.8) {
+      pulseAt = clock;
+      emitPulses(hoverIdx, 0.85);
+    }
+  }
+
+  // 静止时的自发脉冲：随机挑一个有连接的正面节点，只往两三条随机邻居送，不返回。
+  function emitIdlePulses(idx, strength) {
+    var nb = adj[idx];
+    if (!nb || !nb.length) return;
+    var count = Math.min(nb.length, 2 + ((rnd() * 3) | 0));
+    var used = {};
+    var made = 0;
+    for (var guard = 0; guard < 30 && made < count; guard++) {
+      var j = nb[(rnd() * nb.length) | 0];
+      if (used[j]) continue;
+      used[j] = 1;
+      var len = Math.hypot(sx[j] - sx[idx], sy[j] - sy[idx]);
+      pulses.push({
+        a: idx, b: j, p: 0, dir: 1,
+        dur: clamp(len / 430, 0.26, 0.85),
+        wait: made * 0.06, amp: strength, ret: 0
+      });
+      made++;
+    }
+  }
+
+  function tickIdlePulse(dt) {
+    if (LAYERS.pulse.mix < 0.05 || dragMode !== 0 || hoverIdx >= 0) return;
+    idlePulseIn -= dt;
+    if (idlePulseIn > 0) return;
+    idlePulseIn = 1.3 + rnd() * 1.7;
+    for (var k = 0; k < 10; k++) {
+      var i = (rnd() * nodes.length) | 0;
+      if (camZ[i] > 0.2 && adj[i] && adj[i].length) {
+        emitIdlePulses(i, 0.62 + rnd() * 0.24);
+        return;
+      }
+    }
+  }
+
+  function updatePulses(dt) {
+    for (var i = pulses.length - 1; i >= 0; i--) {
+      var p = pulses[i];
+      if (p.wait > 0) { p.wait -= dt; continue; }
+      p.p += p.dir * dt / p.dur;
+      if (p.p < 0 || p.p > 1) pulses.splice(i, 1);
+    }
+    for (var r = pulseRings.length - 1; r >= 0; r--) {
+      pulseRings[r].t += dt;
+      if (pulseRings[r].t > 0.8) pulseRings.splice(r, 1);
+    }
+  }
+
+  function drawPulses(fade) {
+    var mix = LAYERS.pulse.mix;
+    if (mix < 0.01 || !pulses.length) return;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    for (var i = 0; i < pulses.length; i++) {
+      var p = pulses[i];
+      if (p.wait > 0) continue;
+      var ax = sx[p.a], ay = sy[p.a], bx = sx[p.b], by = sy[p.b];
+      var dx = bx - ax, dy = by - ay;
+      var hx = ax + dx * p.p, hy = ay + dy * p.p;
+      // 去程拖一条半条边的光尾，隔着一屏也看得见；回程只留一颗小珠子。
+      var q = clamp(p.p - p.dir * (p.ret ? 0.22 : 0.45), 0, 1);
+      var tx = ax + dx * q, ty = ay + dy * q;
+      var d = (dep[p.a] + dep[p.b]) * 0.5;
+      var amp = p.amp * mix * fade * (0.45 + 0.55 * d * d);
+      if (amp < 0.01) continue;
+
+      var grad = ctx.createLinearGradient(tx, ty, hx, hy);
+      grad.addColorStop(0, 'rgba(216,236,255,0)');
+      grad.addColorStop(1, 'rgba(228,243,255,' + (0.72 * amp) + ')');
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = p.ret ? 1.0 : 1.7;
+      ctx.beginPath();
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(hx, hy);
+      ctx.stroke();
+
+      ctx.globalAlpha = Math.min(1, amp * 1.15);
+      ctx.fillStyle = '#EAF5FF';
+      ctx.beginPath();
+      ctx.arc(hx, hy, p.ret ? 1.05 : 1.9, 0, TAU);
+      ctx.fill();
+
+      if (!p.ret) {
+        var gr = 10;
+        ctx.globalAlpha = amp * 0.45;
+        ctx.drawImage(starSprite, hx - gr, hy - gr, gr * 2, gr * 2);
+      }
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  function drawPulseRings(fade) {
+    var mix = LAYERS.pulse.mix;
+    if (mix < 0.01 || !pulseRings.length) return;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineWidth = 1.2;
+    for (var i = 0; i < pulseRings.length; i++) {
+      var r = pulseRings[i];
+      var k = r.t / 0.8;
+      var nodeR = nodes[r.i].wr * R * scl[r.i];
+      if (nodeR < 1.6) nodeR = 1.6;
+      ctx.globalAlpha = (1 - k) * (1 - k) * 0.38 * mix * fade;
+      ctx.strokeStyle = '#CFE4FF';
+      ctx.beginPath();
+      ctx.arc(sx[r.i], sy[r.i], nodeR + 2 + easeOut(k) * 26, 0, TAU);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // 前景散景：大而虚的光斑只落在画面外圈（离球心 0.60 maxRad 以外），
+  // 永远压不到球和节点；视差比最近的星层还快，读成「镜头前」。
+  var bokeh = [];
+  var bokehCoolSprite = null;
+  var bokehWarmSprite = null;
+
+  function makeBokehSprite(rgb) {
+    var S = 128;
+    var cv = document.createElement('canvas');
+    cv.width = cv.height = S;
+    var g = cv.getContext('2d');
+    var grd = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    var c = function (a) { return 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + a + ')'; };
+    // 空心光斑：中间几乎透光，亮环压在 0.93 半径上，像失焦的镜面高光。
+    grd.addColorStop(0, c(0.12));
+    grd.addColorStop(0.50, c(0.10));
+    grd.addColorStop(0.74, c(0.16));
+    grd.addColorStop(0.86, c(0.30));
+    grd.addColorStop(0.925, c(0.55));
+    grd.addColorStop(0.965, c(0.30));
+    grd.addColorStop(0.99, c(0.08));
+    grd.addColorStop(1, c(0));
+    g.fillStyle = grd;
+    g.fillRect(0, 0, S, S);
+    return cv;
+  }
+
+  function buildBokeh() {
+    bokeh = [];
+    for (var i = 0; i < 7; i++) {
+      bokeh.push({
+        // 均分一圈再抖开，避免几片叠成一团脏斑。
+        angle: TAU * i / 7 + rnd() * 0.7,
+        r: maxRad * (0.62 + rnd() * 0.28),
+        size: 28 + rnd() * 62,
+        alpha: 0.05 + rnd() * 0.045,
+        warm: rnd() < 0.28,
+        drift: (0.004 + rnd() * 0.012) * (rnd() < 0.5 ? -1 : 1),
+        phase: rnd() * TAU
+      });
+    }
+  }
+
+  function drawBokeh(fade) {
+    var mix = LAYERS.bokeh.mix;
+    if (mix < 0.01 || !bokeh.length || !bokehCoolSprite) return;
+    var t = clock;
+    ctx.globalCompositeOperation = 'lighter';
+    for (var i = 0; i < bokeh.length; i++) {
+      var b = bokeh[i];
+      var a = b.angle + skyShown * 0.75 + t * b.drift;
+      var r = b.r + Math.sin(t * 0.10 + b.phase) * R * 0.05;
+      var x = cx + Math.cos(a) * r;
+      var y = cy + Math.sin(a) * r;
+      var s = b.size * (1 + 0.05 * Math.sin(t * 0.16 + b.phase));
+      if (x < -s * 1.2 || x > W + s * 1.2 || y < -s * 1.2 || y > H + s * 1.2) continue;
+      ctx.globalAlpha = b.alpha * mix * fade * (0.85 + 0.15 * Math.sin(t * 0.21 + b.phase));
+      ctx.drawImage(b.warm ? bokehWarmSprite : bokehCoolSprite, x - s, y - s, s * 2, s * 2);
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  function drawVignette(fade) {
+    if (!vignette) return;
+    ctx.globalAlpha = fade;
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1;
+  }
+
+  function drawAmbientMeteors(fade) {
+    if (!ambients.length) return;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+
+    for (var i = 0; i < ambients.length; i++) {
+      var m = ambients[i];
+      var env = smooth(0, 0.1, m.t) * (1 - smooth(m.life * 0.7, m.life, m.t));
+      if (env <= 0.002) continue;
+      var v = Math.sqrt(m.vx * m.vx + m.vy * m.vy) || 1;
+      var ux = m.vx / v, uy = m.vy / v;
+      var tail = m.len;
+      var tx = m.x - ux * tail;
+      var ty = m.y - uy * tail;
+      var grad = ctx.createLinearGradient(m.x, m.y, tx, ty);
+      var core = m.warm ? '255,226,182' : '202,226,255';
+
+      // 大彗星多垫一层宽光：尾巴又长又淡时，只有细线会像划痕。
+      if (m.big) {
+        ctx.globalAlpha = 0.07 * env * m.alpha;
+        ctx.strokeStyle = 'rgba(' + core + ',1)';
+        ctx.lineWidth = m.width * 5.5;
+        ctx.beginPath();
+        ctx.moveTo(m.x, m.y);
+        ctx.lineTo(tx, ty);
+        ctx.stroke();
+      }
+
+      grad.addColorStop(0, 'rgba(' + core + ',' + (0.72 * env * m.alpha) + ')');
+      grad.addColorStop(0.35, 'rgba(' + core + ',' + (0.22 * env * m.alpha) + ')');
+      grad.addColorStop(1, 'rgba(' + core + ',0)');
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = m.width;
+      ctx.beginPath();
+      ctx.moveTo(m.x, m.y);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+
+      var gr = m.big ? 16 + m.width * 8 : 7 + m.width * 4;
+      ctx.globalAlpha = (m.big ? 0.62 : 0.38) * env * m.alpha;
+      ctx.drawImage(starSprite, m.x - gr, m.y - gr, gr * 2, gr * 2);
+
+      if (m.big) {
+        ctx.globalAlpha = 0.7 * env * m.alpha;
+        ctx.fillStyle = 'rgba(' + core + ',1)';
+        ctx.beginPath();
+        ctx.arc(m.x, m.y, 1.8 + m.width * 0.6, 0, TAU);
+        ctx.fill();
+      }
+    }
+
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* ─────────────────────────── 渲染：球体 ─────────────────────────── */
+
+  function drawRim() {
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = rimGrad;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  var EDGE_BUCKETS = 12;
+  var edgeSegs = [];
+  for (var eb = 0; eb < EDGE_BUCKETS; eb++) edgeSegs.push([]);
+
+  function drawEdges(fade) {
+    for (var b = 0; b < EDGE_BUCKETS; b++) edgeSegs[b].length = 0;
+
+    var hasHi = hoverIdx >= 0;
+    for (var e = 0; e < edgeA.length; e++) {
+      var a = edgeA[e], b2 = edgeB[e];
+      var d = (dep[a] + dep[b2]) * 0.5;
+      var alpha;
+      if (hasHi) {
+        if (a === hoverIdx || b2 === hoverIdx) alpha = 0.24 + 0.68 * d * d;
+        else alpha = 0.022 + 0.09 * d * d;
+      } else {
+        alpha = 0.060 + 0.42 * d * d * d;
+      }
+      if (alpha < 0.006) continue;
+      var bi = Math.floor(alpha * EDGE_BUCKETS);
+      if (bi >= EDGE_BUCKETS) bi = EDGE_BUCKETS - 1;
+      if (bi < 0) bi = 0;
+      edgeSegs[bi].push(sx[a], sy[a], sx[b2], sy[b2]);
+    }
+
+    ctx.strokeStyle = APP.edge;
+    ctx.lineWidth = 1;
+    ctx.lineCap = 'round';
+    for (var k = 0; k < EDGE_BUCKETS; k++) {
+      var seg = edgeSegs[k];
+      if (!seg.length) continue;
+      ctx.globalAlpha = ((k + 0.55) / EDGE_BUCKETS) * fade;
+      ctx.beginPath();
+      for (var o = 0; o < seg.length; o += 4) {
+        ctx.moveTo(seg[o], seg[o + 1]);
+        ctx.lineTo(seg[o + 2], seg[o + 3]);
+      }
+      ctx.stroke();
+    }
+
+    if (hasHi) {
+      ctx.globalAlpha = 0.54 * fade;
+      ctx.strokeStyle = '#c4d6ec';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      var nb = adj[hoverIdx];
+      for (var n = 0; n < nb.length; n++) {
+        ctx.moveTo(sx[hoverIdx], sy[hoverIdx]);
+        ctx.lineTo(sx[nb[n]], sy[nb[n]]);
+      }
+      ctx.stroke();
+    }
+
+    ctx.globalAlpha = 1;
+  }
+
+  function computeShading() {
+    var hasHi = hoverIdx >= 0;
+    var Lx = -0.4175, Ly = -0.5468, Lz = 0.7257;
+
+    for (var i = 0; i < nodes.length; i++) {
+      var p = nodes[i].p;
+      // 光照用相机空间方向：球转，光不转。
+      var X = M[0] * p[0] + M[1] * p[1] + M[2] * p[2];
+      var Y = M[3] * p[0] + M[4] * p[1] + M[5] * p[2];
+      var Z = camZ[i];
+
+      var ndl = X * Lx + Y * Ly + Z * Lz;
+      var lit = 0.56 + 0.44 * Math.pow(ndl < 0 ? 0 : ndl, 0.85);
+      var d = dep[i];
+      var edgeShade = 0.66 + 0.34 * clamp((d - 0.42) / 0.50, 0, 1);
+      var a = (0.32 + 0.68 * Math.pow(d, 1.15)) * lit * edgeShade;
+
+      var r = nodes[i].wr * R * scl[i];
+      if (r < 1.6) r = 1.6;
+
+      if (hasHi) {
+        if (i === hoverIdx) {
+          a = 1;
+          r *= 1.42;
+        } else if (hoverMask[i]) {
+          a = Math.min(1, a * 1.16 + 0.26);
+          r *= 1.10;
+        } else {
+          a *= 0.42;
+        }
+      }
+
+      shadeAlpha[i] = a;
+      shadeRad[i] = r;
+    }
+  }
+
+  function drawGlow(fade) {
+    var hasHi = hoverIdx >= 0;
+    ctx.globalCompositeOperation = 'lighter';
+    for (var q = 0; q < order.length; q++) {
+      var i = order[q];
+      var a = shadeAlpha[i];
+      if (a < 0.20) continue;
+      var dk = Math.pow(dep[i], 1.7);
+      var r = shadeRad[i] * (i === hoverIdx ? 7.0 : 4.6);
+      var ga = Math.min(0.85, a * 0.46 * dk) * fade;
+      if (ga <= 0.004) continue;
+      ctx.globalAlpha = ga;
+      ctx.drawImage(nodeSprite, sx[i] - r, sy[i] - r, r * 2, r * 2);
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  function drawNodes(fade) {
+    ctx.fillStyle = APP.node;
+    for (var q = 0; q < order.length; q++) {
+      var i = order[q];
+      var a = shadeAlpha[i];
+      if (a <= 0.01) continue;
+      ctx.globalAlpha = a * fade;
+      ctx.beginPath();
+      ctx.arc(sx[i], sy[i], shadeRad[i], 0, TAU);
+      ctx.fill();
+    }
+
+    if (hoverIdx >= 0 && hoverIdx !== -1) {
+      var i2 = hoverIdx;
+      var r2 = shadeRad[i2] + 5.5;
+      ctx.globalAlpha = 0.55 * fade;
+      ctx.strokeStyle = APP.ring;
+      ctx.lineWidth = 1.5;
+      ctx.lineCap = 'round';
+      var span = 124 * Math.PI / 180;
+      ctx.beginPath();
+      ctx.arc(sx[i2], sy[i2], r2, -62 * Math.PI / 180, -62 * Math.PI / 180 + span);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(sx[i2], sy[i2], r2, 118 * Math.PI / 180, 118 * Math.PI / 180 + span);
+      ctx.stroke();
+    }
+
+    ctx.globalAlpha = 1;
+  }
+
+  /* ─────────────────────────── 渲染：流星 ─────────────────────────── */
+
+  function drawOrbitalMeteors(fade) {
+    if (!meteors.length) return;
+
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    for (var i = 0; i < meteors.length; i++) {
+      var m = meteors[i];
+      var env = smooth(0, 0.09, m.t) * (1 - smooth(m.life * 0.68, m.life, m.t));
+      if (env <= 0.003) continue;
+
+      var grow = smooth(0, 0.16, m.t);
+      var tailTime = clamp(Math.abs(m.spin) * 0.75, 0.08, 0.80) * grow;
+      var steps = 14;
+      var pts = [];
+      for (var k = 0; k <= steps; k++) {
+        var f = k / steps;
+        var age = tailTime * f;
+        var th = m.theta - m.spin * age;
+        var rad = m.radius - m.drift * age;
+        pts.push(cx + Math.cos(th) * rad, cy + Math.sin(th) * rad);
+      }
+
+      var hx = pts[0], hy = pts[1];
+      var warm = m.warm;
+      var glowRGBA = warm ? '255,178,110' : '126,180,255';
+      var coreRGBA = warm ? '255,236,202' : '234,245,255';
+      var a = env * m.alpha * fade;
+
+      // 外层光晕：整条尾巴垫一层很淡的宽光，让流星从背景里浮出来。
+      ctx.globalAlpha = 0.055 * a;
+      ctx.strokeStyle = 'rgba(' + glowRGBA + ',1)';
+      ctx.lineWidth = m.width * 5.0;
+      ctx.beginPath();
+      ctx.moveTo(pts[0], pts[1]);
+      for (var p = 2; p < pts.length; p += 2) ctx.lineTo(pts[p], pts[p + 1]);
+      ctx.stroke();
+
+      // 尾巴分 6 段收细、变淡；不这么做，整条会像一根等宽的光管。
+      var CH = 6;
+      for (var c = 0; c < CH; c++) {
+        var s0 = Math.floor((c * steps) / CH);
+        var s1 = Math.min(steps, Math.floor(((c + 1) * steps) / CH) + 1);
+        var fall = 1 - c / CH;
+        ctx.globalAlpha = (0.62 * Math.pow(fall, 1.7)) * a;
+        ctx.strokeStyle = 'rgba(' + (c < 2 ? coreRGBA : glowRGBA) + ',1)';
+        ctx.lineWidth = Math.max(0.45, m.width * (0.3 + 1.8 * fall));
+        ctx.beginPath();
+        ctx.moveTo(pts[s0 * 2], pts[s0 * 2 + 1]);
+        for (var pc = s0 + 1; pc <= s1; pc++) {
+          ctx.lineTo(pts[pc * 2], pts[pc * 2 + 1]);
+        }
+        ctx.stroke();
+      }
+
+      // 头部：大光晕 + 一颗很实的白核，甩出去的方向一眼能读出来。
+      var hr = 9 + m.width * 6;
+      ctx.globalAlpha = 0.55 * a;
+      ctx.drawImage(warm ? warmSprite : starSprite, hx - hr, hy - hr, hr * 2, hr * 2);
+      ctx.globalAlpha = 0.35 * a;
+      ctx.fillStyle = 'rgba(' + coreRGBA + ',1)';
+      ctx.beginPath();
+      ctx.arc(hx, hy, Math.max(2.2, m.width * 2.2), 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = 0.95 * a;
+      ctx.fillStyle = warm ? '#fffaf0' : '#ffffff';
+      ctx.beginPath();
+      ctx.arc(hx, hy, Math.max(1.0, m.width * 0.95), 0, TAU);
+      ctx.fill();
+    }
+
+    // 火星
+    for (var s = 0; s < sparks.length; s++) {
+      var sp = sparks[s];
+      var se = 1 - sp.t / sp.life;
+      if (se <= 0) continue;
+      ctx.globalAlpha = se * se * sp.alpha * fade;
+      ctx.fillStyle = sp.warm ? '#ffd9a8' : '#d6e7ff';
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, sp.size, 0, TAU);
+      ctx.fill();
+    }
+
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* ─────────────────────────── 渲染：标签 ─────────────────────────── */
+
+  var labelPicks = [];
+  var labelShow = [];
+  var labelBoxes = [];
+  var titleWidths = {};
+  var LABEL_FONT = '500 11.5px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif';
+
+  function labelWidth(title) {
+    var w = titleWidths[title];
+    if (w != null) return w;
+    ctx.save();
+    ctx.font = LABEL_FONT;
+    w = ctx.measureText(title).width;
+    ctx.restore();
+    titleWidths[title] = w;
+    return w;
+  }
+
+  function pickStaticLabels() {
+    labelPicks.length = 0;
+    labelBoxes.length = 0;
+    var max = hoverIdx >= 0 ? 6 : 7;
+    var padX = 9, padY = 7;
+
+    for (var k = order.length - 1; k >= 0 && labelPicks.length < max; k--) {
+      var i = order[k];
+      if (dep[i] < 0.62 || nodes[i].degree < 4) continue;
+      var x = sx[i], y = sy[i];
+      if (x < -20 || x > W + 20 || y < 26 || y > H - 24) continue;
+
+      var r = Math.max(shadeRad[i], 1.6);
+      var ly = y - r - 18;
+      if (ly < 16) ly = y + r + 18;
+      var hw = labelWidth(nodes[i].title) * 0.5 + padX;
+      var box = { x0: x - hw, x1: x + hw, y0: ly - padY, y1: ly + padY };
+
+      var crowded = false;
+      for (var q = 0; q < labelBoxes.length; q++) {
+        var b = labelBoxes[q];
+        if (box.x0 < b.x1 && box.x1 > b.x0 && box.y0 < b.y1 && box.y1 > b.y0) {
+          crowded = true;
+          break;
+        }
+      }
+      if (crowded) continue;
+      labelPicks.push(i);
+      labelBoxes.push(box);
+    }
+  }
+
+  function drawLabels(fade) {
+    pickStaticLabels();
+    labelShow.length = 0;
+
+    var baseAlpha = hoverIdx >= 0 ? 0.22 : 0.34;
+    for (var p = 0; p < labelPicks.length; p++) {
+      var i = labelPicks[p];
+      if (i === hoverIdx) continue;
+      var a = baseAlpha * smooth(0.62, 0.76, dep[i]) * fade;
+      if (a < 0.01) continue;
+      labelShow.push(i, a, 11.5);
+    }
+
+    if (hoverIdx >= 0) {
+      labelShow.push(hoverIdx, 0.95 * fade, 13);
+    }
+
+    if (!labelShow.length) return;
+
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+
+    for (var s = 0; s < labelShow.length; s += 3) {
+      var idx = labelShow[s];
+      var alpha = labelShow[s + 1];
+      var size = labelShow[s + 2];
+      var r = Math.max(shadeRad[idx], 1.6);
+      var lx = sx[idx];
+      var ly = sy[idx] - r - 18;
+      if (ly < 16) ly = sy[idx] + r + 18;
+
+      ctx.font = '500 ' + size + 'px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'center';
+
+      ctx.globalAlpha = alpha * 0.92;
+      ctx.strokeStyle = APP.halo;
+      ctx.lineWidth = 3.2;
+      ctx.strokeText(nodes[idx].title, lx, ly);
+
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = idx === hoverIdx ? APP.labelFocus : APP.label;
+      ctx.fillText(nodes[idx].title, lx, ly);
+    }
+
+    ctx.globalAlpha = 1;
+  }
+
+  /* ─────────────────────────── 主循环 ─────────────────────────── */
+
+  var last = 0;
+  var fpsAcc = 0, fpsN = 0, fpsShow = 0;
+
+  function frame(now) {
+    if (!last) last = now;
+    var dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.05) dt = 0.05;
+    if (dt < 0) dt = 0;
+
+    fpsAcc += dt;
+    fpsN++;
+    if (fpsAcc > 0.5) {
+      fpsShow = Math.round(fpsN / fpsAcc);
+      fpsAcc = 0;
+      fpsN = 0;
+    }
+
+    update(dt);
+    project();
+
+    for (var i = 0; i < nodes.length; i++) order[i] = i;
+    order.sort(function (a, b) { return camZ[a] - camZ[b]; });
+
+    if (dragMode === 0 && mouseInside) {
+      hoverIdx = pickNode(mouseX, mouseY);
+    } else if (dragMode !== 0) {
+      hoverIdx = -1;
+    }
+    maybePing();
+    updateHoverMask();
+    computeShading();
+
+    render();
+
+    var want = dragMode === 1 ? 'grabbing' : 'grab';
+    if (want !== lastCursor) {
+      canvas.style.cursor = want;
+      lastCursor = want;
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  function render() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, W, H);
+
+    var fade = easeOut(introT);
+
+    drawNebula(fade);
+    drawStars(fade);
+    drawAmbientMeteors(fade);
+    drawVignette(fade);
+
+    drawRim();
+    drawEdges(fade);
+    drawPulses(fade);
+    drawGlow(fade);
+    drawNodes(fade);
+    drawOrbitalMeteors(fade);
+    drawPulseRings(fade);
+    drawBokeh(fade);
+    drawLabels(fade);
+  }
+
+  function updateHoverMask() {
+    if (!hoverMask) hoverMask = new Uint8Array(nodes.length);
+    if (hoverMask._idx === hoverIdx) return;
+    hoverMask._idx = hoverIdx;
+    hoverMask.fill(0);
+    if (hoverIdx >= 0) {
+      var nb = adj[hoverIdx];
+      for (var i = 0; i < nb.length; i++) hoverMask[nb[i]] = 1;
+    }
+  }
+
+  /* ─────────────────────────── 命中 ─────────────────────────── */
+
+  function pickNode(mx, my) {
+    var best = -1, bestScore = Infinity;
+    for (var i = 0; i < nodes.length; i++) {
+      var dx = mx - sx[i], dy = my - sy[i];
+      var r = nodes[i].wr * R * scl[i];
+      if (r < 1.55) r = 1.55;
+      var hit = Math.max(r + 6, 9);
+      var d2 = dx * dx + dy * dy;
+      if (d2 > hit * hit) continue;
+      var score = d2 - camZ[i] * 600;
+      if (score < bestScore) { bestScore = score; best = i; }
+    }
+    return best;
+  }
+
+  /* ─────────────────────────── 交互 ─────────────────────────── */
+
+  function onDown(e) {
+    markInteracted();
+    canvas.setPointerCapture(e.pointerId);
+    canvas.classList.add('dragging');
+    dragMode = 1;
+    lastPX = e.clientX;
+    lastPY = e.clientY;
+    idleTime = 0;
+    spinSamples.length = 0;
+    mouseX = e.clientX;
+    mouseY = e.clientY;
+    velX = 0;
+    velY = 0;
+    hoverIdx = -1;
+  }
+
+  function onMove(e) {
+    mouseX = e.clientX;
+    mouseY = e.clientY;
+    mouseInside = true;
+
+    if (dragMode === 0) {
+      idleTime = 0;
+      return;
+    }
+
+    var dx = e.clientX - lastPX;
+    var dy = e.clientY - lastPY;
+    if (dx === 0 && dy === 0) return;
+
+    applyDragRotation(dy, dx);
+    spinSamples.push([dx, dy]);
+    if (spinSamples.length > 6) spinSamples.shift();
+
+    if (MODES[modeKey].meteor && Math.abs(dx) > 13) {
+      meteorDragAcc += Math.abs(dx);
+      while (meteorDragAcc > 96) {
+        meteorDragAcc -= 96;
+        spawnOrbital({
+          dir: dx > 0 ? 1 : -1,
+          radius: 1.05 + rnd() * 0.06,
+          drift: 18 + rnd() * 30,
+          life: 0.5 + rnd() * 0.3,
+          width: 0.5 + rnd() * 0.45,
+          alpha: 0.6 + rnd() * 0.3
+        });
+      }
+    }
+
+    lastPX = e.clientX;
+    lastPY = e.clientY;
+  }
+
+  function onUp(e) {
+    canvas.classList.remove('dragging');
+
+    if (dragMode === 1) {
+      if (spinSamples.length) {
+        var sumX = 0, sumY = 0;
+        for (var i = 0; i < spinSamples.length; i++) {
+          sumX += spinSamples[i][0];
+          sumY += spinSamples[i][1];
+        }
+        var inv = 1 / spinSamples.length;
+        velY = sumX * inv * 0.0062 * 46;
+        velX = sumY * inv * 0.0062 * 46;
+        var mag = Math.sqrt(velX * velX + velY * velY);
+        if (mag > 1.6) {
+          velX *= 1.6 / mag;
+          velY *= 1.6 / mag;
+        }
+        if (mag < 0.02) { velX = 0; velY = 0; }
+
+        if (mag > 0.30 && MODES[modeKey].meteor) {
+          var dir = Math.abs(velY) > Math.abs(velX) ? (velY > 0 ? 1 : -1) : (velX > 0 ? 1 : -1);
+          trailDir = dir;
+          spawnBurst(clamp(mag * 0.85, 0.5, 1.3), dir);
+        }
+        if (Math.abs(velY) > 0.25) trailDir = velY > 0 ? 1 : -1;
+        trailKick = Math.min(1, trailKick + clamp(mag * 0.55, 0, 0.9));
+      }
+      dragMode = 0;
+      idleTime = 0;
+      spinSamples.length = 0;
+    }
+
+    try { canvas.releasePointerCapture(e.pointerId); } catch (err) {}
+  }
+
+  function onLeave() {
+    mouseInside = false;
+    mouseX = -9999;
+    mouseY = -9999;
+    hoverIdx = -1;
+  }
+
+  function flingNow() {
+    var dir = trailDir >= 0 ? -1 : 1;
+    doFling(1.0, dir);
+  }
+
+  /* ─────────────────────────── 面板 ─────────────────────────── */
+
+  function buildPanel() {
+    rowsEl.innerHTML = '';
+    for (var i = 0; i < layerKeys.length; i++) {
+      var k = layerKeys[i];
+      var v = LAYERS[k];
+      var row = document.createElement('div');
+      row.className = 'row' + (v.on ? ' on' : '');
+      row.dataset.k = k;
+      row.innerHTML =
+        '<div class="no">' + (i + 1) + '</div>' +
+        '<div class="bd">' +
+          '<div class="nm">' + v.name + '</div>' +
+          '<div class="ds">' + v.ds + '</div>' +
+        '</div>' +
+        '<span class="sw"></span>';
+      row.addEventListener('click', function () {
+        toggleLayer(this.dataset.k);
+      });
+      rowsEl.appendChild(row);
+    }
+    syncCompare();
+  }
+
+  function syncRows() {
+    var rows = rowsEl.children;
+    for (var i = 0; i < rows.length; i++) {
+      var k = rows[i].dataset.k;
+      rows[i].className = 'row' + (LAYERS[k].on ? ' on' : '');
+    }
+    syncCompare();
+    updateMeta();
+  }
+
+  function syncCompare() {
+    var any = false;
+    for (var i = 0; i < layerKeys.length; i++) {
+      if (LAYERS[layerKeys[i]].on) any = true;
+    }
+    allOff = !any;
+    compareBtn.innerHTML = allOff ? '恢复增味 <kbd>C</kbd>' : '对比现行 <kbd>C</kbd>';
+  }
+
+  function toggleLayer(k, force) {
+    var v = LAYERS[k];
+    if (!v) return;
+    v.on = force == null ? !v.on : !!force;
+    // 打开脉冲层就先送一轮，不用等悬停也能看见它是什么。
+    if (k === 'pulse' && v.on) {
+      setTimeout(function () { if (LAYERS.pulse.on) pulseDemo(); }, 420);
+    }
+    syncRows();
+  }
+
+  function compareNow() {
+    var makeOn = allOff;
+    for (var i = 0; i < layerKeys.length; i++) {
+      LAYERS[layerKeys[i]].on = makeOn;
+    }
+    if (makeOn) {
+      setTimeout(function () { if (LAYERS.pulse.on) pulseDemo(); }, 520);
+    }
+    syncRows();
+  }
+
+  function updateMeta() {
+    var bigN = 0;
+    for (var i = 0; i < ambients.length; i++) {
+      if (ambients[i].big) bigN++;
+    }
+    metaEl.innerHTML =
+      '<b>再添三味</b><br>' +
+      fpsShow + ' fps · ' + nodes.length + ' 节点<br>' +
+      pulses.length + ' 脉冲 · ' + bigN + ' 大彗星';
+  }
+
+  /* ─────────────────────────── 启动 ─────────────────────────── */
+
+  function init() {
+    buildGraph();
+    allocProjection();
+    ensureSprites();
+    buildPanel();
+    resize();
+
+    window.addEventListener('resize', function () {
+      resize();
+    });
+
+    canvas.addEventListener('pointerdown', onDown);
+    canvas.addEventListener('pointermove', onMove);
+    canvas.addEventListener('pointerup', onUp);
+    canvas.addEventListener('pointercancel', onUp);
+    canvas.addEventListener('pointerleave', onLeave);
+    canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+    window.addEventListener('keydown', function (e) {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        flingNow();
+        return;
+      }
+      if (e.key === 'c' || e.key === 'C') {
+        compareNow();
+        return;
+      }
+      if (e.key === 'p' || e.key === 'P') {
+        pulseDemo();
+        return;
+      }
+      var map = { '1': 'pulse', '2': 'lens', '3': 'bokeh' };
+      if (map[e.key]) toggleLayer(map[e.key]);
+    });
+
+    flingBtn.addEventListener('click', flingNow);
+    compareBtn.addEventListener('click', compareNow);
+    pulseBtn.addEventListener('click', pulseDemo);
+
+    var params = new URLSearchParams(location.search);
+    if (params.get('ui') === '0') document.body.classList.add('no-ui');
+    var layersParam = params.get('layers');
+    if (layersParam != null) {
+      var onSet = layersParam.split(',');
+      for (var li = 0; li < layerKeys.length; li++) {
+        var lay = LAYERS[layerKeys[li]];
+        lay.on = onSet.indexOf(layerKeys[li]) >= 0;
+        lay.mix = lay.on ? 1 : 0;
+      }
+      syncRows();
+    }
+
+    updateMeta();
+    setInterval(updateMeta, 400);
+
+    // 这一页是看静止状态的，默认不替用户甩；要甩用空格或按钮。
+    if (params.get('auto') === '1') {
+      setTimeout(function () {
+        if (!interacted) doFling(0.9, 1);
+      }, 1500);
+    }
+    // 开场自动演示一次脉冲，不然不悬停就看不到。
+    setTimeout(function () {
+      if (LAYERS.pulse.on) pulseDemo();
+    }, 2600);
+
+    requestAnimationFrame(frame);
+  }
+
+  // 给截图 / 调试用
+  window.__cosmosExtra = {
+    ready: true,
+    toggle: function (k, on) {
+      toggleLayer(k, on);
+      LAYERS[k].mix = LAYERS[k].on ? 1 : 0;
+    },
+    only: function (k) {
+      for (var i = 0; i < layerKeys.length; i++) {
+        LAYERS[layerKeys[i]].on = layerKeys[i] === k;
+        LAYERS[layerKeys[i]].mix = LAYERS[layerKeys[i]].on ? 1 : 0;
+      }
+      syncRows();
+    },
+    all: function (on) {
+      for (var i = 0; i < layerKeys.length; i++) {
+        LAYERS[layerKeys[i]].on = !!on;
+        LAYERS[layerKeys[i]].mix = on ? 1 : 0;
+      }
+      syncRows();
+    },
+    comet: spawnBigComet,
+    pulse: pulseDemo,
+    pick: function () {
+      var i = frontNode();
+      return i < 0 ? null : { i: i, x: sx[i], y: sy[i], n: adj[i].length };
+    },
+    pulses: function () { return pulses.slice(0, 6); },
+    fling: function (power, dir) { doFling(power == null ? 1 : power, dir); },
+    info: function () {
+      return {
+        velY: velY, skyShown: skyShown, skyRate: skyRateS,
+        meteors: meteors.length, big: ambients.filter(function (a) { return a.big; }).length,
+        pulses: pulses.length,
+        idleIn: idlePulseIn,
+        fps: fpsShow,
+        layers: layerKeys.map(function (k) { return LAYERS[k].on; })
+      };
+    }
+  };
+
+  init();
+})();
+</script>
+</body>
+</html>

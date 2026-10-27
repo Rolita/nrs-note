@@ -159,4 +159,21 @@ void main() {
     field.paintMeteors(canvas, const Size(1440, 900));
     recorder.endRecording().dispose();
   });
+
+  test('前景冷雾五团，重排尺寸后数量不变，没有图片也能画', () {
+    final CosmosField field = makeField();
+    expect(field.debugHazeCount, 5);
+
+    field.resize(const Size(1120, 720), 216);
+    expect(field.debugHazeCount, 5);
+
+    for (int i = 0; i < 10; i++) {
+      field.update(0.05, velX: 0, velY: 0, dragging: false, radius: 216);
+    }
+
+    final ui.PictureRecorder recorder = ui.PictureRecorder();
+    final Canvas canvas = Canvas(recorder);
+    field.paintHaze(canvas, const Size(1120, 720), radius: 216);
+    recorder.endRecording().dispose();
+  });
 }

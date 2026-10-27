@@ -61,7 +61,7 @@ Future<void> _pumpPane(
         ChangeNotifierProvider<NotesController>.value(value: notes),
       ],
       child: MaterialApp(
-        theme: AppTheme.build(AppPalette.dark),
+        theme: AppTheme.build(AppPalette.midnight),
         home: Scaffold(body: EditorPane(onDelete: (Note note) {})),
       ),
     ),
@@ -82,7 +82,7 @@ void main() {
 
   Widget build(String documentId) {
     return MaterialApp(
-      theme: AppTheme.build(AppPalette.dark),
+      theme: AppTheme.build(AppPalette.midnight),
       home: Scaffold(
         body: MarkdownEditor(
           controller: controller,
@@ -204,7 +204,7 @@ void main() {
           ChangeNotifierProvider<NotesController>.value(value: notes),
         ],
         child: MaterialApp(
-          theme: AppTheme.build(AppPalette.dark),
+          theme: AppTheme.build(AppPalette.midnight),
           home: Scaffold(body: EditorPane(onDelete: (Note note) {})),
         ),
       ),
@@ -323,7 +323,7 @@ void main() {
           ChangeNotifierProvider<NotesController>.value(value: notes),
         ],
         child: MaterialApp(
-          theme: AppTheme.build(AppPalette.dark),
+          theme: AppTheme.build(AppPalette.midnight),
           home: Scaffold(body: EditorPane(onDelete: (Note note) {})),
         ),
       ),

@@ -4,7 +4,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../core/app_enums.dart';
 import '../core/theme/app_palette.dart';
 import '../core/theme/app_tokens.dart';
-import '../core/theme/theme_presets.dart';
 import '../data/models/note.dart';
 import 'template_settings.dart';
 
@@ -17,11 +16,6 @@ class SettingsController extends ChangeNotifier {
 
   final SharedPreferences _prefs;
 
-  static const String _kTheme = 'nrs.theme';
-  static const String _kThemePreset = 'nrs.themePreset';
-
-  /// One overlay key per scheme: `nrs.themeOverride.obsidian` and friends.
-  static const String _kThemeOverride = 'nrs.themeOverride.';
   static const String _kSort = 'nrs.sort';
   static const String _kSidebar = 'nrs.sidebarCollapsed';
   static const String _kOutline = 'nrs.outlineVisible';
@@ -67,163 +61,15 @@ class SettingsController extends ChangeNotifier {
   }
 
   // ------------------------------------------------------------------ theme
-
-  ThemePreference get theme {
-    final String? raw = _prefs.getString(_kTheme);
-    return ThemePreference.values.firstWhere(
-      (ThemePreference e) => e.name == raw,
-      orElse: () => ThemePreference.system,
-    );
-  }
-
-  set theme(ThemePreference value) {
-    if (theme == value) return;
-    _prefs.setString(_kTheme, value.name);
-    notifyListeners();
-  }
-
-  // --------------------------------------------------------- colour scheme
   //
-  // 「配色方案」 and 「明暗模式」 are two orthogonal axes: the scheme picks which
-  // board, the mode picks which *face* of that board. `_kTheme` above keeps
-  // carrying the mode (system / light / dark); renaming it would throw away an
-  // existing install's light-or-dark choice.
+  // 只有一块色板：午夜靛（深色）。明暗模式、配色方案和自定义配色都在
+  // 2026-10-27 移除了——它们各自都要一套「读到不认识的存储值怎么办」的兜底，
+  // 而真正被用到的只有这一块。旧的偏好键（`nrs.theme`、`nrs.themePreset`、
+  // `nrs.themeOverride.*`）不再读也不再写，留在磁盘上不碍事。
 
-  /// The board the user picked. An unrecognised stored string falls back to
-  /// 曜石 — and is deliberately *not* rewritten, so a downgrade still reads.
-  ThemePresetId get themePreset {
-    final String? raw = _prefs.getString(_kThemePreset);
-    return ThemePresetId.values.firstWhere(
-      (ThemePresetId e) => e.name == raw,
-      orElse: () => ThemePresetId.fallback,
-    );
-  }
-
-  set themePreset(ThemePresetId value) {
-    if (themePreset == value) return;
-    _prefs.setString(_kThemePreset, value.name);
-    notifyListeners();
-  }
-
-  /// The user's edits to [preset], if any. The in-memory draft wins over what is
-  /// on disk, so a drag under the pointer is reflected the instant it moves.
-  ///
-  /// Each scheme keeps its own overlay, so editing 曜石 leaves 午夜靛's colours
-  /// exactly as they shipped.
-  PaletteOverride? overrideFor(ThemePresetId preset) {
-    final ({ThemePresetId preset, PaletteOverride board})? draft = _draft;
-    if (draft != null && draft.preset == preset) return draft.board;
-    return PaletteOverride.decode(
-      _prefs.getString(_overrideKey(preset)),
-      base: preset,
-    );
-  }
-
-  /// While the pointer is down: update the draft and notify, **do not write**.
-  ///
-  /// On Windows every `setString` rewrites the whole preferences file, so
-  /// committing on each drag frame would be sixty file writes per second.
-  void previewOverride(ThemePresetId preset, PaletteOverride value) {
-    _draft = (preset: preset, board: value);
-    notifyListeners();
-  }
-
-  /// On pointer-up / on committing a hex field: write it out and drop the draft.
-  void commitOverride(ThemePresetId preset, PaletteOverride value) {
-    final String key = _overrideKey(preset);
-    final bool unchanged = _prefs.getString(key) == value.raw;
-    _draft = null;
-    if (unchanged) return;
-    _prefs.setString(key, value.raw);
-    notifyListeners();
-  }
-
-  /// Drops [preset]'s overlay entirely, putting its built-in board back in
-  /// force. Used by the editor's 「重置」 when it is committed.
-  void clearOverride(ThemePresetId preset) {
-    final String key = _overrideKey(preset);
-    final ({ThemePresetId preset, PaletteOverride board})? draft = _draft;
-    final bool hadDraft = draft != null && draft.preset == preset;
-    final bool hadStored = _prefs.containsKey(key);
-    _draft = hadDraft ? null : draft;
-    if (hadStored) _prefs.remove(key);
-    if (hadDraft || hadStored) notifyListeners();
-  }
-
-  /// Rolls the scheme *and that scheme's overlay* back to [snapshot] — the
-  /// editor's 「取消」.
-  ///
-  /// The snapshot is a whole pair, so a user who was on 曜石 with no overlay,
-  /// opened the editor and cancelled comes back to 曜石 with nothing left
-  /// behind.
-  void restoreTheme(
-    ({ThemePresetId preset, PaletteOverride? override}) snapshot,
-  ) {
-    _draft = null;
-    if (snapshot.preset == ThemePresetId.fallback) {
-      _prefs.remove(_kThemePreset);
-    } else {
-      _prefs.setString(_kThemePreset, snapshot.preset.name);
-    }
-    final String key = _overrideKey(snapshot.preset);
-    final PaletteOverride? layer = snapshot.override;
-    if (layer == null) {
-      _prefs.remove(key);
-    } else {
-      _prefs.setString(key, layer.raw);
-    }
-    notifyListeners();
-  }
-
-  /// The palette in force for a given face of the current scheme.
-  ///
-  /// `ThemePresets.resolve` builds a fresh [AppPalette] every call, and the
-  /// editor's line layout identifies a theme by that instance
-  /// (`LiveLineStyle.styleKey`). Handing out a new instance on every build
-  /// would make it re-lay out the whole document while a theme switch is
-  /// animating — once per frame. This keeps one instance per
-  /// `(preset, brightness, overlay)`, so the palette only changes when the
-  /// colours actually do.
-  AppPalette paletteFor(Brightness brightness) {
-    final ThemePresetId preset = themePreset;
-    final String layer = _layerOf(preset);
-    final (String, AppPalette)? hit = _palettes[(preset, brightness)];
-    if (hit != null && hit.$1 == layer) return hit.$2;
-    final AppPalette built = ThemePresets.resolve(
-      preset: preset,
-      override: overrideFor(preset),
-      brightness: brightness,
-    );
-    _palettes[(preset, brightness)] = (layer, built);
-    return built;
-  }
-
-  /// 每个（预设 × 明暗）只留一格：覆盖层一变（拖动取色）就换新实例。
-  final Map<(ThemePresetId, Brightness), (String, AppPalette)> _palettes =
-      <(ThemePresetId, Brightness), (String, AppPalette)>{};
-
-  /// 当前预设覆盖层的原始串（草稿优先）。
-  String _layerOf(ThemePresetId preset) {
-    final ({ThemePresetId preset, PaletteOverride board})? draft = _draft;
-    return draft != null && draft.preset == preset
-        ? draft.board.raw
-        : _prefs.getString(_overrideKey(preset)) ?? '';
-  }
-
-  /// Memo key for the two `ThemeData` objects: any change to either key, or to
-  /// the draft, changes it.
-  String get themeSignature => '${themePreset.name}|${_layerOf(themePreset)}';
-
-  /// True while the editor dialog is open, so `MaterialApp` can drop its theme
-  /// tween: frame-by-frame cross-fades between a colour and the finger that is
-  /// dragging it feel sticky, and mid-tween boards briefly report a stale
-  /// `isDark`.
-  bool themeEditing = false;
-
-  ({ThemePresetId preset, PaletteOverride board})? _draft;
-
-  static String _overrideKey(ThemePresetId preset) =>
-      '$_kThemeOverride${preset.name}';
+  /// 全应用的颜色。返回的是同一个 `const` 实例，所以 `LiveLineStyle` 那种
+  /// 「按实例判断主题变没变」的地方天然稳定，不会因为一次重建就重排全文。
+  AppPalette get palette => AppPalette.midnight;
 
   // ------------------------------------------------------------------ sorting
 

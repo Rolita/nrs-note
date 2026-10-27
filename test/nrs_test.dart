@@ -1332,7 +1332,7 @@ Setext 标题
     // scrolling the caret line into view — from this number. Counting headings
     // as body rows used to land every jump short by the headings it had passed.
     const TextStyle base = TextStyle(fontSize: 15.5, height: 1.78);
-    const AppPalette palette = AppPalette.light;
+    const AppPalette palette = AppPalette.midnight;
     const int target = 6;
 
     double above(String text) =>
@@ -1376,7 +1376,7 @@ Setext 标题
 
   group('Table', () {
     const TextStyle base = TextStyle(fontSize: 15.5, height: 1.78);
-    const AppPalette palette = AppPalette.light;
+    const AppPalette palette = AppPalette.midnight;
     // `| a | b |` forms; the divider makes the row above it the header.
     const String doc = '| 想要 | 就写 |\n| --- | --- |\n| **加粗** | `Ctrl + B` |\n';
     // 表格几何由 `LiveTableBlocks` 自绘承担：直接读它交给渲染层的行/列矩形

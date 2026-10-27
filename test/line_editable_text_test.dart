@@ -530,7 +530,7 @@ void main() {
   group('live 行样式', () {
     final LiveLineStyle styles = LiveLineStyle(
       base: _style,
-      palette: AppPalette.light,
+      palette: AppPalette.midnight,
     );
 
     test('标题放大、代码等宽、围栏折叠', () {
@@ -577,7 +577,7 @@ void main() {
       // 光标落进标签：标签退回源码，底片不再画，内边距一起收掉。
       final LiveLineStyle lit = LiveLineStyle(
         base: styles.base,
-        palette: AppPalette.light,
+        palette: AppPalette.midnight,
         reveal: () => const TextSelection.collapsed(offset: 1),
       );
       expect(lit.insetFor(line), EdgeInsets.zero);
@@ -588,7 +588,7 @@ void main() {
       final List<SourceLine> lines = scanSourceLines(text);
       final LiveLineStyle styled = LiveLineStyle(
         base: _style,
-        palette: AppPalette.light,
+        palette: AppPalette.midnight,
         source: text,
       );
       final InlineSpan span = styled.spanFor(lines[1]);
@@ -608,7 +608,7 @@ void main() {
 
       expect(fills, hasLength(1));
       expect(line.text.substring(fills.single.from, fills.single.to), '#日常');
-      expect(fills.single.fill, AppPalette.light.accentSoft);
+      expect(fills.single.fill, AppPalette.midnight.accentSoft);
       expect(fills.single.radius, 5);
       expect(fills.single.padX, 6);
       expect(fills.single.padY, 1);
@@ -620,16 +620,16 @@ void main() {
       final SourceLine line = scanSourceLines('前 #日常 后').single;
       final LiveLineStyle lit = LiveLineStyle(
         base: styles.base,
-        palette: AppPalette.light,
+        palette: AppPalette.midnight,
         hoverTag: const TextRange(start: 2, end: 5),
       );
 
-      expect(lit.fillsFor(line).single.fill, AppPalette.light.accent);
+      expect(lit.fillsFor(line).single.fill, AppPalette.midnight.accent);
       final TextSpan span = lit.spanFor(line) as TextSpan;
       final TextSpan tag = span.children!.whereType<TextSpan>().firstWhere(
         (TextSpan s) => s.text == '#日常',
       );
-      expect(tag.style!.color, AppPalette.light.onAccent);
+      expect(tag.style!.color, AppPalette.midnight.onAccent);
     });
 
     testWidgets('代码行的光标退进卡片内边距', (WidgetTester tester) async {

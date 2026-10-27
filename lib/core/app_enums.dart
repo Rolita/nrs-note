@@ -1,22 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
-enum ThemePreference {
-  system('跟随系统', LucideIcons.sunMoon),
-  light('浅色', LucideIcons.sun),
-  dark('深色', LucideIcons.moon);
-
-  const ThemePreference(this.label, this.icon);
-  final String label;
-  final IconData icon;
-
-  ThemeMode get mode => switch (this) {
-    ThemePreference.system => ThemeMode.system,
-    ThemePreference.light => ThemeMode.light,
-    ThemePreference.dark => ThemeMode.dark,
-  };
-}
-
 /// File-tree order. Folders always come before files; the mode decides the order
 /// inside each folder.
 enum SortMode {

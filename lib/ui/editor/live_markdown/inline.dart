@@ -18,10 +18,10 @@ String? _codeLabel(String language) {
 
 /// 把一段代码的 token 转成带颜色的 span 子节点。
 ///
-/// 按行排版与旧的段落排版共用：颜色只由明暗决定，代码块不会因为光标移动而
-/// 换色。
-List<InlineSpan> codeHighlightSpans(List<CodeToken> tokens, bool isDark) {
-  final CodePalette c = CodePalette.forDark(isDark);
+/// 按行排版与旧的段落排版共用：颜色是一套固定的（[CodePalette.dark]），代码块
+/// 不会因为光标移动或换主题而换色。
+List<InlineSpan> codeHighlightSpans(List<CodeToken> tokens) {
+  const CodePalette c = CodePalette.dark;
   return <InlineSpan>[
     for (final CodeToken t in tokens)
       TextSpan(
@@ -254,12 +254,12 @@ List<InlineSpan> _inline(
     } else if (token.startsWith('==')) {
       final String inner = token.substring(2, token.length - 2);
       spans.add(TextSpan(text: '==', style: mark));
-      // 亮色底片不动字色；暗色的荧光金底必须把字压深，否则亮字落在亮金上
-      // 读不出来。光标进来（`open`）时底片撤掉，字色一起回到正文色。
+      // 荧光金底必须把字压深，否则亮字落在亮金上读不出来。光标进来
+      // （`open`）时底片撤掉，字色一起回到正文色。
       spans.add(
         TextSpan(
           text: inner,
-          style: open ? style : HighlightColors.inkOn(p, style),
+          style: open ? style : style.copyWith(color: HighlightColors.darkInk),
         ),
       );
       spans.add(TextSpan(text: '==', style: mark));
@@ -275,7 +275,7 @@ List<InlineSpan> _inline(
             end: m.end - 2,
             probe: inner,
             style: style,
-            fill: HighlightColors.band(p),
+            fill: HighlightColors.darkFill,
             radius: kHighlightRadius,
             padX: kHighlightPadX,
             isCode: false,

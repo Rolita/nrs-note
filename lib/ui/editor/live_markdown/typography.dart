@@ -32,7 +32,7 @@ TextStyle _headingStyle(TextStyle base, AppPalette p, int level) {
   );
 }
 
-TextStyle _codeLine(TextStyle base, AppPalette p) {
+TextStyle _codeLine(TextStyle base) {
   // 0.84 of the body size: the design sheet's `pre code` is 12.5px against a
   // 15px paragraph. Code used to be 0.94, which made a fenced block read as
   // loudly as the prose around it.
@@ -46,7 +46,7 @@ TextStyle _codeLine(TextStyle base, AppPalette p) {
     // read line by line, and body leading (1.78) made a snippet look
     // double-spaced next to the reference.
     height: snapLineHeight(s, 1.5),
-    color: CodePalette.forDark(p.isDark).plain,
+    color: CodePalette.dark.plain,
     letterSpacing: 0,
   );
 }
@@ -226,7 +226,7 @@ TextStyle liveHeadingStyle(TextStyle base, AppPalette p, int level) =>
     _headingStyle(base, p, level);
 
 /// 围栏代码块里一行的排版样式（等宽、小一号）。
-TextStyle liveCodeLineStyle(TextStyle base, AppPalette p) => _codeLine(base, p);
+TextStyle liveCodeLineStyle(TextStyle base) => _codeLine(base);
 
 /// 折叠行：语法字符不落墨，但仍在文本里占着原来的偏移。
 TextStyle liveCollapsedStyle(TextStyle base) => _collapsed(base);

@@ -125,13 +125,13 @@ class LiveLineStyle implements LineStyleKeyed {
             ? liveHeadingStyle(base, palette, line.headingLevel)
             : base;
       case LineBlockKind.code:
-        return liveCodeLineStyle(base, palette);
+        return liveCodeLineStyle(base);
       case LineBlockKind.fence:
         // 折叠的围栏不落墨：它只占住卡片头那一行，源码本来就不该在画面上。
         // 光标落上去时才展开成一行源码。
         if (!_revealed(line)) return liveCollapsedStyle(base);
         return liveMarkerStyle(
-          liveCodeLineStyle(base, palette),
+          liveCodeLineStyle(base),
           palette,
           accented: true,
         );
@@ -192,7 +192,7 @@ class LiveLineStyle implements LineStyleKeyed {
         style: style,
         children: tokens == null
             ? <InlineSpan>[TextSpan(text: body)]
-            : codeHighlightSpans(tokens, palette.isDark),
+            : codeHighlightSpans(tokens),
       );
       return highlighted.toPlainText() == body
           ? highlighted

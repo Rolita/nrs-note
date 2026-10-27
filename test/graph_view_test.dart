@@ -53,7 +53,7 @@ Future<Harness> pumpGraph(
   final GlobalKey<GraphViewState> key = GlobalKey<GraphViewState>();
   await tester.pumpWidget(
     MaterialApp(
-      theme: AppTheme.build(AppPalette.dark),
+      theme: AppTheme.build(AppPalette.midnight),
       home: Scaffold(
         body: GraphView(
           key: key,
@@ -742,6 +742,55 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('孤立笔记'), findsNothing, reason: '再点收起');
       expect(find.text('图谱设置'), findsOneWidget);
+    });
+  });
+
+  group('信号脉冲', () {
+    testWidgets('悬停节点时沿连线送光点，移开后自然消散', (WidgetTester tester) async {
+      final Harness h = await pumpGraph(tester);
+      final Offset empty =
+          tester.getTopLeft(find.byKey(h.view.debugStageKey)) +
+          const Offset(500, 16);
+
+      expect(
+        h.view.debugPulseCount,
+        0,
+        reason: '测试环境不自转，静止时不该有自发脉冲',
+      );
+
+      final TestGesture mouse = await hoverAt(tester, nodeAt(tester, h, 'a'));
+      expect(h.view.debugPulseCount, greaterThan(0), reason: 'A 有两条连线');
+      expect(h.view.debugPulseRingCount, greaterThan(0), reason: '源节点先震一圈');
+
+      await mouse.moveTo(empty);
+      await tester.pumpAndSettle();
+      expect(h.view.debugPulseCount, 0, reason: '光点走完就结束，不留残影');
+      expect(h.view.debugPulseRingCount, 0);
+    });
+
+    testWidgets('右键钉住的中心也一直供能，鼠标移开不熄', (
+      WidgetTester tester,
+    ) async {
+      final Harness h = await pumpGraph(tester);
+
+      final TestGesture mouse = await tester.startGesture(
+        nodeAt(tester, h, 'a'),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await mouse.up();
+      await mouse.removePointer();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 16));
+
+      expect(
+        h.view.debugPulseCount,
+        greaterThan(0),
+        reason: '钉住的 a 是焦点，脉冲从它出发，不依赖鼠标还停在那儿',
+      );
+
+      await tester.pumpAndSettle();
+      expect(h.view.debugPulseCount, 0, reason: '这一轮走完就收，不常驻');
     });
   });
 }

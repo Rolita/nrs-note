@@ -4,6 +4,7 @@ import 'package:web/web.dart' as web;
 
 import '../../core/utils/canvas_document.dart';
 import 'canvas_store.dart';
+import 'note_store.dart' show TrashEntry;
 
 /// 浏览器端：白板存在 `localStorage` 里，和笔记一个路子。
 ///
@@ -85,6 +86,19 @@ class WebCanvasStore implements CanvasStore {
     }
     throw CanvasPathTaken('$base$canvasExtension');
   }
+
+  @override
+  Future<TrashEntry?> delete(String relativePath) async {
+    await init();
+    // 浏览器端没有回收站：删掉就是删掉，返回 null 让上层不要说「已移入
+    // 回收站」——那句话在这里是谎话，也没有撤销可做。
+    _cache.remove(relativePath);
+    web.window.localStorage.removeItem('$_prefix$relativePath');
+    return null;
+  }
+
+  @override
+  Future<bool> restoreTrash(String entryId) async => false;
 
   /// 调试用：把缓存里的东西打成一段 JSON。
   String debugDump() => jsonEncode(_cache);

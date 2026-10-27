@@ -11,7 +11,6 @@ import 'package:nrs/app.dart';
 import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/core/theme/app_theme.dart';
 import 'package:nrs/core/theme/highlight_colors.dart';
-import 'package:nrs/core/theme/theme_presets.dart';
 import 'package:nrs/core/utils/table_model.dart';
 import 'package:nrs/core/utils/table_selection.dart';
 import 'package:nrs/data/models/note.dart';
@@ -48,7 +47,7 @@ void main() {
     );
     await tester.pumpWidget(
       MaterialApp(
-        theme: AppTheme.build(AppPalette.light),
+        theme: AppTheme.build(AppPalette.midnight),
         home: Scaffold(
           body: MarkdownEditor(
             controller: controller,
@@ -113,7 +112,7 @@ void main() {
     addTearDown(titleFocus.dispose);
     await tester.pumpWidget(
       MaterialApp(
-        theme: AppTheme.build(AppPalette.light),
+        theme: AppTheme.build(AppPalette.midnight),
         home: Scaffold(
           body: MarkdownEditor(
             controller: MarkdownSourceController(text: '正文'),
@@ -137,7 +136,7 @@ void main() {
     );
     expect(
       titleField.selectionColor,
-      AppPalette.light.selection,
+      AppPalette.midnight.selection,
       reason: '标题的选区高亮必须是可见的',
     );
     expect(
@@ -156,7 +155,7 @@ void main() {
         .first;
 
     LineFillRun fill() => field.lineLayout!.laidOut.single.fills.single;
-    expect(fill().fill, AppPalette.light.accentSoft);
+    expect(fill().fill, AppPalette.midnight.accentSoft);
 
     final Rect local = field.getLocalRectForCaret(
       const TextPosition(offset: 3),
@@ -165,11 +164,11 @@ void main() {
     final TestPointer mouse = TestPointer(1, PointerDeviceKind.mouse);
     await tester.sendEventToBinding(mouse.hover(caret.center));
     await tester.pumpAndSettle();
-    expect(fill().fill, AppPalette.light.accent, reason: '悬停应换成实心胶囊');
+    expect(fill().fill, AppPalette.midnight.accent, reason: '悬停应换成实心胶囊');
 
     await tester.sendEventToBinding(mouse.hover(Offset.zero));
     await tester.pumpAndSettle();
-    expect(fill().fill, AppPalette.light.accentSoft, reason: '移开应恢复');
+    expect(fill().fill, AppPalette.midnight.accentSoft, reason: '移开应恢复');
   });
 
   testWidgets('行首标签的胶囊与行中标签同形，左边内边距不被裁掉', (WidgetTester tester) async {
@@ -250,7 +249,7 @@ void main() {
     WidgetTester tester,
     String text,
     TextSelection selection, {
-    AppPalette palette = AppPalette.light,
+    AppPalette palette = AppPalette.midnight,
     TextSelection? frozen,
     ImageProvider? Function(String)? imageProviderFor,
   }) async {
@@ -322,7 +321,7 @@ void main() {
     for (int x = 0; x < px.width; x++) {
       int n = 0;
       for (int y = 0; y < px.height; y++) {
-        if (px.isColor(AppPalette.light.accentSoft, x, y)) n++;
+        if (px.isColor(AppPalette.midnight.accentSoft, x, y)) n++;
       }
       if (n > 4) {
         start ??= x;
@@ -1922,8 +1921,8 @@ void main() {
   ) async {
     const String text = '第一行文字\n第二行文字\n第三行文字';
     for (final AppPalette palette in <AppPalette>[
-      AppPalette.light,
-      AppPalette.dark,
+      AppPalette.midnight,
+      AppPalette.midnight,
     ]) {
       final _Pixels px = await shoot(
         tester,
@@ -2042,7 +2041,7 @@ void main() {
       text,
       TextSelection.collapsed(offset: text.length),
     );
-    final Color band = HighlightColors.band(px.palette);
+    final Color band = HighlightColors.darkFill;
 
     int top = -1;
     int bottom = -1;
@@ -2075,7 +2074,7 @@ void main() {
       tester,
       text,
       TextSelection.collapsed(offset: text.length),
-      palette: AppPalette.dark,
+      palette: AppPalette.midnight,
     );
 
     int band = 0;
@@ -2093,7 +2092,7 @@ void main() {
       tester,
       text,
       const TextSelection.collapsed(offset: 3),
-      palette: AppPalette.dark,
+      palette: AppPalette.midnight,
     );
     int litWhileEditing = 0;
     int inkWhileEditing = 0;
@@ -2117,7 +2116,7 @@ void main() {
         text,
         TextSelection.collapsed(offset: at),
       );
-      final Color band = HighlightColors.band(px.palette);
+      final Color band = HighlightColors.darkFill;
       int lit = 0;
       for (int y = 0; y < px.height; y++) {
         for (int x = 0; x < px.width; x++) {
@@ -2366,8 +2365,8 @@ void main() {
     ) async {
       const String text = '短句\n\n另一句\n';
       for (final AppPalette palette in <AppPalette>[
-        AppPalette.light,
-        AppPalette.dark,
+        AppPalette.midnight,
+        AppPalette.midnight,
       ]) {
         final _Pixels px = await shoot(
           tester,
@@ -2696,7 +2695,7 @@ void main() {
     final FocusNode focus = FocusNode();
     addTearDown(focus.dispose);
     final GlobalKey key = GlobalKey();
-    final AppPalette p = AppPalette.light;
+    final AppPalette p = AppPalette.midnight;
 
     await tester.pumpWidget(
       MaterialApp(
@@ -2814,7 +2813,7 @@ void main() {
     final FocusNode focus = FocusNode();
     addTearDown(focus.dispose);
     final GlobalKey key = GlobalKey();
-    final AppPalette p = AppPalette.light;
+    final AppPalette p = AppPalette.midnight;
 
     await tester.pumpWidget(
       MaterialApp(
@@ -3143,7 +3142,7 @@ void main() {
       TableRange.columnsOf(block, 1, 1).toTextSelection(),
       // The theme in the report: its selection is blue, so a tinted chip cannot
       // be confused with the neutral wash or with antialiased glyphs.
-      palette: ThemePresets.of(ThemePresetId.midnight).dark,
+      palette: AppPalette.midnight,
     );
 
     final List<List<int>> bands = px.bandsOf(px.palette.selectionEdge, 40);
@@ -3559,7 +3558,7 @@ void main() {
         // 桌面才有滚动条：`MaterialScrollBehavior` 只在 linux / macOS / windows
         // 上给竖向滚动视图加条，主题里的 platform 就是它读到的那一个。
         theme: AppTheme.build(
-          AppPalette.light,
+          AppPalette.midnight,
         ).copyWith(platform: TargetPlatform.windows),
         scrollBehavior: const NrsScrollBehavior(),
         home: Scaffold(

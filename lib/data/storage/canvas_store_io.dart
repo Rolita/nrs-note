@@ -5,6 +5,8 @@ import 'package:path_provider/path_provider.dart';
 import '../../core/utils/canvas_document.dart';
 import 'atomic_file.dart';
 import 'canvas_store.dart';
+import 'note_store.dart' show TrashEntry;
+import 'trash_store.dart';
 
 /// 桌面端：vault 里的真实 `.nrs` 文件。
 ///
@@ -139,6 +141,60 @@ class IoCanvasStore implements CanvasStore {
         flush: true,
       );
       return relative;
+    }
+    throw CanvasPathTaken('$base$canvasExtension');
+  }
+
+  @override
+  Future<TrashEntry?> delete(String relativePath) async {
+    final Directory root = await _vault;
+    final File file = File(_absolute(relativePath));
+    if (!await file.exists()) return null;
+    // 和笔记共用一个回收站：用户点一次「回收站」就该看到所有删掉的东西，
+    // 而不是按文件类型分成两处。
+    return TrashStore(root).move(file, relativePath);
+  }
+
+  @override
+  Future<bool> restoreTrash(String entryId) async {
+    final Directory root = await _vault;
+    final TrashStore trash = TrashStore(root);
+    final TrashRecord? record = await trash.read(entryId);
+    if (record == null) return false;
+    final String original = record.entry.originalPath;
+    if (!isSafeCanvasPath(original)) return false;
+    try {
+      await write(await _freePath(original), record.markdown);
+    } catch (_) {
+      // 写不回去就把条目留在回收站：宁可多一条，不能两边都没有。
+      return false;
+    }
+    await trash.purge(entryId);
+    return true;
+  }
+
+  /// 恢复时的落点：原路径还空着就原位回去，被占了就退到 ` 2`、` 3`。
+  ///
+  /// 不覆盖是硬要求——用户可能是「删了旧白板、又新建了一块同名的」，
+  /// 恢复时把新的顶掉，等于删了两次。
+  Future<String> _freePath(String originalPath) async {
+    final String clean = originalPath
+        .replaceAll('\\', '/')
+        .replaceFirst(RegExp(r'^/+'), '');
+    final int slash = clean.lastIndexOf('/');
+    final String folder = slash < 0 ? '' : clean.substring(0, slash);
+    final String name = slash < 0 ? clean : clean.substring(slash + 1);
+    final String base = name.toLowerCase().endsWith(canvasExtension)
+        ? name.substring(0, name.length - canvasExtension.length)
+        : name;
+    for (int n = 1; n < 1000; n++) {
+      final String candidate = n == 1
+          ? '$base$canvasExtension'
+          : '$base $n$canvasExtension';
+      final String relative = folder.isEmpty
+          ? candidate
+          : '$folder/$candidate';
+      if (!await File(_absolute(relative)).exists()) return relative;
     }
     throw CanvasPathTaken('$base$canvasExtension');
   }

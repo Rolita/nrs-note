@@ -111,7 +111,7 @@ abstract final class AppTheme {
           vertical: AppSpace.xs + 1,
         ),
         decoration: BoxDecoration(
-          color: p.textPrimary.withValues(alpha: p.isDark ? 0.94 : 0.92),
+          color: p.textPrimary.withValues(alpha: 0.94),
           borderRadius: AppRadius.smAll,
         ),
       ),

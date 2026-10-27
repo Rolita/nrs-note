@@ -86,7 +86,7 @@ void main() {
   }) async {
     await tester.pumpWidget(
       MaterialApp(
-        theme: AppTheme.build(AppPalette.dark),
+        theme: AppTheme.build(AppPalette.midnight),
         home: NoticeScope(
           controller: notices,
           child: Scaffold(

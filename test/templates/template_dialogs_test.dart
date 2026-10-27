@@ -30,7 +30,7 @@ Future<_Probe<T>> _openDialog<T>(
   final _Probe<T> probe = _Probe<T>();
   await tester.pumpWidget(
     MaterialApp(
-      theme: AppTheme.build(AppPalette.light),
+      theme: AppTheme.build(AppPalette.midnight),
       home: Scaffold(
         body: Builder(
           builder: (BuildContext context) => TextButton(
