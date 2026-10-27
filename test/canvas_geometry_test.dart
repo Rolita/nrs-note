@@ -6,129 +6,185 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nrs/core/utils/canvas_geometry.dart';
 
 void main() {
-  group('视口', () {
-    test('世界 ↔ 屏幕往返不丢精度', () {
-      const CanvasViewport vp = CanvasViewport(
-        zoom: 1.7,
-        offset: Offset(-240, 80),
-      );
-      const Offset world = Offset(123.5, -47.25);
+  group('摄像机', () {
+    const Size stage = Size(1000, 800);
 
-      final Offset screen = vp.toScreen(world);
+    test('默认：中心对准原点、缩放 1', () {
+      const CanvasCamera cam = CanvasCamera();
 
-      expect(vp.toWorld(screen).dx, closeTo(world.dx, 1e-9));
-      expect(vp.toWorld(screen).dy, closeTo(world.dy, 1e-9));
+      expect(cam.center, Offset.zero);
+      expect(cam.zoom, 1);
+      expect(cam.toScreen(Offset.zero, stage), const Offset(500, 400));
+      expect(cam.toWorld(const Offset(500, 400), stage), Offset.zero);
     });
 
-    test('矩形往返也一致', () {
-      const CanvasViewport vp = CanvasViewport(
-        zoom: 0.6,
-        offset: Offset(12, -8),
+    test('屏幕与世界互逆', () {
+      const CanvasCamera cam = CanvasCamera(
+        center: Offset(120, -40),
+        zoom: 2.5,
       );
-      const Rect world = Rect.fromLTWH(-30, 40, 200, 120);
+      const Offset world = Offset(33.5, 71.25);
 
-      final Rect back = vp.rectToWorld(vp.rectToScreen(world));
+      final Offset back = cam.toWorld(cam.toScreen(world, stage), stage);
+      expect(back.dx, closeTo(world.dx, 1e-9));
+      expect(back.dy, closeTo(world.dy, 1e-9));
+    });
 
+    test('rect 的两个方向也互逆', () {
+      const CanvasCamera cam = CanvasCamera(
+        center: Offset(-17, 33),
+        zoom: 0.6,
+      );
+      const Rect world = Rect.fromLTWH(10, 20, 250, 120);
+
+      final Rect back = cam.rectToWorld(cam.rectToScreen(world, stage), stage);
       expect(back.left, closeTo(world.left, 1e-9));
       expect(back.top, closeTo(world.top, 1e-9));
       expect(back.width, closeTo(world.width, 1e-9));
       expect(back.height, closeTo(world.height, 1e-9));
     });
 
-    test('以光标为锚点缩放，那个点停在原地', () {
-      const CanvasViewport vp = CanvasViewport(
-        zoom: 1,
-        offset: Offset(30, -10),
+    test('visibleWorld 是整块画布对应的世界矩形', () {
+      const CanvasCamera cam = CanvasCamera(zoom: 2, center: Offset(100, 100));
+      final Rect v = cam.visibleWorld(stage);
+
+      expect(v.width, closeTo(500, 1e-9));
+      expect(v.height, closeTo(400, 1e-9));
+      expect(v.center, const Offset(100, 100));
+    });
+
+    test('平移：拖动多少屏幕像素，内容就跟多少', () {
+      const CanvasCamera cam = CanvasCamera(zoom: 2, center: Offset(10, 20));
+      final CanvasCamera moved = cam.pannedBy(const Offset(-30, 5));
+
+      // 世界中心反向走 delta/zoom
+      expect(moved.center, const Offset(25, 17.5));
+      // 同一个世界点的屏幕位置正好跟着走
+      expect(
+        moved.toScreen(const Offset(10, 20), stage) -
+            cam.toScreen(const Offset(10, 20), stage),
+        const Offset(-30, 5),
       );
-      const Offset anchor = Offset(400, 300);
-      final Offset worldBefore = vp.toWorld(anchor);
+    });
 
-      final CanvasViewport zoomed = vp.zoomedAt(anchor, 2.4);
+    test('movedTo 只改中心', () {
+      const CanvasCamera cam = CanvasCamera(zoom: 1.7);
+      final CanvasCamera moved = cam.movedTo(const Offset(5, 6));
 
-      final Offset screenAfter = zoomed.toScreen(worldBefore);
-      expect(screenAfter.dx, closeTo(anchor.dx, 1e-9));
-      expect(screenAfter.dy, closeTo(anchor.dy, 1e-9));
+      expect(moved.center, const Offset(5, 6));
+      expect(moved.zoom, 1.7);
+    });
+
+    test('以光标为锚点缩放：锚点下的世界坐标不动', () {
+      const CanvasCamera cam = CanvasCamera(zoom: 1);
+      const Offset anchor = Offset(120, 260);
+      final Offset worldBefore = cam.toWorld(anchor, stage);
+
+      final CanvasCamera zoomed = cam.zoomedAt(anchor, 2.4, stage);
+
       expect(zoomed.zoom, closeTo(2.4, 1e-9));
+      expect(zoomed.toWorld(anchor, stage).dx, closeTo(worldBefore.dx, 1e-9));
+      expect(zoomed.toWorld(anchor, stage).dy, closeTo(worldBefore.dy, 1e-9));
     });
 
-    test('缩放到上限就停住，不会越界', () {
-      const CanvasViewport vp = CanvasViewport(zoom: 3, offset: Offset.zero);
+    test('放大没有上限', () {
+      const CanvasCamera cam = CanvasCamera(zoom: 3, center: Offset.zero);
 
-      final CanvasViewport zoomed = vp.zoomedAt(Offset.zero, 10);
-
-      expect(zoomed.zoom, CanvasViewport.maxZoom);
-    });
-
-    test('缩放到下限就停住', () {
-      const CanvasViewport vp = CanvasViewport(zoom: 0.2, offset: Offset.zero);
-
-      expect(vp.zoomedAt(Offset.zero, 0.001).zoom, CanvasViewport.minZoom);
-    });
-
-    test('已经在上限时缩放不改 offset（避免无意义的重绘）', () {
-      const CanvasViewport vp = CanvasViewport(
-        zoom: CanvasViewport.maxZoom,
-        offset: Offset(5, 5),
+      expect(cam.zoomedAt(Offset.zero, 10, stage).zoom, closeTo(30, 1e-9));
+      expect(
+        cam.zoomedAt(Offset.zero, 10000, stage).zoom,
+        closeTo(30000, 1e-6),
       );
-
-      final CanvasViewport zoomed = vp.zoomedAt(const Offset(100, 100), 2);
-
-      expect(zoomed.offset, vp.offset);
     });
 
-    test('withZoomAt 精确回到 100%', () {
-      const CanvasViewport vp = CanvasViewport(
-        zoom: 0.37,
-        offset: Offset(-90, 40),
+    test('缩小的下限只挡住 0', () {
+      const CanvasCamera cam = CanvasCamera(zoom: 0.2);
+
+      expect(
+        cam.zoomedAt(Offset.zero, 1e-12, stage).zoom,
+        CanvasCamera.minZoom,
       );
-
-      final CanvasViewport reset = vp.withZoomAt(const Offset(500, 400), 1);
-
-      expect(reset.zoom, closeTo(1, 1e-9));
-      expect(reset.toScreen(vp.toWorld(const Offset(500, 400))).dx,
-          closeTo(500, 1e-9));
+      expect(CanvasCamera.minZoom, greaterThan(0));
+      expect(CanvasCamera.minZoom, lessThan(0.08), reason: '8% 不再是墙');
     });
 
-    test('pannedBy 只动 offset', () {
-      const CanvasViewport vp = CanvasViewport(
-        zoom: 1.5,
-        offset: Offset(10, 20),
+    test('放到极大时锚点照样不跑', () {
+      const CanvasCamera cam = CanvasCamera(zoom: 1e5, center: Offset(3, 4));
+      const Offset anchor = Offset(100, 100);
+      final CanvasCamera zoomed = cam.zoomedAt(anchor, 2, stage);
+
+      expect(zoomed.zoom, closeTo(2e5, 1e-6));
+      expect(
+        zoomed.toWorld(anchor, stage).dx,
+        closeTo(cam.toWorld(anchor, stage).dx, 1e-9),
       );
+      expect(
+        zoomed.toWorld(anchor, stage).dy,
+        closeTo(cam.toWorld(anchor, stage).dy, 1e-9),
+      );
+    });
 
-      final CanvasViewport moved = vp.pannedBy(const Offset(-30, 5));
+    test('withZoomAt(1) 回到 100% 且锚点不跑', () {
+      const CanvasCamera cam = CanvasCamera(zoom: 2, center: Offset(50, 50));
+      const Offset anchor = Offset(500, 400);
 
-      expect(moved.zoom, 1.5);
-      expect(moved.offset, const Offset(-20, 25));
+      final CanvasCamera reset = cam.withZoomAt(anchor, 1, stage);
+
+      expect(reset.zoom, 1);
+      expect(reset.toWorld(anchor, stage).dx, closeTo(cam.toWorld(anchor, stage).dx, 1e-9));
+      expect(reset.toWorld(anchor, stage).dy, closeTo(cam.toWorld(anchor, stage).dy, 1e-9));
     });
 
     test('fit 把内容装进画布并居中', () {
       const Rect content = Rect.fromLTWH(0, 0, 200, 100);
-      const Size stage = Size(1000, 800);
 
-      final CanvasViewport vp = CanvasViewport.fit(content, stage);
+      final CanvasCamera cam = CanvasCamera.fit(content, stage);
 
-      expect(vp.toScreen(content.center).dx, closeTo(500, 1e-6));
-      expect(vp.toScreen(content.center).dy, closeTo(400, 1e-6));
+      expect(cam.toScreen(content.center, stage).dx, closeTo(500, 1e-6));
+      expect(cam.toScreen(content.center, stage).dy, closeTo(400, 1e-6));
       // 装得下：内容的屏幕尺寸不超过画布减去两倍留白
-      expect(content.width * vp.zoom, lessThanOrEqualTo(1000 - 180 + 1e-6));
-      expect(content.height * vp.zoom, lessThanOrEqualTo(800 - 180 + 1e-6));
+      expect(content.width * cam.zoom, lessThanOrEqualTo(1000 - 180 + 1e-6));
+      expect(content.height * cam.zoom, lessThanOrEqualTo(800 - 180 + 1e-6));
     });
 
     test('fit 空内容退化成「中心对准原点」', () {
-      final CanvasViewport vp = CanvasViewport.fit(Rect.zero, const Size(600, 400));
+      final CanvasCamera cam = CanvasCamera.fit(Rect.zero, const Size(600, 400));
 
-      expect(vp.zoom, 1);
-      expect(vp.toScreen(Offset.zero), const Offset(300, 200));
+      expect(cam.zoom, 1);
+      expect(cam.toScreen(Offset.zero, const Size(600, 400)), const Offset(300, 200));
     });
 
     test('fit 画布尺寸为 0 时不炸', () {
       expect(
-        () => CanvasViewport.fit(
+        () => CanvasCamera.fit(
           const Rect.fromLTWH(0, 0, 10, 10),
           Size.zero,
         ),
         returnsNormally,
       );
+    });
+
+    test('值相等（画笔 shouldRepaint 依赖它）', () {
+      const CanvasCamera a = CanvasCamera(center: Offset(1, 2), zoom: 1.5);
+      const CanvasCamera b = CanvasCamera(center: Offset(1, 2), zoom: 1.5);
+
+      expect(a, b);
+      expect(a.hashCode, b.hashCode);
+      expect(a == const CanvasCamera(center: Offset(1, 2), zoom: 1.6), isFalse);
+    });
+  });
+
+  group('插值', () {
+    test('lerpDouble / lerpOffset', () {
+      expect(lerpDouble(0, 10, 0.25), 2.5);
+      expect(lerpOffset(Offset.zero, const Offset(10, 20), 0.5),
+          const Offset(5, 10));
+    });
+
+    test('easeOutCubic 两端钉住、中点快', () {
+      expect(easeOutCubic(0), 0);
+      expect(easeOutCubic(1), 1);
+      expect(easeOutCubic(0.5), greaterThan(0.5));
     });
   });
 
@@ -267,31 +323,6 @@ void main() {
     });
   });
 
-  group('吸附', () {
-    test('网格吸附：容差内才动', () {
-      expect(snapToGrid(18), 20);
-      expect(snapToGrid(23), 20);
-      expect(snapToGrid(30), 30, reason: '离 20 和 40 都超过 6');
-      expect(snapToGrid(-2), 0);
-    });
-
-    test('网格吸附：负坐标也对称', () {
-      expect(snapToGrid(-18), -20);
-      expect(snapToGrid(-42), -40);
-    });
-
-    test('网格为 0 时原样返回', () {
-      expect(snapToGrid(13.7, grid: 0), 13.7);
-    });
-
-    test('边缘对齐取最近的候选', () {
-      expect(snapToEdge(103, <double>[100, 105]), 105);
-      expect(snapToEdge(99, <double>[100]), 100);
-      expect(snapToEdge(50, <double>[100]), isNull);
-      expect(snapToEdge(50, const <double>[]), isNull);
-    });
-  });
-
   group('缩放卡片', () {
     const Rect start = Rect.fromLTRB(100, 100, 300, 200);
 
@@ -421,11 +452,10 @@ void main() {
     expect(rectsIntersect(a, const Rect.fromLTWH(5, 5, 10, 10)), isTrue);
   });
 
-  test('数学常数没被写错（防止手滑改坏 maxReach）', () {
+  test('数学常数没被写错（防止手滑改坏 maxReach / fitPadding）', () {
     expect(CanvasEdgeGeometry.maxReach, 96);
-    expect(snapGridSize, 20);
-    expect(snapGridTolerance, 6);
-    expect(snapEdgeTolerance, 8);
+    expect(CanvasCamera.fitPadding, 90);
+    expect(CanvasCamera.minZoom, 1e-6);
     expect(math.max(1, 2), 2);
   });
 }

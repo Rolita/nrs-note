@@ -30,6 +30,7 @@ import 'package:nrs/ui/editor/image_panel.dart';
 import 'package:nrs/ui/editor/outline_panel.dart';
 import 'package:nrs/ui/editor/table_panel.dart';
 import 'package:nrs/ui/graph/graph_view.dart';
+import 'package:nrs/ui/image/image_pane.dart';
 import 'package:nrs/ui/shell/app_shell.dart';
 import 'package:nrs/ui/shell/function_rail.dart';
 import 'package:nrs/ui/shell/note_list_panel.dart';
@@ -66,8 +67,7 @@ class _NoCanvasStore implements CanvasStore {
   Future<List<CanvasRef>> list() async => canvases;
 
   @override
-  Future<String> read(String relativePath) async =>
-      '{"nodes":[],"edges":[]}';
+  Future<String> read(String relativePath) async => '{"nodes":[],"edges":[]}';
 
   @override
   Future<void> write(String relativePath, String contents) async {}
@@ -123,8 +123,11 @@ class _NoCanvasStore implements CanvasStore {
 }
 
 class _VaultStore extends NoteStore {
-  _VaultStore(this.notes, {List<String>? folders, this.files = const <VaultFile>[]})
-    : folders = <String>[...?folders];
+  _VaultStore(
+    this.notes, {
+    List<String>? folders,
+    this.files = const <VaultFile>[],
+  }) : folders = <String>[...?folders];
 
   final List<Note> notes;
   final List<String> folders;
@@ -267,7 +270,14 @@ void main() {
     updatedAt: updatedAt,
   );
 
-  Future<({SettingsController settings, NotesController notes})> pumpShell(
+  Future<
+    ({
+      SettingsController settings,
+      NotesController notes,
+      CanvasController canvas,
+    })
+  >
+  pumpShell(
     WidgetTester tester, {
     Size size = const Size(1400, 900),
     List<Note>? vault,
@@ -275,6 +285,9 @@ void main() {
     List<CanvasRef>? canvases,
     List<VaultFile>? files,
     SortMode sort = SortMode.updatedDesc,
+
+    /// 额外的偏好初值，比如「上次退出时正看着哪块白板」。
+    Map<String, Object> extraPrefs = const <String, Object>{},
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1.0;
@@ -283,6 +296,7 @@ void main() {
 
     SharedPreferences.setMockInitialValues(<String, Object>{
       'nrs.sort': sort.name,
+      ...extraPrefs,
     });
     final SettingsController settings = await SettingsController.load();
     final Note note = Note(
@@ -327,7 +341,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    return (settings: settings, notes: notes);
+    return (settings: settings, notes: notes, canvas: canvas);
   }
 
   testWidgets('the shell is title bar, sidebar, editor and outline, in order', (
@@ -374,9 +388,7 @@ void main() {
     final Rect rail = tester.getRect(find.byType(AppRail));
     final Rect templatesRect = tester.getRect(templates);
     final Rect trash = tester.getRect(find.byTooltip('回收站'));
-    final Rect settingsButton = tester.getRect(
-      find.byTooltip('设置  ·  Ctrl+,'),
-    );
+    final Rect settingsButton = tester.getRect(find.byTooltip('设置  ·  Ctrl+,'));
     expect(templatesRect.top, lessThan(rail.center.dy));
     expect(trash.top, greaterThan(rail.center.dy));
     expect(settingsButton.top, greaterThan(trash.top));
@@ -392,8 +404,7 @@ void main() {
         createdAt: DateTime(2026, 1, 1),
         updatedAt: DateTime(2026, 1, 2),
       );
-      final ({SettingsController settings, NotesController notes}) app =
-          await pumpShell(tester, vault: <Note>[note]);
+      final app = await pumpShell(tester, vault: <Note>[note]);
       app.notes.select('task');
       await tester.pump();
 
@@ -466,8 +477,7 @@ void main() {
   testWidgets('dragging the handles resizes the sidebar and the outline', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(tester);
+    final app = await pumpShell(tester);
     expect(app.settings.listWidth, AppLayout.listDefaultWidth);
     expect(app.settings.rightPanelWidth, AppLayout.rightPanelWidth);
 
@@ -512,11 +522,10 @@ void main() {
   testWidgets(
     'the search panel waits with a hint instead of listing the vault',
     (WidgetTester tester) async {
-      final ({SettingsController settings, NotesController notes}) app =
-          await pumpShell(
-            tester,
-            vault: <Note>[note('a', '甲', DateTime(2026, 1, 2))],
-          );
+      final app = await pumpShell(
+        tester,
+        vault: <Note>[note('a', '甲', DateTime(2026, 1, 2))],
+      );
 
       await tester.tap(find.byTooltip('搜索'));
       await tester.pumpAndSettle();
@@ -611,26 +620,25 @@ void main() {
     final int target = lines.indexWhere((String l) => l.contains('定位词'));
     expect(target, greaterThan(40), reason: '目标行必须远在首屏之外');
 
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          vault: <Note>[
-            Note(
-              id: 'a',
-              title: '甲文',
-              body: body.toString(),
-              createdAt: DateTime(2026, 1, 1),
-              updatedAt: DateTime(2026, 1, 2),
-            ),
-            Note(
-              id: 'b',
-              title: '乙文',
-              body: '# 乙文\n\n和搜索无关\n',
-              createdAt: DateTime(2026, 1, 1),
-              updatedAt: DateTime(2026, 1, 3),
-            ),
-          ],
-        );
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[
+        Note(
+          id: 'a',
+          title: '甲文',
+          body: body.toString(),
+          createdAt: DateTime(2026, 1, 1),
+          updatedAt: DateTime(2026, 1, 2),
+        ),
+        Note(
+          id: 'b',
+          title: '乙文',
+          body: '# 乙文\n\n和搜索无关\n',
+          createdAt: DateTime(2026, 1, 1),
+          updatedAt: DateTime(2026, 1, 3),
+        ),
+      ],
+    );
     // 先打开另一篇，点击结果才真的需要切换过去。
     app.notes.select('b');
     await tester.pumpAndSettle();
@@ -677,26 +685,25 @@ void main() {
   testWidgets('a tag query lists its notes with the line the tag sits on', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          vault: <Note>[
-            Note(
-              id: 'a',
-              title: 'NRS 快速入门',
-              body: '# NRS 快速入门\n\n正文里直接写 #入门 也会变成可点击的标签\n',
-              createdAt: DateTime(2026, 1, 1),
-              updatedAt: DateTime(2026, 1, 2),
-            ),
-            Note(
-              id: 'b',
-              title: '闲话',
-              body: '# 闲话\n\n与标签无关\n',
-              createdAt: DateTime(2026, 1, 1),
-              updatedAt: DateTime(2026, 1, 1),
-            ),
-          ],
-        );
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[
+        Note(
+          id: 'a',
+          title: 'NRS 快速入门',
+          body: '# NRS 快速入门\n\n正文里直接写 #入门 也会变成可点击的标签\n',
+          createdAt: DateTime(2026, 1, 1),
+          updatedAt: DateTime(2026, 1, 2),
+        ),
+        Note(
+          id: 'b',
+          title: '闲话',
+          body: '# 闲话\n\n与标签无关\n',
+          createdAt: DateTime(2026, 1, 1),
+          updatedAt: DateTime(2026, 1, 1),
+        ),
+      ],
+    );
 
     await tester.tap(find.byTooltip('搜索'));
     await tester.pumpAndSettle();
@@ -722,90 +729,89 @@ void main() {
     expect(find.descendant(of: panel, matching: find.text('闲话')), findsNothing);
   });
 
-  testWidgets('a note with three matches is one group, always tinted', (WidgetTester tester) async {
-      final ({SettingsController settings, NotesController notes}) app =
-          await pumpShell(
-            tester,
-            vault: <Note>[
-              Note(
-                id: 'a',
-                title: 'NRS 快速入门',
-                fileName: 'NRS 快速入门.md',
-                body: '# NRS 快速入门\n\n第一行 #入门\n第二行 #入门\n第三行 #入门\n',
-                createdAt: DateTime(2026, 1, 1),
-                updatedAt: DateTime(2026, 1, 2),
-              ),
-            ],
-          );
+  testWidgets('a note with three matches is one group, always tinted', (
+    WidgetTester tester,
+  ) async {
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[
+        Note(
+          id: 'a',
+          title: 'NRS 快速入门',
+          fileName: 'NRS 快速入门.md',
+          body: '# NRS 快速入门\n\n第一行 #入门\n第二行 #入门\n第三行 #入门\n',
+          createdAt: DateTime(2026, 1, 1),
+          updatedAt: DateTime(2026, 1, 2),
+        ),
+      ],
+    );
 
-      await tester.tap(find.byTooltip('搜索'));
-      await tester.pumpAndSettle();
-      app.notes.setQuery('tag:#入门');
-      await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('搜索'));
+    await tester.pumpAndSettle();
+    app.notes.setQuery('tag:#入门');
+    await tester.pumpAndSettle();
 
-      final Finder panel = find.byType(NoteListPanel);
-      // One group named after the file (without `.md`), with the match count.
-      expect(
-        find.descendant(of: panel, matching: find.text('NRS 快速入门')),
-        findsOneWidget,
-      );
-      expect(
-        find.descendant(of: panel, matching: find.text('3')),
-        findsOneWidget,
-      );
-      final Finder firstCard = find.descendant(
-        of: panel,
-        matching: find.textContaining('第一行'),
-      );
-      expect(firstCard, findsOneWidget);
-      expect(
-        find.descendant(of: panel, matching: find.textContaining('第三行')),
-        findsOneWidget,
-      );
+    final Finder panel = find.byType(NoteListPanel);
+    // One group named after the file (without `.md`), with the match count.
+    expect(
+      find.descendant(of: panel, matching: find.text('NRS 快速入门')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: panel, matching: find.text('3')),
+      findsOneWidget,
+    );
+    final Finder firstCard = find.descendant(
+      of: panel,
+      matching: find.textContaining('第一行'),
+    );
+    expect(firstCard, findsOneWidget);
+    expect(
+      find.descendant(of: panel, matching: find.textContaining('第三行')),
+      findsOneWidget,
+    );
 
-      // 命中词一出现就着色，不再等指针移上来。
-      Color? highlightBackground() {
-        final Text text = tester.widget<Text>(firstCard);
-        final TextSpan span = text.textSpan! as TextSpan;
-        for (final InlineSpan child in span.children ?? const <InlineSpan>[]) {
-          final Color? color = child.style?.backgroundColor;
-          if (color != null) return color;
-        }
-        return null;
+    // 命中词一出现就着色，不再等指针移上来。
+    Color? highlightBackground() {
+      final Text text = tester.widget<Text>(firstCard);
+      final TextSpan span = text.textSpan! as TextSpan;
+      for (final InlineSpan child in span.children ?? const <InlineSpan>[]) {
+        final Color? color = child.style?.backgroundColor;
+        if (color != null) return color;
       }
+      return null;
+    }
 
-      final Color? idle = highlightBackground();
-      expect(idle, isNotNull, reason: '命中的词要有底色');
+    final Color? idle = highlightBackground();
+    expect(idle, isNotNull, reason: '命中的词要有底色');
 
-      final TestGesture pointer = await tester.createGesture(
-        kind: PointerDeviceKind.mouse,
-      );
-      await pointer.addPointer(location: Offset.zero);
-      addTearDown(pointer.removePointer);
-      await pointer.moveTo(tester.getCenter(firstCard));
-      await tester.pumpAndSettle();
-      expect(highlightBackground(), idle, reason: '悬浮不再换色');
+    final TestGesture pointer = await tester.createGesture(
+      kind: PointerDeviceKind.mouse,
+    );
+    await pointer.addPointer(location: Offset.zero);
+    addTearDown(pointer.removePointer);
+    await pointer.moveTo(tester.getCenter(firstCard));
+    await tester.pumpAndSettle();
+    expect(highlightBackground(), idle, reason: '悬浮不再换色');
 
-      // The header folds its cards away.
-      await tester.tap(
-        find.descendant(of: panel, matching: find.text('NRS 快速入门')),
-      );
-      await tester.pumpAndSettle();
-      expect(
-        find.descendant(of: panel, matching: find.textContaining('第一行')),
-        findsNothing,
-      );
-    },
-  );
+    // The header folds its cards away.
+    await tester.tap(
+      find.descendant(of: panel, matching: find.text('NRS 快速入门')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.descendant(of: panel, matching: find.textContaining('第一行')),
+      findsNothing,
+    );
+  });
 
   testWidgets('Aa flips case sensitivity, which changes what matches', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          vault: <Note>[note('a', 'Plan', DateTime(2026, 1, 2))],
-        );
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[note('a', 'Plan', DateTime(2026, 1, 2))],
+    );
 
     await tester.tap(find.byTooltip('搜索'));
     await tester.pumpAndSettle();
@@ -852,8 +858,7 @@ void main() {
   testWidgets('the outline yields to the editor in a narrow window', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(tester);
+    final app = await pumpShell(tester);
     expect(find.byType(OutlinePanel), findsOneWidget);
 
     tester.view.physicalSize = const Size(900, 900);
@@ -869,8 +874,7 @@ void main() {
   testWidgets('focus mode hides every region but the editor', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(tester);
+    final app = await pumpShell(tester);
 
     app.settings.focusMode = true;
     await tester.pumpAndSettle();
@@ -883,14 +887,13 @@ void main() {
   testWidgets('opening a note adds a tab, and its neighbour takes over', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          vault: <Note>[
-            note('a', '甲', DateTime(2026, 3, 1)),
-            note('b', '乙', DateTime(2026, 2, 1)),
-          ],
-        );
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[
+        note('a', '甲', DateTime(2026, 3, 1)),
+        note('b', '乙', DateTime(2026, 2, 1)),
+      ],
+    );
     Finder inBar(String text) => find.descendant(
       of: find.byType(AppTitleBar),
       matching: find.text(text),
@@ -957,9 +960,7 @@ void main() {
     },
   );
 
-  testWidgets('图片面板与大纲、表格共用最右一栏，列出当前文件的图片', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('图片面板与大纲、表格共用最右一栏，列出当前文件的图片', (WidgetTester tester) async {
     final Note withImages = Note(
       id: 'img',
       title: '带图的笔记',
@@ -999,8 +1000,7 @@ void main() {
   });
 
   testWidgets('大纲 / 表格 / 图片三块面板共用同一列宽', (WidgetTester tester) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(tester);
+    final app = await pumpShell(tester);
 
     final double outline = tester.getRect(find.byType(OutlinePanel)).width;
     expect(outline, AppLayout.rightPanelWidth);
@@ -1043,16 +1043,15 @@ void main() {
   testWidgets('right-clicking a file in the tree offers delete for that file', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          sort: SortMode.titleAsc,
-          vault: <Note>[
-            note('a', 'A 笔记', DateTime(2026, 3, 1)),
-            note('b', 'B 笔记', DateTime(2026, 2, 1)),
-            note('c', 'C 笔记', DateTime(2026, 1, 1)),
-          ],
-        );
+    final app = await pumpShell(
+      tester,
+      sort: SortMode.titleAsc,
+      vault: <Note>[
+        note('a', 'A 笔记', DateTime(2026, 3, 1)),
+        note('b', 'B 笔记', DateTime(2026, 2, 1)),
+        note('c', 'C 笔记', DateTime(2026, 1, 1)),
+      ],
+    );
 
     await tester.tap(treeRow('B 笔记'), buttons: kSecondaryMouseButton);
     await tester.pumpAndSettle();
@@ -1080,12 +1079,11 @@ void main() {
   testWidgets('Esc backs out of the delete dialog and keeps the note', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          sort: SortMode.titleAsc,
-          vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
-        );
+    final app = await pumpShell(
+      tester,
+      sort: SortMode.titleAsc,
+      vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
+    );
 
     await tester.tap(treeRow('A 笔记'), buttons: kSecondaryMouseButton);
     await tester.pumpAndSettle();
@@ -1104,16 +1102,15 @@ void main() {
   testWidgets('shift+click takes the range, and delete takes the whole range', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          sort: SortMode.titleAsc,
-          vault: <Note>[
-            note('a', 'A 笔记', DateTime(2026, 3, 1)),
-            note('b', 'B 笔记', DateTime(2026, 2, 1)),
-            note('c', 'C 笔记', DateTime(2026, 1, 1)),
-          ],
-        );
+    final app = await pumpShell(
+      tester,
+      sort: SortMode.titleAsc,
+      vault: <Note>[
+        note('a', 'A 笔记', DateTime(2026, 3, 1)),
+        note('b', 'B 笔记', DateTime(2026, 2, 1)),
+        note('c', 'C 笔记', DateTime(2026, 1, 1)),
+      ],
+    );
 
     // The first row is the anchor, so shift+clicking the last one takes all three.
     await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
@@ -1205,8 +1202,7 @@ void main() {
   testWidgets('新建文件夹 creates it outright, without asking for a name', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(tester);
+    final app = await pumpShell(tester);
 
     await tester.tap(find.byTooltip('新建文件夹'));
     await tester.pumpAndSettle();
@@ -1221,8 +1217,7 @@ void main() {
   testWidgets('F2 renames the clicked row, and Enter writes the new name', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(tester, sort: SortMode.titleAsc);
+    final app = await pumpShell(tester, sort: SortMode.titleAsc);
 
     await tester.tap(treeRow('一篇笔记'));
     await tester.pumpAndSettle();
@@ -1252,8 +1247,7 @@ void main() {
   testWidgets('Esc leaves the name alone and closes the field', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(tester, sort: SortMode.titleAsc);
+    final app = await pumpShell(tester, sort: SortMode.titleAsc);
 
     await tester.tap(treeRow('一篇笔记'));
     await tester.pumpAndSettle();
@@ -1276,17 +1270,16 @@ void main() {
   testWidgets('右键 moves the whole selection into a folder', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          sort: SortMode.titleAsc,
-          folders: <String>['项目'],
-          vault: <Note>[
-            note('a', 'A 笔记', DateTime(2026, 3, 1)),
-            note('b', 'B 笔记', DateTime(2026, 2, 1)),
-            note('c', 'C 笔记', DateTime(2026, 1, 1)),
-          ],
-        );
+    final app = await pumpShell(
+      tester,
+      sort: SortMode.titleAsc,
+      folders: <String>['项目'],
+      vault: <Note>[
+        note('a', 'A 笔记', DateTime(2026, 3, 1)),
+        note('b', 'B 笔记', DateTime(2026, 2, 1)),
+        note('c', 'C 笔记', DateTime(2026, 1, 1)),
+      ],
+    );
 
     // The first row is the anchor, so shift+clicking the second takes two.
     await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
@@ -1315,12 +1308,11 @@ void main() {
   testWidgets('a folder can be renamed from its right-click menu', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
-          folders: <String>['项目'],
-        );
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
+      folders: <String>['项目'],
+    );
 
     await tester.tap(find.text('项目'), buttons: kSecondaryMouseButton);
     await tester.pumpAndSettle();
@@ -1344,15 +1336,14 @@ void main() {
   testWidgets('a folder can be deleted from its menu, and the notice undoes it', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          vault: <Note>[
-            note('a', 'A 笔记', DateTime(2026, 3, 1)).copyWith(folderPath: '项目'),
-            note('b', 'B 笔记', DateTime(2026, 2, 1)),
-          ],
-          folders: <String>['项目'],
-        );
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[
+        note('a', 'A 笔记', DateTime(2026, 3, 1)).copyWith(folderPath: '项目'),
+        note('b', 'B 笔记', DateTime(2026, 2, 1)),
+      ],
+      folders: <String>['项目'],
+    );
 
     await tester.tap(
       find.descendant(of: find.byType(VaultTree), matching: find.text('项目')),
@@ -1391,12 +1382,11 @@ void main() {
   testWidgets('dragging a row onto a folder moves the note into it', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
-          folders: <String>['项目'],
-        );
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
+      folders: <String>['项目'],
+    );
 
     final Offset from = tester.getCenter(treeRow('A 笔记'));
     final Offset to = tester.getCenter(treeRow('项目'));
@@ -1409,17 +1399,12 @@ void main() {
   testWidgets(
     'dragging a note out of a folder into empty space takes it home',
     (WidgetTester tester) async {
-      final ({SettingsController settings, NotesController notes}) app =
-          await pumpShell(
-            tester,
-            vault: <Note>[
-              note(
-                'a',
-                'A 笔记',
-                DateTime(2026, 3, 1),
-              ).copyWith(folderPath: '项目'),
-            ],
-          );
+      final app = await pumpShell(
+        tester,
+        vault: <Note>[
+          note('a', 'A 笔记', DateTime(2026, 3, 1)).copyWith(folderPath: '项目'),
+        ],
+      );
       await expandEverything(tester);
 
       final Rect tree = tester.getRect(find.byType(VaultTree));
@@ -1434,13 +1419,12 @@ void main() {
   testWidgets('letting go on its own folder does not send a note to the root', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          vault: <Note>[
-            note('a', 'A 笔记', DateTime(2026, 3, 1)).copyWith(folderPath: '项目'),
-          ],
-        );
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[
+        note('a', 'A 笔记', DateTime(2026, 3, 1)).copyWith(folderPath: '项目'),
+      ],
+    );
     await expandEverything(tester);
 
     final Offset from = tester.getCenter(treeRow('A 笔记'));
@@ -1491,8 +1475,7 @@ void main() {
   testWidgets('dragging a folder onto another folder moves it inside', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(tester, folders: <String>['甲', '乙']);
+    final app = await pumpShell(tester, folders: <String>['甲', '乙']);
     await expandEverything(tester);
 
     final Offset from = tester.getCenter(treeRow('甲'));
@@ -1678,19 +1661,18 @@ void main() {
   testWidgets('the outline reuses its headings until the body changes', (
     WidgetTester tester,
   ) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          vault: <Note>[
-            Note(
-              id: 'a',
-              title: '笔记',
-              body: '# 标题\n\n正文\n',
-              createdAt: DateTime(2026, 1, 1),
-              updatedAt: DateTime(2026, 1, 2),
-            ),
-          ],
-        );
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[
+        Note(
+          id: 'a',
+          title: '笔记',
+          body: '# 标题\n\n正文\n',
+          createdAt: DateTime(2026, 1, 1),
+          updatedAt: DateTime(2026, 1, 2),
+        ),
+      ],
+    );
 
     final List<Heading> first = tester
         .widget<OutlinePanel>(find.byType(OutlinePanel))
@@ -1747,9 +1729,7 @@ void main() {
     expect(treeRow('A 笔记'), findsNothing, reason: '收起要把文件夹里的笔记藏起来');
   });
 
-  testWidgets('白板、图片和只有图片的文件夹都出现在文件树里，行尾带后缀', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('白板、图片和只有图片的文件夹都出现在文件树里，行尾带后缀', (WidgetTester tester) async {
     await pumpShell(
       tester,
       vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
@@ -1834,9 +1814,7 @@ void main() {
     );
   });
 
-  testWidgets('Shift 连选能跨笔记和白板，删除只作用于选中的白板', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('Shift 连选能跨笔记和白板，删除只作用于选中的白板', (WidgetTester tester) async {
     await pumpShell(
       tester,
       sort: SortMode.titleAsc,
@@ -1886,9 +1864,7 @@ void main() {
     expect(find.text('2 块白板'), findsOneWidget);
   });
 
-  testWidgets('功能栏的白板按钮直接新建一块未命名白板，不弹选择框', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('功能栏的白板按钮直接新建一块未命名白板，不弹选择框', (WidgetTester tester) async {
     await pumpShell(tester);
 
     await tester.tap(find.byTooltip('白板  ·  Ctrl+Shift+B'));
@@ -1904,9 +1880,130 @@ void main() {
     expect(treeRow('未命名白板 2'), findsOneWidget);
   });
 
-  testWidgets('Ctrl+P 打开模板选择器，Enter 把模板插进当前笔记', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('打开白板之后，标签条里多一页白板，和笔记标签一样', (WidgetTester tester) async {
+    await pumpShell(tester);
+    expect(find.byKey(const ValueKey<String>('canvas-tab')), findsNothing);
+
+    await tester.tap(find.byTooltip('白板  ·  Ctrl+Shift+B'));
+    await tester.pumpAndSettle();
+
+    // 一页 tab，标题就是那块白板的名字——不是「白板」这种页类型名。
+    final Finder tab = find.byKey(const ValueKey<String>('canvas-tab'));
+    expect(tab, findsOneWidget);
+    expect(
+      find.descendant(of: tab, matching: find.text('未命名白板')),
+      findsOneWidget,
+    );
+    expect(find.byType(CanvasBoard), findsOneWidget);
+  });
+
+  testWidgets('白板标签常驻：切回笔记再点它，回到那块白板', (WidgetTester tester) async {
+    await pumpShell(tester);
+    await tester.tap(find.byTooltip('白板  ·  Ctrl+Shift+B'));
+    await tester.pumpAndSettle();
+    expect(find.byType(CanvasBoard), findsOneWidget);
+
+    // 点笔记标签回正文。
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AppTitleBar),
+        matching: find.text('一篇笔记'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(CanvasBoard), findsNothing);
+    // 白板那一页还在，只是没选中。
+    expect(find.byKey(const ValueKey<String>('canvas-tab')), findsOneWidget);
+
+    // 点回来，还是原来那块（不是重新新建的一块）。
+    await tester.tap(find.byKey(const ValueKey<String>('canvas-tab')));
+    await tester.pumpAndSettle();
+    expect(find.byType(CanvasBoard), findsOneWidget);
+  });
+
+  testWidgets('上次退出时正看着白板，启动后打开那块并切过去', (WidgetTester tester) async {
+    // `main` 里做的事：读完 vault 之后按会话把白板打开。外壳只负责
+    // 「文档来了就切过去」——这里就照这个顺序走一遍。
+    final ({
+      SettingsController settings,
+      NotesController notes,
+      CanvasController canvas,
+    })
+    app = await pumpShell(
+      tester,
+      canvases: <CanvasRef>[
+        CanvasRef(
+          relativePath: '未命名白板.nrs',
+          title: '未命名白板',
+          modified: DateTime(2026, 1, 1),
+        ),
+      ],
+      extraPrefs: <String, Object>{
+        'nrs.sessionCanvas': '未命名白板.nrs',
+        'nrs.sessionCanvasActive': true,
+      },
+    );
+    // 启动那一帧还没打开文档：主区还是正文。
+    expect(find.byType(EditorPane), findsOneWidget);
+    expect(find.byKey(const ValueKey<String>('canvas-tab')), findsNothing);
+
+    expect(await app.canvas.open('未命名白板.nrs'), isTrue);
+    await tester.pumpAndSettle();
+
+    // 文档一到，标签出现、主区切过去——不用用户再点一次。
+    expect(find.byKey(const ValueKey<String>('canvas-tab')), findsOneWidget);
+    expect(find.byType(CanvasBoard), findsOneWidget);
+    expect(find.byType(EditorPane), findsNothing);
+  });
+
+  testWidgets('上次只是开着白板页、人在写笔记：启动后停在笔记', (WidgetTester tester) async {
+    final ({
+      SettingsController settings,
+      NotesController notes,
+      CanvasController canvas,
+    })
+    app = await pumpShell(
+      tester,
+      canvases: <CanvasRef>[
+        CanvasRef(
+          relativePath: '未命名白板.nrs',
+          title: '未命名白板',
+          modified: DateTime(2026, 1, 1),
+        ),
+      ],
+      extraPrefs: <String, Object>{'nrs.sessionCanvas': '未命名白板.nrs'},
+    );
+
+    expect(await app.canvas.open('未命名白板.nrs'), isTrue);
+    await tester.pumpAndSettle();
+
+    // 标签在（那块确实开着），但主区不该被抢走。
+    expect(find.byKey(const ValueKey<String>('canvas-tab')), findsOneWidget);
+    expect(find.byType(EditorPane), findsOneWidget);
+    expect(find.byType(CanvasBoard), findsNothing);
+  });
+
+  testWidgets('点白板标签上的 ×：标签消失，主区回到正文', (WidgetTester tester) async {
+    await pumpShell(tester);
+    await tester.tap(find.byTooltip('白板  ·  Ctrl+Shift+B'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey<String>('canvas-tab')),
+        matching: find.byIcon(LucideIcons.x),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey<String>('canvas-tab')), findsNothing);
+    expect(find.byType(CanvasBoard), findsNothing);
+    expect(find.byType(EditorPane), findsOneWidget);
+    // 关的是那一页，不是那份文件：文件树里那一行还在。
+    expect(treeRow('未命名白板'), findsOneWidget);
+  });
+
+  testWidgets('Ctrl+P 打开模板选择器，Enter 把模板插进当前笔记', (WidgetTester tester) async {
     final Note template = Note(
       id: 'tpl',
       title: '日报模板',
@@ -1915,11 +2012,10 @@ void main() {
       createdAt: DateTime(2026, 1, 1),
       updatedAt: DateTime(2026, 1, 1),
     );
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          vault: <Note>[note('a', '一篇笔记', DateTime(2026, 1, 2)), template],
-        );
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[note('a', '一篇笔记', DateTime(2026, 1, 2)), template],
+    );
 
     // 功能栏的模板按钮和 Ctrl+P 打开的是同一个选择器。
     await tester.tap(find.byTooltip('插入模板  ·  Ctrl+P'));
@@ -1946,9 +2042,7 @@ void main() {
     await tester.pump(const Duration(seconds: 3));
   });
 
-  testWidgets('文件夹模板只在开关打开时套用到新建笔记', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('文件夹模板只在开关打开时套用到新建笔记', (WidgetTester tester) async {
     final Note template = Note(
       id: 'tpl',
       title: '会议模板',
@@ -1957,11 +2051,10 @@ void main() {
       createdAt: DateTime(2026, 1, 1),
       updatedAt: DateTime(2026, 1, 1),
     );
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          vault: <Note>[note('a', '一篇笔记', DateTime(2026, 1, 2)), template],
-        );
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[note('a', '一篇笔记', DateTime(2026, 1, 2)), template],
+    );
     app.settings.folderTemplateRules = <FolderTemplateRule>[
       const FolderTemplateRule(folderPath: '', templateId: 'tpl'),
     ];
@@ -1984,9 +2077,7 @@ void main() {
     await tester.pump(const Duration(seconds: 3));
   });
 
-  testWidgets('模板快捷键按设置插入或新建，改动作后立刻生效', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('模板快捷键按设置插入或新建，改动作后立刻生效', (WidgetTester tester) async {
     final Note template = Note(
       id: 'tpl',
       title: '日报模板',
@@ -1995,11 +2086,10 @@ void main() {
       createdAt: DateTime(2026, 1, 1),
       updatedAt: DateTime(2026, 1, 1),
     );
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          vault: <Note>[note('a', '一篇笔记', DateTime(2026, 1, 2)), template],
-        );
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[note('a', '一篇笔记', DateTime(2026, 1, 2)), template],
+    );
 
     app.settings.templateHotkeys = <String, TemplateHotkey>{
       'tpl': TemplateHotkey(
@@ -2058,9 +2148,7 @@ void main() {
     await tester.pump(const Duration(seconds: 3));
   });
 
-  testWidgets('Ctrl+Tab 换标签之后，正文仍然收得到键盘输入', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('Ctrl+Tab 换标签之后，正文仍然收得到键盘输入', (WidgetTester tester) async {
     // 用户报告：Ctrl+Tab 切到另一个标签后打不进任何字，得用鼠标再点一下
     // 那个标签才行。根因是正文输入框按 `documentId` 整块重建，而焦点节点
     // 是外面传进来的、一直有焦点——新输入框的 State 从来没收到过「获得焦点」
@@ -2079,8 +2167,7 @@ void main() {
       createdAt: DateTime(2026, 1, 1),
       updatedAt: DateTime(2026, 1, 3),
     );
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(tester, vault: <Note>[first, second]);
+    final app = await pumpShell(tester, vault: <Note>[first, second]);
 
     // 两个标签都开着，当前停在乙。
     app.notes.select('a');
@@ -2128,9 +2215,7 @@ void main() {
     await tester.pump(const Duration(seconds: 3));
   });
 
-  testWidgets('没打开图谱时标签条里只有笔记，两个入口都在左侧功能栏', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('没打开图谱时标签条里只有笔记，两个入口都在左侧功能栏', (WidgetTester tester) async {
     await pumpShell(tester);
 
     // 图谱页只在打开时出现；没打开时标签条里只剩笔记。
@@ -2153,9 +2238,7 @@ void main() {
     expect(rail.contains(canvasRect.topLeft), isTrue);
   });
 
-  testWidgets('点功能栏的图谱按钮切到图谱，再点笔记标签切回来', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('点功能栏的图谱按钮切到图谱，再点笔记标签切回来', (WidgetTester tester) async {
     await pumpShell(tester);
 
     await tester.tap(find.byTooltip('关系图谱  ·  Ctrl+G'));
@@ -2167,30 +2250,20 @@ void main() {
     expect(find.byType(EditorPane), findsOneWidget);
   });
 
-  testWidgets('打开图谱时新增关系图谱页，点 × 才关掉它', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('打开图谱时新增关系图谱页，点 × 才关掉它', (WidgetTester tester) async {
     await pumpShell(tester);
 
     expect(find.text('关系图谱'), findsNothing, reason: '没打开时没有这一页');
 
     await tester.tap(find.byTooltip('关系图谱  ·  Ctrl+G'));
     await tester.pumpAndSettle();
-    expect(
-      find.text('关系图谱'),
-      findsOneWidget,
-      reason: '打开图谱时新增这一页',
-    );
+    expect(find.text('关系图谱'), findsOneWidget, reason: '打开图谱时新增这一页');
 
     // 和笔记页一样：切到笔记它还在，点它可以切回图谱。
     await tester.tap(find.text('一篇笔记').first);
     await tester.pumpAndSettle();
     expect(find.byType(EditorPane), findsOneWidget);
-    expect(
-      find.text('关系图谱'),
-      findsOneWidget,
-      reason: '切走只是不显示，不等于关掉',
-    );
+    expect(find.text('关系图谱'), findsOneWidget, reason: '切走只是不显示，不等于关掉');
 
     await tester.tap(find.text('关系图谱'));
     await tester.pumpAndSettle();
@@ -2198,10 +2271,12 @@ void main() {
 
     // 图谱页现在选中，× 可点；笔记页的 × 排在它前面。
     await tester.tap(
-      find.descendant(
-        of: find.byType(AppTitleBar),
-        matching: find.byIcon(LucideIcons.x),
-      ).last,
+      find
+          .descendant(
+            of: find.byType(AppTitleBar),
+            matching: find.byIcon(LucideIcons.x),
+          )
+          .last,
     );
     await tester.pumpAndSettle();
 
@@ -2211,8 +2286,7 @@ void main() {
   });
 
   testWidgets('进图谱收起右侧那一栏，退出图谱自己回来', (WidgetTester tester) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(tester);
+    final app = await pumpShell(tester);
 
     expect(find.byType(OutlinePanel), findsOneWidget, reason: '默认大纲是开着的');
 
@@ -2239,14 +2313,13 @@ void main() {
   });
 
   testWidgets('图谱开着时点文件树里的笔记，主区切回正文', (WidgetTester tester) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          vault: <Note>[
-            note('a', 'A 笔记', DateTime(2026, 3, 1)),
-            note('b', 'B 笔记', DateTime(2026, 3, 2)),
-          ],
-        );
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[
+        note('a', 'A 笔记', DateTime(2026, 3, 1)),
+        note('b', 'B 笔记', DateTime(2026, 3, 2)),
+      ],
+    );
 
     await tester.tap(find.byTooltip('关系图谱  ·  Ctrl+G'));
     await tester.pumpAndSettle();
@@ -2261,14 +2334,11 @@ void main() {
   });
 
   testWidgets('白板开着时点文件树里的笔记，主区切回正文', (WidgetTester tester) async {
-    final ({SettingsController settings, NotesController notes}) app =
-        await pumpShell(
-          tester,
-          vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
-          canvases: <CanvasRef>[
-            const CanvasRef(relativePath: '板.nrs', title: '板'),
-          ],
-        );
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
+      canvases: <CanvasRef>[const CanvasRef(relativePath: '板.nrs', title: '板')],
+    );
 
     await tester.tap(treeRow('板'));
     await tester.pumpAndSettle();
@@ -2280,5 +2350,108 @@ void main() {
     expect(find.byType(CanvasBoard), findsNothing, reason: '点笔记要回到正文');
     expect(find.byType(EditorPane), findsOneWidget);
     expect(app.notes.selectedId, 'a');
+  });
+
+  /// 图片页里有个解码转圈，`pumpAndSettle` 会一直等它转完——固定推两帧。
+  Future<void> settleImage(WidgetTester tester) async {
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+  }
+
+  testWidgets('文件树点图片：主区换成图片页，标题栏多一个图片 tab', (WidgetTester tester) async {
+    await pumpShell(
+      tester,
+      vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
+      folders: <String>['assets'],
+      files: <VaultFile>[const VaultFile(relativePath: 'assets/pic.png')],
+    );
+    await expandEverything(tester);
+
+    await tester.tap(treeRow('pic'));
+    await settleImage(tester);
+
+    expect(find.byType(ImagePane), findsOneWidget);
+    expect(find.byType(EditorPane), findsNothing, reason: '正文要让位给图片');
+    // tab 上是带后缀的文件名，文件树那一行只有名字——两者不会撞。
+    expect(find.text('pic.png'), findsOneWidget);
+  });
+
+  testWidgets('所有图片共用同一个 tab：点第二张只换内容，不多开一页', (WidgetTester tester) async {
+    await pumpShell(
+      tester,
+      vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
+      folders: <String>['assets'],
+      files: <VaultFile>[
+        const VaultFile(relativePath: 'assets/a.png'),
+        const VaultFile(relativePath: 'assets/b.png'),
+      ],
+    );
+    await expandEverything(tester);
+
+    await tester.tap(treeRow('a'));
+    await settleImage(tester);
+    expect(find.text('a.png'), findsOneWidget);
+
+    await tester.tap(treeRow('b'));
+    await settleImage(tester);
+
+    expect(find.text('b.png'), findsOneWidget);
+    expect(find.text('a.png'), findsNothing, reason: '换图不是再开一页');
+    expect(find.byType(ImagePane), findsOneWidget);
+  });
+
+  testWidgets('点图片 tab 上的 ×：tab 消失，主区回到正文', (WidgetTester tester) async {
+    await pumpShell(
+      tester,
+      vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
+      folders: <String>['assets'],
+      files: <VaultFile>[const VaultFile(relativePath: 'assets/pic.png')],
+    );
+    await expandEverything(tester);
+
+    await tester.tap(treeRow('pic'));
+    await settleImage(tester);
+    expect(find.byType(ImagePane), findsOneWidget);
+
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey<String>('image-tab')),
+        matching: find.byIcon(LucideIcons.x),
+      ),
+    );
+    await settleImage(tester);
+
+    expect(find.byKey(const ValueKey<String>('image-tab')), findsNothing);
+    expect(find.byType(ImagePane), findsNothing);
+    expect(find.byType(EditorPane), findsOneWidget);
+  });
+
+  testWidgets('图片 tab 常驻：去看笔记再点它，回到原来那张图', (WidgetTester tester) async {
+    await pumpShell(
+      tester,
+      vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
+      folders: <String>['assets'],
+      files: <VaultFile>[const VaultFile(relativePath: 'assets/pic.png')],
+    );
+    await expandEverything(tester);
+
+    await tester.tap(treeRow('pic'));
+    await settleImage(tester);
+    expect(find.byType(ImagePane), findsOneWidget);
+
+    // 笔记 tab 和文件树里的行同名，得限定在标题栏里找。
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AppTitleBar),
+        matching: find.text('A 笔记'),
+      ),
+    );
+    await settleImage(tester);
+    expect(find.byType(ImagePane), findsNothing, reason: '回正文');
+    expect(find.text('pic.png'), findsOneWidget, reason: '图片 tab 要留在条上');
+
+    await tester.tap(find.text('pic.png'));
+    await settleImage(tester);
+    expect(find.byType(ImagePane), findsOneWidget);
   });
 }

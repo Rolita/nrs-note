@@ -29,6 +29,10 @@ class AppTitleBar extends StatefulWidget {
     required this.onSelectMainView,
     required this.graphOpen,
     required this.onCloseGraph,
+    required this.imageTitle,
+    required this.onCloseImage,
+    required this.canvasTitle,
+    required this.onCloseCanvas,
     required this.leftInset,
     required this.rightInset,
   });
@@ -43,6 +47,14 @@ class AppTitleBar extends StatefulWidget {
   final ValueChanged<MainView> onSelectMainView;
   final bool graphOpen;
   final VoidCallback onCloseGraph;
+
+  /// 图片页那一页 tab 的标题（当前那张图的文件名），`null` = 没开。
+  ///
+  /// 所有图片共用这一页：换图时这个字符串换掉，tab 还是同一个。
+  final String? imageTitle;
+  final VoidCallback onCloseImage;
+  final String? canvasTitle;
+  final VoidCallback onCloseCanvas;
 
   /// Distance from the window's left edge to the editor's left edge.
   final double leftInset;
@@ -105,6 +117,10 @@ class _AppTitleBarState extends State<AppTitleBar> with WindowListener {
         onSelectMainView: widget.onSelectMainView,
         graphOpen: widget.graphOpen,
         onCloseGraph: widget.onCloseGraph,
+        imageTitle: widget.imageTitle,
+        onCloseImage: widget.onCloseImage,
+        canvasTitle: widget.canvasTitle,
+        onCloseCanvas: widget.onCloseCanvas,
         leftInset: widget.leftInset,
         rightInset: widget.rightInset,
         grip: const DragToMoveArea(child: SizedBox.expand()),

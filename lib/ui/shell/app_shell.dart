@@ -10,6 +10,8 @@ import '../../core/platform/vault_sync.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../core/utils/external_link.dart';
+import '../../core/utils/image_file.dart';
+import '../../data/storage/canvas_store.dart';
 import '../../data/storage/canvas_store_factory.dart';
 import '../../core/utils/markdown_actions.dart';
 import '../../core/utils/markdown_outline.dart';
@@ -33,6 +35,7 @@ import '../editor/image_panel.dart';
 import '../editor/outline_panel.dart';
 import '../editor/table_panel.dart';
 import '../graph/graph_view.dart';
+import '../image/image_pane.dart';
 import '../templates/template_interaction.dart';
 import '../templates/template_new_note_dialog.dart';
 import '../templates/template_picker.dart';
@@ -72,10 +75,22 @@ class _AppShellState extends State<AppShell> {
 
   late final NotesController _notes;
   late final SettingsController _settings;
+  late final CanvasController _canvas;
+
+  /// 启动时那块白板文档还在路上，但上次退出时主区正看着它。
+  ///
+  /// 白板是在 `main` 里等 vault 读完才打开的（`open` 要用 vault 路径），
+  /// 那一刻外壳早就建好了。所以这里先记下「打开之后要切过去」，等控制器
+  /// 通知「文档来了」再切——否则启动后停在哪一页全看两边谁先跑完。
+  bool _pendingCanvasActivate = false;
 
   SidebarView _view = SidebarView.files;
 
   /// 主区显示笔记还是图谱。会话级，不持久化：重启回到上次的笔记。
+  ///
+  /// 唯一的例外是白板：它记在偏好里（`sessionCanvasPath` +
+  /// `sessionCanvasActive`），因为「关软件时正看着白板，下次打开还是它」
+  /// 是用户明确要的行为。其余视图不需要——笔记有自己那套标签会话。
   MainView _mainView = MainView.note;
 
   /// 图谱被打开过一次。
@@ -87,6 +102,12 @@ class _AppShellState extends State<AppShell> {
   /// 白板被打开过一次，理由同 [_graphOpened]。
   bool _canvasOpened = false;
 
+  /// 图片页正在看的那张图（vault 相对路径），`null` = 图片页没开。
+  ///
+  /// **所有图片共用这一页**：从文件树点另一张只是换这里的值，不新开 tab。
+  /// 点 tab 上的 × 才把它清掉。
+  String? _imagePath;
+
   int _cursorLine = 0;
   VoidCallback? _stopVaultSync;
 
@@ -95,7 +116,13 @@ class _AppShellState extends State<AppShell> {
     super.initState();
     _notes = context.read<NotesController>();
     _settings = context.read<SettingsController>();
+    _canvas = context.read<CanvasController>();
     _notes.onBlankNoteCreated = _applyFolderTemplate;
+    // 上次退出时正看着白板：文档由 `main` 恢复，这里只管「来了就切过去」。
+    // 路径为 null 时这个标志没有意义（没有白板可切），一并挡掉。
+    _pendingCanvasActivate =
+        _settings.sessionCanvasActive && _settings.sessionCanvasPath != null;
+    _canvas.addListener(_onCanvasChanged);
     // Prefer the newest note on first paint. A restored empty tab strip is a
     // state the user chose (they closed every tab), not an empty selection to
     // heal — `tabSessionRestored` keeps this from undoing it.
@@ -114,12 +141,36 @@ class _AppShellState extends State<AppShell> {
 
   @override
   void dispose() {
+    _canvas.removeListener(_onCanvasChanged);
     _notes.onBlankNoteCreated = null;
     _stopVaultSync?.call();
     _notices.dispose();
     _shellFocus.dispose();
     _bodyValue.dispose();
     super.dispose();
+  }
+
+  /// 白板文档换了（打开 / 新建 / 关掉 / 删除）时：记住这一页，必要时切过去。
+  void _onCanvasChanged() {
+    if (!mounted) return;
+    if (_pendingCanvasActivate && _canvas.hasDocument) {
+      _pendingCanvasActivate = false;
+      _selectMainView(MainView.canvas);
+      return;
+    }
+    _saveCanvasSession();
+  }
+
+  /// 把「开着哪块白板、是不是正在看它」写进偏好。
+  ///
+  /// 白板控制器每次自动保存都会通知一遍，但路径和主区视图都没变——所以
+  /// 真正的写盘判断在 [SettingsController.saveCanvasSession] 里，值相同就
+  /// 直接返回，打字时不会反复重写偏好文件。
+  void _saveCanvasSession() {
+    _settings.saveCanvasSession(
+      path: _canvas.path,
+      active: _mainView == MainView.canvas,
+    );
   }
 
   Future<void> _pullFromDisk() async {
@@ -160,17 +211,22 @@ class _AppShellState extends State<AppShell> {
     if (_mainView == view) return;
     // 白板是一份文件，没有「空白的白板」这种状态：点进来之前得先有一份。
     // 这里只做「还没打开过就新建一块」，已经打开过就直接切过去。
-    if (view == MainView.canvas && !context.read<CanvasController>().hasDocument) {
+    if (view == MainView.canvas &&
+        !context.read<CanvasController>().hasDocument) {
       unawaited(_newCanvasBoard());
       return;
     }
+    // 图片页也一样：没有「空的图片」这种状态。tab 还在但图被关掉之后，
+    // 这里什么都不做，别把主区切成一块空白。
+    if (view == MainView.image && _imagePath == null) return;
     final SettingsController settings = context.read<SettingsController>();
     setState(() {
       _mainView = view;
       if (view == MainView.graph) _graphOpened = true;
       if (view == MainView.canvas) _canvasOpened = true;
     });
-    // 图谱和白板都是全宽的：专注模式下面板都藏起来了，它们也需要那块地方。
+    // 图谱、白板和图片都是全宽的：专注模式下面板都藏起来了，它们也需要
+    // 那块地方。
     if (view != MainView.note && settings.focusMode) {
       settings.focusMode = false;
     }
@@ -185,6 +241,21 @@ class _AppShellState extends State<AppShell> {
         if (mounted) _canvasKey.currentState?.requestFocus();
       });
     }
+    _saveCanvasSession();
+  }
+
+  /// 关掉「白板」页（点 tab 上的 ×）。
+  ///
+  /// 和笔记标签一样，只有点 × 才算关：放下那块文档（会先落盘），主区若正
+  /// 停在这里就退回正文。文件本身还在，文件树里那一行照旧，点它就能再开。
+  void _closeCanvas() {
+    if (!_canvas.hasDocument) return;
+    if (_mainView == MainView.canvas) {
+      setState(() => _mainView = MainView.note);
+    }
+    // `close()` 会先 flush 再清空，然后通知——标签跟着 `hasDocument` 消失。
+    unawaited(_canvas.close());
+    _shellFocus.requestFocus();
   }
 
   /// 关掉「关系图谱」页。
@@ -196,6 +267,19 @@ class _AppShellState extends State<AppShell> {
     setState(() {
       _graphOpened = false;
       if (_mainView == MainView.graph) _mainView = MainView.note;
+    });
+    _shellFocus.requestFocus();
+  }
+
+  /// 关掉「图片」页。
+  ///
+  /// 和图谱页同一条口径：只有点 × 才算关。主区若正停在那张图上就退回正文，
+  /// 并且把 [_imagePath] 清掉——下次点图片会重新进来（不再是上次那张）。
+  void _closeImage() {
+    if (_imagePath == null) return;
+    setState(() {
+      _imagePath = null;
+      if (_mainView == MainView.image) _mainView = MainView.note;
     });
     _shellFocus.requestFocus();
   }
@@ -241,17 +325,54 @@ class _AppShellState extends State<AppShell> {
     _selectMainView(MainView.canvas);
   }
 
-  /// 文件树里点开一个附件（图片、PDF……）：交给系统的默认程序。
+  /// 文件树里点开一个附件。
   ///
-  /// NRS 不解释这些格式，在应用里硬画一遍只会多出一套半成品预览；用户在
-  /// 资源管理器里双击会发生什么，在这里双击就该发生什么。
+  /// 图片在应用内开（主区那一页，所有图片共用一份）；其余交给系统的默认
+  /// 程序——NRS 不解释 PDF、压缩包这些格式，在应用里硬画一遍只会多出一套
+  /// 半成品预览。`svg` / `heic` / `tif` 也算「其余」：文件树给它们画图片
+  /// 图标，但 Flutter 没有解码器，点开只会是一块空白。
   Future<void> _openVaultFile(VaultFile file) async {
+    if (isViewableImageFileName(file.fileName)) {
+      _openVaultImage(file);
+      return;
+    }
     final String? vault = _notes.vaultPath;
     if (vault == null) return;
     final String path = '$vault/${file.relativePath}';
     final bool opened = await openExternal(Uri.file(path).toString());
     if (!mounted || opened) return;
     _toast('打不开这个文件', kind: NoticeKind.error, detail: file.relativePath);
+  }
+
+  /// 在图片页里打开这张图。
+  ///
+  /// 已经停在图片页时只换内容，不切视图、不新开 tab——「所有图片共用这一个
+  /// 图片 tab」就是这条：点第二张图，标题栏上那个 tab 还在原地，只是标题和
+  /// 画面换了。
+  void _openVaultImage(VaultFile file) {
+    final SettingsController settings = context.read<SettingsController>();
+    setState(() {
+      _imagePath = file.relativePath;
+      _mainView = MainView.image;
+    });
+    // 图片是整块画布：专注模式下面板都收起来了，它也需要那块地方。
+    if (settings.focusMode) settings.focusMode = false;
+    _shellFocus.requestFocus();
+  }
+
+  /// 把当前那张图交给系统看图程序。
+  ///
+  /// 应用内解不了的格式（`svg` / `heic` / `tif`）在图片页上给的就是这条路，
+  /// 状态栏那枚按钮走的也是它。
+  Future<void> _openImageExternally() async {
+    final String? relative = _imagePath;
+    final String? vault = _notes.vaultPath;
+    if (relative == null || vault == null) return;
+    final bool opened = await openExternal(
+      Uri.file('$vault/$relative').toString(),
+    );
+    if (!mounted || opened) return;
+    _toast('打不开这个文件', kind: NoticeKind.error, detail: relative);
   }
 
   /// 白板上双击一张文件卡片：打开那篇笔记并切回正文。
@@ -525,9 +646,7 @@ class _AppShellState extends State<AppShell> {
       return;
     }
     _toast(
-      failed == 0
-          ? '已移入回收站'
-          : '${receipts.length} 块白板移入回收站',
+      failed == 0 ? '已移入回收站' : '${receipts.length} 块白板移入回收站',
       detail: single ? titleOf(boards.single) : '${receipts.length} 块白板',
       actionLabel: '撤销',
       onAction: () {
@@ -831,6 +950,10 @@ class _AppShellState extends State<AppShell> {
       (NotesController notes) => notes.error,
     );
     final SettingsController settings = context.watch<SettingsController>();
+    // 白板这一页的标题来自控制器：同一时刻只开着一块，换一块只是换名字。
+    final String? canvasPath = context.select<CanvasController, String?>(
+      (CanvasController canvas) => canvas.path,
+    );
     final bool zen = settings.focusMode;
 
     return NoticeScope(
@@ -848,11 +971,12 @@ class _AppShellState extends State<AppShell> {
             // narrow window) as well as on both drag handles.
             body: LayoutBuilder(
               builder: (BuildContext context, BoxConstraints c) {
-                // 图谱要整块画布：右侧那一栏（大纲 / 表格 / 图片）在图谱里
-                // 收起来，退出图谱自动回来——所以这里只做「图谱时不显示」，
+                // 图谱和图片要整块画布：右侧那一栏（大纲 / 表格 / 图片列表）
+                // 在它们里收起来，退出来自动回来——所以这里只做「不显示」，
                 // 不去改 `settings.*Visible`。改设置会写盘，而且「关掉再打开」
                 // 会把用户原来的选择弄丢。
-                final bool panelAllowed = _mainView != MainView.graph;
+                final bool panelAllowed =
+                    _mainView != MainView.graph && _mainView != MainView.image;
                 final bool showOutline =
                     panelAllowed &&
                     !zen &&
@@ -899,6 +1023,12 @@ class _AppShellState extends State<AppShell> {
                       onSelectMainView: _selectMainView,
                       graphOpen: _graphOpened,
                       onCloseGraph: _closeGraph,
+                      imageTitle: _imagePath?.split('/').last,
+                      onCloseImage: _closeImage,
+                      canvasTitle: canvasPath == null
+                          ? null
+                          : canvasTitleOf(canvasPath),
+                      onCloseCanvas: _closeCanvas,
                       leftInset: leftInset,
                       rightInset: rightInset,
                     ),
@@ -951,8 +1081,9 @@ class _AppShellState extends State<AppShell> {
                                       WidgetsBinding.instance
                                           .addPostFrameCallback((_) {
                                             if (!mounted) return;
-                                            _editorKey.currentState
-                                                ?.goToOffset(offset);
+                                            _editorKey.currentState?.goToOffset(
+                                              offset,
+                                            );
                                           });
                                     },
                                   ),
@@ -988,8 +1119,7 @@ class _AppShellState extends State<AppShell> {
                                     ),
                                     if (_graphOpened)
                                       Offstage(
-                                        offstage:
-                                            _mainView != MainView.graph,
+                                        offstage: _mainView != MainView.graph,
                                         child: GraphView(
                                           notes: context
                                               .watch<NotesController>()
@@ -1005,8 +1135,7 @@ class _AppShellState extends State<AppShell> {
                                     // 都活在 State 里，摘掉子树会一起丢。
                                     if (_canvasOpened)
                                       Offstage(
-                                        offstage:
-                                            _mainView != MainView.canvas,
+                                        offstage: _mainView != MainView.canvas,
                                         child: CanvasBoard(
                                           key: _canvasKey,
                                           document: context
@@ -1015,17 +1144,34 @@ class _AppShellState extends State<AppShell> {
                                           onChanged: context
                                               .read<CanvasController>()
                                               .markDirty,
-                                          files: <({String path, String title})>[
-                                            for (final Note note in context
-                                                .watch<NotesController>()
-                                                .allNotes)
-                                              (
-                                                path: note.relativePath,
-                                                title: _displayTitle(note),
-                                              ),
-                                          ],
+                                          files:
+                                              <({String path, String title})>[
+                                                for (final Note note
+                                                    in context
+                                                        .watch<
+                                                          NotesController
+                                                        >()
+                                                        .allNotes)
+                                                  (
+                                                    path: note.relativePath,
+                                                    title: _displayTitle(note),
+                                                  ),
+                                              ],
                                           onOpenFile: _openFromCanvas,
                                           onOpenLink: _openCanvasLink,
+                                        ),
+                                      ),
+                                    // 图片页：所有图片共用这一份 State。换图只
+                                    // 换 `_imagePath`，缩放状态由 `didUpdateWidget`
+                                    // 复位，不重建整棵子树。
+                                    if (_imagePath != null)
+                                      Offstage(
+                                        offstage: _mainView != MainView.image,
+                                        child: ImagePane(
+                                          source: _imagePath!,
+                                          absolutePath:
+                                              '${_notes.vaultPath ?? ''}/$_imagePath',
+                                          onOpenExternal: _openImageExternally,
                                         ),
                                       ),
                                   ],
@@ -1060,10 +1206,9 @@ class _AppShellState extends State<AppShell> {
                                   value: _bodyValue,
                                   onApply: (MarkdownEditFn fn) =>
                                       _editorKey.currentState?.applyEdit(fn),
-                                  onJump: (int offset) =>
-                                      _editorKey.currentState?.goToOffset(
-                                        offset,
-                                      ),
+                                  onJump: (int offset) => _editorKey
+                                      .currentState
+                                      ?.goToOffset(offset),
                                 ),
                               ],
                               if (showImages) ...<Widget>[

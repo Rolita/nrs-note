@@ -60,9 +60,7 @@ Future<void> main() async {
   notes.canvasCountOf = (String folder) async {
     final List<CanvasRef> boards = await canvas.list();
     return boards
-        .where(
-          (CanvasRef board) => board.relativePath.startsWith('$folder/'),
-        )
+        .where((CanvasRef board) => board.relativePath.startsWith('$folder/'))
         .length;
   };
 
@@ -80,6 +78,8 @@ Future<void> main() async {
       // 白板清单要等 vault 路径就绪才能读（`init()` 之后），所以挂在读盘
       // 完成之后，不占启动的关键路径。
       unawaited(canvas.refreshCanvases());
+      // 上次关窗口时开着的那块白板：同样要等 vault 读完才打得开。
+      unawaited(_restoreCanvasSession(settings, canvas));
       saveSession();
       notes.addListener(saveSession);
     }),
@@ -107,4 +107,20 @@ Future<void> main() async {
     await canvas.flush();
     BootTrace.mark('canvas flushed');
   });
+}
+
+/// 恢复上次关窗口时开着的那块白板。
+///
+/// 必须在 vault 读完（`bootstrap`）之后：`open` 要用 vault 路径。打不开就
+/// 当没这回事，顺手把会话清掉——文件被删了、路径坏了，不该每次启动都重试
+/// 一遍，更不该在启动时弹一个错误框。
+Future<void> _restoreCanvasSession(
+  SettingsController settings,
+  CanvasController canvas,
+) async {
+  final String? path = settings.sessionCanvasPath;
+  if (path == null) return;
+  if (await canvas.open(path)) return;
+  canvas.setError(null);
+  settings.saveCanvasSession(path: null, active: false);
 }

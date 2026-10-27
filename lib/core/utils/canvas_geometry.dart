@@ -1,4 +1,4 @@
-/// 白板的几何计算：视口变换、连线贝塞尔、命中测试、吸附。
+/// 白板的几何计算：摄像机、连线贝塞尔、命中测试、缩放手柄。
 ///
 /// 全部是纯函数 / 不可变值对象，不碰 widget、不碰 `BuildContext`。
 /// 白板里最容易算错的就是坐标，所以这一层单独拆出来，用单测钉死。
@@ -30,103 +30,118 @@ enum CanvasSide {
   };
 }
 
-/// 视口：世界坐标 ↔ 屏幕坐标。
+/// 摄像机：画面中心对准哪个世界坐标、放大多少。
 ///
-/// 只有一种变换，`screen = world * zoom + offset`。别的地方不要再自己算一遍——
-/// 白板里「拖 A 结果 B 动了」这类 bug 十有八九是有第二套坐标公式。
-class CanvasViewport {
-  const CanvasViewport({this.zoom = 1, this.offset = Offset.zero});
+/// 只有一种变换，`screen = (world - center) * zoom + stage.center`。
+/// 别的地方不要再自己算一遍——白板里「拖 A 结果 B 动了」这类 bug
+/// 十有八九是有第二套坐标公式。
+///
+/// 和「左上角偏移」的视口相比，中心点模型的差别在缩放：以屏幕某点为锚点
+/// 缩放时，只要保证那个点下面的世界坐标不动，公式是
+/// `center' = anchorWorld - (anchorScreen - stageCenter) / zoom'`，
+/// 不用先算 offset 再回推。
+class CanvasCamera {
+  const CanvasCamera({this.center = Offset.zero, this.zoom = 1});
+
+  /// 画面正中央对准的世界坐标。
+  final Offset center;
 
   final double zoom;
-  final Offset offset;
 
-  /// 缩放下限。再小字已经是噪点，网格也该消失了。
-  static const double minZoom = 0.1;
+  /// 缩放的**数值下限**，不是视觉上的极限。
+  ///
+  /// 白板**不设缩放上限**：想放到多少倍就放到多少倍。下限只用来挡住 0 和
+  /// Infinity——`1 / zoom` 到处都是（线宽、手柄、箭头都靠它折算屏幕像素），
+  /// zoom 掉到 0 会算出无穷大，几何整个变 NaN。1e-6 时一个世界像素只有
+  /// 百万分之一屏幕像素，任何内容都缩成一点，实际用不到比这更小。
+  static const double minZoom = 1e-6;
 
-  /// 缩放上限。再大一张卡片就占满屏，没意义。
-  static const double maxZoom = 4;
-
-  /// 适应窗口时四周留的空白。
+  /// 适应窗口时四周留的空白（屏幕像素）。
   static const double fitPadding = 90;
 
-  Offset toScreen(Offset world) => world * zoom + offset;
+  /// 屏幕中心。每个换算都要用，单独抽出来免得写十遍。
+  static Offset stageCenter(Size stage) => stage.center(Offset.zero);
 
-  Offset toWorld(Offset screen) => (screen - offset) / zoom;
+  Offset toScreen(Offset world, Size stage) =>
+      (world - center) * zoom + stageCenter(stage);
 
-  Rect rectToScreen(Rect world) => Rect.fromLTWH(
-    world.left * zoom + offset.dx,
-    world.top * zoom + offset.dy,
+  Offset toWorld(Offset screen, Size stage) =>
+      (screen - stageCenter(stage)) / zoom + center;
+
+  Rect rectToScreen(Rect world, Size stage) => Rect.fromLTWH(
+    (world.left - center.dx) * zoom + stage.width / 2,
+    (world.top - center.dy) * zoom + stage.height / 2,
     world.width * zoom,
     world.height * zoom,
   );
 
-  Rect rectToWorld(Rect screen) => Rect.fromLTWH(
-    (screen.left - offset.dx) / zoom,
-    (screen.top - offset.dy) / zoom,
+  Rect rectToWorld(Rect screen, Size stage) => Rect.fromLTWH(
+    (screen.left - stage.width / 2) / zoom + center.dx,
+    (screen.top - stage.height / 2) / zoom + center.dy,
     screen.width / zoom,
     screen.height / zoom,
   );
 
-  CanvasViewport pannedBy(Offset delta) =>
-      CanvasViewport(zoom: zoom, offset: offset + delta);
+  /// 当前屏幕上能看到的世界矩形。
+  Rect visibleWorld(Size stage) => rectToWorld(Offset.zero & stage, stage);
 
-  /// 以屏幕上某一点为锚点缩放：那个点在缩放前后**停在原地**。
-  CanvasViewport zoomedAt(Offset screenAnchor, double factor) {
-    final double next = (zoom * factor).clamp(minZoom, maxZoom);
-    if (next == zoom) return this;
-    final double k = next / zoom;
-    return CanvasViewport(
-      zoom: next,
-      offset: screenAnchor - (screenAnchor - offset) * k,
-    );
-  }
+  /// 平移：拖动屏幕 [delta] 像素，内容就跟着走那么多。
+  CanvasCamera pannedBy(Offset delta) =>
+      CanvasCamera(center: center - delta / zoom, zoom: zoom);
+
+  /// 直接位移到某个世界中心。
+  CanvasCamera movedTo(Offset next) => CanvasCamera(center: next, zoom: zoom);
+
+  /// 以屏幕上某一点为锚点缩放：那个点下面的世界坐标在缩放前后**停在原地**。
+  CanvasCamera zoomedAt(Offset screenAnchor, double factor, Size stage) =>
+      withZoomAt(screenAnchor, zoom * factor, stage);
 
   /// 缩放固定到某个值（`Ctrl+0` 回 100%）。
-  ///
-  /// 不复用 [zoomedAt] 的乘法：`zoom * (1 / zoom)` 会给出 0.9999999999999999，
-  /// 而「回到 100%」显示成 99% 是那种一眼就看得见、又很难解释的错。
-  CanvasViewport withZoomAt(Offset screenAnchor, double value) {
-    final double next = value.clamp(minZoom, maxZoom);
+  CanvasCamera withZoomAt(Offset screenAnchor, double value, Size stage) {
+    final double next = value < minZoom ? minZoom : value;
     if (next == zoom) return this;
-    final double k = next / zoom;
-    return CanvasViewport(
+    final Offset anchorWorld = toWorld(screenAnchor, stage);
+    final Offset offsetFromCenter = screenAnchor - stageCenter(stage);
+    return CanvasCamera(
+      center: anchorWorld - offsetFromCenter / next,
       zoom: next,
-      offset: screenAnchor - (screenAnchor - offset) * k,
     );
   }
 
   /// 把 [content] 装进 [stage] 并居中。内容为空时退化成「中心对准原点」。
-  static CanvasViewport fit(Rect content, Size stage) {
-    if (stage.isEmpty) return const CanvasViewport();
+  static CanvasCamera fit(
+    Rect content,
+    Size stage, {
+    double padding = fitPadding,
+  }) {
+    if (stage.isEmpty) return const CanvasCamera();
     if (content.width <= 0 || content.height <= 0) {
-      return CanvasViewport(offset: stage.center(Offset.zero));
+      return const CanvasCamera();
     }
     final double scale = math.min(
-      (stage.width - fitPadding * 2) / content.width,
-      (stage.height - fitPadding * 2) / content.height,
+      (stage.width - padding * 2) / content.width,
+      (stage.height - padding * 2) / content.height,
     );
-    final double zoom = scale.clamp(minZoom, maxZoom);
-    return CanvasViewport(
-      zoom: zoom,
-      offset: stage.center(Offset.zero) - content.center * zoom,
+    return CanvasCamera(
+      center: content.center,
+      zoom: scale < minZoom ? minZoom : scale,
     );
   }
 
   /// 值相等。
   ///
-  /// 视口是画笔的输入，`shouldRepaint` 拿它和上一帧比。没有 `==` 就只能比
-  /// 引用，每帧都判定「变了」——平移缩放时白画一遍无所谓，静止时也重绘就
-  /// 是纯浪费。
+  /// 摄像机会作为画笔的输入，`shouldRepaint` 拿它和上一帧比。没有 `==`
+  /// 就只能比引用，每帧都判定「变了」——静止时也重绘就是纯浪费。
   @override
   bool operator ==(Object other) =>
-      other is CanvasViewport && other.zoom == zoom && other.offset == offset;
+      other is CanvasCamera && other.center == center && other.zoom == zoom;
 
   @override
-  int get hashCode => Object.hash(zoom, offset);
+  int get hashCode => Object.hash(center, zoom);
 
   @override
   String toString() =>
-      'CanvasViewport(zoom: ${zoom.toStringAsFixed(3)}, offset: $offset)';
+      'CanvasCamera(center: $center, zoom: ${zoom.toStringAsFixed(3)})';
 }
 
 /// 一组矩形的并集。空集合返回 [Rect.zero]。
@@ -138,7 +153,7 @@ Rect unionOf(Iterable<Rect> rects) {
   return out ?? Rect.zero;
 }
 
-/// 一条边的曲线几何。
+/// 一条边的曲线几何（**世界坐标**）。
 ///
 /// 三次贝塞尔：两个端点各带一个控制点，控制点沿所在边的法线伸出去，
 /// 所以线是「从卡片侧面长出来」的，不会从卡片正中穿过去。
@@ -255,41 +270,6 @@ CanvasEdgeGeometry edgeGeometry({
   );
 }
 
-/// 拖到离网格多近就吸上去。
-const double snapGridSize = 20;
-const double snapGridTolerance = 6;
-
-/// 拖到离另一张卡片边缘多近就对齐。
-const double snapEdgeTolerance = 8;
-
-/// 一维吸附到网格：偏差在 [tolerance] 内才动，否则原样返回。
-///
-/// 拖动**过程中**不吸，松手才吸——过程中吸会让人觉得「拽不动」。
-double snapToGrid(
-  double value, {
-  double grid = snapGridSize,
-  double tolerance = snapGridTolerance,
-}) {
-  if (grid <= 0) return value;
-  final double snapped = (value / grid).roundToDouble() * grid;
-  return (snapped - value).abs() <= tolerance ? snapped : value;
-}
-
-/// 一维边缘对齐：在 [candidates] 里找一个与 [value] 差不超过
-/// [snapEdgeTolerance] 的值，取最近的。没有就返回 `null`。
-double? snapToEdge(double value, Iterable<double> candidates) {
-  double? best;
-  double bestDelta = snapEdgeTolerance;
-  for (final double c in candidates) {
-    final double delta = (c - value).abs();
-    if (delta <= bestDelta) {
-      bestDelta = delta;
-      best = c;
-    }
-  }
-  return best;
-}
-
 /// 命中一张卡片。容差是屏幕像素，所以要除以 zoom 换到世界坐标。
 bool hitsRect(Rect rect, Offset world, {double tolerance = 0}) {
   if (tolerance <= 0) return rect.contains(world);
@@ -299,8 +279,7 @@ bool hitsRect(Rect rect, Offset world, {double tolerance = 0}) {
 /// 框选：矩形相交即命中。
 bool rectsIntersect(Rect a, Rect b) => a.overlaps(b);
 
-/// 八个缩放手柄的位置（四角 + 四边中点），顺序固定，`CanvasResizeHandle` 的
-/// 下标就是它的序号。
+/// 八个缩放手柄的位置（四角 + 四边中点），顺序固定。
 enum CanvasResizeHandle {
   topLeft,
   topCenter,
@@ -369,4 +348,17 @@ Rect resizeRect(
   }
 
   return Rect.fromLTRB(left, top, right, bottom);
+}
+
+/// 两个数之间按 [t] 插值（摄像机动效用）。
+double lerpDouble(double a, double b, double t) => a + (b - a) * t;
+
+/// `Offset` 版本。
+Offset lerpOffset(Offset a, Offset b, double t) =>
+    Offset(lerpDouble(a.dx, b.dx, t), lerpDouble(a.dy, b.dy, t));
+
+/// 缓出曲线：起手快、收尾慢。摄像机动效统一用它。
+double easeOutCubic(double t) {
+  final double u = (1 - t).clamp(0.0, 1.0);
+  return 1 - u * u * u;
 }

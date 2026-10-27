@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import '../../core/app_enums.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
+import '../../core/utils/image_file.dart';
 import '../../data/models/note.dart';
 import '../../data/storage/canvas_store.dart';
 import '../../data/storage/note_store.dart';
@@ -359,8 +360,9 @@ class VaultTreeState extends State<VaultTree> {
     final List<({Note? note, CanvasRef? board})> rows = _selectableRows();
     final int anchor = _anchorIndex(rows);
     final int index = rows.indexWhere(
-      (({Note? note, CanvasRef? board}) r) =>
-          note != null ? r.note?.id == note.id : r.board?.relativePath == board?.relativePath,
+      (({Note? note, CanvasRef? board}) r) => note != null
+          ? r.note?.id == note.id
+          : r.board?.relativePath == board?.relativePath,
     );
     if (anchor < 0 || index < 0) {
       // 锚点不见了（文件夹被折叠、那篇笔记被删）：退化成单选，别让整段
@@ -381,12 +383,18 @@ class VaultTreeState extends State<VaultTree> {
     setState(() {
       _selected
         ..clear()
-        ..addAll(range.map((({Note? note, CanvasRef? board}) r) => r.note?.id).whereType<String>());
+        ..addAll(
+          range
+              .map((({Note? note, CanvasRef? board}) r) => r.note?.id)
+              .whereType<String>(),
+        );
       _selectedBoards
         ..clear()
         ..addAll(
           range
-              .map((({Note? note, CanvasRef? board}) r) => r.board?.relativePath)
+              .map(
+                (({Note? note, CanvasRef? board}) r) => r.board?.relativePath,
+              )
               .whereType<String>(),
         );
     });
@@ -853,10 +861,9 @@ class VaultTreeState extends State<VaultTree> {
     List<String> childrenOf(String parent) {
       final Set<String>? children = childFolders[parent];
       if (children == null) return const <String>[];
-      return children.toList()
-        ..sort(
-          (String a, String b) => a.toLowerCase().compareTo(b.toLowerCase()),
-        );
+      return children.toList()..sort(
+        (String a, String b) => a.toLowerCase().compareTo(b.toLowerCase()),
+      );
     }
 
     final List<_TreeRow> rows = <_TreeRow>[];
@@ -881,8 +888,12 @@ class VaultTreeState extends State<VaultTree> {
   /// 没有，就固定排在后面。
   static int _compareEntries(_FileEntry a, _FileEntry b, SortMode mode) {
     final int primary = switch (mode) {
-      SortMode.titleAsc => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
-      SortMode.titleDesc => b.title.toLowerCase().compareTo(a.title.toLowerCase()),
+      SortMode.titleAsc => a.title.toLowerCase().compareTo(
+        b.title.toLowerCase(),
+      ),
+      SortMode.titleDesc => b.title.toLowerCase().compareTo(
+        a.title.toLowerCase(),
+      ),
       SortMode.updatedDesc => _byDate(b.modified, a.modified),
       SortMode.updatedAsc => _byDate(a.modified, b.modified),
       SortMode.createdDesc => _byDate(b.created, a.created),
@@ -1005,8 +1016,7 @@ class VaultTreeState extends State<VaultTree> {
       title: entry.title,
       tooltip: entry.path,
       depth: row.depth,
-      selected:
-          board != null && _selectedBoards.contains(board.relativePath),
+      selected: board != null && _selectedBoards.contains(board.relativePath),
       active: board != null && board.relativePath == widget.activeCanvasPath,
       icon: board != null
           ? LucideIcons.layoutDashboard
@@ -1071,23 +1081,11 @@ class VaultTreeState extends State<VaultTree> {
     );
   }
 
-  static const Set<String> _imageExtensions = <String>{
-    'png',
-    'jpg',
-    'jpeg',
-    'gif',
-    'webp',
-    'avif',
-    'bmp',
-    'svg',
-    'heic',
-    'tif',
-    'tiff',
-  };
-
   static IconData _iconFor(String extension) {
     final String ext = extension.toLowerCase();
-    if (_imageExtensions.contains(ext)) return LucideIcons.image;
+    // 清单在 `core/utils/image_file.dart`：外壳判断「点了是开图片页还是交给
+    // 系统」用的是同一份，两边不会一个画图片图标、一个弹系统看图程序。
+    if (kImageExtensions.contains(ext)) return LucideIcons.image;
     if (ext == 'pdf') return LucideIcons.fileText;
     return LucideIcons.file;
   }
@@ -1508,11 +1506,7 @@ class _FileRow extends StatelessWidget {
                     child: icon == null
                         ? null
                         : Center(
-                            child: Icon(
-                              icon,
-                              size: 11,
-                              color: p.textTertiary,
-                            ),
+                            child: Icon(icon, size: 11, color: p.textTertiary),
                           ),
                   ),
                   Expanded(

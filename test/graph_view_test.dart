@@ -115,15 +115,6 @@ void main() {
       expect(h.view.debugNodeCount, 0);
       expect(find.textContaining('还没有笔记'), findsOneWidget);
     });
-
-    testWidgets('没有任何双链时说清楚怎么连', (WidgetTester tester) async {
-      await pumpGraph(
-        tester,
-        notes: <Note>[note('a', 'A'), note('b', 'B')],
-      );
-
-      expect(find.textContaining('还没有双链'), findsOneWidget);
-    });
   });
 
   group('悬停高亮，单击打开', () {

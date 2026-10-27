@@ -20,6 +20,10 @@ class AppTitleBar extends StatelessWidget {
     required this.onSelectMainView,
     required this.graphOpen,
     required this.onCloseGraph,
+    required this.imageTitle,
+    required this.onCloseImage,
+    required this.canvasTitle,
+    required this.onCloseCanvas,
     required this.leftInset,
     required this.rightInset,
   });
@@ -32,6 +36,10 @@ class AppTitleBar extends StatelessWidget {
   final ValueChanged<MainView> onSelectMainView;
   final bool graphOpen;
   final VoidCallback onCloseGraph;
+  final String? imageTitle;
+  final VoidCallback onCloseImage;
+  final String? canvasTitle;
+  final VoidCallback onCloseCanvas;
   final double leftInset;
   final double rightInset;
 
@@ -53,6 +61,10 @@ class AppTitleBar extends StatelessWidget {
         onSelectMainView: onSelectMainView,
         graphOpen: graphOpen,
         onCloseGraph: onCloseGraph,
+        imageTitle: imageTitle,
+        onCloseImage: onCloseImage,
+        canvasTitle: canvasTitle,
+        onCloseCanvas: onCloseCanvas,
         leftInset: leftInset,
         rightInset: rightInset,
         // No window to drag in a tab.

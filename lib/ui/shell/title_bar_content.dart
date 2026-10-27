@@ -59,6 +59,10 @@ class TitleBarLayout extends StatelessWidget {
     required this.onSelectMainView,
     required this.graphOpen,
     required this.onCloseGraph,
+    required this.imageTitle,
+    required this.onCloseImage,
+    required this.canvasTitle,
+    required this.onCloseCanvas,
     required this.grip,
     required this.leftInset,
     required this.rightInset,
@@ -81,6 +85,23 @@ class TitleBarLayout extends StatelessWidget {
 
   /// 关掉图谱页：主区若正停在那里就退回正文。
   final VoidCallback onCloseGraph;
+
+  /// 图片页那一页 tab 的标题（当前那张图的文件名），`null` = 没开。
+  ///
+  /// 只有一页：从文件树点第二张图时换的是这个字符串，不是多一页 tab。
+  final String? imageTitle;
+
+  /// 关掉图片页：主区若正停在那里就退回正文。
+  final VoidCallback onCloseImage;
+
+  /// 白板页那一页 tab 的标题（当前那块白板的名字），`null` = 没开。
+  ///
+  /// 和图片页一样只有一页：白板同一时刻只开着一块（`CanvasController`
+  /// 就一份文档），从文件树点另一块换的是这个字符串，不是再多一页。
+  final String? canvasTitle;
+
+  /// 关掉白板页：放下那块文档，主区若正停在那里就退回正文。
+  final VoidCallback onCloseCanvas;
 
   /// The window's drag surface. Handed in rather than created here because only
   /// the desktop build may talk to `window_manager`.
@@ -143,9 +164,10 @@ class TitleBarLayout extends StatelessWidget {
       ],
     );
 
-    // 图谱里右侧那一栏是收起来的，三颗开关也就没有可指向的面板了——
+    // 图谱和图片里右侧那一栏是收起来的，三颗开关也就没有可指向的面板了——
     // 留着能点但什么都不发生，比不显示更让人困惑。
-    final bool showPanelToggles = mainView != MainView.graph;
+    final bool showPanelToggles =
+        mainView != MainView.graph && mainView != MainView.image;
 
     final Widget outlineButton = _BarButton(
       icon: LucideIcons.listTree,
@@ -265,9 +287,35 @@ class TitleBarLayout extends StatelessWidget {
                                 child: _TitleTab(
                                   label: '关系图谱',
                                   active: mainView == MainView.graph,
-                                  onTap: () =>
-                                      onSelectMainView(MainView.graph),
+                                  onTap: () => onSelectMainView(MainView.graph),
                                   onClose: onCloseGraph,
+                                ),
+                              ),
+                            // 白板页：和笔记标签一样有标题、下划线、×。
+                            // 只有一页（同一时刻只开着一块），所以 key 固定，
+                            // 从文件树换一块时这枚 tab 原地换名字。
+                            if (canvasTitle != null)
+                              Flexible(
+                                child: _TitleTab(
+                                  key: const ValueKey<String>('canvas-tab'),
+                                  label: canvasTitle!,
+                                  active: mainView == MainView.canvas,
+                                  onTap: () =>
+                                      onSelectMainView(MainView.canvas),
+                                  onClose: onCloseCanvas,
+                                ),
+                              ),
+                            // 图片页：**只有一页**，所有图片共用。从文件树点
+                            // 第二张图换的是这个标题，不是再多一页——所以它
+                            // 的 key 是固定的，换图时这枚 tab 原地不动。
+                            if (imageTitle != null)
+                              Flexible(
+                                child: _TitleTab(
+                                  key: const ValueKey<String>('image-tab'),
+                                  label: imageTitle!,
+                                  active: mainView == MainView.image,
+                                  onTap: () => onSelectMainView(MainView.image),
+                                  onClose: onCloseImage,
                                 ),
                               ),
                           ],

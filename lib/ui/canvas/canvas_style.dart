@@ -1,29 +1,32 @@
 import 'package:flutter/material.dart';
 
 import '../../core/theme/app_palette.dart';
+import '../../core/theme/app_tokens.dart';
 import '../../core/theme/table_colors.dart';
 import '../../core/utils/table_model.dart' show CellColor, CellColorToken;
 
-/// 白板的配色。
+/// 白板的配色与刻度。
 ///
-/// 和 `graph_style.dart` 同一个套路：把 [AppPalette] 里的一堆色解析成
-/// 白板真正要用的那几个名字，画的时候不再回头看主题。
+/// 视觉基准是 graphif：白板是**一块坐标系**（有刻度、有原点十字），
+/// 卡片是**一根描边**而不是一块色块。所以这里的令牌分三组：
 ///
-/// 两套主题的差别只有两处，都在这里消化掉：
-///
-/// * **点阵**。深色底上用亮点点、浅色底上用暗点点，靠的是 `textPrimary`
-///   本来就跟着主题翻转；透明度不同（深色 8%、浅色 12%），因为浅色底
-///   的对比度天生更弱，同样的 alpha 会看不见。
-/// * **卡片底色**。深色主题 `surfaceRaised` 比画布亮一级（卡片浮起来），
-///   浅色主题同理。所以直接取 `surfaceRaised` 就行，不用分主题写死。
+/// * **网格**：[gridMajor] 主格（带刻度数字）、[axis] 原点十字。刻意压得很淡
+///   ——网格是背景的纹理，不是内容。**没有次格**：格子里不再切小格。
+/// * **标尺**：贴在画布上边与左边的两条带（[canvasRulerThickness] 像素），
+///   底色就是画布色，所以内容滚到它下面会被截断，像真的尺子压着纸。
+/// * **卡片**：统一的中性半透明底（[cardFill]）+ 一根细描边。六种预设色
+///   **不再进底色**，只染描边和文字（见 [canvasCardBorder] / [canvasCardInk]）。
 class CanvasStyle {
   const CanvasStyle({
     required this.background,
-    required this.gridDot,
-    required this.gridDotStrong,
+    required this.gridMajor,
+    required this.axis,
+    required this.rulerBackground,
+    required this.rulerText,
+    required this.rulerTick,
+    required this.rulerEdge,
     required this.cardFill,
-    required this.cardOutline,
-    required this.cardShadow,
+    required this.groupOutline,
     required this.accent,
     required this.accentSoft,
     required this.selectionFill,
@@ -39,44 +42,60 @@ class CanvasStyle {
     required this.emptyHint,
   });
 
-  factory CanvasStyle.of(AppPalette p) {
-    const double dot = 0.08;
-    return CanvasStyle(
-      background: p.canvas,
-      gridDot: p.textPrimary.withValues(alpha: dot),
-      // 间距翻倍时用更实一档，否则 40px 的大格看着比 20px 的小格还稀。
-      gridDotStrong: p.textPrimary.withValues(alpha: dot * 1.7),
-      cardFill: p.surfaceRaised,
-      cardOutline: p.outline,
-      cardShadow: p.shadow,
-      accent: p.accent,
-      accentSoft: p.accentSoft,
-      selectionFill: p.accentSoft.withValues(alpha: 0.40),
-      selectionOutline: p.accent.withValues(alpha: 0.70),
-      edge: p.outline,
-      edgeSelected: p.accent,
-      edgeLabel: p.textSecondary,
-      labelHalo: p.canvas,
-      textPrimary: p.textPrimary,
-      textSecondary: p.textSecondary,
-      handle: p.accent,
-      handleRing: p.surface,
-      emptyHint: p.textTertiary,
-    );
-  }
+  factory CanvasStyle.of(AppPalette p) => CanvasStyle(
+    background: p.canvas,
+    // 只有一层格线：再淡就看不见，再亮就抢内容。
+    gridMajor: p.textPrimary.withValues(alpha: 0.085),
+    axis: p.accent.withValues(alpha: 0.24),
+    rulerBackground: p.canvas,
+    rulerText: p.textTertiary,
+    rulerTick: p.textPrimary.withValues(alpha: 0.16),
+    rulerEdge: p.outline,
+    // 卡片只比画布亮一点点：轮廓由那根描边交代，不靠色块和投影。
+    cardFill: p.surfaceRaised.withValues(alpha: 0.72),
+    groupOutline: p.textPrimary.withValues(alpha: 0.22),
+    accent: p.accent,
+    accentSoft: p.accentSoft,
+    selectionFill: p.accentSoft.withValues(alpha: 0.40),
+    selectionOutline: p.accent.withValues(alpha: 0.70),
+    edge: p.textPrimary.withValues(alpha: 0.30),
+    edgeSelected: p.accent,
+    edgeLabel: p.textSecondary,
+    labelHalo: p.canvas,
+    textPrimary: p.textPrimary,
+    textSecondary: p.textSecondary,
+    handle: p.accent,
+    handleRing: p.surface,
+    emptyHint: p.textTertiary,
+  );
 
   /// 画布底色。和左栏最深处同一级：白板是一块「凹陷的工作台」。
   final Color background;
 
-  /// 点阵。20px 一格时用这个。
-  final Color gridDot;
+  /// 主格线（标尺上写了数字的那一条）。**没有次格**——一格就是相邻两个
+  /// 刻度之间的距离，格子里不再切小格。
+  final Color gridMajor;
 
-  /// 点阵。缩放到 200% 以上、间距翻倍时用这个。
-  final Color gridDotStrong;
+  /// 世界原点的十字（x = 0 / y = 0 两条）。
+  final Color axis;
 
+  /// 标尺带的底色。用画布色，内容滚到下面就被截断。
+  final Color rulerBackground;
+
+  /// 标尺上的刻度数字。
+  final Color rulerText;
+
+  /// 标尺上的小刻度线。
+  final Color rulerTick;
+
+  /// 标尺带内侧那根收边线。
+  final Color rulerEdge;
+
+  /// 卡片底色：中性半透明面。颜色不进这里。
   final Color cardFill;
-  final Color cardOutline;
-  final Color cardShadow;
+
+  /// 分组框的描边。
+  final Color groupOutline;
 
   final Color accent;
   final Color accentSoft;
@@ -105,35 +124,144 @@ class CanvasStyle {
   final Color emptyHint;
 }
 
-/// 点阵网格的间距（世界坐标）。
-const double canvasGridSize = 20;
-/// 缩到多小就彻底不画网格。
-///
-/// 0.35 对应屏幕上 7px 一格：再密下去就是一片灰雾，除了拖慢重绘没有用处。
-const double canvasGridFadeOut = 0.35;
+// ---------------------------------------------------------------- 网格刻度
 
-/// 缩到多大就把网格间距翻倍。
+/// 主格步长的候选阶梯（世界单位）。
 ///
-/// 200% 时 20px 已经是屏幕上 40px，不翻倍点会显得稀疏、像没对齐。
-const double canvasGridCoarsen = 2.0;
+/// 只走 1 / 2 / 5 三个系数，标尺上的数字才会是 100、200、500 这种整数，
+/// 不会出现 137 这种读不出量级的刻度。
+const List<double> canvasGridLadder = <double>[
+  10,
+  20,
+  50,
+  100,
+  200,
+  500,
+  1000,
+  2000,
+  5000,
+  10000,
+  20000,
+  50000,
+  100000,
+  200000,
+  500000,
+  1000000,
+  2000000,
+  5000000,
+  10000000,
+];
 
-/// 网格整体的透明度。
+/// 主格在屏幕上的最小步长。低于它就把阶梯往上跳一档。
 ///
-/// 从 [canvasGridFadeOut] 到它的 1.6 倍之间线性淡入，避免「唰一下」出现。
-double canvasGridOpacity(double zoom) {
-  const double start = canvasGridFadeOut;
-  const double end = canvasGridFadeOut * 1.6;
-  if (zoom <= start) return 0;
-  if (zoom >= end) return 1;
-  return (zoom - start) / (end - start);
+/// 64px 是「一眼能数清格子」的下限；再密下去网格就从纹理变成灰雾了。
+const double canvasGridMinScreenStep = 64;
+
+/// 主格（写数字的那一层）的世界步长。
+///
+/// 跟着缩放走阶梯，而不是把同一套间距画得越来越密：缩小时 100 → 200 →
+/// 500，放大时 100 → 50 → 20。所以**任何缩放下刻度都是整数**，
+/// 也不会出现「缩到 8% 要点上百万个点」这种事。
+double canvasGridMajorStep(double zoom) {
+  final double z = zoom > 0 ? zoom : 1;
+  for (final double step in canvasGridLadder) {
+    if (step * z >= canvasGridMinScreenStep) return step;
+  }
+  return canvasGridLadder.last;
 }
 
-/// 屏幕上实际的点阵间距（世界单位）。
+/// 上边标尺带的高度（屏幕像素，不跟着缩放变）。
 ///
-/// 缩放到 [canvasGridCoarsen] 以上就翻倍。翻倍而不是画更多点，是因为
-/// 网格的职责只是「让你看得出在拖多远」，不是刻度尺。
-double canvasGridStep(double zoom) =>
-    zoom >= canvasGridCoarsen ? canvasGridSize * 2 : canvasGridSize;
+/// 数字是「刻在线中间」的，所以这一条只放得下一行字。
+const double canvasRulerThickness = 20;
+
+/// 左边标尺带的宽度。
+///
+/// 比上边那条宽：左边的数字要靠右对齐摆进带子里，而 `-2000` 这种五位数
+/// 在 10px 字号下要 26px，20px 的带子装不下，字就会跑到画布上。
+const double canvasRulerSideWidth = 32;
+
+/// 标尺上写什么。
+///
+/// 阶梯里的步长都是整数，所以绝大多数时候就是整数的字符串；留一位小数
+/// 只是为了防止以后有人把阶梯改成 2.5 这类值。判整数带 1e-6 的容差——
+/// `k * major` 在 k 很大时会算出 `999.9999999999999` 这种值。
+String canvasRulerLabel(double value) {
+  final double rounded = value.roundToDouble();
+  if ((value - rounded).abs() < 1e-6) return rounded.round().toString();
+  return value.toStringAsFixed(1);
+}
+
+// ------------------------------------------------------------------ 空卡片
+
+/// 空文字卡片正中的那三个点。
+///
+/// **这三个点就是这张卡的内容**，不是装饰。所以它的宽度要拿来量：
+/// 空卡片的宽 = 这串点的宽 + 两边内边距，和「打完字就贴合文字」是同一套
+/// 算法，只不过现在的内容恰好是三个点。量别的东西（比如量一个空格）都会
+/// 让卡片和点之间空出一块。
+const String canvasEmptyDots = '•••';
+
+/// 那三个点的排版。画笔和尺寸拟合**必须共用这一份**，否则量出来的宽度和
+/// 画出来的宽度差一点点，右边就会多一条空。
+///
+/// `height: 1` 是刻意的：点是小圆点，不需要正文那 1.6 的行高撑着；卡片
+/// 本身的高度另按一行正文算（见 `_fitTextNode`），所以两者互不影响。
+///
+/// [scale] 是节点的字号倍率，字距也要跟着放大，否则大卡片上的三个点会挤成
+/// 一小撮。
+TextStyle canvasEmptyDotsStyle({Color? color, double scale = 1}) => TextStyle(
+  fontSize: AppText.ui * scale,
+  height: 1,
+  letterSpacing: 1 * scale,
+  color: color,
+  fontFamily: AppFonts.ui,
+  fontFamilyFallback: AppFonts.uiFallback,
+);
+
+// ------------------------------------------------------------------ 浮层
+
+/// 详细信息面板右下角那个拖拽握把的边长（屏幕像素）。
+const double canvasDetailsGripSide = 18;
+
+/// 面板能被拖到的尺寸范围。
+///
+/// 下限刚好放得下一列输入框，再窄标签就要换行；上限只是防止把面板拖成整块
+/// 屏幕——它是个子窗口，不是主界面。
+const double canvasDetailsMinWidth = 240;
+const double canvasDetailsMaxWidth = 620;
+const double canvasDetailsMinHeight = 220;
+const double canvasDetailsMaxHeight = 720;
+
+/// `Ctrl+=` / `Ctrl+-` 按一下，字号乘多少。
+///
+/// 1.25 是「按三下看得见、按四下翻倍」的节奏。1.1 太钝了——按半天看不出
+/// 变化，用户会以为快捷键没生效。
+const double canvasResizeStep = 1.25;
+
+/// 贴合文字时，宽度额外留的余量（世界像素）。
+///
+/// 不留的话，卡片宽度会**正好等于**文字宽度——也就是正好落在折行的临界点上。
+/// 这时任何一个亚像素的差（字形步进的浮点累加、输入框那边少排 2.6px 的光标
+/// 余量）都会让最后一行多折一次，于是「不编辑时一行、一编辑变两行」。
+/// 1px 看不出来，但足够把临界点推开。
+const double canvasTextFitSlack = 1;
+
+/// 按 [step] 排出落在 `[0, extent]` 里的网格线的屏幕坐标。
+///
+/// [origin] 是**世界原点**在屏幕上的位置（x 或 y 分量）。Dart 的 `%` 对正
+/// 除数恒返回非负数，所以负坐标平移过来也不会漏掉第一条线。
+List<double> canvasGridLineOffsets(double origin, double step, double extent) {
+  final List<double> out = <double>[];
+  // 屏幕步长小于 1px 时画出来就是一整片实心，直接不画。
+  if (step < 1 || extent <= 0) return out;
+  double at = origin % step;
+  while (at <= extent) {
+    out.add(at);
+    at += step;
+  }
+  return out;
+}
 
 // ------------------------------------------------------------------ 卡片配色
 
@@ -187,17 +315,21 @@ CellColor? canvasCellColor(String? raw) {
   return CellColor.custom(argb);
 }
 
-/// 卡片底色：设了色就用那个色，没设就是浮起来的那一层。
-Color canvasCardFill(AppPalette p, CellColor? color) =>
-    color == null ? p.surfaceRaised : tableFillColor(p, color);
-
 /// 卡片文字色：设了色就用那个色的墨，没设就是正文色。
 Color canvasCardInk(AppPalette p, CellColor? color) =>
     color == null ? p.textPrimary : tableInkColor(p, color);
 
-/// 卡片描边：设了色就用那个色的墨压到 45%，没设就是普通的分隔线。
+/// 卡片描边：没设色是一根淡白线（graphif 那种「纸边」），设了色就是那个色。
 ///
-/// 深色主题下是深底亮边、浅色主题下是浅底深边，两套主题不用各写一份。
+/// 颜色只在这里和文字上出现——底色永远是 [CanvasStyle.cardFill]，
+/// 所以一屏摆二十张卡片也不会变成一块调色盘。
 Color canvasCardBorder(AppPalette p, CellColor? color) => color == null
-    ? p.outline
-    : tableInkColor(p, color).withValues(alpha: 0.45);
+    ? p.textPrimary.withValues(alpha: 0.30)
+    : tableInkColor(p, color).withValues(alpha: 0.80);
+
+/// 分组标题色。分组没有底色，标题就是它的「脸」。
+Color canvasGroupInk(AppPalette p) => p.textPrimary.withValues(alpha: 0.90);
+
+/// 换色菜单里的色块：这里要的是**实心**的色，和卡片身上的半透明底无关。
+Color canvasSwatchFill(AppPalette p, CellColor? color) =>
+    color == null ? p.surfaceRaised : tableFillColor(p, color);

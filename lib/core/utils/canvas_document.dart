@@ -1,31 +1,41 @@
 /// 白板文件（`.nrs`）的数据模型。
 ///
-/// 文件**内容**是 [JSON Canvas 1.0](https://jsoncanvas.org/spec/1.0/)：
-/// 字段、枚举值、默认值全部照规范，后缀换成了 `.nrs`。之所以不自己发明格式，
-/// 是因为规范的字段集已经被现实打磨过（`group` / `subpath` / `fromEnd` / 六色预设），
-/// 自己设计一套大概率会漏；而且想和 Obsidian 互通只要改个后缀直接写出去。
+/// 这是 NRS 自己的格式，**不是** JSON Canvas：白板是一张自由坐标的场景图，
+/// 坐标没有网格、没有取整，节点想放在哪儿就放在哪儿。
 ///
-/// 三个容易写反的地方，改之前先读：
-///
-/// * **`toEnd` 缺省是 `arrow`，`fromEnd` 缺省是 `none`**。两个默认值不一样。
-/// * **`x/y/width/height` 在规范里是整数**。内存里留 `double` 是为了拖动平滑，
-///   落盘时 [encodeCanvas] 会 `round()`。
-/// * **节点数组的顺序就是 z-index**：第一个在最底层，最后一个在最上层。
-///   所以命中测试要倒序遍历，绘制要正序遍历。
+///   * 所有几何量都是自由浮点。落盘只压到小数点后三位，避免拖动产生
+///     `12.300000000000001` 这种噪声把文件搞脏。
+///   * 节点数组的顺序就是绘制顺序：靠前的先画（在下面）。
+///   * 不认识的字段原样保留：文件可能在别的工具里被改过。
+///   * 摄像机（当前看哪儿、缩放多少）**不落盘**。白板文件描述的是内容，
+///     不是某个人上一次的视线；打开时按内容自适应。
 library;
 
 import 'dart:convert';
 import 'dart:math';
 import 'dart:ui' show Rect;
 
-/// 白板文件的后缀。想和 Obsidian 直接互通就把这里改回 `'.canvas'`。
+/// 白板文件的后缀。
 const String canvasExtension = '.nrs';
 
+/// 当前文件格式版本。读写都从 `version` 字段判断。
+const int canvasFormatVersion = 1;
+
 /// 新建卡片的默认尺寸。
+///
+/// 这是**兜底**用的：文件里缺 `width` / `height` 时才落到这里，也是文件卡片、
+/// 链接卡片的宽度。双击新建的文字卡片**没有自己的常量**——它和打完字的卡片
+/// 走同一套「贴合内容」，只是空着的时候内容就是那三个点（`canvasEmptyDots`）。
 const double canvasDefaultWidth = 250;
 const double canvasDefaultHeight = 120;
 
-/// 卡片能被缩到多小。再小就没法点了，也没法把光标放进去。
+/// 文字卡片贴合内容时，最多能长到多宽。
+///
+/// 卡片宽度跟着文字走（空着的时候是一张小卡，写多了自己长），但总得有个头：
+/// 一行写三千字，卡片就成了一条贯穿整块板子的线。
+const double canvasTextMaxWidth = 420;
+
+/// 卡片能被缩到多小。再小就没法点，也没法把光标放进去。
 const double canvasMinSize = 40;
 
 /// 白板文件的格式错误。
@@ -55,10 +65,12 @@ sealed class CanvasNode {
     required this.width,
     required this.height,
     this.color,
+    double scale = 1,
     Map<String, Object?> extra = const <String, Object?>{},
-  }) : extra = Map<String, Object?>.of(extra);
+  }) : _scale = _validScale(scale) ? scale : 1,
+       extra = Map<String, Object?>.of(extra);
 
-  /// 唯一 id，16 位小写十六进制（与 Obsidian 同长度）。
+  /// 唯一 id，16 位小写十六进制。
   final String id;
 
   double x;
@@ -66,11 +78,28 @@ sealed class CanvasNode {
   double width;
   double height;
 
+  double _scale;
+
+  /// 内容倍率：**字号**放大缩小的倍数，不是框的尺寸。
+  ///
+  /// `Ctrl+=` / `Ctrl+-` 改的就是它。文字卡片会把卡片重新贴合到放大后的
+  /// 文字上，所以「字变大、卡片跟着变大」是一次操作。
+  ///
+  /// **没有上下限**（和画布的缩放一样）：想放大到多少就多少，别按 4 倍
+  /// 之类的值设墙。只挡 0 / 负数 / NaN——那几个值会让字彻底消失且再也乘
+  /// 不回来（0 × 1.25 还是 0）。
+  ///
+  /// 不写进 JSON 当 1：没调过大小的卡片不该因为这个字段多出一行 diff。
+  double get scale => _scale;
+
+  set scale(double value) {
+    if (_validScale(value)) _scale = value;
+  }
+
   /// `'1'`–`'6'` 预设色，或 `'#RRGGBB'` / `'#RRGGBBAA'`；`null` = 默认色。
   String? color;
 
-  /// 规范之外、我们不认识的键。**原样保留**，否则用户在别的工具里设的
-  /// 新字段会被我们吃掉。
+  /// 我们不认识的键。**原样保留**，否则用户在别的工具里设的新字段会被吃掉。
   final Map<String, Object?> extra;
 
   CanvasNodeType get type;
@@ -84,8 +113,8 @@ sealed class CanvasNode {
 
   Rect get rect => Rect.fromLTWH(x, y, width, height);
 
-  /// 写回 JSON。键顺序固定（`id/type/x/y/width/height/color`，再按类型追加），
-  /// 因为白板文件会进 git，键序抖动会让每次保存都产生整文件 diff。
+  /// 写回 JSON。键顺序固定，因为白板文件会进 git，键序抖动会让每次保存
+  /// 都产生整文件 diff。
   Map<String, Object?> toJson() {
     final Map<String, Object?> out = <String, Object?>{
       'id': id,
@@ -95,6 +124,8 @@ sealed class CanvasNode {
       'width': _wireNumber(width),
       'height': _wireNumber(height),
       if (color != null) 'color': color,
+      // 只在调过大小的时候写。默认 1 不写，免得每张卡都多一行。
+      if (scale != 1) 'scale': _wireNumber(scale),
     };
     _writeSpecific(out);
     _writeExtra(out);
@@ -112,7 +143,7 @@ sealed class CanvasNode {
   }
 }
 
-/// 文字卡片：`text` 里是 Markdown。
+/// 文字卡片：`text` 是卡片的正文，可以多行。
 final class TextNode extends CanvasNode {
   TextNode({
     required super.id,
@@ -122,6 +153,7 @@ final class TextNode extends CanvasNode {
     required super.height,
     this.text = '',
     super.color,
+    super.scale,
     super.extra,
   });
 
@@ -145,13 +177,14 @@ final class FileNode extends CanvasNode {
     this.file = '',
     this.subpath,
     super.color,
+    super.scale,
     super.extra,
   });
 
   /// 相对 vault 根的文件路径（正斜杠），和 `Note.relativePath` 同一种写法。
   String file;
 
-  /// 指向笔记里的某个标题或块，**始终以 `#` 开头**（规范要求）。
+  /// 指向笔记里的某个标题或块，以 `#` 开头。
   String? subpath;
 
   @override
@@ -174,6 +207,7 @@ final class LinkNode extends CanvasNode {
     required super.height,
     this.url = '',
     super.color,
+    super.scale,
     super.extra,
   });
 
@@ -186,7 +220,11 @@ final class LinkNode extends CanvasNode {
   void _writeSpecific(Map<String, Object?> out) => out['url'] = url;
 }
 
-/// 分组：一个框住若干卡片的大矩形，可以带标题和背景图。
+/// 分组：一个框住若干卡片的大矩形，可以带标题。
+///
+/// 分组和卡片一样只有世界坐标，没有「子节点相对坐标」。谁在分组里由
+/// 几何包含关系决定（见 `canvas_board.dart` 的拖动逻辑），所以嵌套分组
+/// 天然成立，也不会出现「坐标存了两份、改了一处另一处不对」。
 final class GroupNode extends CanvasNode {
   GroupNode({
     required super.id,
@@ -195,19 +233,12 @@ final class GroupNode extends CanvasNode {
     required super.width,
     required super.height,
     this.label,
-    this.background,
-    this.backgroundStyle,
     super.color,
+    super.scale,
     super.extra,
   });
 
   String? label;
-
-  /// 背景图路径。
-  String? background;
-
-  /// `cover` / `ratio` / `repeat`。
-  String? backgroundStyle;
 
   @override
   CanvasNodeType get type => CanvasNodeType.group;
@@ -215,8 +246,6 @@ final class GroupNode extends CanvasNode {
   @override
   void _writeSpecific(Map<String, Object?> out) {
     if (label != null) out['label'] = label;
-    if (background != null) out['background'] = background;
-    if (backgroundStyle != null) out['backgroundStyle'] = backgroundStyle;
   }
 }
 
@@ -244,7 +273,7 @@ class CanvasEdge {
   String? fromSide;
   String? toSide;
 
-  /// `none` / `arrow`。**缺省值两边不一样**，见 [fromIsArrow] / [toIsArrow]。
+  /// `none` / `arrow`。
   String? fromEnd;
   String? toEnd;
 
@@ -253,17 +282,17 @@ class CanvasEdge {
 
   final Map<String, Object?> extra;
 
-  /// 起点有没有箭头。规范缺省 `none`。
+  /// 起点有没有箭头。缺省 `none`。
   bool get fromIsArrow => fromEnd == 'arrow';
 
-  /// 终点有没有箭头。规范缺省 **`arrow`**——写反了就会「一条箭头都看不见」。
+  /// 终点有没有箭头。缺省 **`arrow`**——写反了就会「一条箭头都看不见」。
   bool get toIsArrow => toEnd != 'none';
 
   Map<String, Object?> toJson() {
     final Map<String, Object?> out = <String, Object?>{
       'id': id,
-      'fromNode': fromNode,
-      'toNode': toNode,
+      'from': fromNode,
+      'to': toNode,
       if (fromSide != null) 'fromSide': fromSide,
       if (toSide != null) 'toSide': toSide,
       if (fromEnd != null) 'fromEnd': fromEnd,
@@ -290,7 +319,7 @@ class CanvasDocument {
        edges = edges ?? <CanvasEdge>[],
        extra = Map<String, Object?>.of(extra);
 
-  /// 顺序即 z-index：靠前的在下面。
+  /// 顺序即绘制顺序：靠前的在下面。
   final List<CanvasNode> nodes;
 
   final List<CanvasEdge> edges;
@@ -317,6 +346,7 @@ class CanvasDocument {
 
   Map<String, Object?> toJson() {
     final Map<String, Object?> out = <String, Object?>{
+      'version': canvasFormatVersion,
       'nodes': <Object?>[for (final CanvasNode n in nodes) n.toJson()],
       'edges': <Object?>[for (final CanvasEdge e in edges) e.toJson()],
     };
@@ -339,19 +369,18 @@ const Set<String> _knownNodeKeys = <String>{
   'width',
   'height',
   'color',
+  'scale',
   'text',
   'file',
   'subpath',
   'url',
   'label',
-  'background',
-  'backgroundStyle',
 };
 
 const Set<String> _knownEdgeKeys = <String>{
   'id',
-  'fromNode',
-  'toNode',
+  'from',
+  'to',
   'fromSide',
   'toSide',
   'fromEnd',
@@ -360,11 +389,9 @@ const Set<String> _knownEdgeKeys = <String>{
   'label',
 };
 
-const Set<String> _knownTopKeys = <String>{'nodes', 'edges'};
+const Set<String> _knownTopKeys = <String>{'version', 'nodes', 'edges'};
 
 const Set<String> _sides = <String>{'top', 'right', 'bottom', 'left'};
-
-const Set<String> _backgroundStyles = <String>{'cover', 'ratio', 'repeat'};
 
 final RegExp _hexColor = RegExp(r'^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$');
 
@@ -404,8 +431,8 @@ CanvasDocument parseCanvas(String source) {
       if (item is! Map<String, Object?>) continue;
       final CanvasEdge? edge = _edgeOf(item);
       if (edge == null) continue;
-      if (edge.fromNode == edge.toNode) continue;             // 自环
-      if (!seenIds.contains(edge.fromNode)) continue;         // 指向不存在的节点
+      if (edge.fromNode == edge.toNode) continue; // 自环
+      if (!seenIds.contains(edge.fromNode)) continue; // 指向不存在的节点
       if (!seenIds.contains(edge.toNode)) continue;
       if (!edgeIds.add(edge.id)) continue;
       edges.add(edge);
@@ -432,6 +459,7 @@ CanvasNode? _nodeOf(Map<String, Object?> json) {
   final double x = _doubleOf(json['x']);
   final double y = _doubleOf(json['y']);
   final String? color = _colorOf(json['color']);
+  final double scale = _scaleOf(json['scale']);
   final Map<String, Object?> extra = <String, Object?>{
     for (final MapEntry<String, Object?> e in json.entries)
       if (!_knownNodeKeys.contains(e.key)) e.key: e.value,
@@ -447,6 +475,7 @@ CanvasNode? _nodeOf(Map<String, Object?> json) {
         height: height,
         text: json['text'] is String ? json['text']! as String : '',
         color: color,
+        scale: scale,
         extra: extra,
       );
     case 'file':
@@ -459,6 +488,7 @@ CanvasNode? _nodeOf(Map<String, Object?> json) {
         file: json['file'] is String ? json['file']! as String : '',
         subpath: _subpathOf(json['subpath']),
         color: color,
+        scale: scale,
         extra: extra,
       );
     case 'link':
@@ -470,6 +500,7 @@ CanvasNode? _nodeOf(Map<String, Object?> json) {
         height: height,
         url: json['url'] is String ? json['url']! as String : '',
         color: color,
+        scale: scale,
         extra: extra,
       );
     case 'group':
@@ -480,22 +511,21 @@ CanvasNode? _nodeOf(Map<String, Object?> json) {
         width: width,
         height: height,
         label: _textOrNull(json['label']),
-        background: _textOrNull(json['background']),
-        backgroundStyle: _backgroundStyles.contains(json['backgroundStyle'])
-            ? json['backgroundStyle']! as String
-            : null,
         color: color,
+        scale: scale,
         extra: extra,
       );
     default:
-      // 不认识的类型：整张卡片跳过。将来规范加类型时我们不该崩。
+      // 不认识的类型：整张卡片跳过。将来加类型时我们不该崩。
       return null;
   }
 }
 
 CanvasEdge? _edgeOf(Map<String, Object?> json) {
-  final Object? from = json['fromNode'];
-  final Object? to = json['toNode'];
+  // 新格式用 `from` / `to`；顺手认一下旧的 `fromNode` / `toNode`，
+  // 让手改过的文件不至于整条边消失。
+  final Object? from = json['from'] ?? json['fromNode'];
+  final Object? to = json['to'] ?? json['toNode'];
   if (from is! String || to is! String || from.isEmpty || to.isEmpty) {
     return null;
   }
@@ -513,7 +543,10 @@ CanvasEdge? _edgeOf(Map<String, Object?> json) {
     label: _textOrNull(json['label']),
     extra: <String, Object?>{
       for (final MapEntry<String, Object?> e in json.entries)
-        if (!_knownEdgeKeys.contains(e.key)) e.key: e.value,
+        if (!_knownEdgeKeys.contains(e.key) &&
+            e.key != 'fromNode' &&
+            e.key != 'toNode')
+          e.key: e.value,
     },
   );
 }
@@ -552,13 +585,24 @@ double _sizeOf(Object? raw, double fallback) {
   return value < canvasMinSize ? canvasMinSize : value;
 }
 
+/// 字号倍率。缺省是 1；写坏了（0、负数、NaN）也回 1，不能因为一个字段
+/// 把整张卡的字弄没。**不设上下限**。
+double _scaleOf(Object? raw) {
+  if (raw == null) return 1;
+  final double value = _doubleOf(raw);
+  return _validScale(value) ? value : 1;
+}
+
+/// 倍率得是正的有限数。0 会让字消失且再也乘不回来，NaN / ∞ 会把排版搞崩。
+bool _validScale(double value) => value.isFinite && value > 0;
+
 String? _textOrNull(Object? raw) {
   if (raw is! String) return null;
   final String trimmed = raw.trim();
   return trimmed.isEmpty ? null : trimmed;
 }
 
-/// 规范要求 `subpath` 始终以 `#` 开头；缺了就补上，不丢内容。
+/// `subpath` 以 `#` 开头；缺了就补上，不丢内容。
 String? _subpathOf(Object? raw) {
   final String? text = _textOrNull(raw);
   if (text == null) return null;
@@ -577,23 +621,28 @@ String? _colorOf(Object? raw) {
   return null;
 }
 
-/// 落盘用：规范要求 `x/y/width/height` 是整数，所以一律取整。
+/// 落盘用：保留三位小数。
 ///
-/// 内存里保留小数（拖动是连续的，取整会让卡片一顿一顿地跳），只在写文件时圆整。
-/// 这样既不会写出 `249.99999` 把文件搞脏，拖动过程中也不会抖。
-Object _wireNumber(double v) => v.isFinite ? v.round() : 0;
+/// 坐标是自由的（不吸附网格、不取整），但拖动一帧能产生
+/// `12.300000000000001` 这种浮点噪声。压到三位既不影响手感，也不会让
+/// 每次保存都产生一长串无意义的 diff。
+Object _wireNumber(double v) {
+  if (!v.isFinite) return 0;
+  final double rounded = (v * 1000).roundToDouble() / 1000;
+  return rounded == rounded.truncateToDouble() ? rounded.toInt() : rounded;
+}
 
 // ------------------------------------------------------------------ 写出
 
 /// 把白板写成文件内容。
 ///
-/// 缩进两空格、键序固定、坐标取整——这样同一个白板反复保存不会产生无意义的 diff。
+/// 缩进两空格、键序固定——同一个白板反复保存不会产生无意义的 diff。
 String encodeCanvas(CanvasDocument doc) =>
     const JsonEncoder.withIndent('  ').convert(doc.toJson());
 
 // ------------------------------------------------------------------ 新建
 
-/// 生成一个 16 位小写十六进制的 id，长度与 Obsidian 一致。
+/// 生成一个 16 位小写十六进制的 id。
 ///
 /// [random] 只在测试里传，用来拿到确定的 id。
 String newCanvasId([Random? random]) {

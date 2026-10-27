@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>白板 · graphif 视觉预览</title>
+<style>
+  :root{
+    --canvas:#0E0F13; --surface:#17181E; --surface-raised:#1F2027;
+    --outline:#2A2C36; --text-primary:#E6E8EF; --text-secondary:#9AA0B0;
+    --text-tertiary:#6A7080; --accent:#8B94F2;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:28px; background:#0A0B0E; color:var(--text-secondary);
+    font:13px/1.6 "Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI",sans-serif;
+  }
+  h1{font-size:14px; font-weight:500; color:var(--text-primary); margin:0 0 4px}
+  p.note{margin:0 0 18px; font-size:12px; color:var(--text-tertiary)}
+  .stage{width:1120px; height:700px; border-radius:8px; overflow:hidden; border:1px solid #1B1C22}
+  svg{display:block}
+  .legend{display:flex; gap:18px; flex-wrap:wrap; margin-top:16px; font-size:12px; color:var(--text-tertiary)}
+  .legend b{color:var(--text-secondary); font-weight:500}
+  code{color:var(--text-secondary)}
+</style>
+</head>
+<body>
+<h1>白板 · graphif 视觉（静态预览）</h1>
+<p class="note">1:1 对应 <code>canvas_painter.dart</code> 的绘制顺序：坐标网格 → 内容（世界坐标）→ 标尺（屏幕坐标，压在内容上）→ 手柄 / 连线圆点。缩放 100%，世界原点在舞台正中。</p>
+<div class="stage"><svg id="s" width="1120" height="700"></svg></div>
+<div class="legend">
+  <span><b>网格</b> 只有主格，一格 100 世界单位</span>
+  <span><b>标尺</b> 上 20px、左 32px，不透明</span>
+  <span><b>卡片</b> 中性半透明底 + 1px 描边，无投影</span>
+  <span><b>颜色</b> 只染描边与文字</span>
+  <span><b>分组</b> 不填底，只画框 + 15px 标题</span>
+  <span><b>连线</b> 1.2px + 8px 箭头</span>
+  <span><b>交互</b> 滚轮缩放，中键拖动平移，右下角没有工具条</span>
+</div>
+<script>
+const NS = 'http://www.w3.org/2000/svg';
+const W = 1120, H = 700, ZOOM = 1;
+const CX = W / 2, CY = H / 2;              // 世界原点在屏幕上的位置
+const TOP = 20, SIDE = 32;                 // 标尺带：上 20px、左 32px
+
+const el = (n, a) => {
+  const e = document.createElementNS(NS, n);
+  for (const k in a) e.setAttribute(k, a[k]);
+  return e;
+};
+const svg = document.getElementById('s');
+const toScreen = (x, y) => [CX + x * ZOOM, CY + y * ZOOM];
+const FONT = '"Segoe UI Variable Text","Microsoft YaHei UI",sans-serif';
+
+// ---------------------------------------------------------------- 网格
+const gridG = el('g', {});
+svg.appendChild(gridG);
+const lineOffsets = (origin, step, extent) => {
+  const out = [];
+  if (step < 1 || extent <= 0) return out;
+  let at = ((origin % step) + step) % step;
+  while (at <= extent) { out.push(at); at += step; }
+  return out;
+};
+function drawLines(xs, ys, color) {
+  let d = '';
+  for (const x of xs) { const px = Math.floor(x) + 0.5; d += `M${px} 0V${H}`; }
+  for (const y of ys) { const py = Math.floor(y) + 0.5; d += `M0 ${py}H${W}`; }
+  gridG.appendChild(el('path', { d, stroke: color, 'stroke-width': 1, fill: 'none' }));
+}
+drawLines(lineOffsets(CX, 100 * ZOOM, W), lineOffsets(CY, 100 * ZOOM, H), 'rgba(230,232,239,0.085)');
+gridG.appendChild(el('line', { x1: CX + .5, y1: 0, x2: CX + .5, y2: H, stroke: 'rgba(139,148,242,0.24)', 'stroke-width': 1 }));
+gridG.appendChild(el('line', { x1: 0, y1: CY + .5, x2: W, y2: CY + .5, stroke: 'rgba(139,148,242,0.24)', 'stroke-width': 1 }));
+
+// ---------------------------------------------------------------- 内容
+const content = el('g', {});
+svg.appendChild(content);
+
+const rectOf = n => {
+  const [sx, sy] = toScreen(n.x, n.y);
+  return { x: sx, y: sy, w: n.w * ZOOM, h: n.h * ZOOM };
+};
+
+function card(n, { ink = '#E6E8EF', stroke = 'rgba(230,232,239,0.30)', selected = false } = {}) {
+  const r = rectOf(n);
+  // 选中：卡片外面再套一圈粗描边。不是把原边框加粗——加粗会往里吃，
+  // 卡片看起来像被换了张。
+  if (selected) {
+    content.appendChild(el('rect', {
+      x: r.x - 3, y: r.y - 3, width: r.w + 6, height: r.h + 6, rx: 13,
+      fill: 'none', stroke: 'rgba(139,148,242,0.85)', 'stroke-width': 3,
+    }));
+  }
+  content.appendChild(el('rect', {
+    x: r.x, y: r.y, width: r.w, height: r.h, rx: 10,
+    fill: 'rgba(31,32,39,0.72)',
+    stroke: selected ? '#8B94F2' : stroke,
+    'stroke-width': 1,
+  }));
+  // 空卡片：正中三个点，不写「空卡片」这种说明书。
+  if (!String(n.text).length) {
+    const dots = el('text', {
+      x: r.x + r.w / 2, y: r.y + r.h / 2, fill: 'rgba(230,232,239,0.45)',
+      'font-size': 13, 'font-family': FONT, 'text-anchor': 'middle',
+      'dominant-baseline': 'middle', 'letter-spacing': 1,
+    });
+    dots.textContent = '•••';
+    content.appendChild(dots);
+    return;
+  }
+  const t = el('text', { x: r.x + 12, y: r.y + 12, fill: ink, 'font-size': 13, 'font-family': FONT });
+  String(n.text).split('\n').forEach((line, i) => {
+    const ts = el('tspan', { x: r.x + 12, dy: i === 0 ? 13 : 21 });
+    ts.textContent = line;
+    t.appendChild(ts);
+  });
+  content.appendChild(t);
+}
+
+function group(n) {
+  const r = rectOf(n);
+  content.appendChild(el('rect', {
+    x: r.x, y: r.y, width: r.w, height: r.h, rx: 12,
+    fill: 'none', stroke: 'rgba(230,232,239,0.22)', 'stroke-width': 1,
+  }));
+  const t = el('text', {
+    x: r.x + 14, y: r.y + 14 + 11, fill: 'rgba(230,232,239,0.90)',
+    'font-size': 15, 'font-family': FONT,
+  });
+  t.textContent = n.label;
+  content.appendChild(t);
+}
+
+// 端点：四边中点 + 外法线
+const anchor = (r, side) => ({
+  top:    { p: [r.x + r.w / 2, r.y],          n: [0, -1] },
+  right:  { p: [r.x + r.w,     r.y + r.h / 2], n: [1, 0] },
+  bottom: { p: [r.x + r.w / 2, r.y + r.h],    n: [0, 1] },
+  left:   { p: [r.x,           r.y + r.h / 2], n: [-1, 0] },
+})[side];
+
+// 自动选边：谁离得远就走谁那一侧
+function autoSides(a, b) {
+  const dx = (b.x + b.w / 2) - (a.x + a.w / 2);
+  const dy = (b.y + b.h / 2) - (a.y + a.h / 2);
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? ['right', 'left'] : ['left', 'right'];
+  return dy >= 0 ? ['bottom', 'top'] : ['top', 'bottom'];
+}
+
+function edge(a, b, { selected = false, label = null, sides = null } = {}) {
+  const ra = rectOf(a), rb = rectOf(b);
+  const [sa, sb] = sides || autoSides(ra, rb);
+  const A = anchor(ra, sa), B = anchor(rb, sb);
+  const dist = Math.hypot(B.p[0] - A.p[0], B.p[1] - A.p[1]);
+  const pull = Math.min(96, dist * 0.4);
+  const c1 = [A.p[0] + A.n[0] * pull, A.p[1] + A.n[1] * pull];
+  const c2 = [B.p[0] + B.n[0] * pull, B.p[1] + B.n[1] * pull];
+  const stroke = selected ? '#8B94F2' : 'rgba(230,232,239,0.30)';
+  content.appendChild(el('path', {
+    d: `M${A.p[0]} ${A.p[1]}C${c1[0]} ${c1[1]} ${c2[0]} ${c2[1]} ${B.p[0]} ${B.p[1]}`,
+    fill: 'none', stroke, 'stroke-width': selected ? 2 : 1.2, 'stroke-linecap': 'round',
+  }));
+  const ang = Math.atan2(B.p[1] - c2[1], B.p[0] - c2[0]);
+  const L = 8, s = 0.36;
+  content.appendChild(el('path', {
+    d: `M${B.p[0]} ${B.p[1]}L${B.p[0] - L * Math.cos(ang - s)} ${B.p[1] - L * Math.sin(ang - s)}L${B.p[0] - L * Math.cos(ang + s)} ${B.p[1] - L * Math.sin(ang + s)}Z`,
+    fill: stroke,
+  }));
+  if (selected) {
+    content.appendChild(el('circle', { cx: A.p[0], cy: A.p[1], r: 3.5, fill: '#8B94F2' }));
+    content.appendChild(el('circle', { cx: B.p[0], cy: B.p[1], r: 3.5, fill: '#8B94F2' }));
+  }
+  if (label) {
+    // 三次贝塞尔 t=0.5 的点
+    const mx = (A.p[0] + 3 * c1[0] + 3 * c2[0] + B.p[0]) / 8;
+    const my = (A.p[1] + 3 * c1[1] + 3 * c2[1] + B.p[1]) / 8;
+    const t = el('text', {
+      x: mx, y: my, fill: selected ? '#8B94F2' : '#9AA0B0', 'font-size': 11.5,
+      'text-anchor': 'middle', 'dominant-baseline': 'middle',
+      stroke: '#0E0F13', 'stroke-width': 3, 'paint-order': 'stroke', 'font-family': FONT,
+    });
+    t.textContent = label;
+    content.appendChild(t);
+  }
+}
+
+const A = { x: -440, y: -180, w: 340, h: 110, text: '白板重构：摄像机模型\n画面中心 + 缩放，缩放平滑逼近' };
+const B = { x: -40,  y: -180, w: 250, h: 110, text: '坐标网格 + 标尺\n一格 100，随缩放走阶梯' };
+const C = { x: 280,  y: -180, w: 250, h: 110, text: '描边式卡片\n颜色只上描边和文字' };
+const D = { x: 250,  y: 30,  w: 300, h: 96,  text: '双击空白 = 新建卡片\n落点就是卡片中心' };
+
+group({ x: -470, y: -230, w: 420, h: 200, label: '输入层' });
+card(A);
+card(B, { ink: '#7FC4F0', stroke: 'rgba(127,196,240,0.80)' });
+card(C, { selected: true });
+card(D);
+
+edge(A, B);
+edge(B, C, { selected: true, label: '依赖' });
+edge(C, D, { label: '依赖' });
+
+// ---------------------------------------------------------------- 装饰件（屏幕坐标）
+const decor = el('g', {});
+svg.appendChild(decor);
+const cR = rectOf(C);
+for (const [hx, hy] of [
+  [0, 0], [cR.w / 2, 0], [cR.w, 0], [cR.w, cR.h / 2],
+  [cR.w, cR.h], [cR.w / 2, cR.h], [0, cR.h], [0, cR.h / 2],
+]) {
+  decor.appendChild(el('circle', { cx: cR.x + hx, cy: cR.y + hy, r: 4, fill: '#17181E' }));
+  decor.appendChild(el('circle', { cx: cR.x + hx, cy: cR.y + hy, r: 3, fill: '#8B94F2' }));
+}
+const bR = rectOf(B);
+for (const [hx, hy] of [[bR.w / 2, 0], [bR.w, bR.h / 2], [bR.w / 2, bR.h], [0, bR.h / 2]]) {
+  decor.appendChild(el('circle', { cx: bR.x + hx, cy: bR.y + hy, r: 5, fill: 'none', stroke: '#17181E', 'stroke-width': 1.5 }));
+  decor.appendChild(el('circle', { cx: bR.x + hx, cy: bR.y + hy, r: 3.5, fill: '#8B94F2' }));
+}
+
+// ---------------------------------------------------------------- 标尺（最后画，压在内容上）
+const ruler = el('g', {});
+svg.appendChild(ruler);
+ruler.appendChild(el('rect', { x: 0, y: 0, width: W, height: TOP, fill: '#0E0F13' }));
+ruler.appendChild(el('rect', { x: 0, y: 0, width: SIDE, height: H, fill: '#0E0F13' }));
+ruler.appendChild(el('line', { x1: 0, y1: TOP + .5, x2: W, y2: TOP + .5, stroke: '#2A2C36', 'stroke-width': 1 }));
+ruler.appendChild(el('line', { x1: SIDE + .5, y1: 0, x2: SIDE + .5, y2: H, stroke: '#2A2C36', 'stroke-width': 1 }));
+
+function rulerText(x, y, value, anchorName) {
+  const t = el('text', {
+    x, y, fill: '#6A7080', 'font-size': 10, 'text-anchor': anchorName,
+    'dominant-baseline': 'middle', 'font-family': FONT,
+  });
+  t.textContent = value;
+  ruler.appendChild(t);
+}
+const major = 100, stepPx = major * ZOOM;
+for (let k = -Math.ceil(CX / stepPx); ; k++) {
+  const x = CX + k * stepPx;
+  if (x > W) break;
+  if (x < SIDE) continue;
+  ruler.appendChild(el('line', { x1: x, y1: TOP - 4, x2: x, y2: TOP, stroke: 'rgba(230,232,239,0.16)', 'stroke-width': 1 }));
+  rulerText(x, TOP / 2, k * major, 'middle');
+}
+for (let k = -Math.ceil(CY / stepPx); ; k++) {
+  const y = CY + k * stepPx;
+  if (y > H) break;
+  if (y < TOP) continue;
+  ruler.appendChild(el('line', { x1: SIDE - 4, y1: y, x2: SIDE, y2: y, stroke: 'rgba(230,232,239,0.16)', 'stroke-width': 1 }));
+  rulerText(SIDE - 5, y, k * major, 'end');
+}
+</script>
+</body>
+</html>

@@ -49,6 +49,8 @@ class SettingsController extends ChangeNotifier {
   static const String _kFocus = 'nrs.focusMode';
   static const String _kSessionTabs = 'nrs.sessionTabs';
   static const String _kSessionSelected = 'nrs.sessionSelected';
+  static const String _kSessionCanvas = 'nrs.sessionCanvas';
+  static const String _kSessionCanvasActive = 'nrs.sessionCanvasActive';
   static const String _kTemplatesFolder = 'nrs.templatesFolder';
   static const String _kFolderTemplates = 'nrs.folderTemplates';
   static const String _kAutoApplyFolderTemplates =
@@ -390,6 +392,40 @@ class SettingsController extends ChangeNotifier {
       _prefs.remove(_kSessionSelected);
     } else {
       _prefs.setString(_kSessionSelected, selectedTab);
+    }
+  }
+
+  // ------------------------------------------------------------- 白板会话
+  //
+  // 白板只有一页：同一时刻只开着一块（`CanvasController` 就一份文档）。
+  // 所以这里存的是「上次开着哪一块」而不是一串标签。
+
+  /// 上次退出时开着的白板（vault 相对路径），`null` = 没开。
+  String? get sessionCanvasPath => _prefs.getString(_kSessionCanvas);
+
+  /// 上次退出时主区停在哪——true 表示当时正看着那块白板。
+  ///
+  /// 单看 [sessionCanvasPath] 不够：白板页开着但用户在写笔记时，下次启动
+  /// 该回到那篇笔记，而不是把白板顶到前面。
+  bool get sessionCanvasActive =>
+      _prefs.getBool(_kSessionCanvasActive) ?? false;
+
+  /// 记下白板那一页的状态；值没变就不碰磁盘。
+  void saveCanvasSession({required String? path, required bool active}) {
+    // 没有白板就没有「正在看白板」这回事，两个键必须一起成立。
+    final bool wantActive = path != null && active;
+    final bool samePath = _prefs.getString(_kSessionCanvas) == path;
+    final bool sameActive = sessionCanvasActive == wantActive;
+    if (samePath && sameActive) return;
+    if (path == null) {
+      _prefs.remove(_kSessionCanvas);
+    } else {
+      _prefs.setString(_kSessionCanvas, path);
+    }
+    if (wantActive) {
+      _prefs.setBool(_kSessionCanvasActive, true);
+    } else {
+      _prefs.remove(_kSessionCanvasActive);
     }
   }
 }

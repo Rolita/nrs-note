@@ -83,6 +83,38 @@ void main() {
     });
   });
 
+  group('白板会话', () {
+    test('没开过白板 → 路径和「正在看白板」都是空的', () async {
+      final (:settings, :prefs) = await load();
+      expect(settings.sessionCanvasPath, isNull);
+      expect(settings.sessionCanvasActive, isFalse);
+    });
+
+    test('路径和「当时正看着它」一起往返', () async {
+      final (:settings, :prefs) = await load();
+
+      settings.saveCanvasSession(path: '笔记/未命名白板.nrs', active: true);
+      expect(settings.sessionCanvasPath, '笔记/未命名白板.nrs');
+      expect(settings.sessionCanvasActive, isTrue);
+
+      // 白板页开着但用户在写笔记：路径留着，激活标记要撤掉。
+      settings.saveCanvasSession(path: '笔记/未命名白板.nrs', active: false);
+      expect(settings.sessionCanvasPath, '笔记/未命名白板.nrs');
+      expect(settings.sessionCanvasActive, isFalse);
+
+      // 关掉白板页：两个键一起消失，别留个孤零零的 active。
+      settings.saveCanvasSession(path: null, active: true);
+      expect(settings.sessionCanvasPath, isNull);
+      expect(
+        settings.sessionCanvasActive,
+        isFalse,
+        reason: '没有白板就没有「正在看白板」这回事',
+      );
+      expect(prefs.containsKey('nrs.sessionCanvas'), isFalse);
+      expect(prefs.containsKey('nrs.sessionCanvasActive'), isFalse);
+    });
+  });
+
   group('表格面板', () {
     test('默认关闭，宽度取最右栏的默认值', () async {
       final (:settings, :prefs) = await load();

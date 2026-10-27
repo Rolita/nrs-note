@@ -81,7 +81,8 @@ class GraphView extends StatefulWidget {
   State<GraphView> createState() => GraphViewState();
 }
 
-class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixin {
+class GraphViewState extends State<GraphView>
+    with SingleTickerProviderStateMixin {
   late final Ticker _ticker;
   final _Repaint _repaint = _Repaint();
   final OrbLabelCache _labels = OrbLabelCache();
@@ -346,7 +347,10 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     _globalLayout = OrbLayout(_graph.nodes.length);
     _globalLayout.seed(_graph);
     // 大图少迭代几轮：全对全是 O(n²)，859 篇时每轮 37 万对。
-    _globalLayout.relax(_graph, iterations: _graph.nodes.length > 420 ? 14 : 26);
+    _globalLayout.relax(
+      _graph,
+      iterations: _graph.nodes.length > 420 ? 14 : 26,
+    );
     _orientToLargestCluster();
     _rebuildView();
   }
@@ -445,7 +449,11 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   ///
   /// 单独写是因为「切图」和「保住位置」必须同时发生：只切图会让节点重新编号，
   /// 位置对不上，球上会瞬间重排。
-  (NoteGraph, OrbLayout) _slice(NoteGraph from, OrbLayout fromLayout, Set<int> keep) {
+  (NoteGraph, OrbLayout) _slice(
+    NoteGraph from,
+    OrbLayout fromLayout,
+    Set<int> keep,
+  ) {
     final NoteGraph sub = from.subgraph(keep);
     final OrbLayout layout = OrbLayout(sub.nodes.length);
     for (int k = 0; k < sub.nodes.length; k++) {
@@ -541,7 +549,9 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     final String q = _settings.query.trim().toLowerCase();
     _lit = List<bool>.generate(_view.nodes.length, (int i) {
       final GraphNode n = _view.nodes[i];
-      if (_settings.folder != null && n.folder != _settings.folder) return false;
+      if (_settings.folder != null && n.folder != _settings.folder) {
+        return false;
+      }
       if (q.isEmpty) return true;
       if (n.title.toLowerCase().contains(q)) return true;
       for (final String t in n.tags) {
@@ -565,7 +575,8 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   /// 5.2 倍，太满就会把标签推出画布。
   static const double _radiusRatio = 0.30;
 
-  double get _sphereRadius => math.min(_stageSize.width, _stageSize.height) * _radiusRatio;
+  double get _sphereRadius =>
+      math.min(_stageSize.width, _stageSize.height) * _radiusRatio;
 
   /// 算一遍投影 + 每帧的亮度。命中测试和绘制共用这批结果。
   void _project() {
@@ -657,7 +668,9 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     // 已经钉住一片的时候不再钉悬停的那颗：这时鼠标只是路过，把新的一颗拽出
     // 球面反而会搅乱正在看的关系。
     final int? want =
-        (_heldCentre == null && _hover != null && _dragNode == null &&
+        (_heldCentre == null &&
+            _hover != null &&
+            _dragNode == null &&
             _rotateFrom == null)
         ? _hover
         : null;
@@ -866,8 +879,10 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     final Float64List? bz = _baseZ;
     if (bx == null || by == null || bz == null) return -1;
     if (a >= bx.length || b >= bx.length) return -1;
-    final double dot =
-        (bx[a] * bx[b] + by[a] * by[b] + bz[a] * bz[b]).clamp(-1.0, 1.0);
+    final double dot = (bx[a] * bx[b] + by[a] * by[b] + bz[a] * bz[b]).clamp(
+      -1.0,
+      1.0,
+    );
     return math.acos(dot);
   }
 
@@ -886,8 +901,11 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     if (ease <= 0) return;
     for (final _Follower f in followers) {
       final OrbPoint parentNow = _layout.pointAt(f.parent);
-      final OrbPoint rigid =
-          OrbLayout.rotateBetween(f.parentFrom, parentNow, f.from);
+      final OrbPoint rigid = OrbLayout.rotateBetween(
+        f.parentFrom,
+        parentNow,
+        f.from,
+      );
       _layout.easeToward(
         f.i,
         _springTarget(parentNow, rigid, f.baseAngle),
@@ -903,18 +921,17 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   /// 让远端额外收：近处几乎只受连接长度影响，90° 附近的邻居最多再多收一份
   /// 「(1 − 连接长度) × 远端收拢」。
   OrbPoint _springTarget(OrbPoint centre, OrbPoint rigid, double baseAngle) {
-    final double base = baseAngle > 0 ? baseAngle : _angleBetween(centre, rigid);
+    final double base = baseAngle > 0
+        ? baseAngle
+        : _angleBetween(centre, rigid);
     final double far = (base / (math.pi * 0.5)).clamp(0.0, 1.0);
     final double pull = _settings.dragFarPull.clamp(0.0, 3.0) * far;
-    final double curved = (_settings.dragLink -
-            (1 - _settings.dragLink) * pull)
+    final double curved = (_settings.dragLink - (1 - _settings.dragLink) * pull)
         .clamp(0.1, 1.3);
     final double want = base * curved;
     // 连接长度压得再小，也不能穿过「最小间距」：否则邻居会贴到被拖节点身上，
     // 用户还会觉得「调小了没效果」。
-    final double rest = math
-        .max(want, _settings.dragGap)
-        .clamp(0.02, math.pi);
+    final double rest = math.max(want, _settings.dragGap).clamp(0.02, math.pi);
     return _atAngle(centre, rigid, rest);
   }
 
@@ -923,11 +940,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   /// 只处理这一小撮点：整张图参与的话每帧 O(n²) 太重，而且会趁拖拽把远处
   /// 的布局也搅乱。枢轴只和直连邻居比（更外圈本来就该离枢轴远）；两两比只在
   /// 同一跳内做，避免跨跳的 O(n²) 爆炸。
-  void _relaxFollowers(
-    OrbPoint pivot,
-    List<_Follower> followers,
-    double dt,
-  ) {
+  void _relaxFollowers(OrbPoint pivot, List<_Follower> followers, double dt) {
     final double gap = _settings.dragGap;
     final double strength = _settings.dragRepel.clamp(0.0, 2.0);
     if (gap <= 0 || strength <= 0) return;
@@ -971,11 +984,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     if (len < 1e-9) return p;
     final double c = math.cos(angle);
     final double s = math.sin(angle) / len;
-    return OrbPoint(
-      p.x * c + tx * s,
-      p.y * c + ty * s,
-      p.z * c + tz * s,
-    );
+    return OrbPoint(p.x * c + tx * s, p.y * c + ty * s, p.z * c + tz * s);
   }
 
   /// 力导向参数变了：让上一次拖拽的那批邻居按新参数再收敛一下。
@@ -1016,8 +1025,10 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       if (!_holdOn) _pinned.clear();
       return;
     }
-    _holdFade = (_holdFade + (want > _holdFade ? dt : -dt) / 0.20)
-        .clamp(0.0, 1.0);
+    _holdFade = (_holdFade + (want > _holdFade ? dt : -dt) / 0.20).clamp(
+      0.0,
+      1.0,
+    );
     if (_holdFade <= 0 && !_holdOn) _pinned.clear();
   }
 
@@ -1025,8 +1036,10 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   void _fadeFocus(double dt) {
     final double want = _focus != null ? 1 : 0;
     if (_focusFade == want) return;
-    _focusFade = (_focusFade + (want > _focusFade ? dt : -dt) / 0.18)
-        .clamp(0.0, 1.0);
+    _focusFade = (_focusFade + (want > _focusFade ? dt : -dt) / 0.18).clamp(
+      0.0,
+      1.0,
+    );
   }
 
   /// 推开的浓度。线性：起手 90ms 铺开，松手 260ms 收回，两端都精确落在 0/1。
@@ -1036,8 +1049,10 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     final double want = (_dragNode != null && _dragMoved) ? 1 : 0;
     if (_pushFade == want) return;
     final double dur = want > _pushFade ? 0.09 : 0.26;
-    _pushFade = (_pushFade + (want > _pushFade ? dt : -dt) / dur)
-        .clamp(0.0, 1.0);
+    _pushFade = (_pushFade + (want > _pushFade ? dt : -dt) / dur).clamp(
+      0.0,
+      1.0,
+    );
   }
 
   void _sortByDepth() {
@@ -1199,7 +1214,9 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
       final double t = _clock * 0.135;
       final double tgtY =
           spin *
-          (0.115 + 0.052 * math.sin(t * 1.7) + 0.026 * math.sin(t * 3.13 + 1.2));
+          (0.115 +
+              0.052 * math.sin(t * 1.7) +
+              0.026 * math.sin(t * 3.13 + 1.2));
       final double tgtX =
           spin *
           (0.020 * math.sin(t * 1.13 + 0.7) + 0.014 * math.sin(t * 2.41 + 2.1));
@@ -1530,7 +1547,8 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
         children: <Widget>[
           SegmentedToggle<GraphScope>(
             value: _settings.scope,
-            onChanged: (GraphScope v) => _onSettings(_settings.copyWith(scope: v)),
+            onChanged: (GraphScope v) =>
+                _onSettings(_settings.copyWith(scope: v)),
             items: const <({GraphScope value, IconData icon, String label})>[
               (value: GraphScope.global, icon: LucideIcons.globe, label: '全局'),
               (value: GraphScope.local, icon: LucideIcons.target, label: '局部'),
@@ -1671,13 +1689,6 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
           ),
         ),
         if (_view.isEmpty) Positioned.fill(child: _emptyState(p)),
-        if (_view.isNotEmpty && _view.edges.isEmpty)
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: AppSpace.md,
-            child: _hintPill(p),
-          ),
         Positioned(
           left: AppSpace.md,
           top: AppSpace.md,
@@ -1685,10 +1696,13 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
             settings: _settings,
             onChanged: _onSettings,
             visibleCount: _view.nodes.length,
-            localCount: _settings.scope == GraphScope.local ? _view.nodes.length : 0,
+            localCount: _settings.scope == GraphScope.local
+                ? _view.nodes.length
+                : 0,
             currentTitle: _currentTitle(),
             collapsed: _panelCollapsed,
-            onToggleCollapsed: () => setState(() => _panelCollapsed = !_panelCollapsed),
+            onToggleCollapsed: () =>
+                setState(() => _panelCollapsed = !_panelCollapsed),
           ),
         ),
         if (_view.isNotEmpty)
@@ -1698,7 +1712,8 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
             child: GraphLegend(
               groups: groups,
               selected: _settings.folder,
-              onSelect: (String? f) => _onSettings(_settings.copyWith(folder: f)),
+              onSelect: (String? f) =>
+                  _onSettings(_settings.copyWith(folder: f)),
             ),
           ),
         Positioned(right: AppSpace.md, bottom: AppSpace.md, child: _hud(p)),
@@ -1850,8 +1865,7 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
         // 不减速，1 是转速与倍率成反比。倍率不足 100% 时不补偿，免得
         // 缩小后一转就飞。
         final double zoom = _scale > 1 ? _scale : 1;
-        final double k =
-            0.0062 / math.pow(zoom, _settings.spinFalloff);
+        final double k = 0.0062 / math.pow(zoom, _settings.spinFalloff);
         final double pitch = delta.dy * k;
         final double yaw = delta.dx * k;
         _camera.rotate(pitch, yaw);
@@ -1929,7 +1943,10 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
 
   void _onPointerSignal(PointerSignalEvent e) {
     if (e is! PointerScrollEvent) return;
-    final double next = (_scale * math.exp(-e.scrollDelta.dy * 0.0016)).clamp(0.45, 5.2);
+    final double next = (_scale * math.exp(-e.scrollDelta.dy * 0.0016)).clamp(
+      0.45,
+      5.2,
+    );
     if (next == _scale) return;
     setState(() => _scale = next);
     _project();
@@ -1974,7 +1991,11 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
         borderRadius: AppRadius.mdAll,
         border: Border.all(color: p.outline),
         boxShadow: <BoxShadow>[
-          BoxShadow(color: p.shadow, blurRadius: 14, offset: const Offset(0, 4)),
+          BoxShadow(
+            color: p.shadow,
+            blurRadius: 14,
+            offset: const Offset(0, 4),
+          ),
         ],
       ),
       child: Row(
@@ -2046,44 +2067,18 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
     return '这些笔记之间还没有双链。\n在正文里写 [[另一篇的标题]]，\n它们之间就会连上线。';
   }
 
-  TextStyle _hintStyle(AppPalette p) => TextStyle(
-    fontSize: AppText.label,
-    height: 1.8,
-    color: p.textTertiary,
-  );
+  TextStyle _hintStyle(AppPalette p) =>
+      TextStyle(fontSize: AppText.label, height: 1.8, color: p.textTertiary);
 
   Widget _emptyState(AppPalette p) {
     return IgnorePointer(
       child: Center(
         child: Padding(
           padding: const EdgeInsets.only(top: 40),
-          child: Text(_hintText(), textAlign: TextAlign.center, style: _hintStyle(p)),
-        ),
-      ),
-    );
-  }
-
-  Widget _hintPill(AppPalette p) {
-    return IgnorePointer(
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420),
-          child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: AppSpace.md),
-            padding: const EdgeInsets.symmetric(
-              horizontal: AppSpace.md,
-              vertical: AppSpace.sm,
-            ),
-            decoration: BoxDecoration(
-              color: p.sidebar.withValues(alpha: 0.86),
-              borderRadius: AppRadius.mdAll,
-              border: Border.all(color: p.outlineSoft),
-            ),
-            child: Text(
-              _hintText(),
-              textAlign: TextAlign.center,
-              style: _hintStyle(p).copyWith(fontSize: AppText.caption),
-            ),
+          child: Text(
+            _hintText(),
+            textAlign: TextAlign.center,
+            style: _hintStyle(p),
           ),
         ),
       ),

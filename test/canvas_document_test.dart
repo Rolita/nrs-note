@@ -6,9 +6,10 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:nrs/core/utils/canvas_document.dart';
 
-/// 一份「像 Obsidian 导出的」白板：四类节点、带 label 的边、group、颜色都齐。
+/// 一份典型白板：四类节点、带 label 的边、分组、颜色都齐。
 const String _fixture = '''
 {
+  "version": 1,
   "nodes": [
     {
       "id": "1111111111111111",
@@ -44,8 +45,6 @@ const String _fixture = '''
       "id": "4444444444444444",
       "type": "group",
       "label": "第一期",
-      "background": "assets/bg.png",
-      "backgroundStyle": "cover",
       "x": -40,
       "y": -40,
       "width": 700,
@@ -55,9 +54,9 @@ const String _fixture = '''
   "edges": [
     {
       "id": "aaaaaaaaaaaaaaaa",
-      "fromNode": "1111111111111111",
+      "from": "1111111111111111",
       "fromSide": "right",
-      "toNode": "2222222222222222",
+      "to": "2222222222222222",
       "toSide": "left",
       "toEnd": "arrow",
       "label": "落地方案",
@@ -65,8 +64,8 @@ const String _fixture = '''
     },
     {
       "id": "bbbbbbbbbbbbbbbb",
-      "fromNode": "2222222222222222",
-      "toNode": "3333333333333333"
+      "from": "2222222222222222",
+      "to": "3333333333333333"
     }
   ]
 }
@@ -74,8 +73,7 @@ const String _fixture = '''
 
 CanvasDocument parse(String s) => parseCanvas(s);
 
-Map<String, Object?> decode(String s) =>
-    jsonDecode(s) as Map<String, Object?>;
+Map<String, Object?> decode(String s) => jsonDecode(s) as Map<String, Object?>;
 
 void main() {
   group('解析', () {
@@ -99,8 +97,6 @@ void main() {
 
       final GroupNode group = doc.nodes[3] as GroupNode;
       expect(group.label, '第一期');
-      expect(group.background, 'assets/bg.png');
-      expect(group.backgroundStyle, 'cover');
     });
 
     test('坐标与尺寸读成 double', () {
@@ -111,6 +107,20 @@ void main() {
       expect(text.width, 250);
       expect(text.height, 120);
       expect(text.rect, const Rect.fromLTWH(0, 0, 250, 120));
+    });
+
+    test('坐标是自由浮点，不做任何吸附或取整', () {
+      final TextNode n =
+          parse(
+                '{"nodes":[{"id":"a","type":"text","x":13.7,"y":-8.25,'
+                '"width":97.5,"height":41.125}]}',
+              ).nodes.single
+              as TextNode;
+
+      expect(n.x, 13.7);
+      expect(n.y, -8.25);
+      expect(n.width, 97.5);
+      expect(n.height, 41.125);
     });
 
     test('边读出 side / label / color', () {
@@ -124,14 +134,28 @@ void main() {
       expect(e.color, '4');
     });
 
+    test('旧键 fromNode / toNode 也认', () {
+      final CanvasEdge e = parse('''
+{"nodes":[{"id":"a","type":"text","x":0,"y":0,"width":10,"height":10},
+{"id":"b","type":"text","x":30,"y":0,"width":10,"height":10}],
+ "edges":[{"id":"e1","fromNode":"a","toNode":"b"}]}
+''').edges.single;
+
+      expect(e.fromNode, 'a');
+      expect(e.toNode, 'b');
+    });
+
     test('缺 nodes / edges 当作空文档', () {
       expect(parse('{}').isEmpty, isTrue);
       expect(parse('{"nodes": []}').isEmpty, isTrue);
       expect(parse('{"edges": []}').isEmpty, isTrue);
     });
 
-    test('顶层未知键原样保留', () {
-      final CanvasDocument doc = parse('{"nodes":[],"edges":[],"zoom":1.5}');
+    test('顶层未知键原样保留，version 不算未知键', () {
+      final CanvasDocument doc = parse(
+        '{"version":1,"nodes":[],"edges":[],'
+        '"zoom":1.5}',
+      );
 
       expect(doc.extra, <String, Object?>{'zoom': 1.5});
     });
@@ -140,7 +164,7 @@ void main() {
       final CanvasDocument doc = parse('''
 {"nodes":[{"id":"n1","type":"text","x":0,"y":0,"width":10,"height":10,
 "text":"a","pinned":true}],
- "edges":[{"id":"e1","fromNode":"n1","toNode":"n1","style":"dashed"}]}
+ "edges":[{"id":"e1","from":"n1","to":"n1","style":"dashed"}]}
 ''');
 
       expect(doc.nodes.single.extra, <String, Object?>{'pinned': true});
@@ -150,21 +174,49 @@ void main() {
       final CanvasDocument two = parse('''
 {"nodes":[{"id":"n1","type":"text","x":0,"y":0,"width":10,"height":10},
 {"id":"n2","type":"text","x":20,"y":0,"width":10,"height":10}],
- "edges":[{"id":"e1","fromNode":"n1","toNode":"n2","style":"dashed"}]}
+ "edges":[{"id":"e1","from":"n1","to":"n2","style":"dashed"}]}
 ''');
       expect(two.edges.single.extra, <String, Object?>{'style': 'dashed'});
+    });
+
+    test('分组只有 label；别家格式的 background 落到 extra 里', () {
+      final GroupNode g =
+          parse('''
+{"nodes":[{"id":"g","type":"group","x":0,"y":0,"width":100,"height":80,
+"label":"一期","background":"assets/bg.png"}]}
+''').nodes.single
+              as GroupNode;
+
+      expect(g.label, '一期');
+      expect(g.extra, <String, Object?>{'background': 'assets/bg.png'});
     });
   });
 
   group('序列化', () {
+    test('写出带上版本号', () {
+      final Map<String, Object?> wire = decode(encodeCanvas(parse(_fixture)));
+
+      expect(wire['version'], canvasFormatVersion);
+    });
+
     test('解析再写出，结构与原来一致', () {
       final CanvasDocument doc = parse(_fixture);
 
-      // 逐字段比：拿一次 encode 的结果解回 Map，再和重新解析后的 encode 比。
       final String once = encodeCanvas(doc);
       final String twice = encodeCanvas(parse(once));
 
       expect(twice, once, reason: '写出再读回来应该完全一样');
+    });
+
+    test('边写成 from / to', () {
+      final Map<String, Object?> wire = decode(encodeCanvas(parse(_fixture)));
+      final Map<String, Object?> edge =
+          (wire['edges']! as List<Object?>).first! as Map<String, Object?>;
+
+      expect(edge['from'], '1111111111111111');
+      expect(edge['to'], '2222222222222222');
+      expect(edge.containsKey('fromNode'), isFalse);
+      expect(edge.containsKey('toNode'), isFalse);
     });
 
     test('写出是幂等的（键序稳定，不会每次保存都抖）', () {
@@ -174,10 +226,54 @@ void main() {
       expect(a, b);
     });
 
-    test('坐标落盘取整，内存里仍是小数', () {
-      final CanvasDocument doc = parse('''
-{"nodes":[{"id":"n1","type":"text","x":10.4,"y":-3.6,"width":250.7,"height":120.2}]}
-''');
+    test('字号倍率只有调过大小才写，默认 1 不占一行', () {
+      final CanvasDocument plain = parse(
+        '{"nodes":[{"id":"n1","type":"text","text":"hi"}]}',
+      );
+      final Map<String, Object?> node1 =
+          ((decode(encodeCanvas(plain))['nodes']! as List<Object?>).single!
+              as Map<String, Object?>);
+      expect(node1.containsKey('scale'), isFalse, reason: '没调过就不写');
+
+      final CanvasDocument scaled = parse(
+        '{"nodes":[{"id":"n1","type":"text","text":"hi","scale":1.5}]}',
+      );
+      expect(scaled.nodes.single.scale, 1.5);
+
+      final Map<String, Object?> node2 =
+          ((decode(encodeCanvas(scaled))['nodes']! as List<Object?>).single!
+              as Map<String, Object?>);
+      expect(node2['scale'], 1.5);
+      expect(parse(encodeCanvas(scaled)).nodes.single.scale, 1.5);
+    });
+
+    test('字号倍率写坏了回 1，不会被一个字段把字弄没', () {
+      for (final String raw in <String>['0', '-2', '"x"']) {
+        final CanvasDocument doc = parse(
+          '{"nodes":[{"id":"n1","type":"text","scale":$raw}]}',
+        );
+        expect(doc.nodes.single.scale, 1, reason: 'scale=$raw');
+      }
+    });
+
+    test('字号倍率没有上限：想放多大就多大', () {
+      final CanvasDocument doc = parse(
+        '{"nodes":[{"id":"n1","type":"text","scale":99}]}',
+      );
+      expect(doc.nodes.single.scale, 99);
+
+      // 设成 0 / 负数会被拒（保留上一次的值），不是夹到某个下限。
+      doc.nodes.single.scale = 0;
+      expect(doc.nodes.single.scale, 99);
+      doc.nodes.single.scale = -3;
+      expect(doc.nodes.single.scale, 99);
+    });
+
+    test('坐标落盘压到三位小数，内存里仍是原值', () {
+      final CanvasDocument doc = parse(
+        '{"nodes":[{"id":"n1","type":"text","x":10.4,"y":-3.6,'
+        '"width":250.7,"height":120.2}]}',
+      );
       final TextNode n = doc.nodes.single as TextNode;
 
       expect(n.x, 10.4, reason: '内存保留小数，拖动才不会一顿一顿');
@@ -187,18 +283,43 @@ void main() {
       final Map<String, Object?> node =
           (wire['nodes']! as List<Object?>).single! as Map<String, Object?>;
 
-      expect(node['x'], 10);
-      expect(node['y'], -4);
-      expect(node['width'], 251);
-      expect(node['height'], 120);
-      expect(node['x'], isA<int>(), reason: '规范要求 integer');
+      expect(node['x'], 10.4);
+      expect(node['y'], -3.6);
+      expect(node['width'], 250.7);
+      expect(node['height'], 120.2);
+
+      final Map<String, Object?> noisy = decode(
+        encodeCanvas(
+          parse('{"nodes":[{"id":"n2","type":"text","x":12.3000000001}]}'),
+        ),
+      );
+      final Map<String, Object?> dirty =
+          (noisy['nodes']! as List<Object?>).single! as Map<String, Object?>;
+      expect(dirty['x'], 12.3, reason: '浮点噪声不该写进文件');
+    });
+
+    test('整数坐标落盘还是整数（文件里不出现 250.0）', () {
+      final Map<String, Object?> wire = decode(
+        encodeCanvas(
+          parse(
+            '{"nodes":[{"id":"n1","type":"text","x":10,"y":-3.5,"width":250,'
+            '"height":120}]}',
+          ),
+        ),
+      );
+      final Map<String, Object?> node =
+          (wire['nodes']! as List<Object?>).single! as Map<String, Object?>;
+
+      expect(node['x'], isA<int>());
+      expect(node['width'], isA<int>());
+      expect(node['y'], -3.5);
     });
 
     test('toEnd 缺省补 arrow，fromEnd 缺省补 none', () {
       final CanvasEdge e = parse('''
 {"nodes":[{"id":"n1","type":"text","x":0,"y":0,"width":10,"height":10},
 {"id":"n2","type":"text","x":20,"y":0,"width":10,"height":10}],
- "edges":[{"id":"e1","fromNode":"n1","toNode":"n2"}]}
+ "edges":[{"id":"e1","from":"n1","to":"n2"}]}
 ''').edges.single;
 
       expect(e.toEnd, 'arrow');
@@ -207,12 +328,15 @@ void main() {
       expect(e.fromIsArrow, isFalse);
 
       // 写回去时也照缺省值写出来，读的人不用猜。
-      final Map<String, Object?> wire = decode(encodeCanvas(parse('''
+      final Map<String, Object?> wire = decode(
+        encodeCanvas(
+          parse('''
 {"nodes":[{"id":"n1","type":"text","x":0,"y":0,"width":10,"height":10},
 {"id":"n2","type":"text","x":20,"y":0,"width":10,"height":10}],
- "edges":[{"id":"e1","fromNode":"n1","toNode":"n2"}]}
-''')));
-
+ "edges":[{"id":"e1","from":"n1","to":"n2"}]}
+'''),
+        ),
+      );
       final Map<String, Object?> edge =
           (wire['edges']! as List<Object?>).single! as Map<String, Object?>;
       expect(edge['toEnd'], 'arrow');
@@ -228,10 +352,7 @@ void main() {
 
   group('容错', () {
     test('不是 JSON 就抛，不静默吞掉', () {
-      expect(
-        () => parse('这不是 JSON'),
-        throwsA(isA<CanvasFormatException>()),
-      );
+      expect(() => parse('这不是 JSON'), throwsA(isA<CanvasFormatException>()));
     });
 
     test('顶层是数组也抛', () {
@@ -239,19 +360,19 @@ void main() {
     });
 
     test('缺 id 就生成一个 16 位十六进制', () {
-      final CanvasNode n = parse('''
-{"nodes":[{"type":"text","x":0,"y":0,"width":10,"height":10}]}
-''').nodes.single;
+      final CanvasNode n = parse(
+        '{"nodes":[{"type":"text","x":0,"y":0,"width":10,"height":10}]}',
+      ).nodes.single;
 
       expect(n.id.length, 16);
       expect(RegExp(r'^[0-9a-f]{16}$').hasMatch(n.id), isTrue);
     });
 
     test('宽高非正数抬到最小值', () {
-      final CanvasDocument doc = parse('''
-{"nodes":[{"id":"a","type":"text","x":0,"y":0,"width":0,"height":-5},
-{"id":"b","type":"text","x":0,"y":0,"width":10,"height":10}]}
-''');
+      final CanvasDocument doc = parse(
+        '{"nodes":[{"id":"a","type":"text","x":0,"y":0,"width":0,"height":-5},'
+        '{"id":"b","type":"text","x":0,"y":0,"width":10,"height":10}]}',
+      );
 
       expect(doc.nodes[0].width, canvasMinSize);
       expect(doc.nodes[0].height, canvasMinSize);
@@ -259,9 +380,9 @@ void main() {
     });
 
     test('缺坐标当 0，缺宽高用默认值', () {
-      final CanvasNode n = parse('''
-{"nodes":[{"id":"a","type":"text"}]}
-''').nodes.single;
+      final CanvasNode n = parse(
+        '{"nodes":[{"id":"a","type":"text"}]}',
+      ).nodes.single;
 
       expect(n.x, 0);
       expect(n.y, 0);
@@ -273,7 +394,7 @@ void main() {
       final CanvasDocument doc = parse('''
 {"nodes":[{"id":"a","type":"text","x":0,"y":0,"width":10,"height":10},
 {"id":"b","type":"mindmap","x":0,"y":0,"width":10,"height":10}],
- "edges":[{"id":"e1","fromNode":"a","toNode":"b"}]}
+ "edges":[{"id":"e1","from":"a","to":"b"}]}
 ''');
 
       expect(doc.nodes.length, 1);
@@ -284,7 +405,7 @@ void main() {
     test('边指向不存在的节点就丢', () {
       final CanvasDocument doc = parse('''
 {"nodes":[{"id":"a","type":"text","x":0,"y":0,"width":10,"height":10}],
- "edges":[{"id":"e1","fromNode":"a","toNode":"幽灵"}]}
+ "edges":[{"id":"e1","from":"a","to":"幽灵"}]}
 ''');
 
       expect(doc.edges, isEmpty);
@@ -293,7 +414,7 @@ void main() {
     test('自环丢掉', () {
       final CanvasDocument doc = parse('''
 {"nodes":[{"id":"a","type":"text","x":0,"y":0,"width":10,"height":10}],
- "edges":[{"id":"e1","fromNode":"a","toNode":"a"}]}
+ "edges":[{"id":"e1","from":"a","to":"a"}]}
 ''');
 
       expect(doc.edges, isEmpty);
@@ -303,8 +424,8 @@ void main() {
       final CanvasDocument doc = parse('''
 {"nodes":[{"id":"a","type":"text","x":0,"y":0,"width":10,"height":10},
 {"id":"b","type":"text","x":30,"y":0,"width":10,"height":10}],
- "edges":[{"id":"e1","fromNode":"a","toNode":"b"},
-          {"id":"e2","fromNode":"b","toNode":"a"}]}
+ "edges":[{"id":"e1","from":"a","to":"b"},
+          {"id":"e2","from":"b","to":"a"}]}
 ''');
 
       expect(doc.edges.length, 2);
@@ -346,7 +467,7 @@ void main() {
       final CanvasEdge e = parse('''
 {"nodes":[{"id":"a","type":"text","x":0,"y":0,"width":10,"height":10},
 {"id":"b","type":"text","x":30,"y":0,"width":10,"height":10}],
- "edges":[{"id":"e1","fromNode":"a","toNode":"b","fromSide":"north","toSide":"RIGHT"}]}
+ "edges":[{"id":"e1","from":"a","to":"b","fromSide":"north","toSide":"RIGHT"}]}
 ''').edges.single;
 
       expect(e.fromSide, isNull);
@@ -357,7 +478,7 @@ void main() {
       final CanvasEdge e = parse('''
 {"nodes":[{"id":"a","type":"text","x":0,"y":0,"width":10,"height":10},
 {"id":"b","type":"text","x":30,"y":0,"width":10,"height":10}],
- "edges":[{"id":"e1","fromNode":"a","toNode":"b","fromEnd":"triangle","toEnd":"none"}]}
+ "edges":[{"id":"e1","from":"a","to":"b","fromEnd":"triangle","toEnd":"none"}]}
 ''').edges.single;
 
       expect(e.fromEnd, 'none');
@@ -366,21 +487,24 @@ void main() {
     });
 
     test('subpath 缺 # 就补上', () {
-      final FileNode n = parse('''
+      final FileNode n =
+          parse('''
 {"nodes":[{"id":"a","type":"file","x":0,"y":0,"width":10,"height":10,
 "file":"a.md","subpath":"标题"}]}
-''').nodes.single as FileNode;
+''').nodes.single
+              as FileNode;
 
       expect(n.subpath, '#标题');
     });
 
-    test('非法 backgroundStyle 当没设', () {
-      final GroupNode g = parse('''
-{"nodes":[{"id":"a","type":"group","x":0,"y":0,"width":10,"height":10,
-"backgroundStyle":"stretch"}]}
-''').nodes.single as GroupNode;
+    test('空 label 当没有', () {
+      final GroupNode g =
+          parse(
+                '{"nodes":[{"id":"g","type":"group","label":"   "}]}',
+              ).nodes.single
+              as GroupNode;
 
-      expect(g.backgroundStyle, isNull);
+      expect(g.label, isNull);
     });
   });
 
@@ -394,10 +518,7 @@ void main() {
     });
 
     test('传固定种子就能复现', () {
-      expect(
-        newCanvasId(Random(7)),
-        newCanvasId(Random(7)),
-      );
+      expect(newCanvasId(Random(7)), newCanvasId(Random(7)));
     });
   });
 
@@ -407,11 +528,14 @@ void main() {
 {"nodes":[{"id":"a","type":"text","x":0,"y":0,"width":10,"height":10},
 {"id":"b","type":"text","x":30,"y":0,"width":10,"height":10},
 {"id":"c","type":"text","x":60,"y":0,"width":10,"height":10}],
- "edges":[{"id":"e1","fromNode":"a","toNode":"b"},
-          {"id":"e2","fromNode":"c","toNode":"a"}]}
+ "edges":[{"id":"e1","from":"a","to":"b"},
+          {"id":"e2","from":"c","to":"a"}]}
 ''');
 
-      expect(doc.edgesOf('a').map((CanvasEdge e) => e.id), <String>['e1', 'e2']);
+      expect(doc.edgesOf('a').map((CanvasEdge e) => e.id), <String>[
+        'e1',
+        'e2',
+      ]);
       expect(doc.edgesOf('b').map((CanvasEdge e) => e.id), <String>['e1']);
       expect(doc.edgesOf('c').map((CanvasEdge e) => e.id), <String>['e2']);
       expect(doc.edgesOf('幽灵'), isEmpty);
@@ -427,15 +551,12 @@ void main() {
     test('节点顺序就是 z-index，解析后不重排', () {
       final CanvasDocument doc = parse(_fixture);
 
-      expect(
-        doc.nodes.map((CanvasNode n) => n.id),
-        <String>[
-          '1111111111111111',
-          '2222222222222222',
-          '3333333333333333',
-          '4444444444444444',
-        ],
-      );
+      expect(doc.nodes.map((CanvasNode n) => n.id), <String>[
+        '1111111111111111',
+        '2222222222222222',
+        '3333333333333333',
+        '4444444444444444',
+      ]);
     });
   });
 }
