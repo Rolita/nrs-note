@@ -263,7 +263,14 @@ class OrbPainter extends CustomPainter {
         ),
     );
 
-    // 大气层：只在球面外侧很窄的一圈，宽了会变成「球外套了个光环」。
+    // 大气层：一比一照 `design/graph-drag-variants.html`。
+    //
+    // 原型是「内半径 0.965R → 外半径 1.075R」的环形渐变：内缘透明，
+    // 0.40 处 10%，0.75 处 3%，外缘淡出。窄环只贴着轮廓外侧走；
+    // 旧版从 0.86R 就开始发亮，等于把最外圈节点也罩进光里，看起来粗一圈。
+    //
+    // Dart 的 radial 没有内半径，用同一外径 + 折算后的 stop 复刻：
+    // 0.965/1.075 = 0.8977，1.009/1.075 = 0.9386，1.0475/1.075 = 0.9744。
     canvas.drawRect(
       rect,
       Paint()
@@ -272,10 +279,12 @@ class OrbPainter extends CustomPainter {
           radius * 1.075,
           <Color>[
             data.style.rim.withValues(alpha: 0),
+            data.style.rim.withValues(alpha: 0),
             data.style.rim,
+            data.style.rim.withValues(alpha: data.style.rim.a * 0.30),
             data.style.rim.withValues(alpha: 0),
           ],
-          <double>[0.80, 0.92, 1],
+          <double>[0, 0.8977, 0.9386, 0.9744, 1],
         ),
     );
   }

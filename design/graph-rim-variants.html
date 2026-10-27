@@ -1,0 +1,1067 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>关系图谱 · 外圈方案</title>
+<style>
+  :root {
+    --page: #0b0c10;
+    --surface: #15171d;
+    --surface-2: #101116;
+    --outline: #24262e;
+    --outline-hi: #3a3d4b;
+    --text: #e6e8ef;
+    --text-2: #9aa0b0;
+    --text-3: #6a7080;
+    --accent: #8b94f2;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 40px 28px 56px;
+    background:
+      radial-gradient(900px 520px at 50% -10%, rgba(139, 148, 242, .07), transparent 70%),
+      var(--page);
+    color: var(--text);
+    font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header {
+    max-width: 1180px;
+    margin: 0 auto 26px;
+    display: flex;
+    align-items: flex-end;
+    gap: 24px;
+  }
+
+  .head-copy { flex: 1; min-width: 0; }
+
+  h1 {
+    margin: 0 0 10px;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: .2px;
+  }
+
+  .lede {
+    margin: 0;
+    max-width: 760px;
+    font-size: 13px;
+    line-height: 1.75;
+    color: var(--text-2);
+  }
+
+  .lede b { color: var(--text); font-weight: 500; }
+  .lede code {
+    font: 11.5px/1.6 ui-monospace, "Cascadia Code", Consolas, monospace;
+    color: #c6cbfa;
+  }
+
+  .theme {
+    display: flex;
+    padding: 3px;
+    border: 1px solid var(--outline);
+    border-radius: 999px;
+    background: var(--surface-2);
+    flex: none;
+  }
+
+  .theme button {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--text-3);
+    font: inherit;
+    font-size: 12px;
+    padding: 5px 13px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background .15s ease, color .15s ease;
+  }
+
+  .theme button:hover { color: var(--text-2); }
+
+  .theme button.on {
+    background: #24262f;
+    color: var(--text);
+  }
+
+  .grid {
+    max-width: 1180px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
+  }
+
+  .card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    background: linear-gradient(180deg, var(--surface), var(--surface-2));
+    border: 1px solid var(--outline);
+    border-radius: 16px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease;
+  }
+
+  .card:hover {
+    border-color: var(--outline-hi);
+    transform: translateY(-1px);
+  }
+
+  .card.picked {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(139, 148, 242, .45), 0 14px 34px -20px rgba(139, 148, 242, .7);
+  }
+
+  .card-head {
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+    padding: 14px 16px 11px;
+  }
+
+  .letter {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .6px;
+    color: var(--text-3);
+  }
+
+  .name { font-size: 14px; font-weight: 500; }
+
+  .badge {
+    margin-left: auto;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 10px;
+    letter-spacing: .3px;
+    color: var(--text-3);
+    border: 1px solid var(--outline);
+    white-space: nowrap;
+  }
+
+  .badge.rec {
+    color: #c6cbfa;
+    border-color: rgba(139, 148, 242, .45);
+    background: rgba(139, 148, 242, .10);
+  }
+
+  .badge.now {
+    color: #aab3c8;
+    border-color: rgba(147, 169, 201, .32);
+    background: rgba(147, 169, 201, .08);
+  }
+
+  .stage {
+    position: relative;
+    aspect-ratio: 4 / 3;
+    background: #04060a;
+    border-top: 1px solid var(--outline);
+    border-bottom: 1px solid var(--outline);
+  }
+
+  body.theme-light .stage { background: #e8ebf0; }
+
+  .stage canvas { display: block; width: 100%; height: 100%; }
+
+  .zoom {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    border: 1px solid rgba(147, 169, 201, .22);
+    background: rgba(6, 8, 12, .55);
+    color: #aab3c8;
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    opacity: .5;
+    pointer-events: none;
+    backdrop-filter: blur(6px);
+    transition: opacity .15s ease, border-color .15s ease;
+  }
+
+  .card:hover .zoom { opacity: 1; border-color: rgba(147, 169, 201, .45); }
+
+  .card.picked::after {
+    content: "已选";
+    position: absolute;
+    top: 58px;
+    right: 12px;
+    z-index: 2;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    letter-spacing: .3px;
+    color: #c6cbfa;
+    border: 1px solid rgba(139, 148, 242, .5);
+    background: rgba(20, 22, 36, .82);
+    pointer-events: none;
+  }
+
+  /* ── 放大预览 ── */
+
+  .lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+  }
+
+  .lightbox[hidden] { display: none; }
+
+  .lb-scrim {
+    position: absolute;
+    inset: 0;
+    background: rgba(4, 5, 8, .74);
+    backdrop-filter: blur(7px);
+  }
+
+  .lb-panel {
+    position: relative;
+    width: min(1120px, calc(100vw - 48px));
+    background: #12141a;
+    border: 1px solid var(--outline-hi);
+    border-radius: 18px;
+    overflow: hidden;
+    box-shadow: 0 40px 90px -30px rgba(0, 0, 0, .8);
+  }
+
+  .lb-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 15px 18px 12px;
+  }
+
+  .lb-head .name { font-size: 15px; }
+
+  .lb-head .spec {
+    margin: 0 0 0 4px;
+    font: 11px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+    color: var(--text-3);
+  }
+
+  .lb-close {
+    margin-left: auto;
+    appearance: none;
+    border: 1px solid var(--outline);
+    background: transparent;
+    color: var(--text-2);
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    align-self: center;
+  }
+
+  .lb-close:hover { border-color: var(--outline-hi); color: var(--text); }
+
+  .lb-stage {
+    height: min(62vh, 620px);
+    background: #04060a;
+    border-top: 1px solid var(--outline);
+    border-bottom: 1px solid var(--outline);
+  }
+
+  body.theme-light .lb-stage { background: #e8ebf0; }
+
+  .lb-stage canvas { display: block; width: 100%; height: 100%; }
+
+  .lb-foot {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 13px 18px 15px;
+  }
+
+  .lb-desc {
+    flex: 1;
+    margin: 0;
+    font-size: 12.5px;
+    line-height: 1.7;
+    color: var(--text-2);
+  }
+
+  .lb-desc b { color: var(--text); font-weight: 500; }
+
+  .lb-actions { display: flex; gap: 8px; flex: none; }
+
+  .lb-actions button {
+    appearance: none;
+    border: 1px solid var(--outline);
+    background: #191b22;
+    color: var(--text-2);
+    font: inherit;
+    font-size: 12px;
+    padding: 7px 13px;
+    border-radius: 9px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .lb-actions button:hover { border-color: var(--outline-hi); color: var(--text); }
+
+  .lb-actions button.primary {
+    border-color: rgba(139, 148, 242, .5);
+    background: rgba(139, 148, 242, .14);
+    color: #c6cbfa;
+  }
+
+  .lb-actions button.primary:hover { background: rgba(139, 148, 242, .22); }
+
+  .desc {
+    margin: 0;
+    padding: 12px 16px 15px;
+    font-size: 12.5px;
+    line-height: 1.7;
+    color: var(--text-2);
+  }
+
+  .desc b { color: var(--text); font-weight: 500; }
+
+  .spec {
+    display: block;
+    margin-top: 6px;
+    font: 11px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+    color: var(--text-3);
+  }
+
+  .foot {
+    max-width: 1180px;
+    margin: 22px auto 0;
+    font-size: 12px;
+    line-height: 1.8;
+    color: var(--text-3);
+  }
+
+  @media (max-width: 880px) {
+    header { flex-direction: column; align-items: flex-start; gap: 14px; }
+    .grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="head-copy">
+    <h1>关系图谱 · 外圈方案</h1>
+    <p class="lede">
+      A 是改动前的蓝色大气层；G 是 <code>graph-drag-variants.html</code> 的一比一复刻，
+      已按这组参数写进 Flutter。点卡片放大对比（数字键 1–7 也行），放大页里可以标记你的选择。
+    </p>
+  </div>
+  <div class="theme" role="group" aria-label="主题">
+    <button type="button" data-theme="dark" class="on">深色</button>
+    <button type="button" data-theme="light">浅色</button>
+  </div>
+</header>
+
+<main class="grid" id="grid"></main>
+
+<p class="foot">
+  外圈画在节点下面，不参与命中；所有方案都不改节点、连线和标签的亮度。浅色主题下同一方案会换成对应的中性色。
+</p>
+
+<div class="lightbox" id="lightbox" hidden>
+  <div class="lb-scrim" data-act="close"></div>
+  <div class="lb-panel" role="dialog" aria-modal="true" aria-label="外圈方案放大预览">
+    <div class="lb-head">
+      <span class="letter" id="lb-letter">A</span>
+      <span class="name" id="lb-name"></span>
+      <span class="spec" id="lb-spec"></span>
+      <button class="lb-close" type="button" data-act="close" aria-label="关闭">×</button>
+    </div>
+    <div class="lb-stage"><canvas id="lb-canvas"></canvas></div>
+    <div class="lb-foot">
+      <p class="lb-desc" id="lb-desc"></p>
+      <div class="lb-actions">
+        <button type="button" data-act="prev">← 上一个</button>
+        <button type="button" data-act="next">下一个 →</button>
+        <button type="button" class="primary" data-act="pick">选这个方案</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ─────────────────────────── 主题 ─────────────────────────── */
+
+  const THEMES = {
+    dark: {
+      inner: '#101a2c', outer: '#04060a',
+      node: '#c2c5cc', edge: '#93a9c9',
+      label: '#cedcf2', labelFocus: '#f2f8ff', halo: '#03060b',
+      neutral: '#cedcf2',
+      glow: [194, 197, 204],
+    },
+    light: {
+      inner: '#f7f8fa', outer: '#e8ebf0',
+      node: '#7a7a7a', edge: '#5a6b85',
+      label: '#5c5c59', labelFocus: '#1b1b1a', halo: '#f2f4f8',
+      neutral: '#5a6b85',
+      glow: [122, 122, 122],
+    },
+  };
+
+  let themeKey = 'dark';
+
+  /* ─────────────────────────── 数据 ─────────────────────────── */
+
+  const CLUSTER_NAMES = ['设计', '工程', '写作', '研究', '生活', '归档', '杂项'];
+  const WEIGHTS = [1.25, 1.15, 1.0, .95, .9, .8, .7];
+  const NOUNS = ['首帧','光栅','缓存','索引','光标','段落','折叠','公式','高亮','拖拽',
+                 '回弹','渐隐','描边','留白','间距','层级','焦点','排序','筛选','模板',
+                 '变量','快照','回滚','同步','迁移','剪枝','聚类','拓扑','向量','矩阵',
+                 '阻尼','惯性','投影','视差','景深','色阶','对比','质感','节奏','呼吸',
+                 '密度','边界','路径','权重','收敛','迭代','残差','梯度','核心','纤维'];
+
+  let _seed = 20261027;
+  function rnd() {
+    _seed = (_seed * 1664525 + 1013904223) >>> 0;
+    return _seed / 4294967296;
+  }
+  function gauss() {
+    let u = 0, v = 0;
+    while (u === 0) u = rnd();
+    while (v === 0) v = rnd();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(TAU * v);
+  }
+  const TAU = Math.PI * 2;
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const norm = (a) => {
+    const l = Math.hypot(a[0], a[1], a[2]) || 1;
+    return [a[0] / l, a[1] / l, a[2] / l];
+  };
+  const cross = (a, b) => [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+
+  const CLUSTER_CENTERS = [];
+  for (let k = 0; k < CLUSTER_NAMES.length; k++) {
+    const y = 1 - (2 * (k + 0.5)) / CLUSTER_NAMES.length;
+    const r = Math.sqrt(Math.max(0, 1 - y * y));
+    const phi = k * 2.399963229728653;
+    CLUSTER_CENTERS.push([Math.cos(phi) * r, y, Math.sin(phi) * r]);
+  }
+
+  // 每个簇的切向基
+  const BASES = CLUSTER_CENTERS.map((c) => {
+    let up = [0, 1, 0];
+    if (Math.abs(dot(c, up)) > 0.92) up = [1, 0, 0];
+    const u = norm(cross(up, c));
+    const v = cross(c, u);
+    return [u, v];
+  });
+
+  const NODE_COUNT = 420;
+  const nodes = [];
+  {
+    const totalW = WEIGHTS.reduce((a, b) => a + b, 0);
+    const sizes = WEIGHTS.map((w) => Math.max(1, Math.round((w / totalW) * NODE_COUNT)));
+    let diff = NODE_COUNT - sizes.reduce((a, b) => a + b, 0);
+    sizes[0] += diff;
+
+    for (let c = 0; c < CLUSTER_NAMES.length; c++) {
+      const centre = CLUSTER_CENTERS[c];
+      const [u, v] = BASES[c];
+      for (let j = 0; j < sizes[c]; j++) {
+        const du = gauss() * 0.38;
+        const dv = gauss() * 0.38;
+        const p = norm([
+          centre[0] + u[0] * du + v[0] * dv,
+          centre[1] + u[1] * du + v[1] * dv,
+          centre[2] + u[2] * du + v[2] * dv,
+        ]);
+        const noun = NOUNS[Math.floor(rnd() * NOUNS.length)];
+        nodes.push({
+          p,
+          cluster: c,
+          title: CLUSTER_NAMES[c] + '·' + noun,
+          degree: 0,
+        });
+      }
+    }
+  }
+
+  // 边：簇内最近邻 + 少量跨簇桥
+  const edgeSet = new Set();
+  const edgePairs = [];
+  function addEdge(a, b) {
+    if (a === b) return;
+    const key = a < b ? a + '_' + b : b + '_' + a;
+    if (edgeSet.has(key)) return;
+    edgeSet.add(key);
+    edgePairs.push([a, b]);
+    nodes[a].degree++;
+    nodes[b].degree++;
+  }
+
+  {
+    const byCluster = CLUSTER_NAMES.map(() => []);
+    nodes.forEach((n, i) => byCluster[n.cluster].push(i));
+
+    for (const list of byCluster) {
+      for (const i of list) {
+        const pi = nodes[i].p;
+        const near = list
+          .filter((j) => j !== i)
+          .map((j) => ({ j, d: dot(pi, nodes[j].p) }))
+          .sort((a, b) => b.d - a.d)
+          .slice(0, 2);
+        for (const { j } of near) addEdge(i, j);
+      }
+    }
+
+    // 少量跨簇长边，让球看起来是一整张网
+    const bridges = 74;
+    for (let k = 0; k < bridges; k++) {
+      let a = Math.floor(rnd() * nodes.length);
+      let b = Math.floor(rnd() * nodes.length);
+      for (let tries = 0; nodes[a].cluster === nodes[b].cluster && tries < 12; tries++) {
+        b = Math.floor(rnd() * nodes.length);
+      }
+      addEdge(a, b);
+    }
+  }
+
+  // 每颗节点的世界半径：按度数给 0.007–0.028
+  nodes.forEach((n) => {
+    n.wr = 0.007 + Math.min(n.degree, 10) * 0.0021;
+  });
+
+  /* ─────────────────────────── 相机 ─────────────────────────── */
+
+  const YAW = -0.38, PITCH = 0.24, ROLL = 0.035;
+  const cyY = Math.cos(YAW), syY = Math.sin(YAW);
+  const cpX = Math.cos(PITCH), spX = Math.sin(PITCH);
+  const crZ = Math.cos(ROLL), srZ = Math.sin(ROLL);
+
+  const projected = nodes.map((n) => {
+    let [x, y, z] = n.p;
+    // yaw（绕 Y）
+    let x1 = x * cyY + z * syY;
+    let z1 = -x * syY + z * cyY;
+    // pitch（绕 X）
+    let y1 = y * cpX - z1 * spX;
+    let z2 = y * spX + z1 * cpX;
+    // roll（绕 Z）
+    let x2 = x1 * crZ - y1 * srZ;
+    let y2 = x1 * srZ + y1 * crZ;
+    return { x: x2, y: y2, z: z2 };
+  });
+
+  const order = projected
+    .map((p, i) => i)
+    .sort((a, b) => projected[a].z - projected[b].z);
+
+  /* ─────────────────────────── 标签 ─────────────────────────── */
+
+  // 挑正面、度数高的节点，彼此留出间距
+  const LABEL_PICKS = [];
+  {
+    const candidates = nodes
+      .map((n, i) => ({ i, z: projected[i].z, d: n.degree }))
+      .filter((n) => n.z > 0.12)
+      .sort((a, b) => b.d - a.d || b.z - a.z);
+    for (const cand of candidates) {
+      if (LABEL_PICKS.length >= 10) break;
+      let crowded = false;
+      for (const other of LABEL_PICKS) {
+        if (dot(nodes[cand.i].p, nodes[other].p) > 0.86) { crowded = true; break; }
+      }
+      if (crowded) continue;
+      LABEL_PICKS.push(cand.i);
+    }
+  }
+
+  /* ─────────────────────────── 辉光贴图 ─────────────────────────── */
+
+  const glowSprites = {};
+  function makeGlow(rgb) {
+    const S = 64;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = S;
+    const g = cv.getContext('2d');
+    const grd = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    const c = (a) => 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + a + ')';
+    grd.addColorStop(0, c(1));
+    grd.addColorStop(0.16, c(0.55));
+    grd.addColorStop(0.38, c(0.18));
+    grd.addColorStop(0.66, c(0.045));
+    grd.addColorStop(1, c(0));
+    g.fillStyle = grd;
+    g.fillRect(0, 0, S, S);
+    return cv;
+  }
+
+  /* ─────────────────────────── 外圈方案 ─────────────────────────── */
+
+  function rimGradient(ctx, cx, cy, R, stops) {
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.075);
+    stops.forEach(([at, color, alpha]) => {
+      g.addColorStop(at, color === null ? 'rgba(0,0,0,0)' : hexA(color, alpha));
+    });
+    return g;
+  }
+
+  function hexA(hex, alpha) {
+    const v = hex.replace('#', '');
+    const r = parseInt(v.slice(0, 2), 16);
+    const g = parseInt(v.slice(2, 4), 16);
+    const b = parseInt(v.slice(4, 6), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
+  }
+
+  function drawRim(ctx, variant, T, W, H, cx, cy, R) {
+    const dark = themeKey === 'dark';
+
+    if (variant === 'a') {
+      // 现状：半径 1.075R，0.80 起淡入，0.92 峰值，1.0 淡出
+      ctx.fillStyle = rimGradient(ctx, cx, cy, R, [
+        [0, null, 0],
+        [0.80, null, 0],
+        [0.92, '#6ea0eb', dark ? 0.13 : 0.18],
+        [1, null, 0],
+      ]);
+      ctx.fillRect(0, 0, W, H);
+      return;
+    }
+
+    if (variant === 'b') {
+      return;
+    }
+
+    if (variant === 'c') {
+      // 中性柔光：同位置、同宽度，颜色换成节点同源的中性色，浓度减半、过渡拉长
+      ctx.fillStyle = rimGradient(ctx, cx, cy, R, [
+        [0, null, 0],
+        [0.50, null, 0],
+        [0.88, T.neutral, dark ? 0.075 : 0.10],
+        [1, null, 0],
+      ]);
+      ctx.fillRect(0, 0, W, H);
+      return;
+    }
+
+    if (variant === 'd') {
+      // 细线镜片边：1px 轮廓 + 极淡的外侧散光
+      ctx.fillStyle = rimGradient(ctx, cx, cy, R, [
+        [0, null, 0],
+        [0.88, T.neutral, dark ? 0.020 : 0.035],
+        [0.98, T.neutral, dark ? 0.030 : 0.045],
+        [1, null, 0],
+      ]);
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, R * 1.006, 0, TAU);
+      ctx.strokeStyle = hexA(T.neutral, dark ? 0.16 : 0.20);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      return;
+    }
+
+    if (variant === 'e') {
+      // 暗角收边：不加光，在球外侧压暗一圈。没有可见的圆。
+      const max = dark ? 0.58 : 0.38;
+      const g = ctx.createRadialGradient(cx, cy, R * 0.74, cx, cy, R * 1.48);
+      g.addColorStop(0, 'rgba(2,4,8,0)');
+      g.addColorStop(0.38, 'rgba(2,4,8,' + (max * 0.09).toFixed(3) + ')');
+      g.addColorStop(0.62, 'rgba(2,4,8,' + (max * 0.38).toFixed(3) + ')');
+      g.addColorStop(0.82, 'rgba(2,4,8,' + (max * 0.72).toFixed(3) + ')');
+      g.addColorStop(1, 'rgba(2,4,8,' + max + ')');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+      return;
+    }
+
+    if (variant === 'f') {
+      // 断环：左右两段 124° 的柔弧，上下留 56° 口，和焦点环同一套角度。
+      const g = ctx.createConicGradient(0, cx, cy);
+      const c = hexA(T.neutral, dark ? 0.20 : 0.24);
+      const zero = hexA(T.neutral, 0);
+      // 0° = 3 点钟方向，顺时针。右弧 −62°…62°，左弧 118°…242°。
+      const deg = (d) => ((((d % 360) + 360) % 360) / 360);
+      g.addColorStop(0, zero);
+      g.addColorStop(deg(-62), zero);
+      g.addColorStop(deg(-50), c);
+      g.addColorStop(deg(50), c);
+      g.addColorStop(deg(62), zero);
+      g.addColorStop(deg(118), zero);
+      g.addColorStop(deg(130), c);
+      g.addColorStop(deg(230), c);
+      g.addColorStop(deg(242), zero);
+      g.addColorStop(1, zero);
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, R * 1.012, 0, TAU);
+      ctx.strokeStyle = g;
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      return;
+    }
+
+    if (variant === 'g') {
+      // 参考页 graph-drag-variants.html 原样：内半径 0.965R，0.40 处 10%，
+      // 0.75 处 3%，外半径 1.075R。窄环只贴轮廓外侧。
+      ctx.fillStyle = rimGradient(ctx, cx, cy, R, [
+        [0, null, 0],
+        [0.8977, null, 0],
+        [0.9386, '#6ea0eb', dark ? 0.10 : 0.18],
+        [0.9744, '#6ea0eb', dark ? 0.030 : 0.054],
+        [1, null, 0],
+      ]);
+      ctx.fillRect(0, 0, W, H);
+      return;
+    }
+  }
+
+  /* ─────────────────────────── 绘制 ─────────────────────────── */
+
+  function render(canvas, variant) {
+    const T = THEMES[themeKey];
+    const W = canvas.clientWidth;
+    const H = canvas.clientHeight;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.round(W * dpr));
+    canvas.height = Math.max(1, Math.round(H * dpr));
+
+    const ctx = canvas.getContext('2d', { alpha: false });
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const cx = W / 2;
+    const cy = H / 2;
+    const R = Math.min(W, H) * 0.30;
+
+    /* 底 */
+    const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.78);
+    bg.addColorStop(0, T.inner);
+    bg.addColorStop(1, T.outer);
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+
+    drawRim(ctx, variant, T, W, H, cx, cy, R);
+
+    /* 投影 */
+    const sx = new Float32Array(nodes.length);
+    const sy = new Float32Array(nodes.length);
+    const scl = new Float32Array(nodes.length);
+    const dep = new Float32Array(nodes.length);
+    const alpha = new Float32Array(nodes.length);
+    const rad = new Float32Array(nodes.length);
+
+    const CAM = 5.4;
+    const lx = -0.4175, ly = -0.5468, lz = 0.7257;
+
+    for (let i = 0; i < nodes.length; i++) {
+      const p = projected[i];
+      const proj = CAM / (CAM - p.z);
+      scl[i] = proj;
+      sx[i] = cx + p.x * R * proj;
+      sy[i] = cy - p.y * R * proj;
+      dep[i] = (p.z + 1) * 0.5;
+
+      const ndl = p.x * lx + p.y * ly + p.z * lz;
+      const lit = 0.56 + 0.44 * Math.pow(ndl < 0 ? 0 : ndl, 0.85);
+      const d = dep[i];
+      const edgeShade = 0.66 + 0.34 * Math.min(1, Math.max(0, (d - 0.42) / 0.50));
+      alpha[i] = (0.32 + 0.68 * Math.pow(d, 1.15)) * lit * edgeShade;
+      rad[i] = Math.max(nodes[i].wr * R * scl[i], 1.6);
+    }
+
+    /* 连线 */
+    ctx.strokeStyle = T.edge;
+    ctx.lineWidth = 1;
+    ctx.lineCap = 'round';
+    for (const [a, b] of edgePairs) {
+      const d = (dep[a] + dep[b]) * 0.5;
+      const al = 0.060 + 0.42 * d * d * d;
+      if (al < 0.006) continue;
+      ctx.globalAlpha = al;
+      ctx.beginPath();
+      ctx.moveTo(sx[a], sy[a]);
+      ctx.lineTo(sx[b], sy[b]);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    /* 辉光 */
+    const glow = glowSprites[themeKey] || (glowSprites[themeKey] = makeGlow(T.glow));
+    ctx.globalCompositeOperation = 'lighter';
+    for (const i of order) {
+      const a = alpha[i];
+      if (a < 0.20) continue;
+      const dk = Math.pow(dep[i], 1.7);
+      const r = rad[i] * 4.6;
+      const ga = Math.min(0.85, a * 0.46 * dk);
+      if (ga <= 0.004) continue;
+      ctx.globalAlpha = ga;
+      ctx.drawImage(glow, sx[i] - r, sy[i] - r, r * 2, r * 2);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+
+    /* 节点 */
+    ctx.fillStyle = T.node;
+    for (const i of order) {
+      if (alpha[i] <= 0.01) continue;
+      ctx.globalAlpha = alpha[i];
+      ctx.beginPath();
+      ctx.arc(sx[i], sy[i], rad[i], 0, TAU);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    /* 标签 */
+    ctx.font = '500 11.5px "PingFang SC", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.lineJoin = 'round';
+    for (const i of LABEL_PICKS) {
+      const r = Math.max(rad[i], 1.6);
+      let lx2 = sx[i];
+      let ly2 = sy[i] - r - 18;
+      if (ly2 < 14) ly2 = sy[i] + r + 18;
+      if (ly2 > H - 18) continue;
+
+      ctx.globalAlpha = 0.58;
+      ctx.strokeStyle = T.halo;
+      ctx.lineWidth = 3.2;
+      ctx.strokeText(nodes[i].title, lx2, ly2);
+      ctx.fillStyle = T.labelFocus;
+      ctx.fillText(nodes[i].title, lx2, ly2);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /* ─────────────────────────── 页面 ─────────────────────────── */
+
+  const VARIANTS = [
+    {
+      id: 'a',
+      name: '旧版 · 蓝色大气层',
+      badge: '改动前',
+      badgeClass: 'now',
+      desc: '改动前球外一圈 13% 的蓝，宽约 0.2R。问题不在“有光”，在颜色和宽度：整张图只有它是蓝的，<b>还压住了最外圈节点</b>。',
+      spec: 'radial · #6EA0EB · α 13% · 0.86–1.08R',
+    },
+    {
+      id: 'b',
+      name: '无圈 · 只剩节点云',
+      badge: '最干净',
+      badgeClass: '',
+      desc: '删掉大气层，只留底色渐变。边界交给节点云自己收，<b>球感靠投影和明暗</b>，不靠一个圆。',
+      spec: 'rim: none',
+    },
+    {
+      id: 'c',
+      name: '中性柔光',
+      badge: '',
+      badgeClass: '',
+      desc: '位置和宽度都不动，颜色换成与节点同源的中性色，浓度减半、过渡拉长。<b>边界还在，但看不出“环”</b>。',
+      spec: 'radial · #CEDCF2 · α 7.5% · 0.54–1.08R',
+    },
+    {
+      id: 'd',
+      name: '细线镜片边',
+      badge: '',
+      badgeClass: '',
+      desc: '一条 1px、16% 的中性细线贴着轮廓，外侧垫一点极淡的光。<b>边界明确、像镜头镀膜</b>，比分段弧更仪器感。',
+      spec: 'stroke 1px · #CEDCF2 · α 16% · r 1.006R',
+    },
+    {
+      id: 'e',
+      name: '暗角收边',
+      badge: '最克制',
+      badgeClass: '',
+      desc: '不加光，改为在球外侧压一圈暗。球从背景里浮出来，<b>整张图没有一条可见的圆</b>。',
+      spec: 'radial shade · #020408 · 0→58% · 0.74–1.48R',
+    },
+    {
+      id: 'f',
+      name: '断环 · 两段柔弧',
+      badge: '',
+      badgeClass: '',
+      desc: '沿用焦点环的语言：左右两段各 124° 的柔弧，上下断开。不构成完整圆，<b>和选中态是一个体系</b>。',
+      spec: 'conic stroke 1.4px · #CEDCF2 · α 20% · ±62°',
+    },
+    {
+      id: 'g',
+      name: '参考页 · 窄大气层',
+      badge: '一比一复刻',
+      badgeClass: 'rec',
+      desc: '照 <code>graph-drag-variants.html</code> 原样搬过来：环从 0.965R 才开始，峰值 10%，外缘 1.075R。<b>只贴轮廓外侧，不再罩住最外圈节点</b>。',
+      spec: 'radial · #6EA0EB · α 10% → 3% · 0.965–1.075R',
+    },
+  ];
+
+  const grid = document.getElementById('grid');
+  const cards = [];
+
+  VARIANTS.forEach((v, idx) => {
+    const card = document.createElement('article');
+    card.className = 'card';
+    card.dataset.variant = v.id;
+    card.innerHTML =
+      '<div class="card-head">' +
+        '<span class="letter">' + String.fromCharCode(65 + idx) + '</span>' +
+        '<span class="name">' + v.name + '</span>' +
+        (v.badge ? '<span class="badge ' + v.badgeClass + '">' + v.badge + '</span>' : '') +
+      '</div>' +
+      '<div class="stage"><canvas></canvas><span class="zoom">放大查看</span></div>' +
+      '<p class="desc">' + v.desc + '<span class="spec">' + v.spec + '</span></p>';
+    card.addEventListener('click', () => openLightbox(idx));
+    grid.appendChild(card);
+    cards.push(card);
+  });
+
+  function renderAll() {
+    cards.forEach((card, i) => {
+      const canvas = card.querySelector('canvas');
+      render(canvas, VARIANTS[i].id);
+    });
+    if (!lightbox.hidden) renderLightbox();
+  }
+
+  /* ── 放大预览 ── */
+
+  const lightbox = document.getElementById('lightbox');
+  const lbCanvas = document.getElementById('lb-canvas');
+  let lbIndex = 0;
+  let picked = -1;
+
+  function openLightbox(idx) {
+    lbIndex = idx;
+    fillLightbox();
+    lightbox.hidden = false;
+    document.body.style.overflow = 'hidden';
+    requestAnimationFrame(renderLightbox);
+  }
+
+  function fillLightbox() {
+    const v = VARIANTS[lbIndex];
+    document.getElementById('lb-letter').textContent = String.fromCharCode(65 + lbIndex);
+    document.getElementById('lb-name').textContent = v.name;
+    document.getElementById('lb-spec').textContent = v.spec;
+    document.getElementById('lb-desc').innerHTML = v.desc;
+    const pick = lightbox.querySelector('[data-act="pick"]');
+    pick.textContent = picked === lbIndex ? '已选 ✓' : '选这个方案';
+  }
+
+  function renderLightbox() {
+    if (lightbox.hidden) return;
+    render(lbCanvas, VARIANTS[lbIndex].id);
+  }
+
+  function closeLightbox() {
+    lightbox.hidden = true;
+    document.body.style.overflow = '';
+  }
+
+  function stepLightbox(delta) {
+    lbIndex = (lbIndex + delta + VARIANTS.length) % VARIANTS.length;
+    fillLightbox();
+    renderLightbox();
+  }
+
+  function pickCurrent() {
+    picked = lbIndex;
+    cards.forEach((c, i) => c.classList.toggle('picked', i === picked));
+    fillLightbox();
+  }
+
+  lightbox.addEventListener('click', (e) => {
+    const act = e.target.closest('[data-act]');
+    if (!act) return;
+    switch (act.dataset.act) {
+      case 'close': closeLightbox(); break;
+      case 'prev': stepLightbox(-1); break;
+      case 'next': stepLightbox(1); break;
+      case 'pick': pickCurrent(); break;
+    }
+  });
+
+  /* ── 主题 ── */
+
+  function setTheme(key) {
+    themeKey = key;
+    document.body.classList.toggle('theme-light', key === 'light');
+    themeButtons.forEach((b) => b.classList.toggle('on', b.dataset.theme === key));
+    renderAll();
+  }
+
+  const themeButtons = Array.from(document.querySelectorAll('.theme button'));
+  themeButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.theme !== themeKey) setTheme(btn.dataset.theme);
+    });
+  });
+
+  const initialTheme = new URLSearchParams(location.search).get('theme');
+  if (initialTheme === 'light') {
+    document.body.classList.add('theme-light');
+    themeButtons.forEach((b) => b.classList.toggle('on', b.dataset.theme === 'light'));
+    themeKey = 'light';
+  }
+
+  const initialOpen = new URLSearchParams(location.search).get('open');
+  if (initialOpen) {
+    const idx = VARIANTS.findIndex((v) => v.id === initialOpen);
+    if (idx >= 0) requestAnimationFrame(() => openLightbox(idx));
+  }
+
+  /* ── 键盘 ── */
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !lightbox.hidden) {
+      closeLightbox();
+      return;
+    }
+    if (e.key === 'ArrowLeft' && !lightbox.hidden) {
+      stepLightbox(-1);
+      return;
+    }
+    if (e.key === 'ArrowRight' && !lightbox.hidden) {
+      stepLightbox(1);
+      return;
+    }
+    if (e.key === 'Enter' && !lightbox.hidden) {
+      pickCurrent();
+      return;
+    }
+    const n = parseInt(e.key, 10);
+    if (!(n >= 1 && n <= VARIANTS.length)) return;
+    openLightbox(n - 1);
+  });
+
+  // 依赖字体度量，等字体就绪再画
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(renderAll);
+  } else {
+    renderAll();
+  }
+
+  let resizeTimer = 0;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(renderAll, 120);
+  });
+})();
+</script>
+</body>
+</html>

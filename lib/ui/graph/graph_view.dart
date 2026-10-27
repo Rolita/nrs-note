@@ -1394,7 +1394,8 @@ class GraphViewState extends State<GraphView> with SingleTickerProviderStateMixi
   OrbStyle _orbStyle(AppPalette p) => OrbStyle(
     canvasInner: p.isDark ? const Color(0xFF101A2C) : const Color(0xFFF7F8FA),
     canvasOuter: p.isDark ? const Color(0xFF04060A) : const Color(0xFFE8EBF0),
-    rim: const Color(0xFF6EA0EB).withValues(alpha: p.isDark ? 0.13 : 0.18),
+    // 大气层峰值 10%：照设计原型 graph-drag-variants.html 的窄环。
+    rim: const Color(0xFF6EA0EB).withValues(alpha: p.isDark ? 0.10 : 0.18),
     edge: p.isDark ? const Color(0xFF93A9C9) : const Color(0xFF5A6B85),
     node: p.isDark ? const Color(0xFFC2C5CC) : const Color(0xFF7A7A7A),
     ring: p.accent,
