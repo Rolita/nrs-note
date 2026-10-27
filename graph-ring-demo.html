@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>关系图谱 · 焦点环方案</title>
+<style>
+  :root {
+    --canvas: #0e0f13;
+    --surface: #17181e;
+    --raised: #1f2027;
+    --outline: #2a2c36;
+    --text: #e6e8ef;
+    --text-2: #9aa0b0;
+    --text-3: #6a7080;
+    --accent: #8b94f2;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 40px 28px 56px;
+    background:
+      radial-gradient(900px 520px at 50% -10%, rgba(139, 148, 242, .10), transparent 70%),
+      var(--canvas);
+    color: var(--text);
+    font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  header {
+    max-width: 1180px;
+    margin: 0 auto 28px;
+  }
+
+  h1 {
+    margin: 0 0 10px;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: .2px;
+  }
+
+  .lede {
+    margin: 0;
+    max-width: 720px;
+    font-size: 13px;
+    line-height: 1.75;
+    color: var(--text-2);
+  }
+
+  .lede b { color: var(--text); font-weight: 500; }
+
+  .grid {
+    max-width: 1180px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(268px, 1fr));
+    gap: 18px;
+  }
+
+  .card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    background: linear-gradient(180deg, var(--surface), #131419);
+    border: 1px solid var(--outline);
+    border-radius: 16px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease;
+  }
+
+  .card:hover {
+    border-color: #3a3d4b;
+    transform: translateY(-1px);
+  }
+
+  .card.picked {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(139, 148, 242, .45), 0 12px 30px -18px rgba(139, 148, 242, .65);
+  }
+
+  .card-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 14px 16px 10px;
+  }
+
+  .letter {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .6px;
+    color: var(--text-3);
+  }
+
+  .name {
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  .badge {
+    margin-left: auto;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 10px;
+    letter-spacing: .3px;
+    color: var(--text-3);
+    border: 1px solid var(--outline);
+    white-space: nowrap;
+  }
+
+  .badge.rec {
+    color: #c6cbfa;
+    border-color: rgba(139, 148, 242, .45);
+    background: rgba(139, 148, 242, .10);
+  }
+
+  .stage {
+    display: block;
+    width: 100%;
+    height: auto;
+    background: #04060a;
+  }
+
+  .caption {
+    padding: 12px 16px 15px;
+    font-size: 11.5px;
+    line-height: 1.7;
+    color: var(--text-2);
+  }
+
+  .spec {
+    display: block;
+    margin-top: 5px;
+    font-size: 10.5px;
+    color: var(--text-3);
+  }
+
+  .label {
+    font-size: 10px;
+    font-weight: 500;
+    fill: #cedcf2;
+    paint-order: stroke;
+    stroke: #03060b;
+    stroke-width: 3px;
+    stroke-linejoin: round;
+  }
+
+  .label.focus {
+    font-size: 11.5px;
+    fill: #f2f8ff;
+  }
+
+  footer {
+    max-width: 1180px;
+    margin: 26px auto 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    align-items: baseline;
+    font-size: 12px;
+    color: var(--text-3);
+  }
+
+  footer strong {
+    color: var(--text);
+    font-weight: 500;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>关系图谱 · 焦点圆环方案</h1>
+  <p class="lede">
+    同一颗被悬浮 / 钉住的节点、同一组连线，只换外面的那圈处理。底、节点、标签都按当前深色主题取色
+    （<b>#8b94f2</b> 主题色，<b>#c2c5cc</b> 节点）。点一张卡片选中，然后告诉我编号。
+  </p>
+</header>
+
+<div class="grid">
+
+  <!-- 现状 -->
+  <article class="card" data-option="现状" data-title="硬描边">
+    <div class="card-head">
+      <span class="letter">NOW</span>
+      <span class="name">硬描边</span>
+      <span class="badge">当前实现</span>
+    </div>
+    <svg class="stage" viewBox="0 0 300 240" aria-label="当前实现：1.1px 实线圆环">
+      <defs>
+        <radialGradient id="bg-now" cx="50%" cy="44%" r="76%">
+          <stop offset="0%" stop-color="#101a2c"/>
+          <stop offset="100%" stop-color="#04060a"/>
+        </radialGradient>
+        <radialGradient id="node-now" cx="34%" cy="30%" r="72%">
+          <stop offset="0%" stop-color="#f4f6fa"/>
+          <stop offset="48%" stop-color="#d7dae2"/>
+          <stop offset="100%" stop-color="#a9adb8"/>
+        </radialGradient>
+        <radialGradient id="glow-now" cx="50%" cy="50%" r="50%">
+          <stop offset="32%" stop-color="#ffffff" stop-opacity=".30"/>
+          <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <rect width="300" height="240" fill="url(#bg-now)"/>
+      <g fill="#c2c5cc" opacity=".16">
+        <circle cx="30" cy="38" r="1.6"/><circle cx="264" cy="30" r="1.4"/>
+        <circle cx="278" cy="202" r="1.7"/><circle cx="24" cy="196" r="1.4"/>
+        <circle cx="52" cy="106" r="1.2"/><circle cx="246" cy="96" r="1.2"/>
+        <circle cx="120" cy="222" r="1.3"/><circle cx="186" cy="20" r="1.3"/>
+      </g>
+      <g stroke="#93a9c9" stroke-opacity=".22" stroke-width="1">
+        <line x1="150" y1="118" x2="72" y2="76"/>
+        <line x1="150" y1="118" x2="218" y2="66"/>
+        <line x1="150" y1="118" x2="246" y2="136"/>
+        <line x1="150" y1="118" x2="88" y2="182"/>
+        <line x1="150" y1="118" x2="204" y2="190"/>
+        <line x1="150" y1="118" x2="46" y2="134"/>
+      </g>
+      <g fill="#c2c5cc">
+        <circle cx="72" cy="76" r="5" opacity=".72"/>
+        <circle cx="218" cy="66" r="4.4" opacity=".66"/>
+        <circle cx="246" cy="136" r="5.4" opacity=".74"/>
+        <circle cx="88" cy="182" r="4.6" opacity=".68"/>
+        <circle cx="204" cy="190" r="4" opacity=".6"/>
+        <circle cx="46" cy="134" r="3.6" opacity=".55"/>
+      </g>
+      <text class="label" x="81" y="80">灵感</text>
+      <text class="label" x="227" y="70">项目 A</text>
+      <text class="label" x="255" y="140">周记</text>
+      <text class="label" x="97" y="186">阅读</text>
+      <circle cx="150" cy="118" r="46" fill="url(#glow-now)"/>
+      <circle cx="150" cy="118" r="14.5" fill="none" stroke="#8b94f2" stroke-opacity=".62" stroke-width="1.1"/>
+      <circle cx="150" cy="118" r="10" fill="url(#node-now)"/>
+      <text class="label focus" x="150" y="160" text-anchor="middle">今日笔记</text>
+    </svg>
+    <p class="caption">
+      线与节点之间空出 4.5px，圈是独立浮着的，存在感全靠一条硬边。
+      <span class="spec">描边 1.1px · 半径 +4.5 · 不透明度 62%</span>
+    </p>
+  </article>
+
+  <!-- A -->
+  <article class="card" data-option="A" data-title="柔光晕">
+    <div class="card-head">
+      <span class="letter">A</span>
+      <span class="name">柔光晕</span>
+      <span class="badge">最轻</span>
+    </div>
+    <svg class="stage" viewBox="0 0 300 240" aria-label="方案 A：去掉实线，只留主题色光晕">
+      <defs>
+        <radialGradient id="bg-a" cx="50%" cy="44%" r="76%">
+          <stop offset="0%" stop-color="#101a2c"/>
+          <stop offset="100%" stop-color="#04060a"/>
+        </radialGradient>
+        <radialGradient id="node-a" cx="34%" cy="30%" r="72%">
+          <stop offset="0%" stop-color="#f4f6fa"/>
+          <stop offset="48%" stop-color="#d7dae2"/>
+          <stop offset="100%" stop-color="#a9adb8"/>
+        </radialGradient>
+        <radialGradient id="halo-a" cx="50%" cy="50%" r="50%">
+          <stop offset="26%" stop-color="#8b94f2" stop-opacity=".34"/>
+          <stop offset="58%" stop-color="#8b94f2" stop-opacity=".15"/>
+          <stop offset="100%" stop-color="#8b94f2" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <rect width="300" height="240" fill="url(#bg-a)"/>
+      <g fill="#c2c5cc" opacity=".16">
+        <circle cx="30" cy="38" r="1.6"/><circle cx="264" cy="30" r="1.4"/>
+        <circle cx="278" cy="202" r="1.7"/><circle cx="24" cy="196" r="1.4"/>
+        <circle cx="52" cy="106" r="1.2"/><circle cx="246" cy="96" r="1.2"/>
+        <circle cx="120" cy="222" r="1.3"/><circle cx="186" cy="20" r="1.3"/>
+      </g>
+      <g stroke="#93a9c9" stroke-opacity=".22" stroke-width="1">
+        <line x1="150" y1="118" x2="72" y2="76"/>
+        <line x1="150" y1="118" x2="218" y2="66"/>
+        <line x1="150" y1="118" x2="246" y2="136"/>
+        <line x1="150" y1="118" x2="88" y2="182"/>
+        <line x1="150" y1="118" x2="204" y2="190"/>
+        <line x1="150" y1="118" x2="46" y2="134"/>
+      </g>
+      <g fill="#c2c5cc">
+        <circle cx="72" cy="76" r="5" opacity=".72"/>
+        <circle cx="218" cy="66" r="4.4" opacity=".66"/>
+        <circle cx="246" cy="136" r="5.4" opacity=".74"/>
+        <circle cx="88" cy="182" r="4.6" opacity=".68"/>
+        <circle cx="204" cy="190" r="4" opacity=".6"/>
+        <circle cx="46" cy="134" r="3.6" opacity=".55"/>
+      </g>
+      <text class="label" x="81" y="80">灵感</text>
+      <text class="label" x="227" y="70">项目 A</text>
+      <text class="label" x="255" y="140">周记</text>
+      <text class="label" x="97" y="186">阅读</text>
+      <circle cx="150" cy="118" r="40" fill="url(#halo-a)"/>
+      <circle cx="150" cy="118" r="11.6" fill="none" stroke="#8b94f2" stroke-opacity=".20" stroke-width="1"/>
+      <circle cx="150" cy="118" r="10" fill="url(#node-a)"/>
+      <text class="label focus" x="150" y="160" text-anchor="middle">今日笔记</text>
+    </svg>
+    <p class="caption">
+      没有硬边，焦点靠主题色光晕托起来。大面积点云里最安静，但选中的确定感也最弱。
+      <span class="spec">径向光晕 40px · 极淡内环 20%</span>
+    </p>
+  </article>
+
+  <!-- B -->
+  <article class="card" data-option="B" data-title="贴合双环">
+    <div class="card-head">
+      <span class="letter">B</span>
+      <span class="name">贴合双环</span>
+      <span class="badge rec">推荐</span>
+    </div>
+    <svg class="stage" viewBox="0 0 300 240" aria-label="方案 B：两道贴着节点的细环">
+      <defs>
+        <radialGradient id="bg-b" cx="50%" cy="44%" r="76%">
+          <stop offset="0%" stop-color="#101a2c"/>
+          <stop offset="100%" stop-color="#04060a"/>
+        </radialGradient>
+        <radialGradient id="node-b" cx="34%" cy="30%" r="72%">
+          <stop offset="0%" stop-color="#f4f6fa"/>
+          <stop offset="48%" stop-color="#d7dae2"/>
+          <stop offset="100%" stop-color="#a9adb8"/>
+        </radialGradient>
+        <radialGradient id="glow-b" cx="50%" cy="50%" r="50%">
+          <stop offset="30%" stop-color="#8b94f2" stop-opacity=".22"/>
+          <stop offset="100%" stop-color="#8b94f2" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <rect width="300" height="240" fill="url(#bg-b)"/>
+      <g fill="#c2c5cc" opacity=".16">
+        <circle cx="30" cy="38" r="1.6"/><circle cx="264" cy="30" r="1.4"/>
+        <circle cx="278" cy="202" r="1.7"/><circle cx="24" cy="196" r="1.4"/>
+        <circle cx="52" cy="106" r="1.2"/><circle cx="246" cy="96" r="1.2"/>
+        <circle cx="120" cy="222" r="1.3"/><circle cx="186" cy="20" r="1.3"/>
+      </g>
+      <g stroke="#93a9c9" stroke-opacity=".22" stroke-width="1">
+        <line x1="150" y1="118" x2="72" y2="76"/>
+        <line x1="150" y1="118" x2="218" y2="66"/>
+        <line x1="150" y1="118" x2="246" y2="136"/>
+        <line x1="150" y1="118" x2="88" y2="182"/>
+        <line x1="150" y1="118" x2="204" y2="190"/>
+        <line x1="150" y1="118" x2="46" y2="134"/>
+      </g>
+      <g fill="#c2c5cc">
+        <circle cx="72" cy="76" r="5" opacity=".72"/>
+        <circle cx="218" cy="66" r="4.4" opacity=".66"/>
+        <circle cx="246" cy="136" r="5.4" opacity=".74"/>
+        <circle cx="88" cy="182" r="4.6" opacity=".68"/>
+        <circle cx="204" cy="190" r="4" opacity=".6"/>
+        <circle cx="46" cy="134" r="3.6" opacity=".55"/>
+      </g>
+      <text class="label" x="81" y="80">灵感</text>
+      <text class="label" x="227" y="70">项目 A</text>
+      <text class="label" x="255" y="140">周记</text>
+      <text class="label" x="97" y="186">阅读</text>
+      <circle cx="150" cy="118" r="34" fill="url(#glow-b)"/>
+      <circle cx="150" cy="118" r="12.6" fill="none" stroke="#8b94f2" stroke-opacity=".52" stroke-width="1"/>
+      <circle cx="150" cy="118" r="15.4" fill="none" stroke="#8b94f2" stroke-opacity=".16" stroke-width="1"/>
+      <circle cx="150" cy="118" r="10" fill="url(#node-b)"/>
+      <text class="label focus" x="150" y="160" text-anchor="middle">今日笔记</text>
+    </svg>
+    <p class="caption">
+      把圈收回到节点身边：内圈实、外圈几乎只是影子。像镜头镀膜的一圈边，精致又不抢标签。
+      <span class="spec">内环 +2.6px / 52% · 外环 +5.4px / 16%</span>
+    </p>
+  </article>
+
+  <!-- C -->
+  <article class="card" data-option="C" data-title="缺口弧环">
+    <div class="card-head">
+      <span class="letter">C</span>
+      <span class="name">缺口弧环</span>
+      <span class="badge">留白</span>
+    </div>
+    <svg class="stage" viewBox="0 0 300 240" aria-label="方案 C：左右两段圆弧，上下留空">
+      <defs>
+        <radialGradient id="bg-c" cx="50%" cy="44%" r="76%">
+          <stop offset="0%" stop-color="#101a2c"/>
+          <stop offset="100%" stop-color="#04060a"/>
+        </radialGradient>
+        <radialGradient id="node-c" cx="34%" cy="30%" r="72%">
+          <stop offset="0%" stop-color="#f4f6fa"/>
+          <stop offset="48%" stop-color="#d7dae2"/>
+          <stop offset="100%" stop-color="#a9adb8"/>
+        </radialGradient>
+        <radialGradient id="glow-c" cx="50%" cy="50%" r="50%">
+          <stop offset="30%" stop-color="#8b94f2" stop-opacity=".22"/>
+          <stop offset="100%" stop-color="#8b94f2" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <rect width="300" height="240" fill="url(#bg-c)"/>
+      <g fill="#c2c5cc" opacity=".16">
+        <circle cx="30" cy="38" r="1.6"/><circle cx="264" cy="30" r="1.4"/>
+        <circle cx="278" cy="202" r="1.7"/><circle cx="24" cy="196" r="1.4"/>
+        <circle cx="52" cy="106" r="1.2"/><circle cx="246" cy="96" r="1.2"/>
+        <circle cx="120" cy="222" r="1.3"/><circle cx="186" cy="20" r="1.3"/>
+      </g>
+      <g stroke="#93a9c9" stroke-opacity=".22" stroke-width="1">
+        <line x1="150" y1="118" x2="72" y2="76"/>
+        <line x1="150" y1="118" x2="218" y2="66"/>
+        <line x1="150" y1="118" x2="246" y2="136"/>
+        <line x1="150" y1="118" x2="88" y2="182"/>
+        <line x1="150" y1="118" x2="204" y2="190"/>
+        <line x1="150" y1="118" x2="46" y2="134"/>
+      </g>
+      <g fill="#c2c5cc">
+        <circle cx="72" cy="76" r="5" opacity=".72"/>
+        <circle cx="218" cy="66" r="4.4" opacity=".66"/>
+        <circle cx="246" cy="136" r="5.4" opacity=".74"/>
+        <circle cx="88" cy="182" r="4.6" opacity=".68"/>
+        <circle cx="204" cy="190" r="4" opacity=".6"/>
+        <circle cx="46" cy="134" r="3.6" opacity=".55"/>
+      </g>
+      <text class="label" x="81" y="80">灵感</text>
+      <text class="label" x="227" y="70">项目 A</text>
+      <text class="label" x="255" y="140">周记</text>
+      <text class="label" x="97" y="186">阅读</text>
+      <circle cx="150" cy="118" r="34" fill="url(#glow-c)"/>
+      <g fill="none" stroke="#8b94f2" stroke-opacity=".55" stroke-width="1.5" stroke-linecap="round">
+        <path d="M 157.28 104.31 A 15.5 15.5 0 0 1 157.28 131.69"/>
+        <path d="M 142.72 131.69 A 15.5 15.5 0 0 1 142.72 104.31"/>
+      </g>
+      <circle cx="150" cy="118" r="10" fill="url(#node-c)"/>
+      <text class="label focus" x="150" y="160" text-anchor="middle">今日笔记</text>
+    </svg>
+    <p class="caption">
+      只留左右两段弧，上下让给标签和连线。像取景框的两只括号，轻，但方向明确。
+      <span class="spec">两段 124° 圆弧 · 1.5px 圆头 · 半径 +5.5</span>
+    </p>
+  </article>
+
+  <!-- D -->
+  <article class="card" data-option="D" data-title="虚线轨道">
+    <div class="card-head">
+      <span class="letter">D</span>
+      <span class="name">虚线轨道</span>
+      <span class="badge">技术感</span>
+    </div>
+    <svg class="stage" viewBox="0 0 300 240" aria-label="方案 D：细虚线绕节点一圈">
+      <defs>
+        <radialGradient id="bg-d" cx="50%" cy="44%" r="76%">
+          <stop offset="0%" stop-color="#101a2c"/>
+          <stop offset="100%" stop-color="#04060a"/>
+        </radialGradient>
+        <radialGradient id="node-d" cx="34%" cy="30%" r="72%">
+          <stop offset="0%" stop-color="#f4f6fa"/>
+          <stop offset="48%" stop-color="#d7dae2"/>
+          <stop offset="100%" stop-color="#a9adb8"/>
+        </radialGradient>
+        <radialGradient id="glow-d" cx="50%" cy="50%" r="50%">
+          <stop offset="30%" stop-color="#8b94f2" stop-opacity=".20"/>
+          <stop offset="100%" stop-color="#8b94f2" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <rect width="300" height="240" fill="url(#bg-d)"/>
+      <g fill="#c2c5cc" opacity=".16">
+        <circle cx="30" cy="38" r="1.6"/><circle cx="264" cy="30" r="1.4"/>
+        <circle cx="278" cy="202" r="1.7"/><circle cx="24" cy="196" r="1.4"/>
+        <circle cx="52" cy="106" r="1.2"/><circle cx="246" cy="96" r="1.2"/>
+        <circle cx="120" cy="222" r="1.3"/><circle cx="186" cy="20" r="1.3"/>
+      </g>
+      <g stroke="#93a9c9" stroke-opacity=".22" stroke-width="1">
+        <line x1="150" y1="118" x2="72" y2="76"/>
+        <line x1="150" y1="118" x2="218" y2="66"/>
+        <line x1="150" y1="118" x2="246" y2="136"/>
+        <line x1="150" y1="118" x2="88" y2="182"/>
+        <line x1="150" y1="118" x2="204" y2="190"/>
+        <line x1="150" y1="118" x2="46" y2="134"/>
+      </g>
+      <g fill="#c2c5cc">
+        <circle cx="72" cy="76" r="5" opacity=".72"/>
+        <circle cx="218" cy="66" r="4.4" opacity=".66"/>
+        <circle cx="246" cy="136" r="5.4" opacity=".74"/>
+        <circle cx="88" cy="182" r="4.6" opacity=".68"/>
+        <circle cx="204" cy="190" r="4" opacity=".6"/>
+        <circle cx="46" cy="134" r="3.6" opacity=".55"/>
+      </g>
+      <text class="label" x="81" y="80">灵感</text>
+      <text class="label" x="227" y="70">项目 A</text>
+      <text class="label" x="255" y="140">周记</text>
+      <text class="label" x="97" y="186">阅读</text>
+      <circle cx="150" cy="118" r="34" fill="url(#glow-d)"/>
+      <circle cx="150" cy="118" r="15" fill="none" stroke="#8b94f2" stroke-opacity=".46"
+              stroke-width="1.1" stroke-linecap="round" stroke-dasharray="2.4 5.2"/>
+      <circle cx="150" cy="118" r="10" fill="url(#node-d)"/>
+      <text class="label focus" x="150" y="160" text-anchor="middle">今日笔记</text>
+    </svg>
+    <p class="caption">
+      把实线拆成短划，远看是一圈淡淡的轨道，近看才认出细节。比实线轻，但不丢焦点。
+      <span class="spec">1.1px 虚线 · 2.4 / 5.2 · 半径 +5 · 46%</span>
+    </p>
+  </article>
+
+</div>
+
+<footer>
+  <span>点卡片选中 · 告诉我编号即可</span>
+  <span id="chosen"><strong>尚未选择</strong></span>
+  <span>标签位置、连线、节点明暗都和当前图谱一致，只改了圆环本身。</span>
+</footer>
+
+<script>
+  const cards = Array.from(document.querySelectorAll('.card'));
+  const chosen = document.getElementById('chosen');
+  cards.forEach((card) => {
+    card.addEventListener('click', () => {
+      cards.forEach((c) => c.classList.remove('picked'));
+      card.classList.add('picked');
+      chosen.innerHTML = '已选择：<strong>' + card.dataset.option + ' · ' + card.dataset.title + '</strong>';
+    });
+  });
+</script>
+
+</body>
+</html>
