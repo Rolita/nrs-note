@@ -116,6 +116,30 @@ void main() {
     expect(field.debugMeteorCount, 1);
   });
 
+  test('大彗星开场 4.5 秒出现，走完寿命后清掉', () {
+    final CosmosField field = makeField();
+    for (int i = 0; i < 40; i++) {
+      field.update(0.1, velX: 0, velY: 0, dragging: false, radius: 270);
+    }
+    expect(field.debugBigCount, 0);
+
+    for (int i = 0; i < 6; i++) {
+      field.update(0.1, velX: 0, velY: 0, dragging: false, radius: 270);
+    }
+    expect(field.debugBigCount, 1);
+
+    // 顺手把丝带尾巴画一遍：没有预渲染贴图时也不能崩。
+    final ui.PictureRecorder recorder = ui.PictureRecorder();
+    final Canvas canvas = Canvas(recorder);
+    field.paintSky(canvas, const Size(1440, 900), radius: 270);
+    recorder.endRecording().dispose();
+
+    for (int i = 0; i < 200; i++) {
+      field.update(0.1, velX: 0, velY: 0, dragging: false, radius: 270);
+    }
+    expect(field.debugBigCount, 0);
+  });
+
   test('没有预渲染图片时也能把天空画完', () {
     final CosmosField field = makeField();
     for (int i = 0; i < 25; i++) {

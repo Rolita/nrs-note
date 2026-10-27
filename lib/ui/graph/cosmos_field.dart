@@ -34,6 +34,13 @@ import 'package:flutter/material.dart';
 /// 一是不需要，二是 widget 测试里没有真实光栅线程，等异步图片会把
 /// `pumpAndSettle` 拖住。没有图片时星点和流星照画，只是少了星云和光晕。
 ///
+/// ## 远景大彗星
+///
+/// 方案页 `design/graph-cosmos-idle.html` 的第 3 层：开场 4.5 秒来第一颗，
+/// 之后 26–44 秒一颗。慢、长、小头，像隔着整个星系。尾巴没有沿用环境
+/// 流星那根等宽渐变线——拉到四五百像素会读成一道划痕——改成三条沿速度
+/// 方向收细的丝带，见 [_paintBigComet]。
+///
 /// ## 生命周期
 ///
 /// 没有自己的 Ticker/Timer。所有状态都由 [update] 推进，而 [update] 挂在
@@ -203,6 +210,9 @@ class CosmosField {
   int get debugAmbientCount => _ambients.length;
 
   @visibleForTesting
+  int get debugBigCount => _ambients.where((_Ambient a) => a.big).length;
+
+  @visibleForTesting
   int get debugSparkCount => _sparks.length;
 
   // ------------------------------------------------------------ 流星状态
@@ -217,6 +227,7 @@ class CosmosField {
   double _spawnAcc = 0;
   double _ambientIn = 2.8;
   double _idleCometIn = 5.0;
+  double _bigCometIn = 4.5;
   double _dragAcc = 0;
 
   /// 指针拖拽时调：攒够 96px 甩出一颗贴边流星，顺便把星轨踢起来。
@@ -334,6 +345,13 @@ class CosmosField {
     if (_ambientIn <= 0) {
       _ambientIn = (2.8 + _rnd() * 4.6) / _ambientMode;
       _spawnAmbient(radius);
+    }
+
+    // 远景大彗星不看拖拽：它远得跟球的惯性无关，安静地慢慢横穿。
+    _bigCometIn -= dt;
+    if (_bigCometIn <= 0) {
+      _bigCometIn = 26 + _rnd() * 18;
+      _spawnAmbient(radius, big: true);
     }
 
     _stepMeteors(dt);
@@ -462,15 +480,18 @@ class CosmosField {
     _trailKick = math.min(1, _trailKick + 0.55 + power * 0.35);
   }
 
-  void _spawnAmbient(double radius) {
+  /// 环境流星：从画布外斜穿而过。`big` 是远景大彗星——起得更远、慢四倍、
+  /// 尾巴四倍长，头却更小更淡。
+  void _spawnAmbient(double radius, {bool big = false}) {
     final double a = _rnd() * _tau;
-    final double dist = radius * (1.35 + _rnd() * 0.85);
+    final double dist =
+        radius * (big ? 1.45 + _rnd() * 0.75 : 1.35 + _rnd() * 0.85);
     final int dir = _rnd() < 0.5 ? 1 : -1;
-    final double speed = 480 + _rnd() * 320;
+    final double speed = big ? 165 + _rnd() * 75 : 480 + _rnd() * 320;
     final double ux = -math.sin(a) * dir;
     final double uy = math.cos(a) * dir;
-    final double back =
-        math.max(_size.width, _size.height) * (0.35 + _rnd() * 0.10);
+    final double back = math.max(_size.width, _size.height) *
+        (big ? 0.25 + _rnd() * 0.10 : 0.35 + _rnd() * 0.10);
     final double cx = _size.width / 2;
     final double cy = _size.height / 2;
 
@@ -480,14 +501,15 @@ class CosmosField {
         y: cy + math.sin(a) * dist - uy * back,
         vx: ux * speed,
         vy: uy * speed,
-        life: 1.7 + _rnd() * 0.9,
-        len: 110 + _rnd() * 160,
-        width: 0.8 + _rnd() * 0.9,
-        alpha: 0.45 + _rnd() * 0.4,
-        warm: _rnd() < 0.10,
+        life: big ? 4.8 + _rnd() * 1.2 : 1.7 + _rnd() * 0.9,
+        len: big ? 450 + _rnd() * 220 : 110 + _rnd() * 160,
+        width: big ? 1.8 + _rnd() * 0.9 : 0.8 + _rnd() * 0.9,
+        alpha: big ? 0.46 + _rnd() * 0.12 : 0.45 + _rnd() * 0.4,
+        warm: _rnd() < (big ? 0.25 : 0.10),
+        big: big,
       ),
     );
-    if (_ambients.length > 8) _ambients.removeAt(0);
+    if (_ambients.length > (big ? 10 : 8)) _ambients.removeAt(0);
   }
 
   void _spawnSpark(
@@ -927,6 +949,11 @@ class CosmosField {
           ? const Color(0xFFFFE2B6)
           : const Color(0xFFCAE2FF);
 
+      if (m.big) {
+        _paintBigComet(canvas, m, core, ux, uy, env, fade);
+        continue;
+      }
+
       canvas.drawLine(
         Offset(m.x, m.y),
         Offset(tx, ty),
@@ -965,6 +992,95 @@ class CosmosField {
         );
       }
     }
+  }
+
+  /// 大彗星的尾巴。原型是一根等宽渐变线，拉到四五百像素长会读成一道
+  /// 划痕：头尾一样粗，末端一刀切。这里拆成三条沿速度方向收细的丝带——
+  /// 宽柔光 / 窄柔光 / 芯线，宽度按 s^0.8 收到零，纵向五段淡出（18% 处
+  /// 五成、42% 处两成半、72% 处不足一成）：轮廓和亮度同时消失，尾端和
+  /// 两侧都不会有硬边，尾巴中段也没有三段渐变的亮度拐点。
+  void _paintBigComet(
+    Canvas canvas,
+    _Ambient m,
+    Color core,
+    double ux,
+    double uy,
+    double env,
+    double fade,
+  ) {
+    final double a0 = env * m.alpha * fade;
+    final double px = -uy;
+    final double py = ux;
+    final double len = m.len;
+    final Offset head = Offset(m.x, m.y);
+    final Offset tip = Offset(m.x - ux * len, m.y - uy * len);
+
+    void ribbon(double headW, double tipW, double headA) {
+      const int steps = 10;
+      double halfAt(double s) =>
+          (headW + (tipW - headW) * math.pow(s, 0.8).toDouble()) * 0.5;
+
+      final Path path = Path();
+      for (int i = 0; i <= steps; i++) {
+        final double s = i / steps;
+        final double o = halfAt(s);
+        final double x = m.x - ux * len * s;
+        final double y = m.y - uy * len * s;
+        if (i == 0) {
+          path.moveTo(x + px * o, y + py * o);
+        } else {
+          path.lineTo(x + px * o, y + py * o);
+        }
+      }
+      for (int i = steps; i >= 0; i--) {
+        final double s = i / steps;
+        final double o = halfAt(s);
+        path.lineTo(m.x - ux * len * s - px * o, m.y - uy * len * s - py * o);
+      }
+      path.close();
+
+      canvas.drawPath(
+        path,
+        Paint()
+          ..isAntiAlias = true
+          ..blendMode = BlendMode.plus
+          ..shader = ui.Gradient.linear(
+            head,
+            tip,
+            <Color>[
+              core.withValues(alpha: headA * a0),
+              core.withValues(alpha: headA * 0.50 * a0),
+              core.withValues(alpha: headA * 0.24 * a0),
+              core.withValues(alpha: headA * 0.08 * a0),
+              core.withValues(alpha: 0),
+            ],
+            <double>[0, 0.18, 0.42, 0.72, 1],
+          ),
+      );
+    }
+
+    ribbon(m.width * 5.5, 0, 0.075);
+    ribbon(m.width * 2.4, m.width * 0.1, 0.16);
+    ribbon(m.width, m.width * 0.06, 0.72);
+
+    final _CosmosArt? art = _art;
+    if (art != null) {
+      final double gr = 16 + m.width * 8;
+      _image.color = const Color(0xFFFFFFFF).withValues(alpha: 0.62 * a0);
+      canvas.drawImageRect(
+        art.starGlow,
+        Rect.fromLTWH(
+          0,
+          0,
+          art.starGlow.width.toDouble(),
+          art.starGlow.height.toDouble(),
+        ),
+        Rect.fromCenter(center: head, width: gr * 2, height: gr * 2),
+        _image,
+      );
+    }
+    _meteorFill.color = core.withValues(alpha: 0.7 * a0);
+    canvas.drawCircle(head, 1.8 + m.width * 0.6, _meteorFill);
   }
 
   void _paintVignette(
@@ -1212,6 +1328,7 @@ class _Ambient {
     required this.width,
     required this.alpha,
     required this.warm,
+    required this.big,
   });
 
   double x;
@@ -1223,6 +1340,7 @@ class _Ambient {
   final double width;
   final double alpha;
   final bool warm;
+  final bool big;
   double t = 0;
 }
 
