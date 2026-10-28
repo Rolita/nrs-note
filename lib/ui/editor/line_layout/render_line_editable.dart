@@ -479,14 +479,24 @@ class RenderLineEditable extends RenderEditable {
         orElse: () => layout.laidOut.last,
       );
       return (
-        line: Rect.fromLTWH(left, _globalOriginOf(Offset(0, last.top + last.height)).dy - 1, layout.width, 2),
+        line: Rect.fromLTWH(
+          left,
+          _globalOriginOf(Offset(0, last.top + last.height)).dy - 1,
+          layout.width,
+          2,
+        ),
         offset: math.min(last.source.end + 1, plain.length),
       );
     }
     final bool before = local.dy < hit.top + hit.height / 2;
     final double y = before ? hit.top : hit.top + hit.height;
     return (
-      line: Rect.fromLTWH(left, _globalOriginOf(Offset(0, y)).dy - 1, layout.width, 2),
+      line: Rect.fromLTWH(
+        left,
+        _globalOriginOf(Offset(0, y)).dy - 1,
+        layout.width,
+        2,
+      ),
       offset: before
           ? hit.source.start
           : math.min(hit.source.end + 1, plain.length),
@@ -897,7 +907,8 @@ class RenderLineEditable extends RenderEditable {
     if (before == after) return null;
     final int max = math.min(before.length, after.length);
     int prefix = 0;
-    while (prefix < max && before.codeUnitAt(prefix) == after.codeUnitAt(prefix)) {
+    while (prefix < max &&
+        before.codeUnitAt(prefix) == after.codeUnitAt(prefix)) {
       prefix++;
     }
     int suffix = 0;
@@ -1138,7 +1149,8 @@ class RenderLineEditable extends RenderEditable {
       // 浮动图片那一行高度是 0——它和下面的正文共用同一段纵向空间——但图片
       // 本身照样要画。
       final bool floats =
-          block is ImageBlockChrome && (block as ImageBlockChrome).chromeAlign != null;
+          block is ImageBlockChrome &&
+          (block as ImageBlockChrome).chromeAlign != null;
       if (line.height <= 0 && !floats) continue;
       final Offset local = _lineOrigin(line);
       // 行可能被整对象复用，而块里的源码偏移是建块时记的：每帧按当前行
@@ -1438,11 +1450,10 @@ class RenderLineEditable extends RenderEditable {
         // 一条代码可以折行：每个视觉行各铺一块。分组的依据必须是视觉行，
         // 而不是盒子的 `top`——被压成零号字的反引号和代码正文字号不同，
         // 即使在同一行，两者的盒子上下沿也差好几个像素。
-        final List<double> baselines =
-            line.visualBaselines ??= <double>[
-              for (final LineMetrics metrics in tp.computeLineMetrics())
-                metrics.baseline,
-            ];
+        final List<double> baselines = line.visualBaselines ??= <double>[
+          for (final LineMetrics metrics in tp.computeLineMetrics())
+            metrics.baseline,
+        ];
         final List<({int line, double left, double right})> groups =
             groupFillBoxesByLine(boxes, baselines);
         for (final ({int line, double left, double right}) group in groups) {
@@ -2234,7 +2245,9 @@ class RenderLineEditable extends RenderEditable {
 /// 却差着几个像素，按 `top` 会拆成三块、把内边距画成独立的竖条。这里改用
 /// 离盒子中心最近的基线认行；同一行的左右端点取并集，折行的代码才会在
 /// 每行各留一块。
-@visibleForTesting
+///
+/// 白板的卡片正文也调它：同一种底片（行内代码、标签、高亮）在两处必须
+/// 画成一样的块。
 List<({int line, double left, double right})> groupFillBoxesByLine(
   List<TextBox> boxes,
   List<double> baselines,

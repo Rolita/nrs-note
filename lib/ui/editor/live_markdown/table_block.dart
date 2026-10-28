@@ -15,6 +15,7 @@ class LiveTableBlocks {
     required this.palette,
     required this.text,
     required this.selection,
+    this.paper,
   });
 
   /// 正文样式（`editorProseStyle` 的产物）。格子的字号由它派生。
@@ -22,6 +23,13 @@ class LiveTableBlocks {
 
   /// 当前主题的调色板。
   final AppPalette palette;
+
+  /// 表格下面那层「纸」；`null` 用 [AppPalette.surface]。
+  ///
+  /// 编辑器里纸面就是编辑区本身，所以默认值够用；白板的卡片底色是另一种
+  /// 半透明面，同一张表画在卡片里要铺卡片自己的底色，否则会浮出一块比
+  /// 卡片更暗的矩形。
+  final Color? paper;
 
   /// 当前源码，调用时才读——实例本身跨帧复用，重建等价的实例会让渲染层
   /// 每一帧都丢掉整篇布局。
@@ -86,10 +94,11 @@ class LiveTableBlocks {
   bool operator ==(Object other) =>
       other is LiveTableBlocks &&
       other.base == base &&
-      other.palette == palette;
+      other.palette == palette &&
+      other.paper == paper;
 
   @override
-  int get hashCode => Object.hash(base, palette);
+  int get hashCode => Object.hash(base, palette, paper);
 
   /// 丢掉这一份测量（连同每个格子的 `TextPainter`）。宿主换掉实例时调用。
   void dispose() => _disposeBlocks();
@@ -245,6 +254,7 @@ class LiveTableBlocks {
           header: row.header,
           last: ri == table.rows.length - 1,
           palette: palette,
+          paper: paper ?? palette.surface,
           textScaler: context.textScaler,
           memoStore: _cellMemo,
           bandOf: (int index) => _bandOf(table, index),
@@ -426,6 +436,7 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
     required this.header,
     required this.last,
     required this.palette,
+    required this.paper,
     required this.textScaler,
     required this.memoStore,
     required this.bandOf,
@@ -445,6 +456,10 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
   final bool last;
 
   final AppPalette palette;
+
+  /// 整行纸面的颜色（见 [LiveTableBlocks.paper]）。
+  final Color paper;
+
   final TextScaler textScaler;
 
   /// 抓手图标的共享缓存；实例归 [LiveTableBlocks] 所有。
@@ -679,8 +694,8 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
 
     // 纸面：整行先铺一层不透明的纸色。字段自己那层整行高亮还在下面，
     // 不铺这一层，没被格子覆盖到的地方会露出“整行都选中”的错觉。
-    final Paint paper = Paint()..color = palette.surface;
-    canvas.drawRect(Rect.fromLTRB(left, top, right, bottom), paper);
+    final Paint paperPaint = Paint()..color = paper;
+    canvas.drawRect(Rect.fromLTRB(left, top, right, bottom), paperPaint);
 
     // 单元格填充在文字和选区**之下**：选中格里仍能看见填色。
     for (final _CellData cell in painted) {
@@ -700,7 +715,7 @@ class _TableLineBlock implements LineBlockView, TableRowChrome {
       canvas.clipRRect(shape);
       canvas.drawRect(
         Rect.fromLTRB(bl, top, br, bottom),
-        Paint()..color = Color.alphaBlend(tint, palette.surface),
+        Paint()..color = Color.alphaBlend(tint, paper),
       );
       for (final _CellData cell in painted) {
         final Color? fill = cell.fill;

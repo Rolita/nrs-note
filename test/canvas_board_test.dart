@@ -38,12 +38,15 @@ CanvasDocument docWith(List<CanvasNode> nodes) =>
     CanvasDocument(nodes: nodes, edges: <CanvasEdge>[]);
 
 class Harness {
-  Harness(this.state, this.doc);
+  Harness(this.state, this.doc, this.key);
 
   final CanvasBoardState state;
 
   /// 板子改的那份文档。测试直接看它，比看界面稳。
   final CanvasDocument? doc;
+
+  /// 重建同一块白板时用的 key：State、画布缓存、视口都靠它留住。
+  final GlobalKey<CanvasBoardState> key;
 
   CanvasCamera get camera => state.debugCamera;
   Size get stage => state.debugStage;
@@ -60,6 +63,33 @@ class Harness {
   List<CanvasNode> get nodes => doc?.nodes ?? const <CanvasNode>[];
 }
 
+/// 白板那棵树。`pumpBoard` 和「换了正文再画一遍」共用，免得两边参数漂。
+Widget boardTree(
+  GlobalKey<CanvasBoardState> key,
+  CanvasDocument? doc, {
+  List<({String path, String title})> files =
+      const <({String path, String title})>[],
+  Map<String, String> noteBodies = const <String, String>{},
+  ValueChanged<String>? onOpenFile,
+  ValueChanged<String>? onOpenLink,
+  VoidCallback? onChanged,
+  Future<bool> Function(String path, String body)? onEditFileBody,
+}) => MaterialApp(
+  theme: AppTheme.build(AppPalette.midnight),
+  home: Scaffold(
+    body: CanvasBoard(
+      key: key,
+      document: doc,
+      files: files,
+      noteBodies: noteBodies,
+      onOpenFile: onOpenFile,
+      onOpenLink: onOpenLink,
+      onChanged: onChanged,
+      onEditFileBody: onEditFileBody,
+    ),
+  ),
+);
+
 Future<Harness> pumpBoard(
   WidgetTester tester, {
   CanvasDocument? document,
@@ -67,8 +97,11 @@ Future<Harness> pumpBoard(
   Size size = const Size(1000, 700),
   List<({String path, String title})> files =
       const <({String path, String title})>[],
+  Map<String, String> noteBodies = const <String, String>{},
   ValueChanged<String>? onOpenFile,
   ValueChanged<String>? onOpenLink,
+  VoidCallback? onChanged,
+  Future<bool> Function(String path, String body)? onEditFileBody,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
@@ -80,21 +113,62 @@ Future<Harness> pumpBoard(
       : (document ?? docWith(<CanvasNode>[]));
   final GlobalKey<CanvasBoardState> key = GlobalKey<CanvasBoardState>();
   await tester.pumpWidget(
-    MaterialApp(
-      theme: AppTheme.build(AppPalette.midnight),
-      home: Scaffold(
-        body: CanvasBoard(
-          key: key,
-          document: doc,
-          files: files,
-          onOpenFile: onOpenFile,
-          onOpenLink: onOpenLink,
-        ),
-      ),
+    boardTree(
+      key,
+      doc,
+      files: files,
+      noteBodies: noteBodies,
+      onOpenFile: onOpenFile,
+      onOpenLink: onOpenLink,
+      onChanged: onChanged,
+      onEditFileBody: onEditFileBody,
     ),
   );
   await tester.pumpAndSettle();
-  return Harness(key.currentState!, doc);
+  return Harness(key.currentState!, doc, key);
+}
+
+/// 文件卡片标题条的屏幕中心。收起卡整张都是标题条，展开卡只有顶上那一条。
+Offset titleCenter(Harness h, String id) =>
+    h.state.debugFileTitleRect(id)!.center;
+
+/// 单击标题条（展开 / 收起）。点完把双击窗口走完，下一次点击不会被认成双击。
+Future<void> clickTitle(WidgetTester tester, Harness h, String id) async {
+  await tester.tapAt(titleCenter(h, id));
+  await tester.pump(const Duration(milliseconds: 400));
+}
+
+/// 双击展开卡的正文区（进就地编辑）。
+Future<void> doubleTapBody(
+  WidgetTester tester,
+  Harness h,
+  CanvasNode node,
+) async {
+  final double titleBottom =
+      node.y + canvasCardPadding + canvasFileHeaderHeight;
+  final Offset at = h.screenOf(
+    Offset(
+      node.x + node.width / 2,
+      titleBottom + (node.y + node.height - titleBottom) / 2,
+    ),
+  );
+  await tester.tapAt(at);
+  await tester.pump(const Duration(milliseconds: 40));
+  await tester.tapAt(at);
+  await tester.pump();
+}
+
+/// 用新的笔记正文把同一块白板再画一遍。
+///
+/// 笔记改了之后外壳就是这么做的：重建，把新的 `noteBodies` 传下去。State
+/// 不换（key 一样），所以排版缓存也还在——正好验「内容变了要重排」。
+Future<void> repumpWithBodies(
+  WidgetTester tester,
+  Harness h,
+  Map<String, String> bodies,
+) async {
+  await tester.pumpWidget(boardTree(h.key, h.doc, noteBodies: bodies));
+  await tester.pump();
 }
 
 /// 滚一下滚轮（= 缩放）。dy 为负是往上滚。
@@ -758,31 +832,8 @@ void main() {
     });
   });
 
-  group('缩放手柄', () {
-    testWidgets('拖右下角把卡片拉大', (WidgetTester tester) async {
-      final Harness h = await pumpBoard(
-        tester,
-        document: docWith(<CanvasNode>[cardAtOrigin()]),
-      );
-      final CanvasNode a = h.nodes.first;
-      await tapCard(tester, h, a);
-
-      final Rect screen = h.screenRect(a.rect);
-      final double d = 20 * h.zoom;
-      final TestGesture g = await tester.startGesture(
-        screen.bottomRight,
-        kind: PointerDeviceKind.mouse,
-      );
-      await g.moveBy(Offset(d, d));
-      await tester.pump();
-      await g.up();
-      await tester.pump();
-
-      expect(a.width, closeTo(270, 1e-6));
-      expect(a.height, closeTo(140, 1e-6));
-    });
-
-    testWidgets('拖左上角往右下，撞到最小尺寸就停', (WidgetTester tester) async {
+  group('尺寸固定', () {
+    testWidgets('卡片没有缩放手柄：选中的卡片拖角也是移动，不改宽高', (WidgetTester tester) async {
       final Harness h = await pumpBoard(
         tester,
         document: docWith(<CanvasNode>[cardAtOrigin()]),
@@ -792,36 +843,17 @@ void main() {
 
       final Rect screen = h.screenRect(a.rect);
       final TestGesture g = await tester.startGesture(
-        screen.topLeft,
+        screen.bottomRight - const Offset(1, 1),
         kind: PointerDeviceKind.mouse,
       );
-      await g.moveBy(const Offset(9999, 9999));
+      await g.moveBy(const Offset(20, 20));
       await tester.pump();
       await g.up();
       await tester.pump();
 
-      expect(a.width, canvasMinSize);
-      expect(a.height, canvasMinSize);
-    });
-
-    testWidgets('没选中时不出手柄，按在卡片角上是拖动', (WidgetTester tester) async {
-      final Harness h = await pumpBoard(
-        tester,
-        document: docWith(<CanvasNode>[cardAtOrigin()]),
-      );
-      final CanvasNode a = h.nodes.first;
-      final Rect screen = h.screenRect(a.rect);
-
-      final TestGesture g = await tester.startGesture(
-        screen.topLeft,
-        kind: PointerDeviceKind.mouse,
-      );
-      await g.moveBy(const Offset(30, 30));
-      await tester.pump();
-      await g.up();
-      await tester.pump();
-
-      expect(a.width, 250, reason: '手柄只在选中时存在');
+      expect(a.width, 250, reason: '四角和四边都没有手柄，拖不出新尺寸');
+      expect(a.height, 120);
+      expect(a.x, greaterThan(0), reason: '这一下应该是拖动卡片');
     });
   });
 
@@ -1073,80 +1105,16 @@ void main() {
       return h.screenOf(g.pointAt(0.5));
     }
 
-    testWidgets('从圆点拖到另一张卡片，建一条边', (WidgetTester tester) async {
-      final CanvasDocument doc = twoCards();
-      final Harness h = await pumpBoard(tester, document: doc);
-      final CanvasNode a = doc.nodeById('a')!;
-      final CanvasNode b = doc.nodeById('b')!;
-
-      final Offset dot = anchorOf(h.screenRect(a.rect), CanvasSide.right);
-      await hoverAt(tester, dot);
-
-      final TestGesture g = await tester.startGesture(
-        dot,
-        kind: PointerDeviceKind.mouse,
-      );
-      await g.moveTo(h.centerOf(b));
-      await tester.pump();
-      await g.up();
-      await tester.pump();
-
-      expect(doc.edges.length, 1);
-      expect(doc.edges.single.fromNode, 'a');
-      expect(doc.edges.single.toNode, 'b');
-      expect(doc.edges.single.fromSide, 'right');
-      expect(h.state.debugSelection, <String>{doc.edges.single.id});
-    });
-
-    testWidgets('松手在空白处，不建边', (WidgetTester tester) async {
+    testWidgets('卡片边上没有连线圆点：按在边上就是拖动卡片', (WidgetTester tester) async {
       final CanvasDocument doc = twoCards();
       final Harness h = await pumpBoard(tester, document: doc);
       final CanvasNode a = doc.nodeById('a')!;
 
-      final Offset dot = anchorOf(h.screenRect(a.rect), CanvasSide.right);
-      await hoverAt(tester, dot);
-
-      final TestGesture g = await tester.startGesture(
-        dot,
-        kind: PointerDeviceKind.mouse,
-      );
-      await g.moveTo(const Offset(60, 60));
-      await tester.pump();
-      await g.up();
-      await tester.pump();
-
-      expect(doc.edges, isEmpty);
-    });
-
-    testWidgets('松手回到自己身上，不建自环', (WidgetTester tester) async {
-      final CanvasDocument doc = twoCards();
-      final Harness h = await pumpBoard(tester, document: doc);
-      final CanvasNode a = doc.nodeById('a')!;
-
-      final Offset dot = anchorOf(h.screenRect(a.rect), CanvasSide.right);
-      await hoverAt(tester, dot);
-
-      final TestGesture g = await tester.startGesture(
-        dot,
-        kind: PointerDeviceKind.mouse,
-      );
-      await g.moveTo(h.centerOf(a));
-      await tester.pump();
-      await g.up();
-      await tester.pump();
-
-      expect(doc.edges, isEmpty);
-    });
-
-    testWidgets('没悬停就没有圆点可拖，按在卡片边上是拖动', (WidgetTester tester) async {
-      final CanvasDocument doc = twoCards();
-      final Harness h = await pumpBoard(tester, document: doc);
-      final CanvasNode a = doc.nodeById('a')!;
-
-      final Offset dot = anchorOf(h.screenRect(a.rect), CanvasSide.right);
+      final Offset edge = anchorOf(h.screenRect(a.rect), CanvasSide.right);
+      await hoverAt(tester, edge);
       // 往卡片里挪 6px 再按：卡片边界上本来就不算「在卡片里」。
       final TestGesture g = await tester.startGesture(
-        dot - const Offset(6, 0),
+        edge - const Offset(6, 0),
         kind: PointerDeviceKind.mouse,
       );
       await g.moveTo(const Offset(60, 60));
@@ -1154,7 +1122,7 @@ void main() {
       await g.up();
       await tester.pump();
 
-      expect(doc.edges, isEmpty);
+      expect(doc.edges, isEmpty, reason: '圆点已移除，边上拖不出连线');
       expect(a.x, isNot(0), reason: '这一下应该是拖动卡片');
     });
 
@@ -1713,10 +1681,10 @@ void main() {
       expect(canvasGridLineOffsets(0, 0.5, 100), isEmpty, reason: '不足 1px 不画');
     });
 
-    test('刻度数字是整数，浮点噪声不外泄', () {
-      expect(canvasRulerLabel(0), '0');
-      expect(canvasRulerLabel(-300), '-300');
-      expect(canvasRulerLabel(99.99999999999999), '100');
+    test('坐标数字是整数，浮点噪声不外泄', () {
+      expect(canvasCoordinateLabel(0), '0');
+      expect(canvasCoordinateLabel(-300), '-300');
+      expect(canvasCoordinateLabel(99.99999999999999), '100');
     });
   });
 
@@ -1966,17 +1934,33 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
     });
 
-    testWidgets('文件卡片没有字可放大，调整大小改的还是框', (WidgetTester tester) async {
+    testWidgets('文件卡片没有可调的框：Ctrl+= 不会改宽高', (WidgetTester tester) async {
       final CanvasDocument doc = docWith(<CanvasNode>[
-        FileNode(id: 'f', x: 0, y: 0, width: 200, height: 100, file: 'a/b.md'),
+        // 展开着：点卡片正文只选中，不会把这张卡收起来。
+        FileNode(
+          id: 'f',
+          x: 0,
+          y: 0,
+          width: 200,
+          height: 100,
+          file: 'a/b.md',
+          expanded: true,
+        ),
       ]);
-      final Harness h = await pumpBoard(tester, document: doc);
+      final Harness h = await pumpBoard(
+        tester,
+        document: doc,
+        noteBodies: const <String, String>{'a/b.md': '一行正文'},
+      );
       final CanvasNode f = doc.nodes.first;
       await tapCard(tester, h, f);
+      final double width = f.width;
+      final double height = f.height;
 
       await pressCtrl(tester, LogicalKeyboardKey.equal);
-      expect(f.width, closeTo(200 * canvasResizeStep, 0.001));
-      expect(f.height, closeTo(100 * canvasResizeStep, 0.001));
+
+      expect(f.width, width, reason: '宽高只由笔记内容决定');
+      expect(f.height, height);
       expect(f.scale, 1, reason: '引用卡片没有「文字即内容」这回事');
     });
   });
@@ -2218,6 +2202,413 @@ void main() {
 
       expect(h.state.debugEditing, isNull);
       expect((doc.nodes.first as GroupNode).label, '新名字');
+    });
+  });
+
+  group('markdown 卡片与引用', () {
+    testWidgets('编辑时按源码贴合，退出编辑按渲染后的样子重贴', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(tester);
+      h.state.createCard();
+      await tester.pump();
+
+      final TextNode card = h.nodes.single as TextNode;
+      await tester.enterText(find.byType(TextField), '# 标题');
+      await tester.pumpAndSettle();
+      final double whileEditing = card.width;
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.escape);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+
+      // 源码里那两个井号渲染后不见了，标题又只有两个字：卡片比编辑时窄。
+      expect(card.width, lessThan(whileEditing), reason: '标记不占地方，渲染后要缩回来');
+      expect(card.text, '# 标题', reason: '存的是源码，不是渲染结果');
+      await tester.pump(const Duration(milliseconds: 400));
+    });
+
+    testWidgets('标题渲染后比同字数的正文更大：卡片跟着变高', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(tester);
+
+      h.state.createCard();
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), '标题');
+      await tester.pumpAndSettle();
+      final CanvasNode plain = h.nodes.single;
+      final double plainHeight = plain.height;
+      final double plainWidth = plain.width;
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.escape);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+
+      h.state.createCard();
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), '# 标题');
+      await tester.pumpAndSettle();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.escape);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+
+      final CanvasNode heading = h.nodes.last;
+      expect(heading.height, greaterThan(plainHeight), reason: '标题字号大，行高也高');
+      expect(heading.width, greaterThan(plainWidth), reason: '字大了，卡片就宽了');
+      await tester.pump(const Duration(milliseconds: 400));
+    });
+
+    testWidgets('打开白板时，装不下渲染结果的卡片会重贴；装得下的原样不动', (WidgetTester tester) async {
+      final CanvasDocument doc = docWith(<CanvasNode>[
+        // 太小：装不下一行标题。
+        textNode('small', x: 0, y: 0, width: 40, height: 30, text: '# 一个标题'),
+        // 很大：内容装得下，用户拖宽过的尺寸要留着。
+        textNode('big', x: 400, y: 0, width: 900, height: 400, text: '短句'),
+      ]);
+      await pumpBoard(tester, document: doc);
+
+      final CanvasNode small = doc.nodes[0];
+      final CanvasNode big = doc.nodes[1];
+      expect(small.width, greaterThan(40), reason: '标题装不下，宽度要长出来');
+      expect(small.height, greaterThan(30), reason: '标题装不下，高度要长出来');
+      expect(big.width, 900, reason: '框比内容大就原样留着');
+      expect(big.height, 400, reason: '框比内容大就原样留着');
+    });
+
+    testWidgets('拖进来的 .md 落成引用卡片：指向那篇笔记，不复制正文', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(tester);
+      h.state.addFileCards(<String>['笔记/甲.md', '乙.md']);
+      await tester.pump();
+
+      expect(h.nodes.length, 2, reason: '一份文件一张卡片');
+      expect(h.nodes[0], isA<FileNode>());
+      expect((h.nodes[0] as FileNode).file, '笔记/甲.md');
+      expect((h.nodes[1] as FileNode).file, '乙.md');
+      expect(
+        h.nodes.whereType<TextNode>(),
+        isEmpty,
+        reason: '引用不是拷贝：不该多出一张装着正文的文字卡片',
+      );
+      expect(
+        h.nodes[0].rect.overlaps(h.nodes[1].rect),
+        isFalse,
+        reason: '几张卡片不能叠成一摞',
+      );
+      expect(h.state.debugSelection.length, 2, reason: '拖进来的卡片要选中');
+      expect(
+        h.nodes.every((CanvasNode n) => !(n as FileNode).expanded),
+        isTrue,
+        reason: '新落的卡片是收起的：一行文件名，不铺开正文',
+      );
+    });
+
+    testWidgets('收起的卡片就是一行文件名：不画正文，也不占默认那么大', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        noteBodies: <String, String>{'甲.md': '# 标题\n${'正文一行\n' * 20}'},
+      );
+      final FileNode card = h.state.addFileCards(<String>['甲.md']).single;
+      await tester.pump();
+
+      expect(h.state.debugFileBody(card.id), isNull);
+      expect(
+        card.height,
+        closeTo(canvasFileTitleHeight + canvasCardPadding * 2, 0.01),
+        reason: '高 = 一行标题 + 内边距',
+      );
+      expect(
+        card.width,
+        lessThan(canvasDefaultWidth),
+        reason: '只有一行文件名，不用铺满默认宽度',
+      );
+    });
+
+    testWidgets('点标题展开：正文画出来，卡片从左上角长下去', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        noteBodies: <String, String>{'甲.md': '# 会议记录\n第一行\n第二行'},
+      );
+      final FileNode card = h.state.addFileCards(<String>['甲.md']).single;
+      await tester.pump();
+      final Offset corner = Offset(card.x, card.y);
+      final double collapsedHeight = card.height;
+
+      await clickTitle(tester, h, card.id);
+
+      expect(h.state.debugFileExpanded(card.id), isTrue);
+      final String? painted = h.state.debugFileBody(card.id);
+      expect(painted, contains('会议记录'));
+      expect(painted, contains('第二行'));
+      expect(painted, isNot(contains('#')), reason: '画出来的是渲染后的正文');
+      expect(card.height, greaterThan(collapsedHeight));
+      expect(Offset(card.x, card.y), corner, reason: '左上角钉住，标题不跑');
+
+      await clickTitle(tester, h, card.id);
+
+      expect(h.state.debugFileExpanded(card.id), isFalse);
+      expect(h.state.debugFileBody(card.id), isNull);
+      expect(card.height, closeTo(collapsedHeight, 0.01));
+      expect(Offset(card.x, card.y), corner, reason: '收起来也从左上角缩回去');
+    });
+
+    testWidgets('展开后按笔记正文贴尺寸：正文多长卡片就多高，没有上限', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        noteBodies: <String, String>{'甲.md': '# 标题\n${'正文一行\n' * 200}'},
+      );
+      final FileNode card = h.state.addFileCards(<String>['甲.md']).single;
+      await tester.pump();
+
+      await clickTitle(tester, h, card.id);
+
+      expect(card.height, greaterThan(100), reason: '默认那个 100 高的框装不下正文');
+      expect(
+        card.height,
+        greaterThan(200 * AppText.ui),
+        reason: '两百行全部排出来——高度没有上限，内容全部显示',
+      );
+      expect(card.width, lessThanOrEqualTo(canvasTextMaxWidth));
+      expect(h.state.debugFileBody(card.id), contains('正文一行'));
+    });
+
+    testWidgets('拖着标题移动不会切换展开状态', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(
+        tester,
+        noteBodies: <String, String>{'甲.md': '正文'},
+      );
+      final FileNode card = h.state.addFileCards(<String>['甲.md']).single;
+      await tester.pump();
+      final Offset before = Offset(card.x, card.y);
+
+      final TestGesture g = await tester.startGesture(
+        titleCenter(h, card.id),
+        kind: PointerDeviceKind.mouse,
+      );
+      // 16 世界单位：过了 3px 死区，算移动，不算点击。
+      await g.moveBy(Offset(16 * h.zoom, 0));
+      await tester.pump();
+      await g.up();
+      await tester.pump();
+
+      expect(card.x, closeTo(before.dx + 16, 0.01));
+      expect(card.expanded, isFalse, reason: '拖走卡片不能顺手把它收起来');
+    });
+
+    testWidgets('Ctrl + 单击标题不切换', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(tester);
+      final FileNode card = h.state.addFileCards(<String>['甲.md']).single;
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.tapAt(titleCenter(h, card.id));
+      await tester.pump();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(card.expanded, isFalse);
+    });
+
+    testWidgets('双击标题条打开那篇笔记', (WidgetTester tester) async {
+      final List<String> opened = <String>[];
+      final Harness h = await pumpBoard(
+        tester,
+        noteBodies: <String, String>{'甲.md': '正文'},
+        onOpenFile: opened.add,
+      );
+      final FileNode card = h.state.addFileCards(<String>['甲.md']).single;
+      await tester.pump();
+
+      final Offset at = titleCenter(h, card.id);
+      await tester.tapAt(at);
+      await tester.pump(const Duration(milliseconds: 40));
+      await tester.tapAt(at);
+      await tester.pump();
+
+      expect(opened, <String>['甲.md']);
+      expect(h.state.debugEditing, isNull);
+      expect(card.expanded, isTrue, reason: '单击在松手时先展开；打开笔记会切走视图，回来时卡片是展开的');
+    });
+
+    testWidgets('双击正文进编辑，提交把源码交给 onEditFileBody', (WidgetTester tester) async {
+      final List<({String path, String body})> writes =
+          <({String path, String body})>[];
+      int boardChanges = 0;
+      final CanvasDocument doc = docWith(<CanvasNode>[
+        FileNode(
+          id: 'f',
+          x: 0,
+          y: 0,
+          width: 240,
+          height: 200,
+          file: '甲.md',
+          expanded: true,
+        ),
+      ]);
+      final Harness h = await pumpBoard(
+        tester,
+        document: doc,
+        noteBodies: const <String, String>{'甲.md': '旧正文'},
+        onChanged: () => boardChanges++,
+        onEditFileBody: (String path, String body) async {
+          writes.add((path: path, body: body));
+          return true;
+        },
+      );
+      final FileNode card = doc.nodes.single as FileNode;
+
+      await doubleTapBody(tester, h, card);
+
+      expect(h.state.debugEditing, 'f');
+      expect(h.state.debugEditingFileBody, isTrue);
+      expect(h.state.debugFileBody('f'), isNull, reason: '编辑中由输入框显示，画笔不再叠一层');
+      expect(find.byType(TextField), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), '改完的正文');
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.escape);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+
+      expect(h.state.debugEditing, isNull);
+      expect(h.state.debugEditingFileBody, isFalse);
+      expect(writes, <({String path, String body})>[
+        (path: '甲.md', body: '改完的正文'),
+      ]);
+      expect(boardChanges, 0, reason: '正文在 .md 里，改它不该标白板脏');
+      expect(card.expanded, isTrue, reason: '退出编辑还是展开着');
+    });
+
+    testWidgets('展开的引用卡片画的是那篇笔记的正文', (WidgetTester tester) async {
+      final CanvasDocument doc = docWith(<CanvasNode>[
+        FileNode(
+          id: 'f',
+          x: 0,
+          y: 0,
+          width: 300,
+          height: 200,
+          file: '甲.md',
+          expanded: true,
+        ),
+      ]);
+      final Harness h = await pumpBoard(
+        tester,
+        document: doc,
+        noteBodies: const <String, String>{'甲.md': '# 会议记录\n第一行\n第二行'},
+      );
+
+      final String? painted = h.state.debugFileBody('f');
+      expect(painted, contains('会议记录'));
+      expect(painted, contains('第二行'));
+      expect(painted, isNot(contains('#')), reason: '画出来的是渲染后的正文');
+    });
+
+    testWidgets('笔记改了，展开卡上的正文跟着改，卡片跟着长高', (WidgetTester tester) async {
+      final CanvasDocument doc = docWith(<CanvasNode>[
+        FileNode(
+          id: 'f',
+          x: 0,
+          y: 0,
+          width: 300,
+          height: 200,
+          file: '甲.md',
+          expanded: true,
+        ),
+      ]);
+      final Harness h = await pumpBoard(
+        tester,
+        document: doc,
+        noteBodies: const <String, String>{'甲.md': '改之前'},
+      );
+      expect(h.state.debugFileBody('f'), '改之前');
+      final double firstHeight = doc.nodes.single.rect.height;
+
+      await repumpWithBodies(tester, h, <String, String>{
+        '甲.md': '改之后\n${'又一行\n' * 20}',
+      });
+
+      expect(
+        h.state.debugFileBody('f'),
+        contains('改之后'),
+        reason: '引用是活的：笔记改了，卡片下一帧就是新的',
+      );
+      expect(
+        doc.nodes.single.rect.height,
+        greaterThan(firstHeight),
+        reason: '正文长了窗口就得长，多出来的字不能被裁掉',
+      );
+    });
+
+    testWidgets('笔记不在了：展开卡上没有正文，只剩标题', (WidgetTester tester) async {
+      final CanvasDocument doc = docWith(<CanvasNode>[
+        FileNode(
+          id: 'f',
+          x: 0,
+          y: 0,
+          width: 300,
+          height: 120,
+          file: '旧/甲.md',
+          expanded: true,
+        ),
+      ]);
+      final Harness h = await pumpBoard(tester, document: doc);
+
+      expect(h.state.debugFileBody('f'), isNull);
+    });
+
+    testWidgets('拖进来的卡片落在松手的地方', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(tester);
+      final Offset at = h.center + const Offset(120, -80);
+      h.state.addFileCards(<String>['甲.md'], at: at);
+      await tester.pump();
+
+      final CanvasNode card = h.nodes.single;
+      expect(card.rect.center.dx, closeTo(at.dx, 0.01));
+      expect(card.rect.center.dy, closeTo(at.dy, 0.01));
+    });
+
+    testWidgets('库外文件刚导入：正文晚一步到，收起的卡片不挪不改', (WidgetTester tester) async {
+      // 收起卡只量文件名，不需要等正文；正文晚到（甚至一直不到）都不该动它。
+      final Harness h = await pumpBoard(tester);
+      final FileNode card = h.state.addFileCards(<String>['新导入.md']).single;
+      await tester.pump();
+      final Rect before = card.rect;
+
+      await repumpWithBodies(tester, h, <String, String>{
+        '新导入.md': '# 会议记录\n${'正文一行\n' * 40}',
+      });
+
+      expect(card.rect, before);
+      expect(card.expanded, isFalse);
+      expect(h.state.debugFileBody(card.id), isNull);
+    });
+
+    testWidgets('正文一直不到：收起卡还是一行，展开后是兜底框，不崩', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(tester);
+      final FileNode card = h.state.addFileCards(<String>['查无此篇.md']).single;
+      await tester.pump();
+      expect(
+        card.height,
+        closeTo(canvasFileTitleHeight + canvasCardPadding * 2, 0.01),
+      );
+
+      await clickTitle(tester, h, card.id);
+
+      expect(card.expanded, isTrue);
+      expect(card.width, canvasDefaultWidth);
+      expect(card.height, 100);
+      expect(h.state.debugFileBody(card.id), isNull);
+    });
+
+    testWidgets('文件列表拖过来：按全局指针换算落点，落成收起卡并选中', (WidgetTester tester) async {
+      final Harness h = await pumpBoard(tester);
+      const Offset pointer = Offset(320, 240);
+
+      h.state.addReferencedNotesFromGlobal(<String>['甲.md'], pointer);
+      await tester.pump();
+
+      final FileNode card = h.nodes.single as FileNode;
+      final Offset world = h.camera.toWorld(pointer, h.stage);
+      expect(card.rect.center.dx, closeTo(world.dx, 0.01));
+      expect(card.rect.center.dy, closeTo(world.dy, 0.01));
+      expect(card.expanded, isFalse);
+      expect(h.state.debugSelection, <String>{card.id});
     });
   });
 }

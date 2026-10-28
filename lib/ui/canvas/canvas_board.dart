@@ -7,13 +7,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 
+import '../../core/platform/drop_support.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../core/utils/canvas_document.dart';
 import '../../core/utils/canvas_geometry.dart';
 import '../../core/utils/table_model.dart' show CellColor;
+import '../common/notices.dart';
 import 'canvas_history.dart';
+import 'canvas_markdown.dart';
 import 'canvas_painter.dart';
 import 'canvas_pickers.dart';
 import 'canvas_style.dart';
@@ -39,8 +43,11 @@ class CanvasBoard extends StatefulWidget {
     required this.document,
     this.onChanged,
     this.files = const <({String path, String title})>[],
+    this.noteBodies = const <String, String>{},
     this.onOpenFile,
     this.onOpenLink,
+    this.onReferenceMarkdown,
+    this.onEditFileBody,
   });
 
   /// 要画的文档。null = 只读空板（还不能编辑），此时不响应任何修改。
@@ -52,11 +59,31 @@ class CanvasBoard extends StatefulWidget {
   /// 可以放到白板上的笔记。文件卡片的挑选列表就是它。
   final List<({String path, String title})> files;
 
+  /// 库里所有笔记的正文（相对路径 → markdown 源码）。
+  ///
+  /// 文件卡片显示的就是它，所以**笔记一改，白板上的卡片跟着改**——白板
+  /// 引用的是那篇笔记，不是一份拷贝。外壳每次重建都传新的一份进来。
+  final Map<String, String> noteBodies;
+
   /// 双击文件卡片：打开那篇笔记。
   final ValueChanged<String>? onOpenFile;
 
   /// 双击链接卡片：用系统浏览器打开。
   final ValueChanged<String>? onOpenLink;
+
+  /// 把拖进来的本地 `.md` 变成库里能引用的相对路径。
+  ///
+  /// 白板只存相对路径（和 `FileNode.file` 的约定一致），所以「库外的文件」
+  /// 得先变成库里的笔记——这一步要用 `NotesController`，而画布不该认识它，
+  /// 于是留一个回调由外壳接。null = 拖进来的文件一律不认。
+  final Future<List<String>> Function(List<String> paths)? onReferenceMarkdown;
+
+  /// 在文件卡片里改了正文：写回被引用的那篇笔记。
+  ///
+  /// 画布不认识 `.md`，也不知道那篇笔记开没开着——这一步同样交给外壳接
+  /// `NotesController.writeNoteBody`。返回 false = 没写进去（笔记不在了、
+  /// 冲突没解决、磁盘写失败）。
+  final Future<bool> Function(String path, String body)? onEditFileBody;
 
   @override
   State<CanvasBoard> createState() => CanvasBoardState();
@@ -79,11 +106,6 @@ enum _Interaction {
   maybeDrag,
 
   dragging,
-
-  resizing,
-
-  /// 从卡片边上的圆点拖出来一条连线，还没落地。
-  connecting,
 }
 
 /// 翻页键的方向：往**哪边看**（不是内容往哪边走）。
@@ -157,19 +179,6 @@ class CanvasBoardState extends State<CanvasBoard>
   final Map<String, Offset> _dragOrigins = <String, Offset>{};
   bool _dragMoved = false;
 
-  /// 缩放：按下的手柄、被缩放的卡片、按下时的矩形。
-  CanvasResizeHandle? _handle;
-  String? _resizeId;
-  Rect _resizeStart = Rect.zero;
-
-  /// 悬停在哪张卡片上（连线圆点只给悬停的那张）。
-  String? _hoverNodeId;
-
-  /// 连线：从哪张卡片的哪条边出发，光标现在在屏幕哪里。
-  String? _connectFromId;
-  CanvasSide _connectSide = CanvasSide.right;
-  Offset? _connectCursor;
-
   /// 正在编辑标签的边。
   String? _editingEdgeId;
 
@@ -221,8 +230,24 @@ class CanvasBoardState extends State<CanvasBoard>
   /// 触控板：上一帧的累计缩放，用来算增量。
   double _panZoomScale = 1;
 
+  /// 正在编辑的是文件卡片**正文**（不是卡片自己的文字）。
+  ///
+  /// 两种编辑共用一套输入框和焦点：文字卡片编的是 `node.text`，文件卡片
+  /// 编的是被引用笔记的正文。提交走两套回调，但退出编辑、失焦提交、隐形
+  /// 输入框这些东西只写一份。
+  bool _editingFileBody = false;
+
+  /// 按下时落在文件卡片标题条上：松手没挪动就切换展开 / 收起。
+  ///
+  /// 不能按下就切——用户要拖这张卡片去别处，第一帧就会把卡片收起来。
+  String? _clickToggleId;
+
   /// 文字排版缓存。跨帧复用，删掉的节点会释放。
   final CanvasTextCache _textCache = CanvasTextCache();
+
+  /// 卡片正文（markdown）的排版缓存：与编辑器同一条管线排出来的整篇。
+  /// 贴合与绘制共用它，画出来的就是量出来的那一份。
+  final CanvasMarkdownCache _markdownCache = CanvasMarkdownCache();
 
   CanvasDocument? get _doc => widget.document;
 
@@ -239,7 +264,6 @@ class CanvasBoardState extends State<CanvasBoard>
   Size get debugStage => _stage;
   bool get debugPanning => _mode == _Interaction.panning;
   bool get debugDragging => _mode == _Interaction.dragging;
-  bool get debugResizing => _mode == _Interaction.resizing;
   bool get debugTicking => _ticker.isActive;
   bool get debugSpaceHeld => _spaceHeld;
   Rect? get debugMarquee => _marqueeWorld;
@@ -267,6 +291,35 @@ class CanvasBoardState extends State<CanvasBoard>
   /// 空板提示的两行文字（测试用）。null = 不是空板。
   (String, String)? get debugEmptyHint => _emptyHint(_doc);
 
+  /// 文件卡片**现在画在卡片上的**正文（测试用）。
+  ///
+  /// 卡片是画出来的，不在 Widget 树里；能问的只有排版缓存——它排的是什么，
+  /// 画出来就是什么。null = 这张卡上没有正文：收起着、正在卡里改正文（这
+  /// 时由输入框负责显示）、笔记不在了，或者根本不是文件卡片。
+  String? debugFileBody(String id) {
+    final CanvasNode? node = _doc?.nodeById(id);
+    if (node is! FileNode) return null;
+    if (!node.expanded || node.id == _editingId) return null;
+    final String? body = widget.noteBodies[node.file];
+    if (body == null || body.trim().isEmpty) return null;
+    return _markdownCache.visibleText('file-body-$id', body);
+  }
+
+  /// 文件卡片展开着吗（测试用）。不是文件卡片就是 null。
+  bool? debugFileExpanded(String id) {
+    final CanvasNode? node = _doc?.nodeById(id);
+    return node is FileNode ? node.expanded : null;
+  }
+
+  /// 正在卡片里改正文吗（测试用）。
+  bool get debugEditingFileBody => _editingFileBody;
+
+  /// 文件卡片标题条的屏幕矩形（测试用）。
+  Rect? debugFileTitleRect(String id) {
+    final CanvasNode? node = _doc?.nodeById(id);
+    return node is FileNode ? _fileTitleRect(node) : null;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -275,6 +328,10 @@ class CanvasBoardState extends State<CanvasBoard>
       // 输入框丢了焦点（点了别处、切了窗口）就收工。
       if (!_editorFocus.hasFocus && _editingId != null) _commitEdit();
     });
+    // 白板是懒建的：第一次挂上来的时候文档已经在控制器里了（`didUpdateWidget`
+    // 收不到），所以这里也要贴一次。
+    _refitAllTextNodes();
+    _fitFileNodes();
   }
 
   @override
@@ -284,10 +341,73 @@ class CanvasBoardState extends State<CanvasBoard>
       // 换了一份文档：下次 build 按内容重新适应视野。
       _fittedDocument = null;
       _editingId = null;
+      _editingFileBody = false;
       _editingEdgeId = null;
       _selected.clear();
       _detailsOpen = false;
       _resetSearch();
+      _refitAllTextNodes();
+      _fitFileNodes();
+      return;
+    }
+    // 笔记正文改过：展开着的卡片是那篇笔记的窗口，正文长了窗口也得跟着长，
+    // 不然新写的字直接被卡片下沿裁掉。
+    final CanvasDocument? doc = _doc;
+    if (doc != null) {
+      for (final CanvasNode node in doc.nodes) {
+        if (node is! FileNode || !node.expanded) continue;
+        if (identical(
+          oldWidget.noteBodies[node.file],
+          widget.noteBodies[node.file],
+        )) {
+          continue;
+        }
+        _fitFileNodes();
+        break;
+      }
+    }
+  }
+
+  /// 打开一块白板时，把**装不下**的文字卡片按渲染后的样子重贴一次。
+  ///
+  /// 文件里存的是尺寸，不是「怎么算出来的尺寸」。以前存的是纯文本的尺寸，
+  /// 现在同一段字要按 markdown 渲染（标题更大、标记消失），旧的宽高就可能
+  /// 装不下——多出来的部分会被卡片裁掉，看着就是「字少了半截」。
+  ///
+  /// **只在装不下的时候改**：框本来就比内容大（用户拖手柄拉宽过）就原样
+  /// 留着。开一块板子不该把用户的排版重排一遍。
+  ///
+  /// 重贴是**静默**的：不标脏、不进撤销栈，只是让画面和文字对得上；下一次
+  /// 保存顺手把新尺寸写回去。
+  void _refitAllTextNodes() {
+    final CanvasDocument? doc = _doc;
+    if (doc == null) return;
+    for (final CanvasNode node in doc.nodes) {
+      if (node is! TextNode || node.text.isEmpty) continue;
+      final Rect before = node.rect;
+      _fitTextNode(node, rendered: true);
+      // 内容比框小（或者正好一样）：说明旧尺寸还够用，把四个数都放回去。
+      // 光还原宽高不够——贴合是锚在中心改的，中心没动，左上角就偏了。
+      if (node.width <= before.width && node.height <= before.height) {
+        node.x = before.left;
+        node.y = before.top;
+        node.width = before.width;
+        node.height = before.height;
+      }
+    }
+  }
+
+  /// 文件卡片全部按内容重贴：收起的是标题一行，展开的是整篇正文。
+  ///
+  /// 文件卡片没有「用户拖出来的框」——宽高永远是内容的函数。打开一块旧板
+  /// 子时重贴一次，把历史尺寸（当年那扇带头顶的正文窗口）收回内容大小。
+  /// 和文字卡片的打开时重贴同一个规矩：静默执行，不标脏、不进撤销栈，下次
+  /// 保存顺手把尺寸写回去。
+  void _fitFileNodes() {
+    final CanvasDocument? doc = _doc;
+    if (doc == null) return;
+    for (final CanvasNode node in doc.nodes) {
+      if (node is FileNode) _fitFileNode(node);
     }
   }
 
@@ -296,6 +416,7 @@ class CanvasBoardState extends State<CanvasBoard>
     _tapWindow?.cancel();
     _ticker.dispose();
     _textCache.dispose();
+    _markdownCache.dispose();
     _editor.dispose();
     _editorFocus.dispose();
     _search.dispose();
@@ -550,6 +671,7 @@ class CanvasBoardState extends State<CanvasBoard>
         ..edges.addAll(parsed.edges);
       _selected.clear();
       _editingId = null;
+      _editingFileBody = false;
       _editingEdgeId = null;
     }, record: false);
   }
@@ -602,6 +724,10 @@ class CanvasBoardState extends State<CanvasBoard>
   }
 
   /// 放一篇笔记到白板上。
+  ///
+  /// 这张卡片**引用**那篇笔记：正文由 [CanvasBoard.noteBodies] 现取，笔记改
+  /// 了卡片跟着改，双击打开的就是那一篇。所以尺寸要按正文贴一次，不然一张
+  /// 长笔记只会露出一行。
   Future<void> createFileCard({Offset? at}) async {
     if (_readOnly) return;
     final String? path = await showCanvasFilePicker(
@@ -609,17 +735,16 @@ class CanvasBoardState extends State<CanvasBoard>
       files: widget.files,
     );
     if (!mounted || path == null) return;
-    _addCard<FileNode>(
-      FileNode(
-        id: newCanvasId(),
-        x: 0,
-        y: 0,
-        width: canvasDefaultWidth,
-        height: 100,
-        file: path,
-      ),
-      at: at,
+    final FileNode node = FileNode(
+      id: newCanvasId(),
+      x: 0,
+      y: 0,
+      width: canvasDefaultWidth,
+      height: 100,
+      file: path,
     );
+    _fitFileNode(node);
+    _addCard<FileNode>(node, at: at);
   }
 
   /// 放一个网址到白板上。
@@ -656,6 +781,157 @@ class CanvasBoardState extends State<CanvasBoard>
     );
   }
 
+  // ------------------------------------------------------------------ 拖放
+
+  /// 把几张笔记放到白板上（引用它们，不复制正文）。
+  ///
+  /// 落点是 [at]（缺省是视口正中），多张时**从上往下一张一张排**：一次拖进
+  /// 五个文件，五张卡片叠在同一处就成了一摞，只能看见最上面那张。
+  ///
+  /// 新落的卡片是**收起**的：图标 + 文件名一行，点标题条才展开看正文。所以
+  /// 摆的时候不用等正文到手，也就没有「补贴一次」这回事了。
+  ///
+  /// 一次拖放只记一步撤销：`_mutate` 在最后调一次。
+  List<FileNode> addFileCards(List<String> paths, {Offset? at}) {
+    final CanvasDocument? doc = _doc;
+    if (doc == null || paths.isEmpty) return const <FileNode>[];
+    final Offset anchor = at ?? _camera.center;
+
+    final List<FileNode> made = <FileNode>[];
+    for (final String path in paths) {
+      final FileNode node = FileNode(
+        id: newCanvasId(),
+        x: 0,
+        y: 0,
+        width: canvasDefaultWidth,
+        height: 100,
+        file: path,
+      );
+      _fitFileNode(node);
+      made.add(node);
+    }
+
+    final double gap = canvasCardPadding * 2;
+    double total = gap * (made.length - 1);
+    for (final FileNode node in made) {
+      total += node.height;
+    }
+    double y = anchor.dy - total / 2;
+    for (final FileNode node in made) {
+      node.x = anchor.dx - node.width / 2;
+      node.y = y;
+      y += node.height + gap;
+    }
+
+    _mutate(() {
+      doc.nodes.addAll(made);
+      _selected
+        ..clear()
+        ..addAll(made.map((FileNode n) => n.id));
+    });
+    return made;
+  }
+
+  /// 文件列表拖过来的笔记：引用到全局坐标 [globalPointer] 所在的画布位置。
+  ///
+  /// 画布不认识 `NotesController`，路径由外壳转好；这里只做坐标换算和落卡。
+  /// `DragTargetDetails.offset` 是反馈卡片的左上角，所以外壳传的是指针的
+  /// 全局位置，不是那个 offset。
+  void addReferencedNotesFromGlobal(List<String> paths, Offset globalPointer) {
+    final RenderBox? box = context.findRenderObject() as RenderBox?;
+    if (box == null) return;
+    addFileCards(paths, at: _toWorld(box.globalToLocal(globalPointer)));
+  }
+
+  /// 能变成卡片的文件：只认 markdown。
+  ///
+  /// 白板引用的是库里的笔记，`docx` / `pdf` 进不了库也读不出结构。
+  static bool _isMarkdownPath(String path) {
+    final String lower = path.toLowerCase();
+    return lower.endsWith('.md') || lower.endsWith('.markdown');
+  }
+
+  /// 文件被拖到白板上：变成**引用那篇笔记**的文件卡片。
+  ///
+  /// 不是把文件搬进白板、也不是把正文复制一份：`.md` 还在文件列表里，卡片
+  /// 只是指向它，正文由 [CanvasBoard.noteBodies] 现取——笔记改了，卡片跟着改。
+  ///
+  /// 拖放期间**不能 await 平台通道**，读文件只能走回调（和左栏拖入笔记是同
+  /// 一套写法）：先把路径收集齐，再落到自己的异步里去处理。
+  Future<void> _onDropFiles(PerformDropEvent event) async {
+    if (_readOnly) return;
+    // 落点用区域内的局部坐标：`DropRegion` 和画布一样大，它就是画布坐标。
+    final Offset at = _toWorld(event.position.local);
+
+    final List<String> paths = <String>[];
+    for (final DropItem item in event.session.items) {
+      // `dataReader` 的类型没从包里导出来，只能靠推断——和左栏拖入笔记一样。
+      final reader = item.dataReader;
+      if (reader == null || !reader.canProvide(Formats.fileUri)) continue;
+      final Completer<String?> done = Completer<String?>();
+      reader.getValue<Uri>(
+        Formats.fileUri,
+        (Uri? uri) {
+          if (done.isCompleted) return;
+          if (uri == null || uri.scheme != 'file') {
+            done.complete(null);
+            return;
+          }
+          try {
+            done.complete(uri.toFilePath());
+          } on UnsupportedError {
+            done.complete(null);
+          }
+        },
+        onError: (Object error) {
+          if (!done.isCompleted) done.complete(null);
+        },
+      );
+      final String? path = await done.future;
+      if (path != null) paths.add(path);
+    }
+    if (!mounted) return;
+    if (paths.isEmpty) {
+      // 拖进来的东西读不出本地路径（虚拟文件、压缩包里的条目、网页里的
+      // 图片……）。不吭声的话，用户看到的就是「拖了没反应」。
+      _notice('没读到拖进来的文件', '先把文件存到本地，再从资源管理器拖进来');
+      return;
+    }
+
+    final List<String> markdown = <String>[
+      for (final String path in paths)
+        if (_isMarkdownPath(path)) path,
+    ];
+    if (markdown.isEmpty) {
+      _notice('只能拖入 .md 文件', '白板引用的是库里的笔记');
+      return;
+    }
+
+    final Future<List<String>> Function(List<String>)? reference =
+        widget.onReferenceMarkdown;
+    if (reference == null) {
+      _notice('这块白板没有接上笔记库', '拖进来的文件没法变成引用');
+      return;
+    }
+
+    final List<String> relative = await reference(markdown);
+    if (!mounted) return;
+    if (relative.isEmpty) {
+      _notice('这几份文件读不进来', '可能是空文件，或者没有读取权限');
+      return;
+    }
+
+    addFileCards(relative, at: at);
+    // 焦点收回白板：拖完就能接着按快捷键，不用先点一下画布。
+    _focus.requestFocus();
+  }
+
+  void _notice(String message, [String? detail]) {
+    NoticeScope.maybeOf(context)?.show(
+      NoticeData(message: message, detail: detail, kind: NoticeKind.error),
+    );
+  }
+
   /// 删掉选中的节点，连带删掉连在它们身上的边。
   void deleteSelection() {
     final CanvasDocument? doc = _doc;
@@ -670,6 +946,7 @@ class CanvasBoardState extends State<CanvasBoard>
       );
       _selected.clear();
       _editingId = null;
+      _editingFileBody = false;
     });
   }
 
@@ -821,18 +1098,15 @@ class CanvasBoardState extends State<CanvasBoard>
     });
   }
 
-  /// 等比放大 / 缩小选中的卡片（`Ctrl+=` / `Ctrl+-`）。
-  ///
-  /// 锚在**中心**而不是左上角：连按五下之后卡片还在原地，不会一路往右下角
-  /// 爬。撞到最小尺寸就停在最小尺寸，不会因为继续按而翻成负宽。
   /// `Ctrl+=` / `Ctrl+-`：**改字，不改框**。
   ///
   /// 这是 graphif 的「调整大小」：按下去字变大变小，卡片跟着字重新贴合，
   /// 所以看起来是「整张卡变大」，本质上动的是字号倍率。把框拉大而字不动，
   /// 得到的是「一张卡里空了一大片」，那是另一件事。
   ///
-  /// 文件 / 链接卡片没有「文字即内容」这回事（它们是固定样式的引用卡），
-  /// 所以对它们仍然是改框。
+  /// 文件卡片的宽高**只由内容决定**，这里没有任何可调的框，重贴一次就算
+  /// 尽力了（通常已经是贴合状态，等于什么也没变）。链接卡片是固定样式的
+  /// 引用卡，仍然改框（锚在中心，撞到最小尺寸就停）。
   void resizeSelectionBy(double factor) {
     final CanvasDocument? doc = _doc;
     if (doc == null || _selected.isEmpty) return;
@@ -842,6 +1116,10 @@ class CanvasBoardState extends State<CanvasBoard>
         if (node is TextNode) {
           node.scale *= factor;
           _fitTextNode(node);
+          continue;
+        }
+        if (node is FileNode) {
+          _fitFileNode(node);
           continue;
         }
         if (node is GroupNode) {
@@ -946,13 +1224,13 @@ class CanvasBoardState extends State<CanvasBoard>
 
   // ---------------------------------------------------------- 详细信息面板
 
-  /// 搜索框在屏幕上的位置：贴着上边、水平居中，压在上边标尺下面一点。
+  /// 搜索框在屏幕上的位置：贴着上边、水平居中。
   Rect get _searchRect {
     const double width = 360;
     const double height = 42;
     final double maxLeft = _stage.width - width - 12;
     final double left = maxLeft <= 12 ? 12 : (_stage.width - width) / 2;
-    return Rect.fromLTWH(left, canvasRulerThickness + 10, width, height);
+    return Rect.fromLTWH(left, 12, width, height);
   }
 
   /// 面板在屏幕上的矩形。没给 [_detailsOrigin] 就贴在右下角。
@@ -1048,17 +1326,17 @@ class CanvasBoardState extends State<CanvasBoard>
   /// 宽度」这个概念）。
   ///
   /// 宽度上限是 [canvasTextMaxWidth]，超了就按上限折行，高度随之增长。
-  void _fitTextNode(TextNode node) {
+  ///
+  /// 卡片显示的是**渲染后**的 markdown（`# 标题` 是一行大字、`**粗**` 只剩
+  /// 粗体），只有正在编辑的那张回到源码——[rendered] 缺省就是按这个判的。
+  /// 两边量出来的宽高不一样：源码里多两个井号，渲染后字号又大一圈。贴着
+  /// 显示的那一种量，卡片才不会在「一进编辑」的时候把字挤出去。
+  void _fitTextNode(TextNode node, {bool? rendered}) {
     // 字号倍率参与排版：`Ctrl+=` 放大的是字，卡片再按放大后的字重新贴合。
     // 内边距也一起放大——字大了一圈、边距不动，卡片会显得挤。
     final double scale = node.scale;
     final double pad = canvasCardPadding * scale;
-    final TextStyle style = TextStyle(
-      fontSize: AppText.ui * scale,
-      height: 1.6,
-      fontFamily: AppFonts.ui,
-      fontFamilyFallback: AppFonts.uiFallback,
-    );
+    final TextStyle style = canvasCardTextStyle(scale);
 
     if (node.text.isEmpty) {
       // 宽：那三个点正好装下。
@@ -1086,34 +1364,136 @@ class CanvasBoardState extends State<CanvasBoard>
       return;
     }
 
+    final bool asMarkdown = rendered ?? (_editingId != node.id);
+    final ({double width, double height}) text = _measureBlock(
+      node.text,
+      scale,
+      markdown: asMarkdown,
+      cacheKey: 'node-${node.id}',
+    );
+    _resizeNodeAroundCenter(node, text.width + pad * 2, text.height + pad * 2);
+  }
+
+  /// 文件卡片贴合内容。
+  ///
+  /// **收起**（默认）：只显示标题一行，尺寸就是那一行字 + 内边距——一张
+  /// 普通节点，不是一块空面板。**展开**：卡片是被引用笔记的窗口，标题下面
+  /// 是正文，宽按正文最长的一行走（上限 [canvasTextMaxWidth]），高度按正文
+  /// 排出来多高就是多高——**没有上限**。笔记有多长，卡片就有多长：内容全
+  /// 部看得见，不存在「裁掉一半」「拖大才看得到」。
+  ///
+  /// 笔记不存在（被删了、改名了）就退回一个默认框，标题还看得见。
+  void _fitFileNode(FileNode node) {
+    final double pad = canvasCardPadding;
+    if (!node.expanded) {
+      final TextPainter title = TextPainter(
+        text: TextSpan(
+          text: canvasFileDisplayTitle(node.file),
+          // 颜色不参与排版，量宽度时用什么都一样。
+          style: canvasFileTitleStyle(const Color(0xFF000000)),
+        ),
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+      )..layout();
+      final double titleWidth = title.width;
+      title.dispose();
+      node.width = math.min(
+        canvasTextMaxWidth,
+        canvasFileIconSize +
+            canvasFileIconGap +
+            titleWidth +
+            pad * 2 +
+            canvasTextFitSlack,
+      );
+      node.height = canvasFileTitleHeight + pad * 2;
+      return;
+    }
+    final String? body = widget.noteBodies[node.file];
+    if (body == null || body.trim().isEmpty) {
+      node.width = canvasDefaultWidth;
+      node.height = 100;
+      return;
+    }
+    final ({double width, double height}) text = _measureBlock(
+      body,
+      1,
+      markdown: true,
+      cacheKey: 'file-body-${node.id}',
+    );
+    // 下限用 [canvasMinSize]：再窄就点不中、也放不下右上角那颗「详细信息」。
+    // 文字卡片没有这个底（宽度永远跟内容），文件卡片是「一扇窗」，太小没意义。
+    node.width = math.max(canvasMinSize, text.width + pad * 2);
+    node.height = text.height + pad * 2 + canvasFileHeaderHeight;
+  }
+
+  /// 切换文件卡片的展开 / 收起。
+  ///
+  /// **左上角钉住**：贴合只改宽高，卡片往下 / 往右长，标题停在原地。按中心
+  /// 贴会把标题拽跑——用户点了一下，卡片却在屏幕上横着挪了一段。
+  void _toggleFileExpanded(FileNode node, {bool record = true}) {
+    _mutate(() {
+      node.expanded = !node.expanded;
+      _fitFileNode(node);
+    }, record: record);
+  }
+
+  /// 量一段正文排出来要多宽多高（**不含内边距**）。
+  ///
+  /// 文字卡片和文件卡片共用：两边各写一套，同一段字在两种卡片上就会排出
+  /// 不同的宽高。返回的宽已经含了那 1px 余量，并压到折行上限以内。
+  ///
+  /// markdown 走的是与打开的编辑器同一条排版管线（`CanvasMarkdownDocument`），
+  /// [cacheKey] 把它留在缓存里：画笔拿到的是同一份终稿，量出来一行、画出来
+  /// 另一行的情况不会发生。
+  ({double width, double height}) _measureBlock(
+    String text,
+    double scale, {
+    required bool markdown,
+    required String cacheKey,
+  }) {
+    final double pad = canvasCardPadding * scale;
     // 折行上限也按倍率放大：字放大一倍，卡片就该能宽一倍，而不是把同一句
     // 话挤成好几行、越堆越高。
     final double maxWidth = math.max(canvasMinSize, canvasTextMaxWidth * scale);
     final double maxText = math.max(1, maxWidth - pad * 2);
 
-    // 一行放得下要多宽。超过上限就按上限算，剩下的交给折行。
-    final TextPainter single = TextPainter(
-      text: TextSpan(text: node.text, style: style),
-      textDirection: TextDirection.ltr,
-      maxLines: 1,
-    )..layout(maxWidth: maxText);
-    final double needed = single.width + pad * 2;
-    single.dispose();
+    if (markdown) {
+      return _markdownCache.fit(
+        cacheKey,
+        text: text,
+        scale: scale,
+        maxWidth: maxText,
+        palette: AppPalette.midnight,
+      );
+    }
 
-    // 宽**就是**文字需要的宽度（+ 那 1px 余量），不看 node.width：
-    // 字多了变宽、字少了缩回去、字号小了跟着小，宽度永远跟着内容。
+    final TextStyle style = canvasCardTextStyle(scale);
+
+    // **一行一行量，取最宽的那行**。只量整段的第一行（`maxLines: 1` 的效果）
+    // 的话，「短标题开头、长句子在后」的卡片会被量窄，长句只好折行，卡片
+    // 就成了一根细条。
+    double widest = 0;
+    for (final String line in text.split('\n')) {
+      final TextPainter painter = TextPainter(
+        text: TextSpan(text: line, style: style),
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+      )..layout(maxWidth: maxText);
+      widest = math.max(widest, painter.width);
+      painter.dispose();
+    }
+
     // **没有下限**：`canvasMinSize` 只管手拖 / 键盘改框，不管贴合——字缩到
     // 一半，卡片就该只有一半宽，留一个 40px 的底就等于「宽度是固定的」。
-    final double width = math.min(needed + canvasTextFitSlack, maxWidth);
+    final double width = math.min(widest + canvasTextFitSlack, maxText);
 
-    final TextPainter block = TextPainter(
-      text: TextSpan(text: node.text, style: style),
+    final TextPainter layout = TextPainter(
+      text: TextSpan(text: text, style: style),
       textDirection: TextDirection.ltr,
-    )..layout(maxWidth: math.max(1, width - pad * 2));
-    final double height = block.height + pad * 2;
-    block.dispose();
-
-    _resizeNodeAroundCenter(node, width, height);
+    )..layout(maxWidth: width);
+    final double height = layout.height;
+    layout.dispose();
+    return (width: width, height: height);
   }
 
   /// 改尺寸但**锚在中心**：贴一次尺寸，卡片不会整体往右下角挪。
@@ -1127,6 +1507,7 @@ class CanvasBoardState extends State<CanvasBoard>
   void _beginEdit(CanvasNode node) {
     final String? current = _editableText(node);
     if (current == null) return;
+    _editingFileBody = false;
     _editor.text = current;
     // **全选**，光标不是停在末尾。graphif 的双击编辑态就是这样：内容整块
     // 高亮，随手一打就把旧的换掉，不用先 Ctrl+A 或者一路退格。
@@ -1135,6 +1516,10 @@ class CanvasBoardState extends State<CanvasBoard>
       baseOffset: 0,
       extentOffset: current.length,
     );
+    // 一进编辑卡片显示的就是**源码**了（输入框里是原文），所以尺寸也要按
+    // 源码重新贴合一次：`# 标题` 渲染后是一行大字，源码只比它长两个字符，
+    // 不重贴的话输入框里的字会溢出卡片。
+    if (node is TextNode) _fitTextNode(node, rendered: false);
     setState(() => _editingId = node.id);
     // 输入框这一帧才建出来，等它挂上再要焦点。少了这一步就得先点一下输入框
     // 才能打字——「随时可以输入」靠的就是它。
@@ -1148,6 +1533,25 @@ class CanvasBoardState extends State<CanvasBoard>
     });
   }
 
+  /// 在文件卡片里改被引用笔记的正文。
+  ///
+  /// 和文字卡片共用一套输入框 / 焦点 / 隐形装饰，区别只有两条：编的是笔记
+  /// 源码（不是卡片自己的文字），以及**光标停在末尾、不全选**——这是整篇
+  /// 笔记，全选之后随手打一个字就把全文替换了。
+  void _beginFileBodyEdit(FileNode node) {
+    _editor.text = widget.noteBodies[node.file] ?? '';
+    _editor.selection = TextSelection.collapsed(offset: _editor.text.length);
+    setState(() {
+      _editingId = node.id;
+      _editingFileBody = true;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _editingId != node.id) return;
+      _editorFocus.requestFocus();
+      _editor.selection = TextSelection.collapsed(offset: _editor.text.length);
+    });
+  }
+
   void _commitEdit() {
     if (_editingEdgeId != null) {
       _commitEdgeEdit();
@@ -1156,13 +1560,45 @@ class CanvasBoardState extends State<CanvasBoard>
     final CanvasDocument? doc = _doc;
     final String? id = _editingId;
     if (id == null) return;
+    final bool fileBody = _editingFileBody;
+    String? filePath;
+    String? fileText;
     if (doc != null) {
       final CanvasNode? node = doc.nodeById(id);
-      if (node != null) _writeText(node, _editor.text);
+      if (node is FileNode && fileBody) {
+        filePath = node.file;
+        fileText = _editor.text;
+      } else if (node != null) {
+        _writeText(node, _editor.text);
+        // 退出编辑又回到渲染后的样子，尺寸得跟着重贴一次：`# 标题` 少了
+        // 两个井号、字号大一圈，宽高都会变。`rendered: true` 是显式的——
+        // 此刻 `_editingId` 还没清掉，靠缺省值会又按源码量一遍。
+        if (node is TextNode) _fitTextNode(node, rendered: true);
+      }
     }
-    setState(() => _editingId = null);
-    widget.onChanged?.call();
+    setState(() {
+      _editingId = null;
+      _editingFileBody = false;
+    });
+    if (filePath != null) {
+      // 正文在 `.md` 里，不在 `.nrs` 里：不标白板脏，写回走笔记库。
+      _writeFileBody(filePath, fileText ?? '');
+    } else {
+      widget.onChanged?.call();
+    }
     if (mounted) _focus.requestFocus();
+  }
+
+  /// 把卡片里改完的正文写回那篇笔记。
+  ///
+  /// 画面由外壳带着新的 `noteBodies` 重建时变过来；写失败就保持原样并提示
+  /// ——不能假装改成功，用户会以为 `.md` 已经变了。
+  Future<void> _writeFileBody(String path, String body) async {
+    final Future<bool> Function(String, String)? write = widget.onEditFileBody;
+    if (write == null) return;
+    final bool ok = await write(path, body);
+    if (!mounted || ok) return;
+    _notice('笔记没有保存上', '磁盘写失败，或者这篇笔记正处在冲突里');
   }
 
   // ---------------------------------------------------------- hit testing
@@ -1178,38 +1614,21 @@ class CanvasBoardState extends State<CanvasBoard>
     return null;
   }
 
-  /// 单选时才有手柄。
-  CanvasNode? get _singleSelection {
-    if (_selected.length != 1) return null;
-    return _doc?.nodeById(_selected.first);
-  }
+  /// 文件卡片标题条的屏幕矩形：顶部内边距 + 标题一行，整张卡那么宽。
+  ///
+  /// 收起卡整张都在这一条里（高 = 一行 + 上下内边距），所以点收起卡的任何
+  /// 地方都算点文件名——「点文件名展开」在收起态就是点整张卡。
+  Rect _fileTitleRect(CanvasNode node) => _rectToScreen(
+    Rect.fromLTWH(
+      node.x,
+      node.y,
+      node.width,
+      canvasCardPadding + canvasFileHeaderHeight,
+    ),
+  );
 
-  /// 手柄的命中测试在**屏幕坐标**里做：手柄是固定 6px 的视觉尺寸。
-  CanvasResizeHandle? _handleAt(Offset screen) {
-    final CanvasNode? node = _singleSelection;
-    if (node == null || _editingId != null) return null;
-    final Rect rect = _rectToScreen(node.rect);
-    if (rect.width < 12 || rect.height < 12) return null;
-    for (final CanvasResizeHandle handle in CanvasResizeHandle.values) {
-      if ((handle.at(rect) - screen).distance <= 7) return handle;
-    }
-    return null;
-  }
-
-  /// 悬停卡片四条边中点的圆点。
-  ({CanvasNode node, CanvasSide side})? _connectDotAt(Offset screen) {
-    final String? id = _hoverNodeId;
-    if (id == null || _readOnly) return null;
-    final CanvasNode? node = _doc?.nodeById(id);
-    if (node == null) return null;
-    final Rect rect = _rectToScreen(node.rect);
-    if (rect.width < 20 || rect.height < 20) return null;
-    for (final CanvasSide side in CanvasSide.values) {
-      final Offset at = anchorOf(rect, side);
-      if ((at - screen).distance <= 7) return (node: node, side: side);
-    }
-    return null;
-  }
+  bool _inFileTitle(CanvasNode node, Offset screen) =>
+      _fileTitleRect(node).contains(screen);
 
   List<CanvasEdgeVisual> _edgeVisuals() =>
       buildEdgeVisuals(document: _doc, selected: _selected);
@@ -1217,29 +1636,6 @@ class CanvasBoardState extends State<CanvasBoard>
   CanvasEdgeVisual? _edgeAt(Offset screen) {
     final Offset world = _toWorld(screen);
     return edgeAtVisual(_edgeVisuals(), world, tolerance: 6 / _camera.zoom);
-  }
-
-  /// 松手：落在另一张卡片上就建边，落在空白或自己身上就取消。
-  void _finishConnect(Offset screen) {
-    final CanvasDocument? doc = _doc;
-    final String? fromId = _connectFromId;
-    if (doc == null || fromId == null) return;
-    final CanvasNode? target = _nodeAt(_toWorld(screen));
-    if (target == null || target.id == fromId) return;
-
-    final CanvasEdge edge = CanvasEdge(
-      id: newCanvasId(),
-      fromNode: fromId,
-      toNode: target.id,
-      // 只记出发那条边；目标那头交给自动选边。
-      fromSide: _connectSide.name,
-    );
-    _mutate(() {
-      doc.edges.add(edge);
-      _selected
-        ..clear()
-        ..add(edge.id);
-    });
   }
 
   // ------------------------------------------------------------ 边标签
@@ -1250,6 +1646,7 @@ class CanvasBoardState extends State<CanvasBoard>
     setState(() {
       _editingEdgeId = visual.edge.id;
       _editingId = null;
+      _editingFileBody = false;
       _selected
         ..clear()
         ..add(visual.edge.id);
@@ -1289,6 +1686,7 @@ class CanvasBoardState extends State<CanvasBoard>
 
   void _onPointerDown(PointerDownEvent e) {
     _lastPointer = e.localPosition;
+    _clickToggleId = null;
 
     // 浮层自己吃掉的点击不往画布传：点搜索框不该清掉选中，点面板里的输入
     // 框也不该把正在编辑的卡片收掉。
@@ -1357,36 +1755,7 @@ class CanvasBoardState extends State<CanvasBoard>
       return;
     }
 
-    // 1. 手柄
-    final CanvasResizeHandle? handle = _handleAt(e.localPosition);
-    if (handle != null) {
-      final CanvasNode node = _singleSelection!;
-      _pushHistory();
-      setState(() {
-        _mode = _Interaction.resizing;
-        _handle = handle;
-        _resizeId = node.id;
-        _resizeStart = node.rect;
-        _dragFromScreen = e.localPosition;
-      });
-      return;
-    }
-
-    // 2. 连线圆点
-    final ({CanvasNode node, CanvasSide side})? dot = _connectDotAt(
-      e.localPosition,
-    );
-    if (dot != null) {
-      setState(() {
-        _mode = _Interaction.connecting;
-        _connectFromId = dot.node.id;
-        _connectSide = dot.side;
-        _connectCursor = e.localPosition;
-      });
-      return;
-    }
-
-    // 3. 卡片
+    // 1. 卡片
     final CanvasNode? node = _nodeAt(world);
     if (node != null) {
       if (_isDoubleTap(e.localPosition, node.id)) {
@@ -1403,7 +1772,13 @@ class CanvasBoardState extends State<CanvasBoard>
         }
         switch (node) {
           case FileNode(:final String file):
-            widget.onOpenFile?.call(file);
+            // 标题条双击 = 打开那篇笔记；正文区双击 = 就在卡里改。
+            // 收起状态整张卡都是标题条，所以双击收起卡是打开笔记。
+            if (!node.expanded || _inFileTitle(node, e.localPosition)) {
+              widget.onOpenFile?.call(file);
+            } else {
+              _beginFileBodyEdit(node);
+            }
           case LinkNode(:final String url):
             widget.onOpenLink?.call(url);
           default:
@@ -1446,10 +1821,17 @@ class CanvasBoardState extends State<CanvasBoard>
           }
         }
       });
+      // 点标题条 = 展开 / 收起，但只在**松手没挪动**时算：按下就切的话，
+      // 想拖走这张卡的第一帧就会把它收起来。Ctrl 加选不动它。
+      if (!additive &&
+          node is FileNode &&
+          _inFileTitle(node, e.localPosition)) {
+        _clickToggleId = node.id;
+      }
       return;
     }
 
-    // 4. 连线。放在卡片后面：线画在卡片下面，压到卡片上的那一段
+    // 2. 连线。放在卡片后面：线画在卡片下面，压到卡片上的那一段
     // 应该点中卡片，而不是点中一条看不见的线。
     final CanvasEdgeVisual? edge = _edgeAt(e.localPosition);
     if (edge != null) {
@@ -1464,7 +1846,7 @@ class CanvasBoardState extends State<CanvasBoard>
       return;
     }
 
-    // 5. 空白
+    // 3. 空白
     if (_isDoubleTap(e.localPosition, '')) {
       createCard(at: world);
       return;
@@ -1510,10 +1892,6 @@ class CanvasBoardState extends State<CanvasBoard>
         _dragTo(e.localPosition);
       case _Interaction.dragging:
         _dragTo(e.localPosition);
-      case _Interaction.resizing:
-        _resizeTo(e.localPosition);
-      case _Interaction.connecting:
-        setState(() => _connectCursor = e.localPosition);
     }
   }
 
@@ -1532,43 +1910,12 @@ class CanvasBoardState extends State<CanvasBoard>
     });
   }
 
-  void _resizeTo(Offset screen) {
-    final CanvasDocument? doc = _doc;
-    final String? id = _resizeId;
-    final CanvasResizeHandle? handle = _handle;
-    if (doc == null || id == null || handle == null) return;
-    final CanvasNode? node = doc.nodeById(id);
-    if (node == null) return;
-    final Offset delta = _toWorld(screen) - _toWorld(_dragFromScreen);
-    final Rect next = resizeRect(
-      _resizeStart,
-      handle,
-      delta,
-      minSize: canvasCardMinSide,
-    );
-    setState(() {
-      node.x = next.left;
-      node.y = next.top;
-      node.width = next.width;
-      node.height = next.height;
-    });
-  }
-
-  void _onPointerUp(PointerEvent e) {
+  void _onPointerUp(PointerEvent e, {bool cancelled = false}) {
     if (_resizingDetails) {
       setState(() => _resizingDetails = false);
       return;
     }
     if (_mode == _Interaction.idle) return;
-    if (_mode == _Interaction.connecting) {
-      _finishConnect(e.localPosition);
-      setState(() {
-        _mode = _Interaction.idle;
-        _connectFromId = null;
-        _connectCursor = null;
-      });
-      return;
-    }
     if (_mode == _Interaction.marquee) {
       _selectInMarquee();
       setState(() {
@@ -1579,17 +1926,25 @@ class CanvasBoardState extends State<CanvasBoard>
       return;
     }
     final bool moved = _mode == _Interaction.dragging && _dragMoved;
-    final bool resized = _mode == _Interaction.resizing;
+    // 一次「点」= 按在标题条上、松手没挪动、也没被系统取消。
+    final String? toggleId =
+        _mode == _Interaction.maybeDrag && !moved && !cancelled
+        ? _clickToggleId
+        : null;
 
     setState(() {
       _mode = _Interaction.idle;
       _marqueeStart = null;
       _marqueeEnd = null;
-      _handle = null;
-      _resizeId = null;
       _dragOrigins.clear();
     });
-    if (moved || resized) widget.onChanged?.call();
+    _clickToggleId = null;
+    if (moved) widget.onChanged?.call();
+    if (toggleId != null) {
+      final CanvasNode? node = _doc?.nodeById(toggleId);
+      // 历史已经在按下时记过了，这里不重复记一步。
+      if (node is FileNode) _toggleFileExpanded(node, record: false);
+    }
   }
 
   /// 滚轮 = **缩放**：往上放大、往下缩小，以光标为锚点。
@@ -1618,7 +1973,7 @@ class CanvasBoardState extends State<CanvasBoard>
       }
       return;
     }
-    // 浮层上面不放画布的光标（抓手、连线点、缩放手柄都不该在那儿出现）。
+    // 浮层上面不放画布的光标（抓手、详细信息图标都不该在那儿出现）。
     if (_overOverlay(e.localPosition)) {
       if (_cursor != SystemMouseCursors.basic) {
         setState(() => _cursor = SystemMouseCursors.basic);
@@ -1631,47 +1986,14 @@ class CanvasBoardState extends State<CanvasBoard>
       }
       return;
     }
-    final CanvasResizeHandle? handle = _handleAt(e.localPosition);
-    final ({CanvasNode node, CanvasSide side})? dot = _connectDotAt(
-      e.localPosition,
-    );
     final CanvasNode? over = _nodeAt(
       _toWorld(e.localPosition),
       tolerance: 1 / _camera.zoom,
     );
-
-    final MouseCursor next = handle != null
-        ? _cursorFor(handle)
-        : (dot != null
-              ? SystemMouseCursors.precise
-              : (_spaceHeld
-                    ? SystemMouseCursors.grab
-                    : (over != null
-                          ? SystemMouseCursors.click
-                          : SystemMouseCursors.basic)));
-    final String? hoverId = dot?.node.id ?? over?.id;
-    if (next != _cursor || hoverId != _hoverNodeId) {
-      setState(() {
-        _cursor = next;
-        _hoverNodeId = hoverId;
-      });
-    }
-  }
-
-  static MouseCursor _cursorFor(CanvasResizeHandle handle) {
-    if (handle == CanvasResizeHandle.topLeft ||
-        handle == CanvasResizeHandle.bottomRight) {
-      return SystemMouseCursors.resizeUpLeftDownRight;
-    }
-    if (handle == CanvasResizeHandle.topRight ||
-        handle == CanvasResizeHandle.bottomLeft) {
-      return SystemMouseCursors.resizeUpRightDownLeft;
-    }
-    if (handle == CanvasResizeHandle.topCenter ||
-        handle == CanvasResizeHandle.bottomCenter) {
-      return SystemMouseCursors.resizeUpDown;
-    }
-    return SystemMouseCursors.resizeLeftRight;
+    final MouseCursor next = _spaceHeld
+        ? SystemMouseCursors.grab
+        : (over != null ? SystemMouseCursors.click : SystemMouseCursors.basic);
+    if (next != _cursor) setState(() => _cursor = next);
   }
 
   void _onPanZoomStart(PointerPanZoomStartEvent e) {
@@ -1705,15 +2027,31 @@ class CanvasBoardState extends State<CanvasBoard>
             ..add(node.id);
         }
       });
-      _showCardMenu(e.position);
+      _showCardMenu(e.position, node);
       return;
     }
     _showBoardMenu(e.position);
   }
 
-  /// 右键卡片：换色 + 删除。
-  Future<void> _showCardMenu(Offset global) async {
+  /// 右键卡片：换色 + 删除；文件卡片多两项（展开 / 收起、打开笔记）。
+  Future<void> _showCardMenu(Offset global, CanvasNode node) async {
     final String? picked = await _popup(global, <PopupMenuEntry<String>>[
+      if (node is FileNode) ...<PopupMenuEntry<String>>[
+        PopupMenuItem<String>(
+          value: 'toggle',
+          height: 34,
+          child: Text(
+            node.expanded ? '收起' : '展开',
+            style: const TextStyle(fontSize: AppText.ui),
+          ),
+        ),
+        const PopupMenuItem<String>(
+          value: 'open',
+          height: 34,
+          child: Text('打开笔记', style: TextStyle(fontSize: AppText.ui)),
+        ),
+        const PopupMenuDivider(),
+      ],
       for (final String? value in canvasColorChoices)
         PopupMenuItem<String>(
           value: 'color:${value ?? ''}',
@@ -1737,6 +2075,16 @@ class CanvasBoardState extends State<CanvasBoard>
       ),
     ]);
     if (!mounted || picked == null) return;
+    if (picked == 'toggle') {
+      // 撤销栈里拿到的是快照，这里的 node 对象可能已经作废：按 id 现取。
+      final CanvasNode? live = _doc?.nodeById(node.id);
+      if (live is FileNode) _toggleFileExpanded(live);
+      return;
+    }
+    if (picked == 'open') {
+      if (node is FileNode) widget.onOpenFile?.call(node.file);
+      return;
+    }
     if (picked == 'delete') {
       deleteSelection();
       return;
@@ -2106,7 +2454,7 @@ class CanvasBoardState extends State<CanvasBoard>
             : doc?.nodeById(_editingId!);
         final CanvasEdgeVisual? editingEdge = _editingEdge;
 
-        return Focus(
+        final Widget board = Focus(
           focusNode: _focus,
           onKeyEvent: _onKey,
           child: MouseRegion(
@@ -2118,7 +2466,8 @@ class CanvasBoardState extends State<CanvasBoard>
               onPointerDown: _onPointerDown,
               onPointerMove: _onPointerMove,
               onPointerUp: _onPointerUp,
-              onPointerCancel: _onPointerUp,
+              onPointerCancel: (PointerCancelEvent e) =>
+                  _onPointerUp(e, cancelled: true),
               onPointerHover: _onPointerHover,
               onPointerSignal: _onPointerSignal,
               onPointerPanZoomStart: _onPanZoomStart,
@@ -2138,12 +2487,10 @@ class CanvasBoardState extends State<CanvasBoard>
                             palette: p,
                             selected: Set<String>.of(_selected),
                             editingId: _editingId,
-                            hoverNodeId: _hoverNodeId,
-                            connectFromId: _connectFromId,
-                            connectSide: _connectSide,
-                            connectCursor: _connectCursor,
                             marquee: _marqueeWorld,
                             textCache: _textCache,
+                            markdownCache: _markdownCache,
+                            fileBodies: widget.noteBodies,
                             canEdit: !_readOnly,
                             emptyHint: _emptyHint(doc),
                           ),
@@ -2154,7 +2501,10 @@ class CanvasBoardState extends State<CanvasBoard>
                     ),
                     // 编辑态：只在这张卡片的位置盖一个真输入框。显示仍由
                     // 画笔画，输入法、选区、光标交给 Flutter。
-                    if (editing != null) _editorOverlay(p, editing),
+                    if (editing is FileNode)
+                      _fileBodyEditor(p, editing)
+                    else if (editing != null)
+                      _editorOverlay(p, editing),
                     if (editingEdge != null) _edgeLabelEditor(p, editingEdge),
                     if (_searchOpen) _searchOverlay(p),
                     if (_detailsNode case final CanvasNode node)
@@ -2164,6 +2514,18 @@ class CanvasBoardState extends State<CanvasBoard>
               ),
             ),
           ),
+        );
+
+        // 拖放区域**和画布一样大**：`event.position.local` 直接就是画布坐标，
+        // 卡片才会落在松手的地方。测试进程里没有原生拖放层，建起来会异步抛
+        // 异常（连 catch 都接不住），所以那里干脆不建。
+        if (!systemDragAndDropAvailable) return board;
+        return DropRegion(
+          formats: const <DataFormat>[Formats.fileUri],
+          hitTestBehavior: HitTestBehavior.translucent,
+          onDropOver: (DropOverEvent event) => DropOperation.copy,
+          onPerformDrop: _onDropFiles,
+          child: board,
         );
       },
     );
@@ -2230,13 +2592,18 @@ class CanvasBoardState extends State<CanvasBoard>
           textAlign: centered ? TextAlign.center : TextAlign.start,
           cursorWidth: cursorWidth,
           cursorColor: p.accent,
-          style: TextStyle(
-            fontSize: fontSize,
-            height: isGroup ? 1.4 : 1.6,
-            color: ink,
-            fontFamily: AppFonts.ui,
-            fontFamilyFallback: AppFonts.uiFallback,
-          ),
+          // 源码的排版和量尺寸共用一份（`canvasCardTextStyle`）：字号、行高、
+          // 字体各写一套，一进编辑字就跳。渲染态正文走 `canvas_markdown.dart`，
+          // 不在这里。分组标题是另一回事——它只有一行，行高比正文紧。
+          style: isGroup
+              ? TextStyle(
+                  fontSize: fontSize,
+                  height: 1.4,
+                  color: ink,
+                  fontFamily: AppFonts.ui,
+                  fontFamilyFallback: AppFonts.uiFallback,
+                )
+              : canvasCardTextStyle(scale * zoom, color: ink),
           decoration: InputDecoration(
             isDense: true,
             isCollapsed: true,
@@ -2267,6 +2634,63 @@ class CanvasBoardState extends State<CanvasBoard>
               _mutate(() => _writeText(node, value), record: false),
           onTapOutside: (_) => _commitEdit(),
           onSubmitted: isGroup ? (_) => _commitEdit() : null,
+        ),
+      ),
+    );
+  }
+
+  /// 文件卡片正文的输入框：只盖在标题条下面那块正文区。
+  ///
+  /// 和文字卡片一样是**隐形**的（卡片本身就是那个框），只是这里编的是被
+  /// 引用笔记的源码，多行、超出就自己滚。标题条不盖——它是展开 / 收起的
+  /// 按钮，不是正文。
+  Widget _fileBodyEditor(AppPalette p, FileNode node) {
+    final double pad = canvasCardPadding;
+    final Rect rect = _rectToScreen(
+      Rect.fromLTRB(
+        node.x + pad,
+        node.y + pad + canvasFileHeaderHeight,
+        node.x + node.width - pad,
+        node.y + node.height - pad,
+      ),
+    );
+    if (rect.width <= 4 || rect.height <= 4) return const SizedBox.shrink();
+    final double zoom = _camera.zoom;
+    final CellColor? color = canvasCellColor(node.color);
+    final Color ink = canvasCardInk(p, color);
+    // 和画笔同样的光标余量：`RenderEditable` 会先扣掉「光标宽 + 1」，不补
+    // 回来，输入框就比卡片少排几个像素（和 [_editorOverlay] 同一个坑）。
+    final double cursorWidth = math.max(1, 1.6 * zoom);
+    final double rightInset = cursorWidth + 1 + canvasTextFitSlack;
+    return Positioned.fromRect(
+      rect: rect,
+      child: Container(
+        padding: EdgeInsets.only(right: rightInset),
+        child: TextField(
+          controller: _editor,
+          focusNode: _editorFocus,
+          maxLines: null,
+          // 固定高度 + 内部滚动：正文比卡片长的时候滚，不是把输入框撑出卡片。
+          expands: true,
+          cursorWidth: cursorWidth,
+          cursorColor: p.accent,
+          style: canvasCardTextStyle(zoom, color: ink),
+          // 隐形（见 [_editorOverlay] 上面那条警告：`InputDecoration.collapsed`
+          // 挡不住主题里的 `filled`）。
+          decoration: const InputDecoration(
+            isDense: true,
+            isCollapsed: true,
+            filled: false,
+            fillColor: Colors.transparent,
+            contentPadding: EdgeInsets.zero,
+            border: InputBorder.none,
+            enabledBorder: InputBorder.none,
+            focusedBorder: InputBorder.none,
+            disabledBorder: InputBorder.none,
+            errorBorder: InputBorder.none,
+            focusedErrorBorder: InputBorder.none,
+          ),
+          onTapOutside: (_) => _commitEdit(),
         ),
       ),
     );
@@ -2343,7 +2767,7 @@ class CanvasBoardState extends State<CanvasBoard>
 
   // ------------------------------------------------------------ 浮层：搜索
 
-  /// 搜索框。贴在画布上边、水平居中，压在上边标尺下面一点。
+  /// 搜索框。贴在画布上边、水平居中。
   Widget _searchOverlay(AppPalette p) {
     final bool empty = _search.text.trim().isEmpty;
     final int total = _searchHits.length;

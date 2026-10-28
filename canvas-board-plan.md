@@ -1,8 +1,9 @@
 # 白板（Canvas）· 架构与实施方案
 
-> 状态：**已实现并验收通过（2026-10-27 重构完成；同日二轮视觉换成 graphif 风，见 §14.3）**。
-> `flutter analyze lib test` 无问题，`flutter test --exclude-tags perf` **1483 条全绿**，
-> 其中白板相关 **201 条**。
+> 状态：**已实现并验收通过（2026-10-27 重构完成；同日二轮视觉换成 graphif 风，见 §14.3；
+> 2026-10-28 九轮卡片正文与编辑器逐项对齐，见 §14.10 / §16.7）**。
+> `flutter analyze lib test` 无问题，`flutter test --exclude-tags perf` **1563 条全绿**，
+> 其中白板相关 **265 条**。
 > 目标：在 nrs-v5 里做一块**无限画布**白板。文件后缀 **`.nrs`**，内容是我们自己的 **NRS v1** 格式。
 > 面向：接手的实施 AI / 工程师。文中路径均对应仓库 `c:\Users\Kotori\Desktop\nrs-v5`。
 
@@ -43,11 +44,11 @@
 | C1 | 功能栏多一颗「白板」按钮：**直接新建**一块 `.nrs` 并切过去 |
 | C2 | 主区多一个「白板」视图，与「图谱」并列在页签条末尾（单实例） |
 | C3 | 平移：中键拖 / 空格 + 左键拖 / `WASD`；缩放：**滚轮**（往上放大、往下缩小，以光标为锚点，平滑过渡） |
-| C4 | 坐标网格随缩放走 1/2/5 阶梯（屏幕步长恒在 64–640px），上 / 左两条标尺带写整数刻度 |
+| C4 | 坐标网格随缩放走 1/2/5 阶梯（屏幕步长恒在 64–640px），整数坐标写在世界原点的两条轴上 |
 | C5 | 双击空白 = 新建文字卡片，直接进入编辑（卡片中心落在双击处） |
-| C6 | 卡片可拖动、八向缩放（四角 + 四边中点），最小 40×40，默认 250×120 |
+| C6 | 卡片可拖动；尺寸跟着内容自动贴合（**没有缩放手柄**），默认 250×120 |
 | C7 | 六种预设色（`"1"`–`"6"`），右键菜单换色 |
-| C8 | 从卡片四边中点圆点拖出落到另一张卡片 = 建边；贝塞尔曲线，可带箭头与文字标签 |
+| C8 | 连线：贝塞尔曲线，可带箭头与文字标签（可选中 / 改标签 / 删除）。**新建连线的 UI 待重新设计**，旧的「从圆点拖出建边」已移除 |
 | C9 | 框选（拖空白）、`Ctrl` 点选、多选整组拖动 / 删除 |
 | C10 | 键盘：`Delete` / `Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y` / `Ctrl+A` / `Ctrl+C` / `Ctrl+V` / `Ctrl+D` / 方向键微调 / `Ctrl+0` / `Ctrl+Shift+H`；视野：`[` `]` / `PageUp` `PageDown` / `Home` `End` / `F` |
 | C11 | **不吸附**：坐标是自由浮点，落盘只压三位小数 |
@@ -60,7 +61,7 @@
 ### 2.2 不做
 
 - ❌ 网页卡片内嵌真实网页（只显示标题 + 域名 + 外链打开）。
-- ❌ 卡片内的完整 Markdown 渲染（一期纯文本 + 基础行内样式）。
+- ❌ 卡片里的**图片渲染**（图片行只显示替代文字；其余 markdown 已与编辑器逐项一致，见 §14.10 #92）。
 - ❌ 多块白板同时开（多页签）。白板是单实例主区视图。
 - ❌ 移动端 / 触屏双指手势。
 - ❌ 吸附 / 对齐辅助线 / 分布对齐（本轮明确删掉）。
@@ -161,17 +162,18 @@ world  = (screen - stage.center) / zoom + center
 
 | 操作 | 行为 |
 |---|---|
-| 单击卡片 | 选中（外圈 accent 粗描边 + 八向手柄） |
+| 单击卡片 | 选中（外圈 accent 粗描边）。**没有缩放手柄**：卡片尺寸只由内容决定 |
 | `Ctrl` + 单击 | 加选 / 减选 |
 | 双击卡片 | 文字 / 分组 → 进编辑；文件 / 链接 → 打开 |
 | `Ctrl` + 双击卡片 | **打开详细信息面板**（任何类型的卡片都一样，文件/链接看到的是路径/网址） |
 | 点选中卡片右上角的小图标 | 同上（那个小图标骑在右上角上，一半在卡片外） |
 | `Enter`（单选时） | 进编辑（文件 / 链接卡片没有可编辑文字，不响应） |
-| 拖动卡片本体 | 移动（多选时整组）；**不吸附** |
-| 拖手柄 | 缩放；最小 40×40，撞到最小尺寸时对面边不动 |
+| 拖动卡片本体 | 移动（多选时整组）；**不吸附**。拖角 / 拖边也是移动，不会改宽高 |
+| 点文件卡片标题条 | 展开 / 收起（展开 = 标题 + 整篇正文；收起 = 一行文件名） |
+| 文件卡片尺寸 | 收起：一行标题；展开：整篇正文，宽上限 `canvasTextMaxWidth` = 420，**高度没有上限**——内容全部显示 |
 | `Delete` | 删除选中卡片，连带删掉它的边 |
 | 右键卡片 | 换色 / 复制 / 删除 / 置顶置底 |
-| 悬停卡片 | 四边中点浮出四个连线圆点；右侧出现「⋯」 |
+| 悬停卡片 | 光标变手；不再浮出连线圆点（2026-10-28 七轮移除） |
 
 ### 4.2.1 浮层（搜索 / 详细信息）
 
@@ -181,7 +183,7 @@ world  = (screen - stage.center) / zoom + center
 
 | 浮层 | 位置 | 行为 |
 |---|---|---|
-| 搜索（`Ctrl+F`） | 上边标尺下方、水平居中，360×42 | 边打边跳：命中第一张就选中并把镜头移过去（只移不改缩放）。`Enter` 下一个、`Shift+Enter` 上一个（循环）、`Esc` 关掉 |
+| 搜索（`Ctrl+F`） | 贴着画布上边（12px）、水平居中，360×42 | 边打边跳：命中第一张就选中并把镜头移过去（只移不改缩放）。`Enter` 下一个、`Shift+Enter` 上一个（循环）、`Esc` 关掉 |
 | 详细信息 | 默认贴舞台右下角，296×352 | 文字 / 颜色 / X / Y / 宽 / 高；**右下角握把能拖大小**（240–620 × 220–720）。`Esc` 关掉 |
 
 面板**没有自己的目标节点**：它永远显示当前那一张单选，选中没了就收起。
@@ -191,12 +193,13 @@ world  = (screen - stage.center) / zoom + center
 
 | 操作 | 行为 |
 |---|---|
-| 从圆点拖出 | 跟随光标的贝塞尔预览 |
-| 松手在卡片上 | 建边，`fromSide` = 出发圆点所在边 |
-| 松手在空白 / 自己身上 | 取消（不建自环） |
 | 单击边 | 选中（变粗 + 端点圆点） |
 | 双击边 | 编辑标签（一行文字，居中压线，带底色描边） |
 | 选中边按 `Delete` | 只删边 |
+
+> **新建连线的 UI 暂时没有**（2026-10-28 七轮）：四边中点的连线圆点已全部移除，
+> 用户要重新设计一版再上。文档层（`fromSide` / `toSide` / 箭头 / 标签）原样保留，
+> 已有的边照常渲染、命中、编辑、删除。
 
 ### 4.4 键盘
 
@@ -213,7 +216,7 @@ world  = (screen - stage.center) / zoom + center
 | `Ctrl+F` | 打开搜索框（见 §4.2.1） |
 | `Ctrl+Enter` | 打开详细信息面板 |
 | `Enter` | 单选时进编辑（分组标题是单行，编辑中按 `Enter` 就是「改完了」） |
-| `Ctrl+=` / `Ctrl+-` | 选中卡片**调字号**（`canvasResizeStep` = 1.25，**锚在中心**，不会往右下角爬）。文字卡片随之重新贴合，看起来是整张卡变大；**没有上下限** |
+| `Ctrl+=` / `Ctrl+-` | 选中卡片**调字号**（`canvasResizeStep` = 1.25，**锚在中心**，不会往右下角爬）。文字卡片随之重新贴合，看起来是整张卡变大；**没有上下限**。文件卡片没有可调的框，按内容重贴（等于不变） |
 | `Esc` | 退出编辑 / 关浮层 / 清空选择 |
 | `空格`（按住） | 抓手模式 |
 | `W/A/S/D` | 惯性平移 |
@@ -233,22 +236,22 @@ world  = (screen - stage.center) / zoom + center
 > 一句话差别：**白板是一块坐标系，不是一张点阵纸；卡片靠一根描边立住，
 > 不靠色块和投影。**
 
-### 5.1 画布：坐标网格 + 标尺
+### 5.1 画布：坐标网格 + 轴上数字
 
 | 元素 | 值 |
 |---|---|
 | 背景 | `p.canvas`（「凹陷的工作台」） |
-| 主格 | `canvasGridMajorStep(zoom)` 走 1/2/5 阶梯（`10…100000`），1px `gridMajor`（`textPrimary`@8.5%），**带刻度数字** |
-| 次格 | **没有**。一格就是标尺上相邻两个数字之间的距离，格子里不再切小格（2026-10-27 按用户要求去掉，`canvasGridMinorStep` / `gridMinor` 已删） |
-| 阶梯规则 | 主格屏幕步长恒落在 `[64, 640)`：`zoom=1` 时 100，缩到 8% 时 1000，放到 800% 时 10。所以刻度永远是整数，也不会缩小时画上百万条线。缩放本身**没有上下限**（见 §3.1），阶梯走完（`< 8px` 一格）就不再画网格 |
+| 主格 | `canvasGridMajorStep(zoom)` 走 1/2/5 阶梯（`10…100000`），1px `gridMajor`（`textPrimary`@8.5%），**轴上写坐标数字** |
+| 次格 | **没有**。一格就是轴上相邻两个数字之间的距离，格子里不再切小格（2026-10-27 按用户要求去掉，`canvasGridMinorStep` / `gridMinor` 已删） |
+| 阶梯规则 | 主格屏幕步长恒落在 `[64, 640)`：`zoom=1` 时 100，缩到 8% 时 1000，放到 800% 时 10。所以坐标数字永远是整数，也不会缩小时画上百万条线。缩放本身**没有上下限**（见 §3.1），阶梯走完（`< 8px` 一格）就不再画网格 |
 | 原点十字 | `x=0` / `y=0` 两条，`axis`（accent@24%） |
-| 上标尺 | 高 20px（`canvasRulerThickness`）的不透明带，`canvas` 底色 + 内侧 1px `rulerEdge`；每个主格一根 4px 小刻度 + 居中数字（10px `rulerText`） |
-| 左标尺 | 宽 32px（`canvasRulerSideWidth`），数字**右对齐**——`-2000` 这种五位数在 20px 带子里放不下 |
+| 坐标数字 | 10px `axisLabel`（`textTertiary`）。x 的数字**居中压在水轴上方** 3px（`canvasAxisLabelGap`），y 的数字**贴在竖轴右侧**、垂直居中；两根轴都在屏幕里时原点只写一个 `0`（x 那组），y 那组跳过 |
+| 数字的显隐 | 数字是轴的刻度：那根轴滚出屏幕，那一组数字一起离开。主格屏幕步长 `< 32px` 时数字会互相压住，整组不写 |
 | 线的锐度 | 网格线统一压在 `.5` 像素上，1px 不抗锯齿成两像素灰边 |
 | 选区框 | 1px 虚线 accent@70%，内部 `accentSoft`@40% |
 
-标尺画在**内容之上**（`_paintScene` 里 restore 之后），内容滚到带子下面会被
-截断——像尺子压着纸，而不是浮在纸上的水印。
+数字画在**内容之前**：它是背景的一部分，卡片压上去就盖住，不会像界面
+chrome 一样浮在卡片上面（2026-10-28 八轮从画布边上的标尺带改过来）。
 
 ### 5.2 卡片（全部自绘）
 
@@ -261,11 +264,12 @@ world  = (screen - stage.center) / zoom + center
 | 编辑中 | 那圈实线换成**虚线**（1.5px，6/4 间距）：实线说「选中」，虚线说「这张卡在吃键盘」 |
 | 投影 | **没有**。卡片靠边线立住 |
 | 内边距 | 12px（`canvasCardPadding`） |
-| 文字 | `AppText.ui`（13px）、行高 1.6，在世界坐标排 |
+| 文字（渲染态） | **与打开的正文编辑器同一份排版**：`layoutLines` + `LiveLineStyle` + `LiveTableBlocks`，标题阶梯、高亮、分隔线、序号槽位、代码底片、表格网格逐项一致。在参考字号 15.5px 下排版，绘制时整体缩放到卡片字号 `AppText.ui × scale`（默认 13px），固定像素（圆点 5、复选框 15、内缩 16）按同一比例缩放 |
+| 文字（编辑态） | 输入框里是**源码**：`AppText.ui`（13px）、行高 1.6，在世界坐标排；退出编辑再按渲染结果重贴 |
 | 空卡片 | 正中三个点「•••」（不写「空卡片」这种说明书）。**编辑态也是这三个点**，输入框只出一根光标——两边都画就成了两层占位，位置也一定会差一点点 |
 | 贴合内容 | 文字卡片跟着文字走，**宽高都双向**：字多了变宽、删了字缩回来，删光回到三个点的宽度。宽度上限 `canvasTextMaxWidth` = 420，超了按上限折行、高度增长。宽度额外留 `canvasTextFitSlack` = 1px，避免正好卡在折行临界点 |
-| 最小尺寸 | 40×40（`canvasMinSize`）**只管手拖和键盘改框，不管贴合**。文字卡片没有自己的尺寸常量——它和打完字的卡片走同一套贴合：宽 = `canvasEmptyDots`（`•••`）量出来的宽 + 内边距，高 = 一行正文；**贴合没有下限**，字号缩一半卡片就窄一半。文件 / 链接卡片仍按 `canvasDefaultWidth` = 250 |
-| 缩放手柄 | 6×6 圆点，`p.accent` + 1px `p.surface` 描边；只在选中时画（屏幕尺寸恒定） |
+| 最小尺寸 | 40×40（`canvasMinSize`）**只管链接卡片键盘改框和落卡兜底，不管贴合**。文字卡片没有自己的尺寸常量——它和打完字的卡片走同一套贴合：宽 = `canvasEmptyDots`（`•••`）量出来的宽 + 内边距，高 = 一行正文；**贴合没有下限**，字号缩一半卡片就窄一半。链接卡片仍按 `canvasDefaultWidth` = 250 |
+| 文件卡片尺寸 | 全自动：收起 = 图标 + 文件名一行；展开 = 标题 + **整篇正文**。宽 = 正文最长一行（上限 `canvasTextMaxWidth` = 420）+ 内边距，高 = 正文排出来多高 + 标题行，**没有上限**。笔记改了就跟着重贴（正文长一行、卡片长一行），不存在裁剪 |
 | 详情小图标 | 16×16 圆角方框骑在右上角上（`canvasDetailsIconRect`），画和命中测试共用它 |
 | 文件 / 链接图标 | Lucide 图标字形（14px）由 `TextPainter` 画 |
 
@@ -293,6 +297,11 @@ world  = (screen - stage.center) / zoom + center
 变成一块调色盘，但换色仍然一眼看得出来。换色菜单里的色点用
 `canvasSwatchFill`（实心 `tableFillColor`）——菜单里必须是实色块，否则六个
 选项长得一模一样。
+
+**渲染态的 markdown 正文不染色**：它和打开的笔记是同一份排版，字色、高亮、
+标签底片都取编辑器的那一套（`textPrimary` / `highlightColors` / `accentSoft`）。
+给正文再套一层卡片色，就等于「同一段字在白板里变了个颜色」——那正是这一轮
+要消灭的不一致。彩色卡片染的是边框和标题/图标那一行。
 
 ### 5.4 分组：Section 框
 
@@ -466,24 +475,25 @@ abstract class CanvasStore {
 整块白板只有**一个** `CustomPaint`。绘制顺序：
 
 ```
-坐标网格：次格 → 主格 → 原点十字（屏幕坐标）
+坐标网格：主格 → 原点十字 → 轴上的坐标数字（屏幕坐标）
   ↓ save；translate(舞台中心) → scale(zoom) → translate(-center)   ← 进入世界坐标
 连线 + 箭头 + 边标签（世界坐标，标签字号 ×1/zoom）
 分组框（按面积从大到小：外层先画）
 节点（文档顺序正序；文字、图标都在世界坐标排）
   ↓ restore                                                        ← 回到屏幕坐标
-坐标标尺：上 20px / 左 32px 的不透明带（压在内容上）
-连线圆点 / 缩放手柄 / 框选框 / 空板提示（屏幕坐标，尺寸恒定）
+详情小图标 / 框选框 / 空板提示（屏幕坐标，尺寸恒定）
 ```
 
 ### 8.2 三条关键约定
 
 1. **内容画在世界坐标**：一次 canvas 变换，几何直接写世界坐标。文字也在世界坐标排，
    Skia 按当前矩阵栅格化字形到设备分辨率，所以放大**不会糊**。
-2. **装饰件画在屏幕坐标**：手柄、圆点、框选、边标签、线宽、箭头、边框粗细，都按
+2. **装饰件画在屏幕坐标**：详情小图标、框选、边标签、线宽、箭头、边框粗细，都按
    `_px = 1 / zoom` 折算——屏幕上永远这么多像素，不跟着缩放变胖变细。
-3. **文字排版要缓存**：`CanvasTextCache` 按节点 id 缓存 `TextPainter`，内容 / 宽度 /
-   颜色 / 对齐 / 最大行数变了才重排；`prune()` 丢掉已删节点，`dispose()` 由 State 负责。
+3. **文字排版要缓存**：渲染态正文走 `CanvasMarkdownCache`，按「节点 id + 用途」缓存整份
+   排版，文字 / 倍率 / 宽度 / 主题变了才重排，**量尺寸和绘制共用同一份终稿**；标题、图标、
+   边标签等零散文字走 `CanvasTextCache`，按节点 id 缓存 `TextPainter`，内容 / 宽度 / 颜色 /
+   对齐 / 最大行数变了才重排。清理统一交给 State 的 `dispose()`。
 
 `shouldRepaint => true`：文档是**原地修改**的（拖动直接改 `node.x`），拿引用比会漏判。
 
@@ -511,13 +521,11 @@ abstract class CanvasStore {
 
 ### 9.1 单层 `Listener` + 显式状态机
 
-不用嵌套 `GestureDetector`（卡片 / 手柄 / 圆点 / 边 / 空白会互相抢手势）。
+不用嵌套 `GestureDetector`（卡片 / 边 / 空白会互相抢手势）。
 一层 `Listener` 收全部原始指针事件，自己命中测试：
 
 ```
-idle ──down on 手柄────→ resizing
-     ──down on 圆点────→ connecting
-     ──down on 卡片────→ maybeDrag ──move > 3px──→ dragging
+idle ──down on 卡片────→ maybeDrag ──move > 3px──→ dragging
      ──down on 边──────→ 选中边（等双击判标签）
      ──down on 空白────→ marquee / panning（看中键 / 空格）
 ```
@@ -529,11 +537,11 @@ idle ──down on 手柄────→ resizing
 
 从**上到下**问，第一个命中的赢：
 
-1. 缩放手柄：**单选**节点的 8 个，容差 7px（屏幕坐标，卡片屏幕边短于 12px 时不出手柄）；
-2. 连线圆点：仅当该卡片正在悬停，四条边中点 7px（屏幕坐标）；
-3. 节点：矩形 `contains`，**倒序**遍历（后画的在上）；悬停时容差 `1/zoom`（`Rect.contains` 不含右 / 下边界）；
-4. 边：点到贝塞尔的距离 < 6px / zoom（20 段折线近似）；
-5. 空白。
+1. 节点：矩形 `contains`，**倒序**遍历（后画的在上）；悬停时容差 `1/zoom`（`Rect.contains` 不含右 / 下边界）；
+2. 边：点到贝塞尔的距离 < 6px / zoom（20 段折线近似）；
+3. 空白。
+
+（缩放手柄与连线圆点已在 2026-10-28 七轮移除，命中测试里不再有这两档。）
 
 拖动分组时按**中心包含**判断子节点归属（`group.rect.contains(child.rect.center)`），
 嵌套分组也一起带走。
@@ -628,10 +636,12 @@ class CanvasController extends ChangeNotifier {
 | 文件 | 状态 | 说明 |
 |---|---|---|
 | `lib/core/utils/canvas_document.dart` | 重写 | NRS v1 模型 + `parseCanvas` / `encodeCanvas` / `newCanvasId` |
-| `lib/core/utils/canvas_geometry.dart` | 重写 | `CanvasCamera`、贝塞尔、手柄、命中工具、插值 |
-| `lib/ui/canvas/canvas_painter.dart` | **新增** | `CanvasScenePainter`（全画布单层自绘）+ `CanvasTextCache` + 边视觉 |
+| `lib/core/utils/canvas_geometry.dart` | 重写 | `CanvasCamera`、贝塞尔、命中工具、插值（缩放手柄 API 已删） |
+| `lib/ui/canvas/canvas_painter.dart` | **新增** | `CanvasScenePainter`（全画布单层自绘，正文用注入的 `CanvasMarkdownCache` 绘制）+ `CanvasTextCache`（图标、标题、边标签等零散文字）+ 边视觉 |
 | `lib/ui/canvas/canvas_board.dart` | 重写 | 摄像机 / Ticker / `Listener` 状态机 / 编辑浮层 / 键盘 |
-| `lib/ui/canvas/canvas_style.dart` | 重写 | 网格 / 标尺 / 描边卡片的配色令牌 + 主格阶梯（`canvasGridMajorStep`）+ 刻度文案 |
+| `lib/ui/canvas/canvas_style.dart` | 重写 | 网格 / 坐标数字 / 描边卡片的配色令牌 + 主格阶梯（`canvasGridMajorStep`）+ 坐标文案（`canvasCoordinateLabel`）+ `canvasCardTextStyle`（要渲染态的正文不用它，见 `canvas_markdown.dart`） |
+| `lib/ui/canvas/canvas_markdown.dart` | **重写** | 卡片正文的排版与绘制：`CanvasMarkdownDocument`（`measure` / `atWidth` / `paint` / `visibleText`）+ `CanvasMarkdownCache`（贴合与绘制共用一份终稿）。内部走编辑器的 `layoutLines` + `LiveLineStyle` + `LiveTableBlocks` |
+| `lib/state/notes_controller.dart` | 改 | `referenceMarkdownFiles`（拖进来的文件 → 库内相对路径）+ `relativeVaultPath`；`importMarkdownFiles` 顺带返回导入出来的路径 |
 | `lib/ui/canvas/canvas_toolbar.dart` | **已删除** | 右下角工具条整个移掉；缩放改滚轮、平移改中键拖 |
 | `lib/ui/canvas/canvas_history.dart` | 保留 | 50 步字符串快照栈 |
 | `lib/ui/canvas/canvas_pickers.dart` | 保留 | 文件选择器、链接对话框、URL 归一化 |
@@ -650,9 +660,10 @@ class CanvasController extends ChangeNotifier {
 
 | 文件 | 条数 | 覆盖 |
 |---|---|---|
-| `test/canvas_document_test.dart` | 38 | 解析 / 序列化 / 三位小数 / 未知键 / 容错 / id |
-| `test/canvas_geometry_test.dart` | 40 | 摄像机换算 / 锚点缩放 / fit / 插值 / 手柄 / 贝塞尔 |
-| `test/canvas_board_test.dart` | 78 | 交互全链路（widget 测试 + 探针断言）+ 坐标网格阶梯 |
+| `test/canvas_document_test.dart` | 43 | 解析 / 序列化 / 三位小数 / 未知键 / 容错 / id / `expanded` |
+| `test/canvas_geometry_test.dart` | 33 | 摄像机换算 / 锚点缩放 / fit / 插值 / 贝塞尔 |
+| `test/canvas_board_test.dart` | 125 | 交互全链路（widget 测试 + 探针断言）+ 坐标网格阶梯 + markdown 贴合 / 拖入 / 引用卡片 |
+| `test/canvas_markdown_test.dart` | 19 | 基础样式/标题阶梯与编辑器同源 + 分隔线/列表/引用/围栏/表格的块级表现 + 行内底片（代码/高亮/标签）+ 两遍贴合 + 缓存复用与失效 + 整篇落画布的冒烟 |
 | `test/canvas_controller_test.dart` | 14 | 打开 / 新建 / 防抖 / 写失败 / 坏 JSON |
 | `test/canvas_history_test.dart` | 6 | 撤销栈边界 |
 | `test/canvas_pickers_test.dart` | 9 | 文件 / 链接选择、URL 归一化 |
@@ -663,16 +674,29 @@ class CanvasController extends ChangeNotifier {
 - **摄像机**：屏幕／世界互逆、`zoomedAt` 锚点世界坐标不变、`fit` 把内容装进 `舞台 - 2×90`、
   `fit` 空内容 / 零舞台不炸、值相等。
 - **网格阶梯**：`canvasGridMajorStep` 的屏幕步长恒在 `[64, 640)`、放大单调不增、
-  `canvasGridLineOffsets` 负原点不漏线、`canvasRulerLabel` 不外泄浮点噪声。
+  `canvasGridLineOffsets` 负原点不漏线、`canvasCoordinateLabel` 不外泄浮点噪声。
 - **数据**：坐标末位无浮点噪声、整数落盘仍是 `int`、round-trip 幂等、旧键 `fromNode` 兼容。
 - **交互**：拖动 16 世界单位就停在 16（**不再吸附到 20**）、框选框是世界坐标（框选途中
   缩放，世界矩形一个数都不变、只是屏幕位置跟着动）、分组嵌套带走、WASD 惯性滑停后
   `debugTicking == false`、滚轮往上放大往下缩小。
+- **markdown 卡片**：正文基础样式逐项等于 `editorProseStyle`（字号/行高/字距）、标题阶梯 1.74×→0.91×
+  半粗、分隔线不落减号只落一条线、有序列表序号进槽位、高亮/代码/标签的圆角与内边距取编辑器常量、
+  代码块计入末尾底片留白、表格行走自绘块；短句按内容收窄、长句顶到上限、倍率翻倍宽高一起翻倍；
+  `fit` 的终稿就是 `get` 返回的同一份，文字变了旧排版不再冒充新文字。编辑时按源码贴合、退出编辑
+  按渲染结果重贴；装不下的旧卡片在打开时重贴而装得下的原样不动。
+- **引用卡片**：拖 `.md` 落的是 `FileNode`（不是装着正文的 `TextNode`）、卡片上画的是那篇笔记
+  渲染后的正文、换一份 `noteBodies` 再画一遍正文就跟着换、笔记不在了就没有正文、长笔记按正文
+  排满**没有高度上限**（两百行 > 200 × 行高）、正文变长卡片跟着长高。
+- **尺寸固定**：卡片没有缩放手柄，选中后拖右下角也只是移动（宽高不变）；卡片边上没有连线圆点，
+  按在边上就是拖动卡片；`Ctrl+=` 对文件卡片不改框。
+- **引用解析**：库内的路径原样返回（不复制）、大小写不同也算库内、库外的先导入再返回、顺序
+  不变、`/vaultx` 不算在 `/vault` 里。
 - **测试探针**：`CanvasBoardState` 暴露 `debugCamera` / `debugZoom` / `debugCenter` /
   `debugTargetZoom` / `debugStage` / `debugVisibleWorld` / `debugMarquee`（世界坐标）/
   `debugSelection` / `debugEditing` / `debugEditingEdge` / `debugColorOf` / `debugEdgeCount` /
-  `debugLabelOf` / `debugPanning` / `debugDragging` / `debugResizing` / `debugTicking` /
-  `debugEmptyHint`。
+  `debugLabelOf` / `debugPanning` / `debugDragging` / `debugTicking` / `debugEmptyHint`，
+  以及文件卡片探针 `debugFileBody` / `debugFileExpanded` / `debugEditingFileBody` /
+  `debugFileTitleRect`。
 
 ### 12.3 验证命令
 
@@ -690,8 +714,9 @@ flutter test
 | 风险 | 应对 |
 |---|---|
 | 自绘文字放大糊 | 文字在世界坐标排版，由 canvas 矩阵栅格化到设备分辨率；缓存只复用 `TextPainter`，不预渲染位图 |
-| 每帧重排文字吃帧率 | `CanvasTextCache` 按节点 id 复用，宽度 / 内容 / 颜色变了才重排 |
-| 卡片多了卡顿 | 没有 Widget 树与布局，只有绘制；网格按屏幕步长排（恒 ≥ 64px 一格），标尺数字每帧现排十几条 10px 短串 |
+| 每帧重排文字吃帧率 | 渲染态正文由 `CanvasMarkdownCache` 按节点复用整份排版（`fit` 的终稿就是 `get` 的同一份）；图标、标题、边标签由 `CanvasTextCache` 复用，输入不变就不重排 |
+| 卡片正文与编辑器两套样式漂移 | 卡片不再自己解析 markdown：直接走编辑器的 `layoutLines` + `LiveLineStyle` + `LiveTableBlocks`，基础样式取 `editorProseStyle`，固定像素常量与编辑器共用；`canvas_markdown_test.dart` 逐项对照编辑器断言 |
+| 卡片多了卡顿 | 没有 Widget 树与布局，只有绘制；网格按屏幕步长排（恒 ≥ 64px 一格），轴上的坐标数字每帧现排十几条 10px 短串 |
 | 手势互相抢 | 单层 `Listener` + 显式状态机；命中测试顺序固定 |
 | 缩放锚点漂移 | 每一步都调 `withZoomAt(anchor, z)`，不是先改 zoom 再修 center |
 | 撤销换对象导致旧引用失效 | 文档原地改、快照回灌；测试与调用方一律按 id 取节点 |
@@ -733,13 +758,13 @@ flutter test
 
 | # | 问题 | 决定 |
 |---|---|---|
-| 12 | 背景是点阵还是坐标系 | **坐标网格 + 标尺**。主格 1/2/5 阶梯恒落在 64–640px 之间，刻度永远整数；上 20px / 左 32px 不透明标尺带压在内容上 |
+| 12 | 背景是点阵还是坐标系 | **坐标网格 + 轴上的坐标数字**。主格 1/2/5 阶梯恒落在 64–640px 之间，数字永远整数。~~上 20px / 左 32px 不透明标尺带压在内容上~~（2026-10-28 八轮改成写在原点两条轴上，见 #79–#81） |
 | 13 | 卡片长什么样 | **描边式**：中性半透明底（`surfaceRaised`@72%）+ 1px `textPrimary`@30%，**去掉投影** |
 | 14 | 六种预设色还要不要 | 要，但**只染描边与文字**，不染底色。换色菜单的色点仍是实心色块 |
 | 15 | 分组 | 改成 graphif 的 **Section 框**：不填底、12px 圆角、15px 标题 |
 | 16 | 连线 | 变细变淡：1.2px `textPrimary`@30%，箭头 8px（原 2px / 10px） |
 | 17 | 旧的点阵令牌 | `canvasGridSize` / `canvasGridStep` / `canvasGridOpacity` / `gridDot*` / `cardShadow` 全删，别再加回来 |
-| 18 | 格子里还要不要小格 | **不要**。只有主格一层，一格 = 标尺相邻两个数字的距离 |
+| 18 | 格子里还要不要小格 | **不要**。只有主格一层，一格 = 轴上相邻两个坐标数字的距离 |
 | 19 | 右下角工具条 | **整颗删掉**（`canvas_toolbar.dart` 已移除）。缩放用滚轮、平移用中键拖——右下角那一小块留给画布本身 |
 | 20 | 视野操作照 graphif 补齐 | 缩放：滚轮 + `[` `]`；平移：中键拖 / 空格拖 / `WASD` / `PageUp` `PageDown` `Home` `End`；重置：`F`（有选中就框住选中） |
 | 21 | 缩放要不要上下限 | **没有上限**（2026-10-28）。原来的 `0.08 / 8` 是随手定的墙，一放大就撞。现在只留 `minZoom = 1e-6` 挡 0 和 Infinity；收敛判据改成相对值；缩到 `1e-5` 以下整块板子不到一像素，`_paintScene` 直接不画 |
@@ -750,7 +775,7 @@ flutter test
 
 | # | 问题 | 决定 |
 |---|---|---|
-| 22 | `Ctrl+F` 干什么 | **搜索节点**。贴在上边标尺下面，边打边跳：命中第一张就选中 + 移镜头（**只移不改缩放**——搜索问的是「这张卡在哪」）。`Enter` / `Shift+Enter` 循环、`Esc` 关 |
+| 22 | `Ctrl+F` 干什么 | **搜索节点**。贴着画布上边、水平居中（2026-10-28 八轮起不再避让标尺），边打边跳：命中第一张就选中 + 移镜头（**只移不改缩放**——搜索问的是「这张卡在哪」）。`Enter` / `Shift+Enter` 循环、`Esc` 关 |
 | 23 | 「详细信息」怎么开 | 三条路：`Ctrl` + 双击卡片、单选后 `Ctrl+Enter`、点选中卡片右上角那颗小图标。面板是个**能拖大的子窗口**（右下角握把），改文字 / 颜色 / X / Y / 宽 / 高 |
 | 24 | 面板跟着谁走 | **跟着当前那一张单选**。不存自己的目标 id——存了就得在每个改选中的地方同步它，漏一处就会出现「面板显示的是上一张卡」 |
 | 25 | `Enter` 是进编辑还是退出编辑 | 文字卡片是**多行**的，`Enter` 必须是换行，退出走 `Esc` / 点别处；**分组标题只有一行**，编辑中按 `Enter` 就是「改完了」（graphif 的「Enter 退出编辑」只在单行里成立） |
@@ -782,6 +807,139 @@ flutter test
 | 43 | 贴合要不要留 40px 的底 | **不要**。`canvasMinSize` 只管手拖 / 键盘改框；贴合一旦留底，字缩一半卡片还是 40 宽，看起来就是「宽度是固定的」。用户原话：「文字如果变小的，那么节点也要跟随变得更小」 |
 | 44 | 编辑时按 Ctrl+= 没反应 | 键盘在输入框里时白板一个键都不抢（那道闸），但 **Ctrl 组合键不会往输入框里打字**，调字号是编辑时最自然的动作。所以 `Ctrl+` `=` / `-` 的判定放在闸**前面**，用同一个 `_resizeFactorOf` 列键位（主键盘 `=` / `-` 和小键盘都算），两边不会各写一份 |
 
+### 14.6 2026-10-28（五轮：卡片支持 markdown + 拖入 .md）
+
+用户：「让这个节点输入框支持 .md。也支持直接把 .md 文件拖入白板里。」
+
+| # | 问题 | 决定 |
+|---|---|---|
+| 45 | 「节点输入框支持 .md」是什么 | 卡片正文按 markdown **渲染**：标题变大、`**粗**` 变粗、标记（`#` `**` `` ` `` `-` `>`）不占地方。存进 `.nrs` 的仍然是**源码**（`TextNode.text`），不是渲染结果——所以老文件不用迁移，纯文本照样显示 |
+| 46 | 渲染放哪、怎么和量尺寸对齐 | `canvas_markdown.dart` 负责整篇排版与绘制。**画和量共用同一份终稿**：`_measureBlock` 走 `CanvasMarkdownCache.fit`，画笔走 `CanvasMarkdownCache.get`（九轮起，见 §14.10 #82–#92）。各写一套就会出现「画出来一行、量出来两行」 |
+| 47 | 行内语法要不要另写正则 | **不写**。`**粗**` / `` `代码` `` / `[[双链]]` / `[文字](地址)` 全走 `core/utils/inline_syntax.dart` 的 `markdownInlinePattern`——和正文编辑器、图谱抽边是同一个扫描器，否则会出现「笔记里是链接、卡片上却是几个星号」 |
+| 48 | 编辑时显示源码还是渲染结果 | **源码**。输入框里就是原文（所见即所打），卡片同时按**源码**贴合；退出编辑再按渲染结果重贴一次。两边量出来的宽高不一样（源码多两个井号、渲染后字号大一圈），贴着显示的那一种量，才不会一进编辑就把字挤出去。实现是 `_fitTextNode(node, {bool? rendered})`，缺省值按「是不是正在编辑的那张」判 |
+| 49 | 打开旧板子时怎么办 | 文件里存的是**尺寸**不是「怎么算出来的尺寸」。旧尺寸是按纯文本量的，现在标题渲染更大就可能装不下、被卡片裁掉。所以 `initState` + `didUpdateWidget` 里跑一次 `_refitAllTextNodes()`：**只在装不下的时候**重贴（宽高都放得下就四个数原样放回去，在详细信息面板里改大过的尺寸不会被抹掉）。静默执行，不标脏、不进撤销栈。**（#76 起打开板子时全部重贴，尺寸收回内容大小——卡片已不能手动拖大）** |
+| 50 | 拖进来的 .md 变成什么卡片 | **引用卡片（`FileNode`），不是拷贝**。用户原话：「更接近于白板引用了这篇 .md，它们是有关联的，并不是把 .md 移动到白板里……而且 .md 修改后，白板里的也同步修改」。所以 `.md` 还留在文件列表里，卡片只存相对路径（`file`），正文由 `CanvasBoard.noteBodies` 现取。一次拖几份就排几张，从上往下一张一张排（整摞以落点为中心），只记一步撤销 |
+| 51 | 卡片上显示什么 | 标题一行（图标 + 文件名去掉 `.md`，那**就是**笔记标题，见 `Note.title`），下面是被引用笔记的**正文**，按 markdown 渲染（和文字卡片同一套 `canvas_markdown.dart`）。正文排在标题下面 `canvasFileHeaderHeight` 处。**（#75 起展开态整篇全画，不按卡片高度截断，也没有 `maxLines`）** |
+| 52 | 卡片多高多宽 | 拖进来时按正文贴一次：宽 = 最长一行（上限 `canvasTextMaxWidth`），高 = 正文 + 标题行（上限 `canvasFileMaxHeight` = 480）。**之后不跟着正文重贴**：卡片是一扇窗，笔记长长了就裁掉，想看自己拖大——不然用户拖过的尺寸会被每次改字顶回去。笔记被删/改名（正文取不到）就退回「标题 + 路径」的老样子，至少还看得出指向哪儿。**（已被 #75 / #76 取代）** |
+| 53 | 库外的文件怎么办 | 白板存的是**库内相对路径**，所以库外的 `.md`（桌面、下载目录）要先变成库里的笔记——这一步是 `NotesController.referenceMarkdownFiles`：在库里的**原样返回相对路径**（不复制、不改名），库外的导入成新笔记再返回。前缀比较大小写不敏感（Windows 上 `C:\` 和 `c:\` 是同一个目录），且必须停在目录分隔符上（`/vaultx` 不算在 `/vault` 里） |
+| 54 | 为什么画布不直接调 NotesController | 画布只认识 `document` / `files` / `noteBodies` 和几个回调。引用要读库、要导入，那是控制器的活，所以留一个 `onReferenceMarkdown` 回调由外壳接——`ui/canvas` 里没有 `NotesController`，也没有 `dart:io` |
+| 55 | 拖放区域为什么套在最外层 | `DropRegion` 和画布**同大小**，`event.position.local` 直接就是画布坐标，卡片才会落在松手的地方。`flutter test` 里没有原生拖放层（建起来会异步抛异常），所以用 `systemDragAndDropAvailable` 把整块区域关掉 |
+| 56 | 拖进来别的格式 | 只认 `.md` / `.markdown`。`docx` / `pdf` 进不了库也读不出结构——失败路径给一句提示（沿用「只报失败，不报成功」的老规矩） |
+
+### 14.7 2026-10-28（六轮：从文件列表拖入 + 收起/展开 + 卡片里改正文）
+
+用户：「我拖 .md 进入白板的时候没反应，检查一下。」「拖进去后直接显示 .md 文件名
+就行了，就是白板里的一个普通节点。默认收起，可以点击文件名展开/收缩，看到 .md
+里面的内容。」「（展开后）卡片里直接改。」「被拖入白板的 .md 文件修改后，文件列表
+里的 .md 也是同步修改。」
+
+根因一句话：**左侧文件列表的拖拽走 Flutter 自己的 `Draggable`，白板只挂了操作
+系统的 `DropRegion`**。`Draggable` 只认 `DragTarget`，白板上一个都没有——松手
+什么都不发生，连「拒绝」都没有。这一轮把第二条拖放通道接上，并把文件卡片改成
+「一张可以展开的笔记节点」。
+
+涉及文件：`vault_tree.dart`（payload 公开 + 指针）、`app_shell.dart`（`DragTarget`
++ `onEditFileBody`）、`canvas_document.dart`（`expanded`）、`canvas_board.dart`
+（落卡 / 切换 / 正文编辑）、`canvas_painter.dart`（收起态 / 编辑态不画正文）、
+`notes_controller.dart`（`writeNoteBody`）。
+
+| # | 问题 | 决定 |
+|---|---|---|
+| 57 | 为什么拖进去没反应 | **两套拖放系统，只接了一套**。桌面 Explorer 拖进来走原生 OLE（`DropRegion`）；从左侧文件列表拖出来是 Flutter 的 `Draggable`，它只往 `DragTarget` 上落。白板上没有 `DragTarget`，于是松手什么都不发生——不是处理器写错了，是**根本没有接收方** |
+| 58 | 怎么接 | 在 `app_shell` 里给 `CanvasBoard` 套一层 `DragTarget<VaultDragPayload>`（同一块区域、同一尺寸）。私有 `_DragPayload` 改名公开的 `VaultDragPayload`；笔记拖拽带的是**落点那一刻**的选中笔记（`tree._dragTargets()`，和文件夹行同一个口径），转成 `relativePath` 列表。文件夹拖拽（`folder != null`）在白板上直接拒绝。`DropRegion` 原样保留：桌面拖进来的文件仍然先导入成笔记，再落到同一个入口 |
+| 59 | 落点怎么算 | `DragTargetDetails.offset` 是**反馈卡片的左上角**（`pointer - dragStartPoint`），不是指针——按它算，卡片会落在离鼠标一行高、半个面板宽的地方。所以 payload 上放一个 `pointer` 字段，`Draggable.onDragUpdate` 每帧写 `details.globalPosition`；落点由 `CanvasBoardState.addReferencedNotesFromGlobal(paths, globalPointer)` 内部 `globalToLocal` → `_toWorld`。原生那一路的 `event.position.local` 不动 |
+| 60 | 拖进去先长什么样 | **收起**：一张只显示图标 + 文件名（去掉 `.md`，那就是笔记标题）的小卡。宽 = 那行文字量出来的宽 + 内边距（上限 `canvasTextMaxWidth`），高 = 一行正文 + 内边距；不画正文、不画所在目录。用户原话：「就是白板里的一个普通节点」。所有新建文件卡的入口（拖放 / 选择器 / 右键菜单）都从收起开始，不是只有拖放 |
+| 61 | 怎么展开 / 收起 | **点标题条切换**。展开时把**左上角钉住**（标题停在原处，卡片往下长），收起时同样从左上角缩回去——按中心贴会把标题拽跑，用户点了三次都不知道自己点到哪了。切换时贴合一次：展开按正文、收起按标题。尺寸写回节点照常落盘，切换 = 一步撤销（复用按下时已记的那一步，不重复记） |
+| 62 | 展开后多大 | 沿用五轮的 `_fitFileNode`：宽按正文最长行（上限 `canvasTextMaxWidth` = 420），高 = 正文 + 标题行（上限 `canvasFileMaxHeight` = 480）。**只在切换的那一下贴**，之后笔记再改只换内容、不动尺寸——卡片是那篇笔记的一扇窗，用户拖过的框不该被每次改字顶回去。**（已被 #75 / #76 取代）** |
+| 63 | 展开状态存不存盘 | 存。`FileNode.expanded` 默认 `false`，只在 `true` 时写 JSON（和 `scale` 同一个规矩）。老白板没有这个键 = 收起——用户要的就是默认收起，文件卡片本身是今天才有的功能，没有需要保住的历史。五轮的 `_pendingFileFit` / `_settlePendingFileFits` 一并删掉：收起卡不需要等正文到手才能量 |
+| 64 | 双击现在是什么意思 | 卡片分成两块：**标题条双击 = 打开那篇笔记**（沿用五轮）；**正文区双击 = 就地编辑正文**（和文字卡片双击进编辑一致）。单击正文只选中，不改展开状态——在展开的大卡片上点一下正文就收起来，那是灾难。收起状态整张卡都是标题条 |
+| 65 | 单击标题和双击标题打架吗 | 单击在**松手**时切换，而且要求按下到松手没挪动（和拖动的 3px 死区同一个判据）；双击的第一下会先切一次，第二下按下去识别成双击就去打开笔记、松手不再切。结果：双击收起卡 = 展开 + 打开笔记。打开笔记会切走视图，回来时卡片是展开的——给单击加 300ms 延迟更难受，这个结果可以接受 |
+| 66 | 卡片里怎么改正文 | 正文区盖一层隐形 `TextField`（和文字卡片同一套全手写 `InputDecoration`：不带底色、不带描边）。编的是**源码**、多行、`expands: true` 自己滚；标题行照画（它是展开/收起按钮，不是正文）。编辑中的那张卡**不画正文**，免得两层字叠在一起。`Esc` / 点别处 / 失焦都提交 |
+| 67 | 改完写到哪 | 新回调 `CanvasBoard.onEditFileBody(path, body)`，外壳接到 `NotesController.writeNoteBody`：**正开着的那篇** → `updateBody` + `saveNow`（编辑器面板靠 `_syncBoundBody` 换过来）；**没开着的** → 照 `applyBodyIfEmpty` 的写法（`await _writing` → `_replace` → `notifyListeners` → `_store.save` → 记基线 / 刷时间戳），失败走 `_error`。这就是用户要的「文件列表里的 .md 同步修改」 |
+| 68 | 反向同步还要写什么 | 不用。卡片读的一直是 `noteBodies[file]`，外壳每帧从 `allNotes` 现取——编辑器里改一个字，卡片下一帧就是新正文（五轮已经验过） |
+| 69 | 正文编辑进不进白板的撤销栈 | **不进**。白板的撤销栈是 `.nrs` 的 JSON 快照，正文在 `.md` 里，压进去也回不去。笔记正开着时它的撤销栈按「外部覆盖」处理（`_bodyEpoch++`），是既有行为 |
+| 70 | 右键菜单补什么 | 文件卡片加两项：`展开 / 收起`（按当前状态换文案）、`打开笔记`。其它卡片不变 |
+| 71 | 拖拽提示给哪一层 | `DragTarget` 悬停复用 OS 拖放那层 `_dropping` 提示（`setExternalDropHover`）；`onLeave` / `onAccept` 都收掉。两条通道共用一层提示，用户看到的是同一件事。**（已被 #77 取代：整层提示删除）** |
+| 72 | 落卡之后选中谁 | 新落的这一摞（沿用 `addFileCards`：从上往下一张一张排、整摞以落点为中心、只记一步撤销）。一次拖五篇进来至少看得见最后一张，不是五张叠成一摞 |
+
+**测试**（§12 同步补）：
+
+- 文档：`expanded` round-trip；缺键 = `false`；只在 `true` 时落盘。
+- 白板：`addReferencedNotesFromGlobal` 落的是收起卡（尺寸 ≈ 标题一行）；点标题展开
+  （尺寸变大、正文画出来、`expanded` 为 true）、再点收起；拖着标题移动 16 世界单位
+  不会切换；`Ctrl` + 单击不切换；双击标题条走 `onOpenFile`；双击正文进编辑、提交后
+  `onEditFileBody` 收到路径和源码；编辑中画笔不画正文。
+- 控制器：`writeNoteBody` 对开着的草稿（body 改 + 写盘）和没开的笔记（改列表 + 写盘）
+  各一条；笔记不存在返回 false。
+- 接线：`VaultDragPayload.notePaths()` 取的是落点那一刻的选中；`folder` 拖拽不被白板接受。
+
+### 14.8 2026-10-28（七轮：去掉手柄和连线圆点，文件卡片全部显示）
+
+用户：「不允许拖拽边缘改变节点宽度和高度！不显示四周中间的那个圆点！」「我从文件
+列表的 .md 拖放到白板里的时候，我的鼠标在哪里松手，就把 .md 文件放到哪里！！不需要
+显示松手引用这篇笔记！」「节点不需要高度限制！我拖拽进去的 .md 里面有很多内容！全部
+显示出来！」（AskUserQuestion 补充：缩放手柄「全都去掉」，连线圆点「晚点会重构新的」，
+宽度上限沿用 420，高度不要上限。）
+
+| # | 问题 | 决定 |
+|---|---|---|
+| 73 | 缩放手柄 | **四角 + 四边中点全部删掉**。`_Interaction.resizing`、`_handle` / `_resizeId` / `_resizeStart`、`_resizeTo`、`_handleAt`、`_cursorFor`、`_paintHandles`、`CanvasResizeHandle` / `resizeRect` 一并删除。卡片尺寸只由内容决定，拖角 / 拖边回到「移动卡片」 |
+| 74 | 连线圆点 / 从圆点建边 | 全部删除：四边中点不再画圆点，`_connectDotAt` / `_finishConnect` / `_Interaction.connecting` / `connectPreview` 删除。**文档层保留**（`fromSide` / `toSide` / 箭头 / 标签），已有的边照常渲染、命中、改标签、删除；新建连线的交互等用户重新设计一版再做 |
+| 75 | 文件卡片高度 | 删除 `canvasFileMaxHeight`。展开态高 = 正文排出来多高 + 标题行，**没有上限**；`_paintReferenceBody` 不再按卡片高度算 `maxLines`，整篇都画。「一篇五千字笔记拉成几千像素」是预期行为，不是 bug |
+| 76 | 笔记改了尺寸怎么办 | `didUpdateWidget` 里比较展开卡片引用的正文实例（`oldWidget.noteBodies[file]` vs 新的）——变了就把文件卡片全部重贴（`_fitFileNodes`）。打开板子时也全部重贴一次，把历史尺寸收回内容大小。之前「展开态尺寸归用户」的前提（用户能拖大）已经不存在了 |
+| 77 | 拖放提示 / 落点 | `_DropHint`（「松手引用这篇笔记」）、`_dropping`、`setExternalDropHover`、外壳的 `onMove` / `onLeave` 全部删除。落点仍然是指针：`Draggable.onDragUpdate` 写 `VaultDragPayload.pointer` → `addReferencedNotesFromGlobal` → `_toWorld(globalToLocal(pointer))`，原生拖放走 `DropRegion` 的 `event.position.local`（它和画布同大小） |
+| 78 | `Ctrl+=` 对文件卡片 | 没有可调的框，`resizeSelectionBy` 对它只调 `_fitFileNode`（通常等于不变）。文字卡片仍然改字号，链接卡片仍然改框 |
+
+**删掉的 API**：`CanvasResizeHandle`、`resizeRect`、`connectPreview`、
+`CanvasBoardState.setExternalDropHover`、`debugResizing`、`canvasFileMaxHeight`、
+`canvasCardMinSide`。`CanvasSide` / `anchorOf` / `nearestSide` / `edgeGeometry` 保留
+（边还在用）。
+
+**测试**：几何里「缩放卡片」整组删除；白板里「缩放手柄」「从圆点建边」几组换成
+「尺寸固定」和「卡片边上没有圆点」；高度上限断言改成「两百行 > 200 × 行高」；
+新增「笔记改了，展开卡上的正文跟着改，卡片跟着长高」。
+
+### 14.9 2026-10-28（八轮：坐标数字挪到轴上）
+
+用户：「把上方和左侧的坐标数字，移到中间，类似图2里的样子。」参考图是一块
+画布应用（izoa）的截图：数字不贴屏幕边，而是跟着**世界原点的两条轴**走——
+x 的数字压在水轴上方，y 的数字贴在竖轴右侧，原点共用一个 `0`。
+
+| # | 问题 | 决定 |
+|---|---|---|
+| 79 | 上 / 左标尺带 | **整条删除**：`_paintRulers` / `_paintRulerText`、`canvasRulerThickness` / `canvasRulerSideWidth`、`rulerBackground` / `rulerTick` / `rulerEdge` 令牌一并删。搜索框不再避让标尺，改贴画布上边 12px（`_searchRect`），内容也不再被两条不透明带截断 |
+| 80 | 坐标数字画在哪 | 世界原点是两条轴：x 的数字**居中压在水轴上方** 3px（`canvasAxisLabelGap`），y 的数字**贴在竖轴右侧**、垂直居中，都是 10px `axisLabel`（`textTertiary`）。数字是**背景**（`_paintAxisLabels` 在内容之前画），卡片压上去就盖住，不像界面 chrome 浮在最上面 |
+| 81 | 轴滚出屏幕了怎么办 | 数字跟着轴走：那根轴不在视口里，那一组数字就不写——数字是轴的刻度，不是常驻边栏。两根轴都在屏幕里时原点只写一个 `0`（x 那组），y 那组跳过 `k == 0`；主格屏幕步长 `< 32px` 时数字互相压，整组不写 |
+
+**删掉的 API**：`canvasRulerThickness`、`canvasRulerSideWidth`、`canvasRulerLabel`
+（改名 `canvasCoordinateLabel`）、`CanvasStyle.rulerBackground` / `rulerText` /
+`rulerTick` / `rulerEdge`，顺手清掉手柄遗留的 `CanvasStyle.handle` / `handleRing`。
+
+**测试**：「坐标网格」组里的文案断言改名 `canvasCoordinateLabel`；条数不变
+（画布 201 条、全量 1567 条全绿）。
+
+### 14.10 2026-10-28（九轮：卡片正文与编辑器逐项对齐）
+
+用户：「白板里的 .md 要对标打开的 .md……高亮和分割线、序号也是。检查还有
+没有其他不一致的地方，改为一致。」盘点下来不是一处两处，是两**套渲染器**：
+
+| # | 问题 | 决定 |
+|---|---|---|
+| 82 | 卡片有一份「简易 markdown 渲染器」 | **整份删掉**。卡片不再自己解析/排版，直接调用编辑器的 `layoutLines` + `LiveLineStyle` + `LiveTableBlocks`；同一条管线、同一份常量，才谈得上「逐项一致」 |
+| 83 | 字号/行高/字距 1.6 / 0 对不上编辑器 | 在**参考字号 15.5**（编辑器默认 `proseSize`）下排版，基础样式直接取 `editorProseStyle(p, 15.5)`；绘制时整块 `scale(AppText.ui × node.scale / 15.5)`，圆点、复选框、代码内缩这些固定像素按同一比例缩 |
+| 84 | 分隔线画成 `──────` 字形 | 与编辑器同一个 `_paintMarkers`：1px 线落在像素栅格上、横贯正文列 |
+| 85 | 有序序号留在正文里 | 序号进槽位、强调色半粗等宽数字、按正文首行基线对齐；无序圆点 5px、复选框 15px、嵌套导轨全部照抄编辑器几何（`canvas_markdown.dart` 的 `_paintMarkers` / `_paintRails`） |
+| 86 | 行内代码/高亮/标签是硬边矩形 | 与编辑器同一套圆角底片：代码 `surfaceSunken` r3、标签 `accentSoft` r5 padX6 padY1、高亮 `HighlightColors.darkFill` r4 padX1.5 rowBox（纵向内缩 16%）；分组仍走 `groupFillBoxesByLine`（为此去掉它的 `@visibleForTesting`，两处生产代码共用） |
+| 87 | 代码块是一行一块灰底，没有语言标签 | 整块圆角底片 + 右上角语言标签 + 左右 16px 内缩；末块把 `kCodeSlabBottomPad` 算进卡片高度，圆角不被裁 |
+| 88 | 表格画成原始竖线 | 表格行走 `LiveTableBlocks` 的自绘块（网格、合并、列宽、纸面）。卡片是半透明的，`paper` 传「卡片底色合成到画布上」的结果，否则卡片里会浮出一块更暗的矩形 |
+| 89 | 量尺寸和绘制各排一遍 | 新增 `CanvasMarkdownCache`：`fit` 把两遍贴合的终稿留在缓存里，`get` 按「文字 + 倍率 + 宽 ±0.5px + 主题」判重后直接复用；文字变了旧排版立刻失效（`matches` / `visibleText` 都按当前文字核对） |
+| 90 | 卡片颜色染正文 | **不再染**：正文按编辑器配色画。彩色卡片染边框和标题/图标（见 §5.3） |
+| 91 | 双链别名 | 跟随编辑器：按行排版显示 `wikilinkTarget` 的原样内部文本（`目标|别名`），不自作主张只留别名 |
+| 92 | 图片 | **仍未渲染成图**：图片块要图片提供者 + 异步解码 + 行失效重排，卡片只显示替代文字。这是已知差距，不算「样式不一致」；下一步接 `LiveImageBlocks` 时一起补 |
+
+**已知取舍**：编辑器默认 `proseSize` 可以被用户改（15.5 起步），卡片固定用
+15.5 作参考再整体缩放——比例始终一致，只差 `snapLineHeight` 取整的一点量化。
+
 ---
 
 ## 15. 验收清单
@@ -791,14 +949,19 @@ flutter test
 - [x] 滚轮以光标为锚点**平滑**缩放（往上放大、往下缩小），全程锚点不漂
 - [x] 右下角没有工具条；`Ctrl+0` 回 100%；`Ctrl+Shift+H` 适应窗口
 - [x] 双击空白出卡片并直接能打字；`Esc` / 点空白退出编辑
-- [x] 拖动卡片坐标是自由浮点（拖 16 就停 16）；八向缩放，最小 40×40
-- [x] 从圆点拖到另一张卡片能建边；边有箭头和标签；选中能删
+- [x] 卡片正文与打开的编辑器同一套 markdown 渲染（标题 / 列表 / 引用 / 高亮 / 分隔线 / 代码 / 表格 / 双链 / 链接）；编辑时回到源码（图片仍只显示替代文字，见 §14.10 #92）
+- [x] 白板里 .md 的渲染与打开的编辑器**逐项一致**：标题阶梯、高亮圆角色块、分隔线、序号槽位、圆点、复选框、引用竖线、行内代码、标签胶囊、代码底片与语言标签、表格网格（图片仍只显示替代文字，见 §14.10 #92）
+- [x] 把 `.md` 拖到白板上：落成**引用**那张笔记的卡片，卡片落在松手指针处，没有额外的拖放提示层
+- [x] 文件卡片收起 = 一行文件名；点标题展开 = **整篇正文全部显示**（高度没有上限，不裁剪）
+- [x] 卡片没有缩放手柄 / 连线圆点：拖角、拖边都是移动；已有连线照常渲染、选中、改标签、删除
+- [x] 拖动卡片坐标是自由浮点（拖 16 就停 16）；尺寸只由内容决定
 - [x] 多选整组拖动；分组带走框内卡片（含嵌套）；`Ctrl+A` 全选；`Delete` 连带删边
 - [x] `Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y` 能一路退回再走回
 - [x] 关掉再打开，坐标（三位小数）、颜色、连线、标签一个不差
 - [x] 浅色 / 深色主题下都读得清（卡片底色、连线、网格）
+- [x] 坐标数字写在世界原点的两条轴上（x 压在水轴上方、y 贴在竖轴右侧，原点一个 `0`）；轴滚出屏幕数字跟着离开，画布边上不再有标尺带
 - [x] 空白板 / 单卡片 / 大坐标三种极端输入都不崩
-- [x] `flutter analyze lib test` 无问题；`flutter test --exclude-tags perf` 1483 条全绿
+- [x] `flutter analyze lib test` 无问题；`flutter test --exclude-tags perf` 1563 条全绿
 
 ---
 
@@ -856,3 +1019,38 @@ flutter test
 
 静态复刻：`design/canvas-graphif-style.html`（1120×700，1:1 对应画笔顺序，
 换视觉前先对着它看；它不参与构建，只是设计稿）。
+
+### 16.5 七轮：去掉手柄 / 圆点，文件卡片全部显示（2026-10-28）
+
+| 步骤 | 结果 |
+|---|---|
+| `canvas_board.dart` 删交互档位 | `_Interaction.resizing` / `connecting`、`_handle` / `_resizeId` / `_resizeStart`、`_hoverNodeId` / `_connectFromId` / `_connectSide` / `_connectCursor`、`_dropping`，以及 `_handleAt` / `_connectDotAt` / `_finishConnect` / `_resizeTo` / `_cursorFor` / `_setDropping` / `setExternalDropHover` |
+| `canvas_board.dart` 卡片尺寸 | `_fitFileNode` 去掉 `math.min(..., canvasFileMaxHeight)`；`_normalizeCollapsedFileNodes` 改成 `_fitFileNodes`（收起 + 展开都重贴）；`didUpdateWidget` 在正文实例变化时重贴；`resizeSelectionBy` 对 `FileNode` 只重贴 |
+| `canvas_painter.dart` | 删 `_paintHandles` / `_paintConnectDots` / 预览虚线 / `hoverNodeId` / `connectFromId` / `connectSide` / `connectCursor`；`_paintReferenceBody` 整篇排版，不再算 `maxLines`；删 `canvasFileMaxHeight` / `canvasCardMinSide` / `connectPreview` |
+| `canvas_geometry.dart` | 删 `CanvasResizeHandle` / `resizeRect` |
+| `app_shell.dart` | `DragTarget` 删 `onMove` / `onLeave`；落点仍走 `VaultDragPayload.pointer` → `addReferencedNotesFromGlobal` |
+| 删除拖放提示 | `_DropHint`（「松手引用这篇笔记」）整块移除 |
+| 测试调整 | 几何「缩放卡片」8 条删除；白板「缩放手柄」3 条 → 「尺寸固定」1 条；「圆点建边」4 条 → 「边上没有圆点」1 条；「文件卡片 Ctrl+= 改框」→「不改宽高」；高度上限断言改成「两百行 > 200 × 行高」；新增「笔记改后卡片长高」 |
+| 回归 | `flutter analyze lib test` 无问题；`flutter test --exclude-tags perf` **1567 条全绿**（canvas 201 条） |
+
+### 16.6 八轮：坐标数字挪到轴上（2026-10-28）
+
+| 步骤 | 结果 |
+|---|---|
+| `canvas_painter.dart` 换绘制层 | 删 `_paintRulers` / `_paintRulerText`；新增 `_paintAxisLabels` / `_axisLabelPainter`：x 数字居中压在水轴上方、y 数字贴竖轴右侧、原点共用一个 `0`；数字跟着轴显隐，画在内容之前（背景层）。`_paintScene` 不再在 restore 之后画标尺 |
+| `canvas_style.dart` 清令牌 | 删 `rulerBackground` / `rulerTick` / `rulerEdge`，`rulerText` → `axisLabel`；删 `canvasRulerThickness` / `canvasRulerSideWidth`；`canvasRulerLabel` → `canvasCoordinateLabel`；新增 `canvasAxisLabelGap = 3`；顺手删手柄遗留的 `handle` / `handleRing` |
+| `canvas_board.dart` 搜索框 | `_searchRect` 顶部从 `canvasRulerThickness + 10` 改成 12 |
+| 测试 | 「坐标网格」组的文案断言改用 `canvasCoordinateLabel`；画布 201 条、全量 1567 条全绿 |
+| 回归 | `flutter analyze lib test` 无问题；`flutter test --exclude-tags perf` **1567 条全绿**（canvas 201 条） |
+
+### 16.7 九轮：卡片正文改用编辑器的行排版管线（2026-10-28）
+
+| 步骤 | 结果 |
+|---|---|
+| `canvas_markdown.dart` 重写 | 旧的 `canvasMarkdownLines/Span/Colors` 整份删除；新增 `CanvasMarkdownDocument`（参考 15.5px 排版 + `renderScale` 缩放绘制、两遍贴合、`visibleText`）与 `CanvasMarkdownCache`（`fit` / `get` / `visibleText`）。标记、底片、代码底片、表格的绘制几何逐段抄自 `render_line_editable.dart` |
+| `live_markdown/table_block.dart` | `LiveTableBlocks` 新增可选 `paper`：编辑器不传（纸面 = `palette.surface`），卡片传「卡片底色合成到画布」的实色 |
+| `line_layout/render_line_editable.dart` | `groupFillBoxesByLine` 去掉 `@visibleForTesting`（卡片的底片分组也用它） |
+| `canvas_painter.dart` | `CanvasScenePainter` 新增 `markdownCache`；`_paintTextNode` / `_paintReferenceBody` 改成 `CanvasMarkdownCache.get(...).paint(...)`；删掉只为旧渲染器服务的 `CanvasTextCache.getRich` / `plainTextOf` / `_CachedText.fingerprint` |
+| `canvas_board.dart` | 新增 `CanvasMarkdownCache _markdownCache`（`dispose` 里释放）；`_measureBlock` 的 markdown 分支改走 `_markdownCache.fit`（键 `node-…` / `file-body-…`），源码分支保持 13px 原样；`debugFileBody` 改读 `visibleText` |
+| 测试 | `canvas_markdown_test.dart` 19 条重写（与编辑器同源、块级/行内表现、贴合、缓存、整篇落画布冒烟）；白板 125 条不动全过（原有「源码贴合 vs 渲染重贴」断言在新字号下仍成立） |
+| 回归 | `flutter analyze lib test` 无问题；`flutter test --exclude-tags perf` **1563 条全绿**（白板相关 265 条） |

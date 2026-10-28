@@ -1,7 +1,7 @@
 /// 白板的自绘画笔。
 ///
-/// 整块画布只有**一个** `CustomPaint`：坐标网格、标尺、连线、卡片、文字、
-/// 手柄、框选，全在这一支画笔里按顺序画出来。卡片不是 Widget——没有布局、
+/// 整块画布只有**一个** `CustomPaint`：坐标网格与轴上的数字、连线、卡片、
+/// 文字、框选，全在这一支画笔里按顺序画出来。卡片不是 Widget——没有布局、
 /// 没有命中测试的重叠，缩放和平移都只是一次 canvas 变换。
 ///
 /// 三条容易写错的地方：
@@ -9,7 +9,7 @@
 /// * **内容画在世界坐标里**：进入画笔先 `translate(画面中心) → scale(zoom)
 ///   → translate(-摄像机中心)`，然后所有几何直接用世界坐标。文字也在世界
 ///   坐标里排版，Skia 会按当前矩阵把字形栅格化到设备分辨率，所以放大不会糊。
-/// * **装饰件画在屏幕坐标里**：手柄、连线圆点、框选框、边标签的字号，都是
+/// * **装饰件画在屏幕坐标里**：坐标数字、框选框、边标签的字号，都是
 ///   「屏幕上永远这么多像素」，不该跟着缩放变大变小。
 /// * **文字排版要缓存**：平移缩放时每帧重排几十段文字会把帧率吃掉。缓存按
 ///   节点 id 存，内容/宽度/颜色变了才重排（见 [CanvasTextCache]）。
@@ -26,13 +26,11 @@ import '../../core/theme/table_colors.dart';
 import '../../core/utils/canvas_document.dart';
 import '../../core/utils/canvas_geometry.dart';
 import '../../core/utils/table_model.dart' show CellColor;
+import 'canvas_markdown.dart';
 import 'canvas_style.dart';
 
 /// 卡片的内边距（世界坐标，跟着缩放走）。
 const double canvasCardPadding = 12;
-
-/// 卡片的最小尺寸（世界坐标）。
-const double canvasCardMinSide = canvasMinSize;
 
 /// 卡片圆角（世界坐标）。graphif 的卡片比「一块方角矩形」圆得多。
 const double canvasCardRadius = 10;
@@ -46,13 +44,64 @@ const double canvasGroupPadding = 14;
 /// 分组标题的字号（世界坐标）。graphif 的 Section 标题就是这么大。
 const double canvasGroupLabelSize = AppText.title;
 
+/// 文件卡片顶部那一行标题占的高度（世界坐标）。
+///
+/// 正文从它下面开始排。贴尺寸（`_fitFileNode`）和画笔用的都是这一个数，
+/// 差一点就会「贴出来的高度和画出来的差一行」。
+const double canvasFileHeaderHeight = AppText.ui * 1.6 + 4;
+
+/// 标题一行本身的高度（不含正文和它之间的那 4px）。
+///
+/// 收起态卡片的高度 = 这一行 + 上下内边距。
+const double canvasFileTitleHeight = AppText.ui * 1.6;
+
+/// 标题前那颗图标的边长（世界坐标）。
+const double canvasFileIconSize = 14;
+
+/// 图标和标题之间的距离。
+const double canvasFileIconGap = 6;
+
+/// 文件卡片上显示的标题：路径最后一段去掉后缀。
+///
+/// 笔记的标题**就是**文件名（见 `Note.title`），所以这里不需要去问控制器。
+String canvasFileTitle(String path) {
+  final String name = path.split('/').last;
+  final int dot = name.lastIndexOf('.');
+  return dot <= 0 ? name : name.substring(0, dot);
+}
+
+/// 卡片上真正画出来的那一行标题。空路径给一个占位，免得卡片是个空框。
+///
+/// 画笔和收起态的贴合共用：两边各写一套，量出来的宽和画出来的字就会差几个
+/// 像素，卡片右边多一条空。
+String canvasFileDisplayTitle(String path) {
+  final String title = canvasFileTitle(path);
+  return title.isEmpty ? '（未命名）' : title;
+}
+
+/// 文件卡片标题的排版。颜色由调用方给（量宽度时随便），字号 / 行高 / 字体
+/// 必须和画笔一模一样。
+TextStyle canvasFileTitleStyle(Color color) => TextStyle(
+  fontSize: AppText.ui,
+  height: 1.6,
+  color: color,
+  fontFamily: AppFonts.ui,
+  fontFamilyFallback: AppFonts.uiFallback,
+);
+
+/// 文件卡片上显示的所在目录；在库根目录时是 null。
+String? canvasFileFolder(String path) {
+  final int slash = path.lastIndexOf('/');
+  return slash <= 0 ? null : path.substring(0, slash);
+}
+
 /// 「打开详细信息」那个小图标的边长（屏幕像素）。
 const double canvasDetailsIconSize = 16;
 
 /// 小图标的矩形（**屏幕坐标**）。
 ///
-/// 骑在卡片右上角上，一半在外。往内挪会和右上角那个缩放手柄抢位置，
-/// 整个挪到外面又容易被当成连线的圆点——骑在角上是唯一不打架的地方。
+/// 骑在卡片右上角上，一半在外：整个放在卡里会压住正文，整个放外面又离卡片
+/// 太远，看起来不像属于这张卡。
 ///
 /// 画和命中测试都调它，两边不可能对不上。
 Rect canvasDetailsIconRect(Rect nodeScreen) => Rect.fromCenter(
@@ -122,17 +171,6 @@ CanvasEdgeVisual? edgeAtVisual(
   }
   return best;
 }
-
-/// 画布上那条从圆点拖出来的预览线（世界坐标）。
-CanvasEdgeGeometry connectPreview({
-  required Rect fromRect,
-  required CanvasSide side,
-  required Offset cursor,
-}) => edgeGeometry(
-  fromRect: fromRect,
-  toRect: Rect.fromCenter(center: cursor, width: 1, height: 1),
-  fromSide: side,
-);
 
 /// 文字排版缓存。
 ///
@@ -224,12 +262,10 @@ class CanvasScenePainter extends CustomPainter {
     required this.palette,
     required this.selected,
     required this.editingId,
-    required this.hoverNodeId,
-    required this.connectFromId,
-    required this.connectSide,
-    required this.connectCursor,
     required this.marquee,
     required this.textCache,
+    required this.markdownCache,
+    required this.fileBodies,
     required this.canEdit,
     required this.emptyHint,
   });
@@ -240,17 +276,21 @@ class CanvasScenePainter extends CustomPainter {
   final AppPalette palette;
   final Set<String> selected;
   final String? editingId;
-  final String? hoverNodeId;
-  final String? connectFromId;
-  final CanvasSide? connectSide;
-
-  /// 连线预览的光标位置（**屏幕**坐标）。
-  final Offset? connectCursor;
 
   /// 框选框（**世界**坐标）。null = 没在框选。
   final Rect? marquee;
 
   final CanvasTextCache textCache;
+
+  /// markdown 正文的整段排版（标题、高亮、表格、代码块……），与编辑器
+  /// 共用同一条行排版管线；见 `canvas_markdown.dart`。
+  final CanvasMarkdownCache markdownCache;
+
+  /// 库里所有笔记的正文：相对路径 → markdown 源码。
+  ///
+  /// 文件卡片显示的就是它——白板引用一篇笔记，不是复制一份，所以笔记改了，
+  /// 下一帧画出来的就是新的正文。
+  final Map<String, String> fileBodies;
 
   /// 能不能编辑（只读空板时为 false）。
   final bool canEdit;
@@ -261,13 +301,13 @@ class CanvasScenePainter extends CustomPainter {
   /// 线宽 / 箭头 / 标签这些「装饰」的屏幕尺寸，换算成世界单位要除以 zoom。
   double get _px => 1 / camera.zoom;
 
-  // ------------------------------------------------------- 网格与坐标标尺
+  // ------------------------------------------------------- 网格与坐标数字
 
   /// 坐标网格。**屏幕坐标**里算：世界坐标铺满再整体变换，缩到 8% 时
   /// 要画上百万条线，而屏幕只有一两千像素。
   ///
-  /// 只有两层：主格（标尺上写数字的那层）和原点十字。**主格里面不再分
-  /// 小格子**——一格就是标尺上相邻两个数字之间的距离。
+  /// 只有两层：主格（坐标数字对齐的那层）和原点十字。**主格里面不再分
+  /// 小格子**——一格就是轴上相邻两个数字之间的距离。
   void _paintGrid(Canvas canvas, Size size) {
     final double zoom = camera.zoom;
     final double major = canvasGridMajorStep(zoom);
@@ -338,95 +378,75 @@ class CanvasScenePainter extends CustomPainter {
     );
   }
 
-  /// 上边与左边的两条坐标标尺。
+  /// 坐标数字：写在世界原点的两条轴上，而不是挂在画布的上边 / 左边。
   ///
-  /// 底色就是画布色（不透明），内容滚到带子下面会被截断——像一张尺子压在
-  /// 纸上，而不是浮在纸上的水印。数字按主格的整数倍算，不经过屏幕换算，
-  /// 所以永远是 100 / 200 / 500 这种干净的刻度。
-  void _paintRulers(Canvas canvas, Size size) {
-    const double top = canvasRulerThickness;
-    const double side = canvasRulerSideWidth;
-    if (size.width <= side || size.height <= top) return;
-
-    final Paint band = Paint()..color = style.rulerBackground;
-    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, top), band);
-    canvas.drawRect(Rect.fromLTWH(0, 0, side, size.height), band);
-
-    final Paint edge = Paint()
-      ..color = style.rulerEdge
-      ..strokeWidth = 1;
-    canvas.drawLine(Offset(0, top + 0.5), Offset(size.width, top + 0.5), edge);
-    canvas.drawLine(
-      Offset(side + 0.5, 0),
-      Offset(side + 0.5, size.height),
-      edge,
-    );
-
+  /// x 的数字居中压在水轴上方，y 的数字贴在竖轴右侧——坐标是轴上的
+  /// 刻度，跟着轴一起平移、缩放。轴滚出屏幕，那一组数字也跟着离开。
+  ///
+  /// 数字按主格的整数倍算，不经过屏幕换算，所以永远是 100 / 200 / 500
+  /// 这种干净的刻度。
+  void _paintAxisLabels(Canvas canvas, Size size) {
     final double major = canvasGridMajorStep(camera.zoom);
     final double stepPx = major * camera.zoom;
-    // 刻度挤到 32px 以内，数字就会互相压在一起，索性一条都不写。
+    // 数字挤到 32px 以内，就会互相压在一起，索性一条都不写。
     if (stepPx < 32) return;
+
     final Offset origin = camera.toScreen(Offset.zero, size);
-    final Paint tick = Paint()
-      ..color = style.rulerTick
-      ..strokeWidth = 1;
+    final bool xAxisOn = origin.dy >= 0 && origin.dy <= size.height;
+    final bool yAxisOn = origin.dx >= 0 && origin.dx <= size.width;
 
-    // 上边：竖刻度 + 世界 x，数字压在线中间。
-    int k = ((-origin.dx) / stepPx).floor();
-    while (true) {
-      final double x = origin.dx + k * stepPx;
-      if (x > size.width) break;
-      final String label = canvasRulerLabel(k * major);
-      k++;
-      if (x < side) continue;
-      canvas.drawLine(Offset(x, top - 4), Offset(x, top), tick);
-      _paintRulerText(canvas, label, Offset(x, top / 2));
+    if (xAxisOn) {
+      for (final double x in canvasGridLineOffsets(
+        origin.dx,
+        stepPx,
+        size.width,
+      )) {
+        final int k = ((x - origin.dx) / stepPx).round();
+        final TextPainter painter = _axisLabelPainter(k * major);
+        painter.paint(
+          canvas,
+          Offset(
+            x - painter.width / 2,
+            origin.dy - canvasAxisLabelGap - painter.height,
+          ),
+        );
+        painter.dispose();
+      }
     }
 
-    // 左边：横刻度 + 世界 y，数字靠右对齐，长负数也不会跑出带子。
-    int j = ((-origin.dy) / stepPx).floor();
-    while (true) {
-      final double y = origin.dy + j * stepPx;
-      if (y > size.height) break;
-      final String label = canvasRulerLabel(j * major);
-      j++;
-      if (y < top) continue;
-      canvas.drawLine(Offset(side - 4, y), Offset(side, y), tick);
-      _paintRulerText(
-        canvas,
-        label,
-        Offset(side / 2, y),
-        rightAlignAt: side - 5,
-      );
+    if (yAxisOn) {
+      for (final double y in canvasGridLineOffsets(
+        origin.dy,
+        stepPx,
+        size.height,
+      )) {
+        final int k = ((y - origin.dy) / stepPx).round();
+        // 原点的 0 已经由 x 那一组写过一次，同一个位置不叠第二个。
+        if (k == 0 && xAxisOn) continue;
+        final TextPainter painter = _axisLabelPainter(k * major);
+        painter.paint(
+          canvas,
+          Offset(origin.dx + canvasAxisLabelGap, y - painter.height / 2),
+        );
+        painter.dispose();
+      }
     }
   }
 
-  /// 一个刻度数字。[at] 是它的中心；给了 [rightAlignAt] 就改成右对齐。
-  void _paintRulerText(
-    Canvas canvas,
-    String text,
-    Offset at, {
-    double? rightAlignAt,
-  }) {
-    final TextPainter painter = TextPainter(
-      text: TextSpan(
-        text: text,
-        style: TextStyle(
-          fontSize: 10,
-          height: 1,
-          color: style.rulerText,
-          fontFamily: AppFonts.ui,
-          fontFamilyFallback: AppFonts.uiFallback,
-        ),
+  /// 轴上的一个坐标数字。
+  TextPainter _axisLabelPainter(double value) => TextPainter(
+    text: TextSpan(
+      text: canvasCoordinateLabel(value),
+      style: TextStyle(
+        fontSize: 10,
+        height: 1,
+        color: style.axisLabel,
+        fontFamily: AppFonts.ui,
+        fontFamilyFallback: AppFonts.uiFallback,
       ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    final double left = rightAlignAt == null
-        ? at.dx - painter.width / 2
-        : rightAlignAt - painter.width;
-    painter.paint(canvas, Offset(left, at.dy - painter.height / 2));
-    painter.dispose();
-  }
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
 
   // ------------------------------------------------------------------ 连线
 
@@ -437,34 +457,10 @@ class CanvasScenePainter extends CustomPainter {
     )) {
       _paintEdge(canvas, visual);
     }
-    final Offset? cursorScreen = connectCursor;
-    final String? fromId = connectFromId;
-    if (cursorScreen != null && fromId != null) {
-      final CanvasNode? node = document?.nodeById(fromId);
-      if (node != null) {
-        final CanvasEdgeGeometry ghost = connectPreview(
-          fromRect: node.rect,
-          side: connectSide ?? CanvasSide.right,
-          cursor: _toWorld(cursorScreen, _lastSize ?? Size.zero),
-        );
-        _paintCurve(
-          canvas,
-          ghost,
-          Paint()
-            ..color = style.accent
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 2 * _px
-            ..strokeCap = StrokeCap.round,
-          arrow: true,
-        );
-      }
-    }
   }
 
-  /// 画笔在 [paint] 里拿到的尺寸，预览线要用它把屏幕光标换回世界坐标。
+  /// 画笔在 [paint] 里拿到的尺寸，框选框要用它把世界坐标换回屏幕。
   Size? _lastSize;
-
-  Offset _toWorld(Offset screen, Size size) => camera.toWorld(screen, size);
 
   void _paintEdge(Canvas canvas, CanvasEdgeVisual visual) {
     final CanvasEdge edge = visual.edge;
@@ -696,17 +692,25 @@ class CanvasScenePainter extends CustomPainter {
           // 用 hint 再画一份占位，两边迟早对不上（字号、位置、字距各写一套），
           // 而且用户看到的是「输入文字」这种说明书，不是节点自己的样子。
           if (text.isEmpty || node.id != editingId) {
-            _paintTextNode(canvas, node, content, color, text);
+            _paintTextNode(canvas, node, content, text);
           }
         case FileNode(:final String file):
+          final bool editingBody = node.id == editingId;
           _paintReferenceNode(
             canvas,
             node,
             content,
             color,
             icon: LucideIcons.fileText,
-            title: file.split('/').last,
-            detail: file,
+            title: canvasFileDisplayTitle(file),
+            detail: editingBody || !node.expanded
+                ? null
+                : canvasFileFolder(file),
+            // 笔记被删了 / 改名了就是 null：卡片退回「标题 + 路径」的老样子，
+            // 至少还看得出它指向哪儿。正在卡里改正文时也不画：上面那层
+            // 输入框会自己画，两层字会叠在一起。
+            body: editingBody ? null : fileBodies[file],
+            expanded: node.expanded,
           );
         case LinkNode(:final String url):
           _paintReferenceNode(
@@ -764,30 +768,21 @@ class CanvasScenePainter extends CustomPainter {
     run(Offset(rect.left, rect.bottom - r), Offset(rect.left, rect.top + r));
   }
 
-  void _paintTextNode(
-    Canvas canvas,
-    TextNode node,
-    Rect content,
-    CellColor? color,
-    String text,
-  ) {
+  void _paintTextNode(Canvas canvas, TextNode node, Rect content, String text) {
     if (text.isEmpty) {
       _paintEmptyDots(canvas, node, content);
       return;
     }
-    final TextPainter painter = textCache.get(
+    // 卡片显示的是**渲染后**的正文：和打开的编辑器是同一份排版
+    // （`canvas_markdown.dart`），画出来的宽高就是 `_fitTextNode` 量出来的。
+    final CanvasMarkdownDocument doc = markdownCache.get(
       'node-${node.id}',
       text: text,
-      style: TextStyle(
-        fontSize: AppText.ui * node.scale,
-        height: 1.6,
-        color: canvasCardInk(palette, color),
-        fontFamily: AppFonts.ui,
-        fontFamilyFallback: AppFonts.uiFallback,
-      ),
+      scale: node.scale,
       width: content.width,
+      palette: palette,
     );
-    painter.paint(canvas, content.topLeft);
+    doc.paint(canvas, content.topLeft);
   }
 
   /// 空卡片：正中三个点。
@@ -825,46 +820,55 @@ class CanvasScenePainter extends CustomPainter {
     required IconData icon,
     required String title,
     required String? detail,
+    String? body,
+    bool expanded = true,
   }) {
     final Color ink = canvasCardInk(palette, color);
     final Color muted = palette.textTertiary;
-    const double iconSize = 14;
 
     final TextPainter iconPainter = textCache.get(
       'icon-${node.id}',
       text: String.fromCharCode(icon.codePoint),
       style: TextStyle(
-        fontSize: iconSize,
+        fontSize: canvasFileIconSize,
         color: muted,
         fontFamily: icon.fontFamily,
         package: icon.fontPackage,
       ),
-      width: iconSize * 2,
+      width: canvasFileIconSize * 2,
       maxLines: 1,
     );
     iconPainter.paint(
       canvas,
-      Offset(content.left, content.top + (AppText.ui * 1.6 - iconSize) / 2),
+      Offset(
+        content.left,
+        content.top + (canvasFileTitleHeight - canvasFileIconSize) / 2,
+      ),
     );
 
-    final double textLeft = content.left + iconSize + 6;
+    final double textLeft =
+        content.left + canvasFileIconSize + canvasFileIconGap;
     final double textWidth = math.max(0, content.right - textLeft);
     if (textWidth <= 0) return;
 
     final TextPainter titlePainter = textCache.get(
       'title-${node.id}',
       text: title.isEmpty ? '（未命名）' : title,
-      style: TextStyle(
-        fontSize: AppText.ui,
-        height: 1.6,
-        color: ink,
-        fontFamily: AppFonts.ui,
-        fontFamilyFallback: AppFonts.uiFallback,
-      ),
+      style: canvasFileTitleStyle(ink),
       width: textWidth,
       maxLines: 1,
     );
     titlePainter.paint(canvas, Offset(textLeft, content.top));
+
+    // 收起 = 只有标题这一行。展开才有下面那扇「正文窗口」。
+    if (!expanded) return;
+
+    // 有正文的时候，卡片就是那篇笔记的一扇窗：标题一行，下面全是正文。
+    // 路径这时候只是噪声，不画。
+    if (body != null && body.trim().isNotEmpty) {
+      _paintReferenceBody(canvas, node, content, body);
+      return;
+    }
 
     final String? sub = detail;
     if (sub == null || sub.isEmpty) return;
@@ -885,6 +889,30 @@ class CanvasScenePainter extends CustomPainter {
     if (top < content.bottom) {
       detailPainter.paint(canvas, Offset(textLeft, top));
     }
+  }
+
+  /// 文件卡片里的正文：被引用那篇笔记的 markdown。
+  ///
+  /// 整篇都排、整篇都画。卡片高度就是按这份正文贴出来的（见
+  /// `CanvasBoard._fitFileNode`），所以这里不需要、也不许截断——「全部显示
+  /// 出来」是这块卡片的定义。
+  void _paintReferenceBody(
+    Canvas canvas,
+    CanvasNode node,
+    Rect content,
+    String body,
+  ) {
+    final double top = content.top + canvasFileHeaderHeight;
+    if (content.bottom <= top) return;
+
+    final CanvasMarkdownDocument doc = markdownCache.get(
+      'file-body-${node.id}',
+      text: body,
+      scale: 1,
+      width: content.width,
+      palette: palette,
+    );
+    doc.paint(canvas, Offset(content.left, top));
   }
 
   void _paintGroupLabel(
@@ -910,48 +938,6 @@ class CanvasScenePainter extends CustomPainter {
   }
 
   // -------------------------------------------------------------- 装饰件
-
-  /// 悬停卡片四边中点的圆点（屏幕坐标）。
-  void _paintConnectDots(Canvas canvas, Size size) {
-    if (!canEdit) return;
-    final String? id = connectFromId ?? hoverNodeId;
-    if (id == null) return;
-    final CanvasNode? node = document?.nodeById(id);
-    if (node == null) return;
-    final Rect screen = camera.rectToScreen(node.rect, size);
-    if (screen.width < 20 || screen.height < 20) return;
-
-    final Paint ring = Paint()
-      ..color = palette.surface
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-    final Paint dot = Paint()..color = palette.accent;
-    for (final CanvasSide side in CanvasSide.values) {
-      final Offset at = anchorOf(screen, side);
-      canvas.drawCircle(at, 5, ring);
-      canvas.drawCircle(at, 3.5, dot);
-    }
-  }
-
-  /// 单选时的八个缩放手柄（屏幕坐标）。
-  void _paintHandles(Canvas canvas, Size size) {
-    if (selected.length != 1 || editingId != null) return;
-    final CanvasNode? node = document?.nodeById(selected.first);
-    if (node == null) return;
-    final Rect screen = camera.rectToScreen(node.rect, size);
-    if (screen.width < 12 || screen.height < 12) return;
-
-    final Paint ring = Paint()
-      ..color = palette.surface
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1;
-    final Paint dot = Paint()..color = palette.accent;
-    for (final CanvasResizeHandle handle in CanvasResizeHandle.values) {
-      final Offset at = handle.at(screen);
-      canvas.drawCircle(at, 4, ring);
-      canvas.drawCircle(at, 3, dot);
-    }
-  }
 
   /// 选中卡片右上角那颗「打开详细信息」的小图标（屏幕坐标）。
   ///
@@ -1078,6 +1064,8 @@ class CanvasScenePainter extends CustomPainter {
     if (camera.zoom < 1e-5) return;
 
     _paintGrid(canvas, size);
+    // 数字是背景的一部分：卡片压在上面，读的是轴的刻度，不是界面 chrome。
+    _paintAxisLabels(canvas, size);
 
     canvas.save();
     canvas.translate(size.width / 2, size.height / 2);
@@ -1089,11 +1077,6 @@ class CanvasScenePainter extends CustomPainter {
 
     canvas.restore();
 
-    // 标尺压在内容上：内容滚到带子下面就被截断，不会跟刻度数字糊在一起。
-    _paintRulers(canvas, size);
-
-    _paintConnectDots(canvas, size);
-    _paintHandles(canvas, size);
     _paintDetailsIcon(canvas, size);
     _paintMarquee(canvas);
     _paintEmptyHint(canvas, size);

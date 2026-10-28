@@ -1366,12 +1366,13 @@ class NotesController extends ChangeNotifier {
   ///
   /// The last file imported is opened — with several files in one drop, that is
   /// the one the user was aiming at.
-  Future<({int imported, int refused})> importMarkdownFiles(
+  Future<({int imported, int refused, List<String> paths})> importMarkdownFiles(
     List<String> paths,
   ) async {
     int imported = 0;
     int refused = 0;
     String? lastId;
+    final List<String> created = <String>[];
     for (final String path in paths) {
       final String name = _fileNameOfPath(path);
       if (!name.toLowerCase().endsWith('.md')) {
@@ -1391,6 +1392,7 @@ class NotesController extends ChangeNotifier {
         );
         lastId = note.id;
         imported++;
+        created.add(note.relativePath);
       } catch (_) {
         refused++;
       }
@@ -1399,7 +1401,58 @@ class NotesController extends ChangeNotifier {
       await refresh(keepSelection: false);
       if (lastId != null) select(lastId);
     }
-    return (imported: imported, refused: refused);
+    return (imported: imported, refused: refused, paths: created);
+  }
+
+  /// 把拖进白板的文件变成**库里可以引用**的相对路径。
+  ///
+  /// 白板引用的是「库里的这篇笔记」，不是一份拷贝——所以：
+  ///
+  /// * 已经在库里的（路径落在 vault 下面）**原样返回相对路径**：不复制、
+  ///   不改名、不打开，白板引用的一直是同一篇；
+  /// * 库外的（桌面上、下载目录里）先导入成新笔记，再返回它的相对路径。
+  ///   不导入就没法引用：白板存的是相对路径，点开时也按它去库里找。
+  ///
+  /// 读不出来 / 不是 `.md` 的跳过。返回的顺序和 [paths] 一致（去掉跳过的）。
+  Future<List<String>> referenceMarkdownFiles(List<String> paths) async {
+    final String? root = vaultPath;
+    final List<String> inside = <String>[];
+    final List<String> outside = <String>[];
+    for (final String path in paths) {
+      final String? relative = relativeVaultPath(root, path);
+      if (relative == null) {
+        outside.add(path);
+        continue;
+      }
+      // 库里但不是 markdown 的（图片、pdf）不引用：白板卡片存的是笔记路径，
+      // 点开也只会去找一篇不存在的笔记。
+      final String lower = relative.toLowerCase();
+      if (lower.endsWith('.md') || lower.endsWith('.markdown')) {
+        inside.add(relative);
+      }
+    }
+    if (outside.isEmpty) return inside;
+    final ({int imported, int refused, List<String> paths}) result =
+        await importMarkdownFiles(outside);
+    return <String>[...inside, ...result.paths];
+  }
+
+  /// 绝对路径在库里的话，返回它相对 vault 根的路径（正斜杠）；否则 null。
+  ///
+  /// 大小写不敏感地比前缀：Windows 上 `C:\Users\…` 和 `c:\users\…` 是同一个
+  /// 目录，逐字节比会让「库里的文件」被当成库外的、白白复制一份。
+  static String? relativeVaultPath(String? root, String path) {
+    if (root == null || root.isEmpty) return null;
+    final String norm = path.replaceAll(r'\', '/');
+    String base = root.replaceAll(r'\', '/');
+    if (base.endsWith('/')) base = base.substring(0, base.length - 1);
+    if (norm.length <= base.length + 1) return null;
+    if (norm.substring(0, base.length + 1).toLowerCase() !=
+        '${base.toLowerCase()}/') {
+      return null;
+    }
+    final String relative = norm.substring(base.length + 1);
+    return relative.isEmpty ? null : relative;
   }
 
   // ------------------------------------------------------------------- trash
@@ -1592,6 +1645,58 @@ class NotesController extends ChangeNotifier {
       notifyListeners();
       return false;
     }
+  }
+
+  /// Writes [body] into the note at [relativePath] — from the whiteboard.
+  ///
+  /// A file card edits the note it references in place, so the edit has to land
+  /// in the same `.md` the file list and the editor pane show. The open draft
+  /// goes through the normal edit path (the editor pane picks the new body up
+  /// from the draft); every other note is written through the same serialised
+  /// chain [applyBodyIfEmpty] uses, so an older queued write cannot win.
+  ///
+  /// Returns whether the note exists and the write went through.
+  Future<bool> writeNoteBody(String relativePath, String body) async {
+    final Note? target = _noteByPath(relativePath);
+    if (target == null) return false;
+
+    if (_draft?.id == target.id) {
+      if (_draft!.body == body) return true;
+      // 冲突还没解决时不许写：下一次保存就是对另一个程序的无言覆盖。
+      if (_draftHasConflict) return false;
+      updateBody(body);
+      await saveNow();
+      return _noteById(target.id)?.body == body;
+    }
+
+    // Not on screen. A write of this note may already be queued, and that
+    // earlier snapshot must land before this newer one.
+    await _writing;
+    final Note? latest = _noteById(target.id);
+    if (latest == null) return false;
+    final Note updated = latest.copyWith(body: body, updatedAt: DateTime.now());
+    _replace(updated);
+    notifyListeners();
+    try {
+      await _store.save(updated, previousPath: updated.relativePath);
+      _baselines[updated.id] = updated;
+      await _refreshStamp(updated.relativePath);
+      return true;
+    } catch (e) {
+      _error = '保存失败:$e';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// 按库内相对路径找笔记；分隔符和大小写都不敏感（Windows 上 `A/B.md` 和
+  /// `a\b.md` 是同一个文件）。
+  Note? _noteByPath(String relativePath) {
+    final String needle = relativePath.replaceAll('\\', '/').toLowerCase();
+    for (final Note note in _notes) {
+      if (note.relativePath.toLowerCase() == needle) return note;
+    }
+    return null;
   }
 
   /// [candidate] unless another note in the same folder already owns that file

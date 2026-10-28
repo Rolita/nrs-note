@@ -45,6 +45,7 @@ import 'function_rail.dart';
 import 'note_list_panel.dart';
 import 'settings_dialog.dart';
 import 'title_bar.dart';
+import 'vault_tree.dart';
 
 /// Four regions, left to right: the function rail, the switchable sidebar
 /// (files / search / tags), the editor, and the document outline.
@@ -1136,29 +1137,109 @@ class _AppShellState extends State<AppShell> {
                                     if (_canvasOpened)
                                       Offstage(
                                         offstage: _mainView != MainView.canvas,
-                                        child: CanvasBoard(
-                                          key: _canvasKey,
-                                          document: context
-                                              .watch<CanvasController>()
-                                              .document,
-                                          onChanged: context
-                                              .read<CanvasController>()
-                                              .markDirty,
-                                          files:
-                                              <({String path, String title})>[
-                                                for (final Note note
-                                                    in context
-                                                        .watch<
-                                                          NotesController
-                                                        >()
-                                                        .allNotes)
-                                                  (
-                                                    path: note.relativePath,
-                                                    title: _displayTitle(note),
-                                                  ),
-                                              ],
-                                          onOpenFile: _openFromCanvas,
-                                          onOpenLink: _openCanvasLink,
+                                        // 从左侧文件列表拖过来的笔记：白板的第二
+                                        // 条拖放通道（另一条是画布自己的原生
+                                        // `DropRegion`，管桌面拖进来的文件）。
+                                        // 文件夹拖拽不接——那是移动，不是引用。
+                                        child: DragTarget<VaultDragPayload>(
+                                          onWillAcceptWithDetails:
+                                              (
+                                                DragTargetDetails<
+                                                  VaultDragPayload
+                                                >
+                                                d,
+                                              ) =>
+                                                  d.data.folder == null &&
+                                                  d.data.notePaths().isNotEmpty,
+                                          onAcceptWithDetails:
+                                              (
+                                                DragTargetDetails<
+                                                  VaultDragPayload
+                                                >
+                                                d,
+                                              ) {
+                                                final Offset? pointer =
+                                                    d.data.pointer;
+                                                final List<String> paths = d
+                                                    .data
+                                                    .notePaths();
+                                                if (pointer == null ||
+                                                    paths.isEmpty) {
+                                                  return;
+                                                }
+                                                _canvasKey.currentState
+                                                    ?.addReferencedNotesFromGlobal(
+                                                      paths,
+                                                      pointer,
+                                                    );
+                                              },
+                                          builder:
+                                              (
+                                                BuildContext context,
+                                                List<VaultDragPayload?>
+                                                candidate,
+                                                List<dynamic> rejected,
+                                              ) => CanvasBoard(
+                                                key: _canvasKey,
+                                                document: context
+                                                    .watch<CanvasController>()
+                                                    .document,
+                                                onChanged: context
+                                                    .read<CanvasController>()
+                                                    .markDirty,
+                                                files:
+                                                    <
+                                                      ({
+                                                        String path,
+                                                        String title,
+                                                      })
+                                                    >[
+                                                      for (final Note note
+                                                          in context
+                                                              .watch<
+                                                                NotesController
+                                                              >()
+                                                              .allNotes)
+                                                        (
+                                                          path:
+                                                              note.relativePath,
+                                                          title: _displayTitle(
+                                                            note,
+                                                          ),
+                                                        ),
+                                                    ],
+                                                // 文件卡片显示的就是这份正文：白板引用
+                                                // 笔记，不是复制一份。笔记一改，外壳
+                                                // 重建，卡片下一帧就是新的。
+                                                noteBodies: <String, String>{
+                                                  for (final Note note
+                                                      in context
+                                                          .watch<
+                                                            NotesController
+                                                          >()
+                                                          .allNotes)
+                                                    note.relativePath:
+                                                        note.body,
+                                                },
+                                                onReferenceMarkdown:
+                                                    (List<String> p) => context
+                                                        .read<NotesController>()
+                                                        .referenceMarkdownFiles(
+                                                          p,
+                                                        ),
+                                                onOpenFile: _openFromCanvas,
+                                                onOpenLink: _openCanvasLink,
+                                                onEditFileBody:
+                                                    (
+                                                      String path,
+                                                      String body,
+                                                    ) => context
+                                                        .read<NotesController>()
+                                                        .writeNoteBody(
+                                                          path,
+                                                          body,
+                                                        ),
+                                              ),
                                         ),
                                       ),
                                     // 图片页：所有图片共用这一份 State。换图只

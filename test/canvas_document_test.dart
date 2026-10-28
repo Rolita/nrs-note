@@ -247,6 +247,27 @@ void main() {
       expect(parse(encodeCanvas(scaled)).nodes.single.scale, 1.5);
     });
 
+    test('展开状态只在展开时写，收起不占一行', () {
+      Map<String, Object?> firstNode(CanvasDocument doc) =>
+          (decode(encodeCanvas(doc))['nodes']! as List<Object?>).single!
+              as Map<String, Object?>;
+
+      final CanvasDocument collapsed = parse(
+        '{"nodes":[{"id":"a","type":"file","file":"a.md"}]}',
+      );
+      expect(firstNode(collapsed).containsKey('expanded'), isFalse);
+
+      final CanvasDocument expanded = parse(
+        '{"nodes":[{"id":"a","type":"file","file":"a.md","expanded":true}]}',
+      );
+      expect(firstNode(expanded)['expanded'], isTrue);
+      expect(
+        (parse(encodeCanvas(expanded)).nodes.single as FileNode).expanded,
+        isTrue,
+        reason: '写出再读回来，展开状态还在',
+      );
+    });
+
     test('字号倍率写坏了回 1，不会被一个字段把字弄没', () {
       for (final String raw in <String>['0', '-2', '"x"']) {
         final CanvasDocument doc = parse(
@@ -505,6 +526,18 @@ void main() {
               as GroupNode;
 
       expect(g.label, isNull);
+    });
+
+    test('文件卡片的展开状态：缺键 = 收起，true = 展开', () {
+      final List<CanvasNode> nodes = parse('''
+{"nodes":[{"id":"a","type":"file","file":"a.md"},
+{"id":"b","type":"file","file":"b.md","expanded":true},
+{"id":"c","type":"file","file":"c.md","expanded":false}]}
+''').nodes;
+
+      expect((nodes[0] as FileNode).expanded, isFalse, reason: '老文件没有这个键');
+      expect((nodes[1] as FileNode).expanded, isTrue);
+      expect((nodes[2] as FileNode).expanded, isFalse);
     });
   });
 

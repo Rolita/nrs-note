@@ -705,7 +705,7 @@ class VaultTreeState extends State<VaultTree> {
   /// Whether a drop on [folder] would actually change something. A drop that
   /// changes nothing is still *taken* by the folder row (so it cannot fall
   /// through to the root), it just does nothing once it lands.
-  bool _canDrop(_DragPayload payload, String folder) {
+  bool _canDrop(VaultDragPayload payload, String folder) {
     final String? moving = payload.folder;
     if (moving != null) {
       // A folder cannot go inside itself or its own sub-folder — that would
@@ -716,7 +716,7 @@ class VaultTreeState extends State<VaultTree> {
     return _dragTargets().any((Note n) => n.folderPath != folder);
   }
 
-  Future<void> _dropPayload(_DragPayload payload, String folder) async {
+  Future<void> _dropPayload(VaultDragPayload payload, String folder) async {
     if (!_canDrop(payload, folder)) return;
     final String? moving = payload.folder;
     if (moving != null) {
@@ -934,8 +934,8 @@ class VaultTreeState extends State<VaultTree> {
       // note out of a folder and letting go below is how it goes back to the
       // top level. A folder row claims its own drops (see [_folderRow]), which
       // is what keeps a drop on a folder from landing here instead.
-      child: DragTarget<_DragPayload>(
-        onWillAcceptWithDetails: (DragTargetDetails<_DragPayload> d) {
+      child: DragTarget<VaultDragPayload>(
+        onWillAcceptWithDetails: (DragTargetDetails<VaultDragPayload> d) {
           final bool accepted =
               _hoverFolder == null && d.data.tree._canDrop(d.data, '');
           if (accepted) {
@@ -944,16 +944,16 @@ class VaultTreeState extends State<VaultTree> {
           }
           return accepted;
         },
-        onLeave: (_DragPayload? _) {
+        onLeave: (VaultDragPayload? _) {
           _overRoot = false;
           _publishDropTarget();
         },
-        onAcceptWithDetails: (DragTargetDetails<_DragPayload> d) =>
+        onAcceptWithDetails: (DragTargetDetails<VaultDragPayload> d) =>
             d.data.tree._dropPayload(d.data, ''),
         builder:
             (
               BuildContext context,
-              List<_DragPayload?> candidate,
+              List<VaultDragPayload?> candidate,
               List<dynamic> rejected,
             ) => ListView.builder(
               padding: const EdgeInsets.fromLTRB(
@@ -995,9 +995,13 @@ class VaultTreeState extends State<VaultTree> {
     // Renaming wins over dragging: a text field full of selected characters
     // must drag like text, not like a file.
     if (renaming) return content;
-    return Draggable<_DragPayload>(
-      data: _DragPayload.notes(this),
+    final VaultDragPayload payload = VaultDragPayload.notes(this);
+    return Draggable<VaultDragPayload>(
+      data: payload,
       onDragStarted: () => _beginDrag(note),
+      // The canvas needs the pointer, not the feedback chip's corner: it puts
+      // the new card where the user let go.
+      onDragUpdate: (DragUpdateDetails d) => payload.pointer = d.globalPosition,
       // The preview names the row and, live, the folder it would land in; the
       // row itself fades while the drag is in flight.
       feedback: _dragPreview(label: () => _dragLabel(note)),
@@ -1122,33 +1126,33 @@ class VaultTreeState extends State<VaultTree> {
     );
 
     if (renaming) return build(hot: false);
-    return DragTarget<_DragPayload>(
+    return DragTarget<VaultDragPayload>(
       // Accepts every drop, even one that would change nothing: holding on to
       // the drop is what stops it falling through to the vault root below.
-      onWillAcceptWithDetails: (DragTargetDetails<_DragPayload> d) {
+      onWillAcceptWithDetails: (DragTargetDetails<VaultDragPayload> d) {
         _hoverFolder = folder;
         _publishDropTarget();
         return true;
       },
-      onLeave: (_DragPayload? _) {
+      onLeave: (VaultDragPayload? _) {
         if (_hoverFolder == folder) {
           _hoverFolder = null;
           _publishDropTarget();
         }
       },
-      onAcceptWithDetails: (DragTargetDetails<_DragPayload> d) =>
+      onAcceptWithDetails: (DragTargetDetails<VaultDragPayload> d) =>
           d.data.tree._dropPayload(d.data, folder),
       builder:
           (
             BuildContext context,
-            List<_DragPayload?> candidate,
+            List<VaultDragPayload?> candidate,
             List<dynamic> rejected,
           ) {
-            final _DragPayload? hovering = candidate.isEmpty
+            final VaultDragPayload? hovering = candidate.isEmpty
                 ? null
                 : candidate.first;
-            return Draggable<_DragPayload>(
-              data: _DragPayload.folder(this, folder),
+            return Draggable<VaultDragPayload>(
+              data: VaultDragPayload.folder(this, folder),
               feedback: _dragPreview(label: () => row.name),
               childWhenDragging: Opacity(
                 opacity: 0.4,
@@ -1240,15 +1244,31 @@ class VaultTreeState extends State<VaultTree> {
 /// evaluated when the drag begins — *before* `onDragStarted` folds the picked-up
 /// row into the selection — and a drop must move what is selected at the moment
 /// of the drop, not what happened to be selected before it.
-class _DragPayload {
-  const _DragPayload.notes(this.tree) : folder = null;
+///
+/// The whiteboard is the second drop target: it reads [notePaths] to reference
+/// the notes, and [pointer] for where the card lands. [DragTargetDetails.offset]
+/// is the *feedback chip's* top-left (`pointer - dragStartPoint`), not the
+/// pointer, so each `Draggable` keeps this field up to date in `onDragUpdate`.
+class VaultDragPayload {
+  VaultDragPayload.notes(this.tree) : folder = null;
 
-  const _DragPayload.folder(this.tree, String this.folder);
+  VaultDragPayload.folder(this.tree, String this.folder);
 
   final VaultTreeState tree;
 
   /// The folder being moved, or null when the drag carries the note selection.
   final String? folder;
+
+  /// Global pointer position of the drag's latest update.
+  Offset? pointer;
+
+  /// The notes this drag would move / reference right now.
+  List<String> notePaths() {
+    if (folder != null) return const <String>[];
+    return <String>[
+      for (final Note note in tree._dragTargets()) note.relativePath,
+    ];
+  }
 }
 
 class _TreeRow {

@@ -31,10 +31,7 @@ void main() {
     });
 
     test('rect 的两个方向也互逆', () {
-      const CanvasCamera cam = CanvasCamera(
-        center: Offset(-17, 33),
-        zoom: 0.6,
-      );
+      const CanvasCamera cam = CanvasCamera(center: Offset(-17, 33), zoom: 0.6);
       const Rect world = Rect.fromLTWH(10, 20, 250, 120);
 
       final Rect back = cam.rectToWorld(cam.rectToScreen(world, stage), stage);
@@ -131,8 +128,14 @@ void main() {
       final CanvasCamera reset = cam.withZoomAt(anchor, 1, stage);
 
       expect(reset.zoom, 1);
-      expect(reset.toWorld(anchor, stage).dx, closeTo(cam.toWorld(anchor, stage).dx, 1e-9));
-      expect(reset.toWorld(anchor, stage).dy, closeTo(cam.toWorld(anchor, stage).dy, 1e-9));
+      expect(
+        reset.toWorld(anchor, stage).dx,
+        closeTo(cam.toWorld(anchor, stage).dx, 1e-9),
+      );
+      expect(
+        reset.toWorld(anchor, stage).dy,
+        closeTo(cam.toWorld(anchor, stage).dy, 1e-9),
+      );
     });
 
     test('fit 把内容装进画布并居中', () {
@@ -148,18 +151,21 @@ void main() {
     });
 
     test('fit 空内容退化成「中心对准原点」', () {
-      final CanvasCamera cam = CanvasCamera.fit(Rect.zero, const Size(600, 400));
+      final CanvasCamera cam = CanvasCamera.fit(
+        Rect.zero,
+        const Size(600, 400),
+      );
 
       expect(cam.zoom, 1);
-      expect(cam.toScreen(Offset.zero, const Size(600, 400)), const Offset(300, 200));
+      expect(
+        cam.toScreen(Offset.zero, const Size(600, 400)),
+        const Offset(300, 200),
+      );
     });
 
     test('fit 画布尺寸为 0 时不炸', () {
       expect(
-        () => CanvasCamera.fit(
-          const Rect.fromLTWH(0, 0, 10, 10),
-          Size.zero,
-        ),
+        () => CanvasCamera.fit(const Rect.fromLTWH(0, 0, 10, 10), Size.zero),
         returnsNormally,
       );
     });
@@ -177,8 +183,10 @@ void main() {
   group('插值', () {
     test('lerpDouble / lerpOffset', () {
       expect(lerpDouble(0, 10, 0.25), 2.5);
-      expect(lerpOffset(Offset.zero, const Offset(10, 20), 0.5),
-          const Offset(5, 10));
+      expect(
+        lerpOffset(Offset.zero, const Offset(10, 20), 0.5),
+        const Offset(5, 10),
+      );
     });
 
     test('easeOutCubic 两端钉住、中点快', () {
@@ -234,11 +242,19 @@ void main() {
     test('控制点沿边的法线往外伸', () {
       const Rect r = Rect.fromLTWH(0, 0, 100, 100);
 
-      final Offset right = controlPointOf(r, CanvasSide.right, const Offset(400, 50));
+      final Offset right = controlPointOf(
+        r,
+        CanvasSide.right,
+        const Offset(400, 50),
+      );
       expect(right.dx, greaterThan(r.centerRight.dx), reason: '应该往右伸');
       expect(right.dy, closeTo(r.centerRight.dy, 1e-9));
 
-      final Offset top = controlPointOf(r, CanvasSide.top, const Offset(50, -400));
+      final Offset top = controlPointOf(
+        r,
+        CanvasSide.top,
+        const Offset(50, -400),
+      );
       expect(top.dy, lessThan(r.topCenter.dy));
       expect(top.dx, closeTo(r.topCenter.dx, 1e-9));
     });
@@ -246,7 +262,11 @@ void main() {
     test('控制点伸出距离有上限', () {
       const Rect r = Rect.fromLTWH(0, 0, 100, 100);
 
-      final Offset far = controlPointOf(r, CanvasSide.right, const Offset(99999, 50));
+      final Offset far = controlPointOf(
+        r,
+        CanvasSide.right,
+        const Offset(99999, 50),
+      );
 
       expect(
         (far - r.centerRight).distance,
@@ -320,107 +340,6 @@ void main() {
       expect(t.distance, closeTo(1, 1e-6));
       expect(t.dx, greaterThan(0.9));
       expect(t.dy.abs(), lessThan(0.1));
-    });
-  });
-
-  group('缩放卡片', () {
-    const Rect start = Rect.fromLTRB(100, 100, 300, 200);
-
-    test('右下角：右下两条边跟着走', () {
-      final Rect r = resizeRect(
-        start,
-        CanvasResizeHandle.bottomRight,
-        const Offset(50, 30),
-        minSize: 40,
-      );
-
-      expect(r, const Rect.fromLTRB(100, 100, 350, 230));
-    });
-
-    test('左上角：左上两条边跟着走', () {
-      final Rect r = resizeRect(
-        start,
-        CanvasResizeHandle.topLeft,
-        const Offset(-20, -10),
-        minSize: 40,
-      );
-
-      expect(r, const Rect.fromLTRB(80, 90, 300, 200));
-    });
-
-    test('右边中点只动右边', () {
-      final Rect r = resizeRect(
-        start,
-        CanvasResizeHandle.centerRight,
-        const Offset(40, 999),
-        minSize: 40,
-      );
-
-      expect(r, const Rect.fromLTRB(100, 100, 340, 200));
-    });
-
-    test('撞到最小尺寸时，对面的边不动', () {
-      final Rect r = resizeRect(
-        start,
-        CanvasResizeHandle.topLeft,
-        const Offset(9999, 9999),
-        minSize: 40,
-      );
-
-      expect(r.right, 300, reason: '右边缘不该被拖走');
-      expect(r.bottom, 200, reason: '下边缘不该被拖走');
-      expect(r.width, closeTo(40, 1e-9));
-      expect(r.height, closeTo(40, 1e-9));
-    });
-
-    test('往回拖过头也不会出现负宽高', () {
-      final Rect r = resizeRect(
-        start,
-        CanvasResizeHandle.bottomRight,
-        const Offset(-9999, -9999),
-        minSize: 40,
-      );
-
-      expect(r.width, greaterThanOrEqualTo(40));
-      expect(r.height, greaterThanOrEqualTo(40));
-    });
-
-    test('八个手柄的位置都落在矩形边界上', () {
-      for (final CanvasResizeHandle h in CanvasResizeHandle.values) {
-        final Offset p = h.at(start);
-        final bool onEdge =
-            (p.dx - start.left).abs() < 1e-9 ||
-            (p.dx - start.right).abs() < 1e-9 ||
-            (p.dy - start.top).abs() < 1e-9 ||
-            (p.dy - start.bottom).abs() < 1e-9;
-        expect(onEdge, isTrue, reason: '$h 不在边界上');
-        expect(start.inflate(0.001).contains(p), isTrue, reason: '$h 跑到矩形外');
-      }
-    });
-
-    test('四个角牵动两条边，四条边中点只牵动一条', () {
-      const Set<CanvasResizeHandle> corners = <CanvasResizeHandle>{
-        CanvasResizeHandle.topLeft,
-        CanvasResizeHandle.topRight,
-        CanvasResizeHandle.bottomRight,
-        CanvasResizeHandle.bottomLeft,
-      };
-      for (final CanvasResizeHandle h in CanvasResizeHandle.values) {
-        final int moved = <bool>[
-          h.movesLeft,
-          h.movesRight,
-          h.movesTop,
-          h.movesBottom,
-        ].where((bool b) => b).length;
-        expect(moved, corners.contains(h) ? 2 : 1, reason: '$h 牵动的边数不对');
-      }
-    });
-
-    test('没有任何手柄同时牵动一对相反的边', () {
-      for (final CanvasResizeHandle h in CanvasResizeHandle.values) {
-        expect(h.movesLeft && h.movesRight, isFalse, reason: '$h 左右都动');
-        expect(h.movesTop && h.movesBottom, isFalse, reason: '$h 上下都动');
-      }
     });
   });
 

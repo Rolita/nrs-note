@@ -176,6 +176,7 @@ final class FileNode extends CanvasNode {
     required super.height,
     this.file = '',
     this.subpath,
+    this.expanded = false,
     super.color,
     super.scale,
     super.extra,
@@ -187,6 +188,11 @@ final class FileNode extends CanvasNode {
   /// 指向笔记里的某个标题或块，以 `#` 开头。
   String? subpath;
 
+  /// 展开着吗。收起 = 只显示标题一行（默认），展开 = 标题下面是被引用
+  /// 笔记的正文窗口。只在展开时写进 JSON——没展开过的卡片不该多一行 diff；
+  /// 老文件没有这个键就是收起。
+  bool expanded;
+
   @override
   CanvasNodeType get type => CanvasNodeType.file;
 
@@ -194,6 +200,7 @@ final class FileNode extends CanvasNode {
   void _writeSpecific(Map<String, Object?> out) {
     out['file'] = file;
     if (subpath != null) out['subpath'] = subpath;
+    if (expanded) out['expanded'] = true;
   }
 }
 
@@ -373,6 +380,7 @@ const Set<String> _knownNodeKeys = <String>{
   'text',
   'file',
   'subpath',
+  'expanded',
   'url',
   'label',
 };
@@ -487,6 +495,7 @@ CanvasNode? _nodeOf(Map<String, Object?> json) {
         height: height,
         file: json['file'] is String ? json['file']! as String : '',
         subpath: _subpathOf(json['subpath']),
+        expanded: json['expanded'] == true,
         color: color,
         scale: scale,
         extra: extra,

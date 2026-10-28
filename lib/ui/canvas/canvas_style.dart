@@ -10,10 +10,11 @@ import '../../core/utils/table_model.dart' show CellColor, CellColorToken;
 /// 视觉基准是 graphif：白板是**一块坐标系**（有刻度、有原点十字），
 /// 卡片是**一根描边**而不是一块色块。所以这里的令牌分三组：
 ///
-/// * **网格**：[gridMajor] 主格（带刻度数字）、[axis] 原点十字。刻意压得很淡
+/// * **网格**：[gridMajor] 主格、[axis] 原点十字。刻意压得很淡
 ///   ——网格是背景的纹理，不是内容。**没有次格**：格子里不再切小格。
-/// * **标尺**：贴在画布上边与左边的两条带（[canvasRulerThickness] 像素），
-///   底色就是画布色，所以内容滚到它下面会被截断，像真的尺子压着纸。
+/// * **坐标数字**：[axisLabel] 写在世界原点的两条轴上——x 的数字压在
+///   水轴上方，y 的数字贴在竖轴右侧。轴滚出屏幕，数字也跟着离开；画布
+///   边上不再有标尺带。
 /// * **卡片**：统一的中性半透明底（[cardFill]）+ 一根细描边。六种预设色
 ///   **不再进底色**，只染描边和文字（见 [canvasCardBorder] / [canvasCardInk]）。
 class CanvasStyle {
@@ -21,10 +22,7 @@ class CanvasStyle {
     required this.background,
     required this.gridMajor,
     required this.axis,
-    required this.rulerBackground,
-    required this.rulerText,
-    required this.rulerTick,
-    required this.rulerEdge,
+    required this.axisLabel,
     required this.cardFill,
     required this.groupOutline,
     required this.accent,
@@ -37,8 +35,6 @@ class CanvasStyle {
     required this.labelHalo,
     required this.textPrimary,
     required this.textSecondary,
-    required this.handle,
-    required this.handleRing,
     required this.emptyHint,
   });
 
@@ -47,10 +43,7 @@ class CanvasStyle {
     // 只有一层格线：再淡就看不见，再亮就抢内容。
     gridMajor: p.textPrimary.withValues(alpha: 0.085),
     axis: p.accent.withValues(alpha: 0.24),
-    rulerBackground: p.canvas,
-    rulerText: p.textTertiary,
-    rulerTick: p.textPrimary.withValues(alpha: 0.16),
-    rulerEdge: p.outline,
+    axisLabel: p.textTertiary,
     // 卡片只比画布亮一点点：轮廓由那根描边交代，不靠色块和投影。
     cardFill: p.surfaceRaised.withValues(alpha: 0.72),
     groupOutline: p.textPrimary.withValues(alpha: 0.22),
@@ -64,32 +57,21 @@ class CanvasStyle {
     labelHalo: p.canvas,
     textPrimary: p.textPrimary,
     textSecondary: p.textSecondary,
-    handle: p.accent,
-    handleRing: p.surface,
     emptyHint: p.textTertiary,
   );
 
   /// 画布底色。和左栏最深处同一级：白板是一块「凹陷的工作台」。
   final Color background;
 
-  /// 主格线（标尺上写了数字的那一条）。**没有次格**——一格就是相邻两个
-  /// 刻度之间的距离，格子里不再切小格。
+  /// 主格线（坐标数字对齐的那一条）。**没有次格**——一格就是相邻两个
+  /// 坐标数字之间的距离，格子里不再切小格。
   final Color gridMajor;
 
   /// 世界原点的十字（x = 0 / y = 0 两条）。
   final Color axis;
 
-  /// 标尺带的底色。用画布色，内容滚到下面就被截断。
-  final Color rulerBackground;
-
-  /// 标尺上的刻度数字。
-  final Color rulerText;
-
-  /// 标尺上的小刻度线。
-  final Color rulerTick;
-
-  /// 标尺带内侧那根收边线。
-  final Color rulerEdge;
+  /// 轴上的坐标数字。
+  final Color axisLabel;
 
   /// 卡片底色：中性半透明面。颜色不进这里。
   final Color cardFill;
@@ -116,10 +98,6 @@ class CanvasStyle {
   final Color textPrimary;
   final Color textSecondary;
 
-  /// 缩放手柄的圆点与它的描边。
-  final Color handle;
-  final Color handleRing;
-
   /// 空板提示文字。
   final Color emptyHint;
 }
@@ -128,7 +106,7 @@ class CanvasStyle {
 
 /// 主格步长的候选阶梯（世界单位）。
 ///
-/// 只走 1 / 2 / 5 三个系数，标尺上的数字才会是 100、200、500 这种整数，
+/// 只走 1 / 2 / 5 三个系数，轴上的坐标数字才会是 100、200、500 这种整数，
 /// 不会出现 137 这种读不出量级的刻度。
 const List<double> canvasGridLadder = <double>[
   10,
@@ -157,10 +135,10 @@ const List<double> canvasGridLadder = <double>[
 /// 64px 是「一眼能数清格子」的下限；再密下去网格就从纹理变成灰雾了。
 const double canvasGridMinScreenStep = 64;
 
-/// 主格（写数字的那一层）的世界步长。
+/// 主格（写坐标数字的那一层）的世界步长。
 ///
 /// 跟着缩放走阶梯，而不是把同一套间距画得越来越密：缩小时 100 → 200 →
-/// 500，放大时 100 → 50 → 20。所以**任何缩放下刻度都是整数**，
+/// 500，放大时 100 → 50 → 20。所以**任何缩放下数字都是整数**，
 /// 也不会出现「缩到 8% 要点上百万个点」这种事。
 double canvasGridMajorStep(double zoom) {
   final double z = zoom > 0 ? zoom : 1;
@@ -170,23 +148,18 @@ double canvasGridMajorStep(double zoom) {
   return canvasGridLadder.last;
 }
 
-/// 上边标尺带的高度（屏幕像素，不跟着缩放变）。
+/// 坐标数字离轴的间隙（屏幕像素）。
 ///
-/// 数字是「刻在线中间」的，所以这一条只放得下一行字。
-const double canvasRulerThickness = 20;
+/// x 的数字压在水轴上方、y 的数字贴在竖轴右侧，都留这么一点空：数字不
+/// 压线，轴才看得出是一根线。
+const double canvasAxisLabelGap = 3;
 
-/// 左边标尺带的宽度。
-///
-/// 比上边那条宽：左边的数字要靠右对齐摆进带子里，而 `-2000` 这种五位数
-/// 在 10px 字号下要 26px，20px 的带子装不下，字就会跑到画布上。
-const double canvasRulerSideWidth = 32;
-
-/// 标尺上写什么。
+/// 轴上写什么。
 ///
 /// 阶梯里的步长都是整数，所以绝大多数时候就是整数的字符串；留一位小数
 /// 只是为了防止以后有人把阶梯改成 2.5 这类值。判整数带 1e-6 的容差——
 /// `k * major` 在 k 很大时会算出 `999.9999999999999` 这种值。
-String canvasRulerLabel(double value) {
+String canvasCoordinateLabel(double value) {
   final double rounded = value.roundToDouble();
   if ((value - rounded).abs() < 1e-6) return rounded.round().toString();
   return value.toStringAsFixed(1);
@@ -214,6 +187,21 @@ TextStyle canvasEmptyDotsStyle({Color? color, double scale = 1}) => TextStyle(
   fontSize: AppText.ui * scale,
   height: 1,
   letterSpacing: 1 * scale,
+  color: color,
+  fontFamily: AppFonts.ui,
+  fontFamilyFallback: AppFonts.uiFallback,
+);
+
+/// 卡片正文的基础排版。
+///
+/// **画笔、贴合尺寸、编辑输入框三处共用这一份**：字号、行高、字体各写一套，
+/// 卡片就会「显示一行、量出两行、一进编辑又跳一行」。markdown 的标题、
+/// 代码也是从它派生出来的（见 `canvas_markdown.dart`），所以三处一起变。
+///
+/// [scale] 是节点倍率 × 画布缩放后的**最终**倍数，调用方自己乘好。
+TextStyle canvasCardTextStyle(double scale, {Color? color}) => TextStyle(
+  fontSize: AppText.ui * scale,
+  height: 1.6,
   color: color,
   fontFamily: AppFonts.ui,
   fontFamilyFallback: AppFonts.uiFallback,

@@ -180,9 +180,8 @@ class NoteListPanelState extends State<NoteListPanel> {
     if (!mounted || paths.isEmpty) return;
 
     final NotesController notes = context.read<NotesController>();
-    final ({int imported, int refused}) result = await notes.importMarkdownFiles(
-      paths,
-    );
+    final ({int imported, int refused, List<String> paths}) result = await notes
+        .importMarkdownFiles(paths);
     if (!mounted) return;
 
     final int skipped = result.refused;
