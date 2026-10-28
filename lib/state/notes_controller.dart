@@ -1404,39 +1404,6 @@ class NotesController extends ChangeNotifier {
     return (imported: imported, refused: refused, paths: created);
   }
 
-  /// 把拖进白板的文件变成**库里可以引用**的相对路径。
-  ///
-  /// 白板引用的是「库里的这篇笔记」，不是一份拷贝——所以：
-  ///
-  /// * 已经在库里的（路径落在 vault 下面）**原样返回相对路径**：不复制、
-  ///   不改名、不打开，白板引用的一直是同一篇；
-  /// * 库外的（桌面上、下载目录里）先导入成新笔记，再返回它的相对路径。
-  ///   不导入就没法引用：白板存的是相对路径，点开时也按它去库里找。
-  ///
-  /// 读不出来 / 不是 `.md` 的跳过。返回的顺序和 [paths] 一致（去掉跳过的）。
-  Future<List<String>> referenceMarkdownFiles(List<String> paths) async {
-    final String? root = vaultPath;
-    final List<String> inside = <String>[];
-    final List<String> outside = <String>[];
-    for (final String path in paths) {
-      final String? relative = relativeVaultPath(root, path);
-      if (relative == null) {
-        outside.add(path);
-        continue;
-      }
-      // 库里但不是 markdown 的（图片、pdf）不引用：白板卡片存的是笔记路径，
-      // 点开也只会去找一篇不存在的笔记。
-      final String lower = relative.toLowerCase();
-      if (lower.endsWith('.md') || lower.endsWith('.markdown')) {
-        inside.add(relative);
-      }
-    }
-    if (outside.isEmpty) return inside;
-    final ({int imported, int refused, List<String> paths}) result =
-        await importMarkdownFiles(outside);
-    return <String>[...inside, ...result.paths];
-  }
-
   /// 绝对路径在库里的话，返回它相对 vault 根的路径（正斜杠）；否则 null。
   ///
   /// 大小写不敏感地比前缀：Windows 上 `C:\Users\…` 和 `c:\users\…` 是同一个

@@ -1575,63 +1575,8 @@ void main() {
     });
   });
 
-  group('referenceMarkdownFiles', () {
-    test('库里的文件原样引用：不复制、不改名', () async {
-      final Note existing = _note('周报', body: '# 周报\n\n本周进展');
-      final _MemoryStore store = _MemoryStore(<Note>[existing]);
-      store.vault = r'C:\Users\me\Vault';
-      final NotesController notes = await _open(store);
-
-      final List<String> paths = await notes.referenceMarkdownFiles(<String>[
-        r'C:\Users\me\Vault\笔记\周报.md',
-      ]);
-
-      expect(paths, <String>['笔记/周报.md']);
-      expect(notes.allNotes.length, 1, reason: '库里的文件不能被复制一份');
-    });
-
-    test('大小写不同也算在库里：Windows 上那是同一个目录', () async {
-      final _MemoryStore store = _MemoryStore(<Note>[_note('周报')]);
-      store.vault = r'C:\Users\me\Vault';
-      final NotesController notes = await _open(store);
-
-      final List<String> paths = await notes.referenceMarkdownFiles(<String>[
-        r'c:\users\me\vault\周报.md',
-      ]);
-
-      expect(paths, <String>['周报.md']);
-      expect(notes.allNotes.length, 1);
-    });
-
-    test('库外的文件先导入成笔记，再引用它', () async {
-      final _MemoryStore store = _MemoryStore();
-      store.vault = r'C:\Users\me\Vault';
-      store.external[r'C:\Users\me\Desktop\周报.md'] = '# 周报\n\n本周进展';
-      final NotesController notes = await _open(store);
-
-      final List<String> paths = await notes.referenceMarkdownFiles(<String>[
-        r'C:\Users\me\Desktop\周报.md',
-      ]);
-
-      expect(paths, <String>['周报.md']);
-      expect(notes.allNotes.single.body, contains('本周进展'));
-    });
-
-    test('库内库外混着拖：顺序不变，外面的补在后面', () async {
-      final _MemoryStore store = _MemoryStore(<Note>[_note('甲')]);
-      store.vault = '/vault';
-      store.external['/tmp/乙.md'] = '# 乙';
-      final NotesController notes = await _open(store);
-
-      final List<String> paths = await notes.referenceMarkdownFiles(<String>[
-        '/vault/甲.md',
-        '/tmp/乙.md',
-      ]);
-
-      expect(paths, <String>['甲.md', '乙.md']);
-    });
-
-    test('没有本地库（web）：一律当库外处理', () async {
+  group('relativeVaultPath', () {
+    test('库根按目录边界比、大小写不敏感；没有本地库就一律算库外', () {
       expect(NotesController.relativeVaultPath(null, '/vault/甲.md'), isNull);
       expect(NotesController.relativeVaultPath('', '/vault/甲.md'), isNull);
       expect(

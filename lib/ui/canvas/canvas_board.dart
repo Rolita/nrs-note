@@ -46,7 +46,6 @@ class CanvasBoard extends StatefulWidget {
     this.noteBodies = const <String, String>{},
     this.onOpenFile,
     this.onOpenLink,
-    this.onReferenceMarkdown,
     this.onEditFileBody,
   });
 
@@ -70,13 +69,6 @@ class CanvasBoard extends StatefulWidget {
 
   /// 双击链接卡片：用系统浏览器打开。
   final ValueChanged<String>? onOpenLink;
-
-  /// 把拖进来的本地 `.md` 变成库里能引用的相对路径。
-  ///
-  /// 白板只存相对路径（和 `FileNode.file` 的约定一致），所以「库外的文件」
-  /// 得先变成库里的笔记——这一步要用 `NotesController`，而画布不该认识它，
-  /// 于是留一个回调由外壳接。null = 拖进来的文件一律不认。
-  final Future<List<String>> Function(List<String> paths)? onReferenceMarkdown;
 
   /// 在文件卡片里改了正文：写回被引用的那篇笔记。
   ///
@@ -785,8 +777,13 @@ class CanvasBoardState extends State<CanvasBoard>
 
   /// 把几张笔记放到白板上（引用它们，不复制正文）。
   ///
-  /// 落点是 [at]（缺省是视口正中），多张时**从上往下一张一张排**：一次拖进
-  /// 五个文件，五张卡片叠在同一处就成了一摞，只能看见最上面那张。
+  /// [at] 是**整摞的左上角**：鼠标在哪松手，第一张卡的左上角就落在哪——卡片
+  /// 从指针处往右下铺开，和跟着指针走的那个预览片是同一个角，松手时不会跳。
+  /// 只有不给 [at] 的调用（托盘 / 键盘那种没有指针的入口）才把整摞摆在视口
+  /// 正中。
+  ///
+  /// 多张时**从上往下一张一张排**：一次拖进五个文件，五张卡片叠在同一处就
+  /// 成了一摞，只能看见最上面那张。
   ///
   /// 新落的卡片是**收起**的：图标 + 文件名一行，点标题条才展开看正文。所以
   /// 摆的时候不用等正文到手，也就没有「补贴一次」这回事了。
@@ -795,8 +792,6 @@ class CanvasBoardState extends State<CanvasBoard>
   List<FileNode> addFileCards(List<String> paths, {Offset? at}) {
     final CanvasDocument? doc = _doc;
     if (doc == null || paths.isEmpty) return const <FileNode>[];
-    final Offset anchor = at ?? _camera.center;
-
     final List<FileNode> made = <FileNode>[];
     for (final String path in paths) {
       final FileNode node = FileNode(
@@ -813,12 +808,18 @@ class CanvasBoardState extends State<CanvasBoard>
 
     final double gap = canvasCardPadding * 2;
     double total = gap * (made.length - 1);
+    double widest = 0;
     for (final FileNode node in made) {
       total += node.height;
+      widest = math.max(widest, node.width);
     }
-    double y = anchor.dy - total / 2;
+    // 没有指针时按「整摞居中」摆；有指针时指针就是左上角，不再对半折——
+    // 250 宽的卡片居中会让落点看起来偏左半个卡片，手感是「没落在鼠标处」。
+    final Offset corner =
+        at ?? _camera.center - Offset(widest / 2, total / 2);
+    double y = corner.dy;
     for (final FileNode node in made) {
-      node.x = anchor.dx - node.width / 2;
+      node.x = corner.dx;
       node.y = y;
       y += node.height + gap;
     }
@@ -834,6 +835,11 @@ class CanvasBoardState extends State<CanvasBoard>
 
   /// 文件列表拖过来的笔记：引用到全局坐标 [globalPointer] 所在的画布位置。
   ///
+  /// [globalPointer] 就是松手的地方，落成卡片的**左上角**（整摞的第一张）。
+  ///
+  /// **这是文件进白板的唯一通道**：桌面上的 `.md` 先拖进左侧文件列表（导入
+  /// 成库里的笔记），再从列表里拖过来。
+  ///
   /// 画布不认识 `NotesController`，路径由外壳转好；这里只做坐标换算和落卡。
   /// `DragTargetDetails.offset` 是反馈卡片的左上角，所以外壳传的是指针的
   /// 全局位置，不是那个 offset。
@@ -843,87 +849,14 @@ class CanvasBoardState extends State<CanvasBoard>
     addFileCards(paths, at: _toWorld(box.globalToLocal(globalPointer)));
   }
 
-  /// 能变成卡片的文件：只认 markdown。
+  /// 桌面上的文件落在白板上**不落卡**，只解释一句。
   ///
-  /// 白板引用的是库里的笔记，`docx` / `pdf` 进不了库也读不出结构。
-  static bool _isMarkdownPath(String path) {
-    final String lower = path.toLowerCase();
-    return lower.endsWith('.md') || lower.endsWith('.markdown');
-  }
-
-  /// 文件被拖到白板上：变成**引用那篇笔记**的文件卡片。
-  ///
-  /// 不是把文件搬进白板、也不是把正文复制一份：`.md` 还在文件列表里，卡片
-  /// 只是指向它，正文由 [CanvasBoard.noteBodies] 现取——笔记改了，卡片跟着改。
-  ///
-  /// 拖放期间**不能 await 平台通道**，读文件只能走回调（和左栏拖入笔记是同
-  /// 一套写法）：先把路径收集齐，再落到自己的异步里去处理。
-  Future<void> _onDropFiles(PerformDropEvent event) async {
-    if (_readOnly) return;
-    // 落点用区域内的局部坐标：`DropRegion` 和画布一样大，它就是画布坐标。
-    final Offset at = _toWorld(event.position.local);
-
-    final List<String> paths = <String>[];
-    for (final DropItem item in event.session.items) {
-      // `dataReader` 的类型没从包里导出来，只能靠推断——和左栏拖入笔记一样。
-      final reader = item.dataReader;
-      if (reader == null || !reader.canProvide(Formats.fileUri)) continue;
-      final Completer<String?> done = Completer<String?>();
-      reader.getValue<Uri>(
-        Formats.fileUri,
-        (Uri? uri) {
-          if (done.isCompleted) return;
-          if (uri == null || uri.scheme != 'file') {
-            done.complete(null);
-            return;
-          }
-          try {
-            done.complete(uri.toFilePath());
-          } on UnsupportedError {
-            done.complete(null);
-          }
-        },
-        onError: (Object error) {
-          if (!done.isCompleted) done.complete(null);
-        },
-      );
-      final String? path = await done.future;
-      if (path != null) paths.add(path);
-    }
-    if (!mounted) return;
-    if (paths.isEmpty) {
-      // 拖进来的东西读不出本地路径（虚拟文件、压缩包里的条目、网页里的
-      // 图片……）。不吭声的话，用户看到的就是「拖了没反应」。
-      _notice('没读到拖进来的文件', '先把文件存到本地，再从资源管理器拖进来');
-      return;
-    }
-
-    final List<String> markdown = <String>[
-      for (final String path in paths)
-        if (_isMarkdownPath(path)) path,
-    ];
-    if (markdown.isEmpty) {
-      _notice('只能拖入 .md 文件', '白板引用的是库里的笔记');
-      return;
-    }
-
-    final Future<List<String>> Function(List<String>)? reference =
-        widget.onReferenceMarkdown;
-    if (reference == null) {
-      _notice('这块白板没有接上笔记库', '拖进来的文件没法变成引用');
-      return;
-    }
-
-    final List<String> relative = await reference(markdown);
-    if (!mounted) return;
-    if (relative.isEmpty) {
-      _notice('这几份文件读不进来', '可能是空文件，或者没有读取权限');
-      return;
-    }
-
-    addFileCards(relative, at: at);
-    // 焦点收回白板：拖完就能接着按快捷键，不用先点一下画布。
-    _focus.requestFocus();
+  /// 文件只有一条路进白板：先进左侧文件列表（那里负责把它变成库里的笔
+  /// 记），再从列表里拖进来。桌面文件直接落卡的话，`FileNode.file` 存的是
+  /// 库外路径——白板按相对路径去库里找，点开就是空的，「引用一篇笔记」这
+  /// 个模型也就断了。
+  void _refuseDesktopDrop() {
+    _notice('文件请先拖到左侧文件列表', '从列表里再拖到白板，才会变成引用笔记的卡片');
   }
 
   void _notice(String message, [String? detail]) {
@@ -2516,15 +2449,19 @@ class CanvasBoardState extends State<CanvasBoard>
           ),
         );
 
-        // 拖放区域**和画布一样大**：`event.position.local` 直接就是画布坐标，
-        // 卡片才会落在松手的地方。测试进程里没有原生拖放层，建起来会异步抛
-        // 异常（连 catch 都接不住），所以那里干脆不建。
+        // 拖放区域**和画布一样大**，但只用来拦下桌面来的文件并解释一句：
+        // 落卡这件事只认左侧文件列表那一条通道。测试进程里没有原生拖放
+        // 层，建起来会异步抛异常（连 catch 都接不住），所以那里干脆不建。
+        // 光标保持 `copy`：返回 `none` 后 `onPerformDrop` 不会触发，用户就
+        // 只能看到「拖了没反应」。
         if (!systemDragAndDropAvailable) return board;
         return DropRegion(
           formats: const <DataFormat>[Formats.fileUri],
           hitTestBehavior: HitTestBehavior.translucent,
           onDropOver: (DropOverEvent event) => DropOperation.copy,
-          onPerformDrop: _onDropFiles,
+          onPerformDrop: (PerformDropEvent event) async {
+            _refuseDesktopDrop();
+          },
           child: board,
         );
       },

@@ -1137,9 +1137,11 @@ class _AppShellState extends State<AppShell> {
                                     if (_canvasOpened)
                                       Offstage(
                                         offstage: _mainView != MainView.canvas,
-                                        // 从左侧文件列表拖过来的笔记：白板的第二
-                                        // 条拖放通道（另一条是画布自己的原生
-                                        // `DropRegion`，管桌面拖进来的文件）。
+                                        // 文件进白板的**唯一**通道：左侧文件
+                                        // 列表拖过来的笔记。桌面上的文件先拖
+                                        // 进列表（导入成库里的笔记），再从这
+                                        // 里拖进去；画布那层 `DropRegion` 只
+                                        // 负责把桌面来的一律挡回去。
                                         // 文件夹拖拽不接——那是移动，不是引用。
                                         child: DragTarget<VaultDragPayload>(
                                           onWillAcceptWithDetails:
@@ -1221,12 +1223,6 @@ class _AppShellState extends State<AppShell> {
                                                     note.relativePath:
                                                         note.body,
                                                 },
-                                                onReferenceMarkdown:
-                                                    (List<String> p) => context
-                                                        .read<NotesController>()
-                                                        .referenceMarkdownFiles(
-                                                          p,
-                                                        ),
                                                 onOpenFile: _openFromCanvas,
                                                 onOpenLink: _openCanvasLink,
                                                 onEditFileBody:

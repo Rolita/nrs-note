@@ -2552,15 +2552,15 @@ void main() {
       expect(h.state.debugFileBody('f'), isNull);
     });
 
-    testWidgets('拖进来的卡片落在松手的地方', (WidgetTester tester) async {
+    testWidgets('拖进来的卡片：松手的那个点就是它的左上角', (WidgetTester tester) async {
       final Harness h = await pumpBoard(tester);
       final Offset at = h.center + const Offset(120, -80);
       h.state.addFileCards(<String>['甲.md'], at: at);
       await tester.pump();
 
       final CanvasNode card = h.nodes.single;
-      expect(card.rect.center.dx, closeTo(at.dx, 0.01));
-      expect(card.rect.center.dy, closeTo(at.dy, 0.01));
+      expect(card.rect.left, closeTo(at.dx, 0.01));
+      expect(card.rect.top, closeTo(at.dy, 0.01));
     });
 
     testWidgets('库外文件刚导入：正文晚一步到，收起的卡片不挪不改', (WidgetTester tester) async {
@@ -2596,7 +2596,9 @@ void main() {
       expect(h.state.debugFileBody(card.id), isNull);
     });
 
-    testWidgets('文件列表拖过来：按全局指针换算落点，落成收起卡并选中', (WidgetTester tester) async {
+    testWidgets('文件列表拖过来：松手的地方就是左上角，落成收起卡并选中', (
+      WidgetTester tester,
+    ) async {
       final Harness h = await pumpBoard(tester);
       const Offset pointer = Offset(320, 240);
 
@@ -2605,10 +2607,34 @@ void main() {
 
       final FileNode card = h.nodes.single as FileNode;
       final Offset world = h.camera.toWorld(pointer, h.stage);
-      expect(card.rect.center.dx, closeTo(world.dx, 0.01));
-      expect(card.rect.center.dy, closeTo(world.dy, 0.01));
+      expect(card.rect.left, closeTo(world.dx, 0.01));
+      expect(card.rect.top, closeTo(world.dy, 0.01));
       expect(card.expanded, isFalse);
       expect(h.state.debugSelection, <String>{card.id});
+    });
+
+    testWidgets('一次拖几份：第一张的左上角在松手处，往下一张一张排', (
+      WidgetTester tester,
+    ) async {
+      final Harness h = await pumpBoard(tester);
+      const Offset pointer = Offset(320, 240);
+
+      h.state.addReferencedNotesFromGlobal(<String>['甲.md', '乙.md'], pointer);
+      await tester.pump();
+
+      final Offset world = h.camera.toWorld(pointer, h.stage);
+      expect((h.nodes[0] as FileNode).rect.left, closeTo(world.dx, 0.01));
+      expect((h.nodes[0] as FileNode).rect.top, closeTo(world.dy, 0.01));
+      expect(
+        (h.nodes[1] as FileNode).rect.top,
+        greaterThan((h.nodes[0] as FileNode).rect.bottom),
+        reason: '第二张排在下面，不叠在第一张上',
+      );
+      expect(
+        (h.nodes[1] as FileNode).rect.left,
+        closeTo(world.dx, 0.01),
+        reason: '整摞左对齐',
+      );
     });
   });
 }
