@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:nrs/core/app_enums.dart';
 import 'package:nrs/core/theme/app_theme.dart';
 import 'package:nrs/core/theme/app_tokens.dart';
+import 'package:nrs/core/utils/canvas_document.dart';
 import 'package:nrs/core/utils/markdown_outline.dart';
 import 'package:nrs/data/models/note.dart';
 import 'package:nrs/data/storage/canvas_store.dart';
@@ -1864,6 +1865,113 @@ void main() {
     expect(find.text('2 块白板'), findsOneWidget);
   });
 
+  testWidgets('Shift 连选能跨笔记、白板和图片：文件列表里除了文件夹都能连选', (
+    WidgetTester tester,
+  ) async {
+    await pumpShell(
+      tester,
+      sort: SortMode.titleAsc,
+      vault: <Note>[
+        note('a', 'A 笔记', DateTime(2026, 3, 1)),
+        note('b', 'B 笔记', DateTime(2026, 2, 1)),
+      ],
+      canvases: <CanvasRef>[
+        const CanvasRef(relativePath: '白板一.nrs', title: '白板一'),
+      ],
+      folders: <String>['assets'],
+      files: <VaultFile>[
+        const VaultFile(relativePath: 'assets/pic.png'),
+        const VaultFile(relativePath: 'assets/doc.pdf'),
+      ],
+    );
+    await expandEverything(tester);
+
+    // 行的顺序是：assets 文件夹 → 里面的 doc、pic → 根目录的 A、B、白板一。
+    // 锚点放在第一行图片上，Shift 点到最后的白板：中间所有行都进选中。
+    await tester.tap(treeRow('pic'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    final Color? fill = rowFill(tester, 'pic');
+    expect(fill, isNotNull, reason: '点一下图片先选中它自己');
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.tap(treeRow('白板一'));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    // 图片页里有解码转圈，`pumpAndSettle` 等不完，固定推两帧。
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(rowFill(tester, 'A 笔记'), fill, reason: '笔记也算');
+    expect(rowFill(tester, 'B 笔记'), fill);
+    expect(rowFill(tester, '白板一'), fill, reason: 'Shift 点的那一行自己也要亮');
+    expect(find.byType(CanvasBoard), findsNothing, reason: '连选不该顺手把白板打开');
+
+    // 再往回 Shift 到 pdf（它在图片上面一行）：锚点不动，范围收成 doc..pic。
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.tap(treeRow('doc'));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(rowFill(tester, 'doc'), fill, reason: 'pdf 也是文件列表里的一行');
+    expect(rowFill(tester, 'pic'), fill);
+    expect(rowFill(tester, 'A 笔记'), isNot(fill), reason: '范围收回来了');
+  });
+
+  testWidgets('图片也能当锚点：Shift 再点笔记，两行一起亮', (WidgetTester tester) async {
+    await pumpShell(
+      tester,
+      sort: SortMode.titleAsc,
+      vault: <Note>[note('a', 'A 笔记', DateTime(2026, 3, 1))],
+      folders: <String>['assets'],
+      files: <VaultFile>[const VaultFile(relativePath: 'assets/pic.png')],
+    );
+    await expandEverything(tester);
+
+    // 先点图片（会打开图片页），再 Shift 点笔记：从图片到笔记这一段都亮。
+    await tester.tap(treeRow('pic'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.tap(treeRow('A 笔记'));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    // 图片页还开着，解码转圈让 `pumpAndSettle` 等不完。
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final Color? fill = rowFill(tester, 'pic');
+    expect(fill, isNotNull, reason: '图片当锚点也要亮');
+    expect(rowFill(tester, 'A 笔记'), fill);
+  });
+
+  testWidgets('文件夹不参与连选：Shift 点文件夹只展开 / 收起，选中不变', (
+    WidgetTester tester,
+  ) async {
+    await pumpShell(
+      tester,
+      sort: SortMode.titleAsc,
+      vault: <Note>[
+        note('a', 'A 笔记', DateTime(2026, 3, 1)),
+        note('b', 'B 笔记', DateTime(2026, 2, 1)),
+      ],
+      folders: <String>['素材'],
+    );
+    await expandEverything(tester);
+
+    await tester.tap(treeRow('A 笔记'));
+    await tester.pumpAndSettle();
+    final Color? noteFill = rowFill(tester, 'A 笔记');
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.tap(treeRow('素材'));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pumpAndSettle();
+
+    expect(rowFill(tester, 'A 笔记'), noteFill, reason: '选中没被 Shift 点文件夹改掉');
+    expect(rowFill(tester, 'B 笔记'), isNot(noteFill), reason: '文件夹不在连选范围里');
+  });
+
   testWidgets('功能栏的白板按钮直接新建一块未命名白板，不弹选择框', (WidgetTester tester) async {
     await pumpShell(tester);
 
@@ -2454,4 +2562,106 @@ void main() {
     await settleImage(tester);
     expect(find.byType(ImagePane), findsOneWidget);
   });
+
+  testWidgets('从文件列表把图片拖进白板：卡片存路径，不拷贝字节', (
+    WidgetTester tester,
+  ) async {
+    final ({
+      SettingsController settings,
+      NotesController notes,
+      CanvasController canvas,
+    })
+    s = await pumpShell(
+      tester,
+      canvases: <CanvasRef>[
+        const CanvasRef(relativePath: '白板一.nrs', title: '白板一'),
+      ],
+      folders: <String>['assets'],
+      files: <VaultFile>[const VaultFile(relativePath: 'assets/pic.png')],
+    );
+
+    await tester.tap(treeRow('白板一'));
+    await tester.pumpAndSettle();
+    // 打开白板之后树会重建一次（白板清单刷新），文件夹回到折叠态——所以
+    // 展开要放在这之后，不然找不到文件夹里那张图。
+    await expandEverything(tester);
+
+    final Finder board = find.byType(CanvasBoard);
+    expect(board, findsOneWidget);
+    final Rect boardRect = tester.getRect(board);
+
+    final Offset from = tester.getCenter(treeRow('pic'));
+    final Offset to = Offset(boardRect.left + 400, boardRect.top + 300);
+    final TestGesture gesture = await tester.startGesture(from);
+    await tester.pump(const Duration(milliseconds: 20));
+    for (int i = 1; i <= 12; i++) {
+      await gesture.moveTo(Offset.lerp(from, to, i / 12)!);
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    final CanvasDocument? doc = s.canvas.document;
+    final CanvasNode card = doc!.nodes.single;
+    expect(card, isA<FileNode>());
+    expect(
+      (card as FileNode).file,
+      'assets/pic.png',
+      reason: '板子引用库里的那张图，不是把它拷进白板',
+    );
+
+    await tester.pump(const Duration(seconds: 2));
+  });
+
+  testWidgets(
+    '从文件列表把笔记拖进白板：卡片落在松手的地方，不是拖拽的起点',
+    (WidgetTester tester) async {
+      // 这条用例走的是真外壳 + 真手势：拖拽途中文件树会重建（选中态、悬停
+      // 文件夹高亮），载荷因此换过好几份。曾经指针记在载荷里，于是白板读到
+      // 的是**拖拽开始时**那一份的指针——卡片一路落回列表那一侧。
+      final ({
+        SettingsController settings,
+        NotesController notes,
+        CanvasController canvas,
+      })
+      s = await pumpShell(
+        tester,
+        canvases: <CanvasRef>[
+          const CanvasRef(relativePath: '白板一.nrs', title: '白板一'),
+        ],
+      );
+
+      await tester.tap(treeRow('白板一'));
+      await tester.pumpAndSettle();
+
+      final Finder board = find.byType(CanvasBoard);
+      expect(board, findsOneWidget);
+      final Rect boardRect = tester.getRect(board);
+
+      final Offset from = tester.getCenter(treeRow('一篇笔记'));
+      final Offset to = Offset(boardRect.left + 400, boardRect.top + 300);
+      final TestGesture gesture = await tester.startGesture(from);
+      await tester.pump(const Duration(milliseconds: 20));
+      // 一步一步挪过去，中途每一次都要让树有机会重建。
+      for (int i = 1; i <= 12; i++) {
+        await gesture.moveTo(Offset.lerp(from, to, i / 12)!);
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      final CanvasDocument? doc = s.canvas.document;
+      final CanvasNode card = doc!.nodes.single;
+      final CanvasBoardState state = tester.state<CanvasBoardState>(board);
+      // 世界坐标 → 画布内坐标 → 屏幕坐标，和用户眼睛看到的对齐。
+      final Offset onScreen =
+          state.debugCamera.toScreen(card.rect.topLeft, state.debugStage) +
+          boardRect.topLeft;
+      expect(onScreen.dx, closeTo(to.dx, 1));
+      expect(onScreen.dy, closeTo(to.dy, 1));
+
+      // 落卡会排一次自动保存；把它推过去，别给下一条用例留一个挂着的定时器。
+      await tester.pump(const Duration(seconds: 2));
+    },
+  );
 }

@@ -240,6 +240,7 @@ final class GroupNode extends CanvasNode {
     required super.width,
     required super.height,
     this.label,
+    this.autoFit = false,
     super.color,
     super.scale,
     super.extra,
@@ -247,12 +248,20 @@ final class GroupNode extends CanvasNode {
 
   String? label;
 
+  /// 「打包成框」的组：框**始终自动包裹**中心落在框内的成员（§14.25）。
+  ///
+  /// 成员移到哪组跟到哪，宽高跟着变；只有按住 `Alt` 拖拽才能把成员移出
+  /// 去。手动「新建分组」的框是用户圈的一块固定区域，不参与自动贴合。
+  /// 只在 true 时写进 JSON——老文件没有这个键就是 false，不多一行 diff。
+  bool autoFit;
+
   @override
   CanvasNodeType get type => CanvasNodeType.group;
 
   @override
   void _writeSpecific(Map<String, Object?> out) {
     if (label != null) out['label'] = label;
+    if (autoFit) out['autoFit'] = true;
   }
 }
 
@@ -383,6 +392,7 @@ const Set<String> _knownNodeKeys = <String>{
   'expanded',
   'url',
   'label',
+  'autoFit',
 };
 
 const Set<String> _knownEdgeKeys = <String>{
@@ -520,6 +530,7 @@ CanvasNode? _nodeOf(Map<String, Object?> json) {
         width: width,
         height: height,
         label: _textOrNull(json['label']),
+        autoFit: json['autoFit'] == true,
         color: color,
         scale: scale,
         extra: extra,

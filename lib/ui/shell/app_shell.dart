@@ -1152,7 +1152,9 @@ class _AppShellState extends State<AppShell> {
                                                 d,
                                               ) =>
                                                   d.data.folder == null &&
-                                                  d.data.notePaths().isNotEmpty,
+                                                  d.data
+                                                      .referencePaths()
+                                                      .isNotEmpty,
                                           onAcceptWithDetails:
                                               (
                                                 DragTargetDetails<
@@ -1162,9 +1164,12 @@ class _AppShellState extends State<AppShell> {
                                               ) {
                                                 final Offset? pointer =
                                                     d.data.pointer;
+                                                // 笔记和图片走同一条落卡通道：
+                                                // 卡片里存的都是库内相对路径，
+                                                // 板子不拷贝内容（§14.15）。
                                                 final List<String> paths = d
                                                     .data
-                                                    .notePaths();
+                                                    .referencePaths();
                                                 if (pointer == null ||
                                                     paths.isEmpty) {
                                                   return;
@@ -1235,6 +1240,70 @@ class _AppShellState extends State<AppShell> {
                                                           path,
                                                           body,
                                                         ),
+                                                // 图片卡片的字节：画布只认相对
+                                                // 路径，读盘这一步在外壳（画布
+                                                // 不能碰 `dart:io`，Web 也要编译）。
+                                                imageBytesOf: (String path) {
+                                                  final String? vault =
+                                                      _notes.vaultPath;
+                                                  if (vault == null) {
+                                                    return Future<
+                                                      Uint8List?
+                                                    >.value(null);
+                                                  }
+                                                  return imageBytesAt(
+                                                    '$vault/$path',
+                                                  );
+                                                },
+                                                // 粘贴的截图先存成库里的一份
+                                                // 文件，卡片只引用它（§14.20）。
+                                                onSaveImage: (Uint8List png) {
+                                                  final String? board =
+                                                      canvasPath;
+                                                  if (board == null) {
+                                                    return Future<
+                                                      String?
+                                                    >.value(null);
+                                                  }
+                                                  return _notes
+                                                      .saveCanvasImage(
+                                                        board,
+                                                        png,
+                                                      );
+                                                },
+                                                // 从桌面拖进来的图片：读字节
+                                                // → 存进库里 → 返回相对路径。
+                                                onDropImageFiles:
+                                                    (List<String> paths) async {
+                                                      final List<String> out =
+                                                          <String>[];
+                                                      final String? board =
+                                                          canvasPath;
+                                                      if (board == null) {
+                                                        return out;
+                                                      }
+                                                      for (final String path
+                                                          in paths) {
+                                                        final Uint8List?
+                                                        bytes =
+                                                            await imageBytesAt(
+                                                              path,
+                                                            );
+                                                        if (bytes == null) {
+                                                          continue;
+                                                        }
+                                                        final String? saved =
+                                                            await _notes
+                                                                .saveCanvasImage(
+                                                                  board,
+                                                                  bytes,
+                                                                );
+                                                        if (saved != null) {
+                                                          out.add(saved);
+                                                        }
+                                                      }
+                                                      return out;
+                                                    },
                                               ),
                                         ),
                                       ),

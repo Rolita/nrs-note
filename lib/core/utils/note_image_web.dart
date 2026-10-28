@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/widgets.dart';
 
 /// The browser build has no file system to resolve vault paths against, so
@@ -11,6 +13,12 @@ ImageProvider? imageProviderFor(String? absolutePath, String source) {
   }
   return null;
 }
+
+/// 浏览器端没有文件系统，读不出库内图片的字节。
+///
+/// 白板上的图片卡在 Web 上会停在「图标 + 文件名」的样子——不是坏了，是那份
+/// 字节在浏览器里根本不存在。桌面端才是白板的主场。
+Future<Uint8List?> imageBytesAt(String absolutePath) async => null;
 
 /// 浏览器端拿不到本地路径，也就没有尺寸可读。
 ///

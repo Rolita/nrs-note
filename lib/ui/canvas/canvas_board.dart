@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -14,6 +15,8 @@ import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../core/utils/canvas_document.dart';
 import '../../core/utils/canvas_geometry.dart';
+import '../../core/utils/clipboard_image.dart';
+import '../../core/utils/image_file.dart';
 import '../../core/utils/table_model.dart' show CellColor;
 import '../common/notices.dart';
 import 'canvas_history.dart';
@@ -47,6 +50,10 @@ class CanvasBoard extends StatefulWidget {
     this.onOpenFile,
     this.onOpenLink,
     this.onEditFileBody,
+    this.imageBytesOf,
+    this.onSaveImage,
+    this.onDropImageFiles,
+    this.readClipboardImage,
   });
 
   /// 要画的文档。null = 只读空板（还不能编辑），此时不响应任何修改。
@@ -77,6 +84,29 @@ class CanvasBoard extends StatefulWidget {
   /// 冲突没解决、磁盘写失败）。
   final Future<bool> Function(String path, String body)? onEditFileBody;
 
+  /// 读一张库内图片的原始字节（相对路径 → 字节）。null = 这个平台读不了。
+  ///
+  /// 画布是一支 `CustomPainter`，要的是 `ui.Image`，用不上 Widget 那套图片
+  /// 管线；而 `dart:io` 不能进 `ui/`（Web 也要编译这一份），所以读盘交给
+  /// 外壳，这里只负责解码、缓存和重排。
+  final Future<Uint8List?> Function(String relativePath)? imageBytesOf;
+
+  /// 把一张粘贴进来的图存进库里，返回库内相对路径。
+  ///
+  /// 白板**不把图片嵌进 `.nrs`**（§14.15）：粘贴的截图也要先落成库里的一份
+  /// 文件，卡片只引用它。存哪由外壳决定（通常是那块白板所在的文件夹）。
+  final Future<String?> Function(Uint8List pngBytes)? onSaveImage;
+
+  /// 从系统拖进来的图片文件（绝对路径）→ 导入成库内文件，返回相对路径。
+  ///
+  /// 桌面上的图直接拖到白板上是 graphif 的手感（§14.20 方法1）；导入这一步
+  /// 要读盘、要写盘，画布不碰 `dart:io`，交给外壳。
+  final Future<List<String>> Function(List<String> absolutePaths)?
+  onDropImageFiles;
+
+  /// 读系统剪贴板里的图。缺省走真剪贴板；测试里换成一个假的。
+  final Future<Uint8List?> Function()? readClipboardImage;
+
   @override
   State<CanvasBoard> createState() => CanvasBoardState();
 }
@@ -98,6 +128,25 @@ enum _Interaction {
   maybeDrag,
 
   dragging,
+
+  /// 右键从空白处拖出去：正在劈砍（§14.19）。
+  ///
+  /// 和 `connecting` 分开一档：那一档从卡片起手是拉线，这一档从空白起手是
+  /// 划刀。同一个右键，靠**起手在哪**分家——按在卡上是「连它」，按在空地上
+  /// 是「划一刀」。
+  slashing,
+
+  /// 按住图片节点右下角的手柄拖：改宽高（§14.17）。
+  ///
+  /// **只有图片节点有手柄**。文字 / 文件 / 链接 / 分组的尺寸是内容的函数
+  /// （§14.8 #73），给它们手柄等于开一个「拖完又被贴合顶回去」的玩笑。
+  resizingImage,
+
+  /// 右键按在卡片上拖出去：正在拉一条连线（§14.14）。
+  ///
+  /// 单独一档而不是复用 `dragging`：这两件事的手势、预览、松手后的结果
+  /// 完全不同，混在一档里每个分支都要再问一次「是哪种拖」。
+  connecting,
 }
 
 /// 翻页键的方向：往**哪边看**（不是内容往哪边走）。
@@ -150,6 +199,13 @@ class CanvasBoardState extends State<CanvasBoard>
   /// 选中的节点 id / 边 id。
   final Set<String> _selected = <String>{};
 
+  /// Shift 范围选择的**锚点**：上次无键点中的那张卡片（§14.13）。
+  ///
+  /// Shift 再点一张，就选中「锚点矩形 → 这张矩形」撑起的包围框里的全部对象。
+  /// 锚点只在无键点击时重设——Shift / Ctrl 点击不挪它，这样才能从同一个
+  /// 角出发连续换对角扩展。框选、全选、删除时清掉，别留一个早已不在场的锚。
+  String? _rangeAnchorId;
+
   /// 正在编辑的节点 id。
   String? _editingId;
   final TextEditingController _editor = TextEditingController();
@@ -162,6 +218,35 @@ class CanvasBoardState extends State<CanvasBoard>
   ///
   /// 存世界坐标而不是屏幕坐标，是为了「框着框着滚一下滚轮」时框还贴在
   /// 内容上。
+  // ------------------------------------------------------- 连线创建（右键）
+
+  /// 右键拖拽的起点卡片 id。
+  String? _connectFromId;
+
+  /// 拉线时指针在哪（世界坐标）。
+  Offset? _connectTo;
+
+  /// 指针下面那张卡（松手就连它）；null = 空白处。
+  String? _connectTargetId;
+
+  /// 右键按着 —— 还没决定是「点」（菜单 / 方法2 建连线）还是「拖」（拉线）。
+  ///
+  /// 两件事都得等到**松手**才判：按下就弹菜单的话，右键拖拽永远走不到。
+  bool _rightDown = false;
+
+  /// 右键按下的那张卡（null = 按在空白上）。
+  String? _rightDownNodeId;
+
+  /// 右键按下的屏幕位置，3px 死区用。
+  Offset _rightDownAt = Offset.zero;
+
+  /// 这一刀的刀锋（世界坐标，折线）。null = 没在劈。
+  List<Offset>? _slashPoints;
+
+  /// 刀锋现在切到了谁——松手就砍它们（拖的时候就靠这两个集合高亮）。
+  Set<String> _slashNodes = <String>{};
+  Set<String> _slashEdges = <String>{};
+
   Offset? _marqueeStart;
   Offset? _marqueeEnd;
 
@@ -169,7 +254,35 @@ class CanvasBoardState extends State<CanvasBoard>
   Offset _dragFrom = Offset.zero;
   Offset _dragFromScreen = Offset.zero;
   final Map<String, Offset> _dragOrigins = <String, Offset>{};
+
+  /// Ctrl+滚轮缩图片的「一阵」窗口：一阵里只记一步撤销。
+  Timer? _imageScaleWindow;
+
+  /// 正在被拖角的那张图片卡（null = 没在拖）。
+  String? _resizeImageId;
+  Offset _resizeFrom = Offset.zero;
+  Rect _resizeOrigin = Rect.zero;
   bool _dragMoved = false;
+
+  /// 这次拖动**允许**把卡片移出 autoFit 组吗（§14.25）。
+  ///
+  /// 拖动途中一旦按过 `Alt` 就是 true：组框在拖的时候不追，让卡片有机会
+  /// 拖到框外。松手时按「中心还在不在**拖动前**那个框里」判去留——拖出去
+  /// 了才算脱离，只是按一下 Alt、或者在框里挪两下什么也不会发生。
+  bool _dragEscape = false;
+
+  /// 按下 Alt 拖动时，各组**拖动前**的框（组 id → 矩形）。
+  ///
+  /// 拖动途中框会缩到只包剩下的成员，拿缩过的框判「有没有拖出去」会把
+  /// 框内的小移动也认成逃逸。这里记一份原始尺寸，松手就不再改它。
+  final Map<String, Rect> _dragOriginsGroupBox = <String, Rect>{};
+
+  /// autoFit 组「上一轮贴合**之前**」的框（组 id → 矩形）。
+  ///
+  /// 判成员只能拿贴合前的框：用刚贴出来的框，下一帧就会把移出过边界的卡
+  /// 永久踢出成员集（框只会越收越紧）。任何非贴合的改动（撤销、重建文档）
+  /// 都应该把这个缓存丢掉，见 [_forgetGroupJudges]。
+  final Map<String, Rect> _groupJudge = <String, Rect>{};
 
   /// 正在编辑标签的边。
   String? _editingEdgeId;
@@ -241,6 +354,15 @@ class CanvasBoardState extends State<CanvasBoard>
   /// 贴合与绘制共用它，画出来的就是量出来的那一份。
   final CanvasMarkdownCache _markdownCache = CanvasMarkdownCache();
 
+  /// 已经解码好的图片（库内相对路径 → `ui.Image`）。
+  ///
+  /// 画笔是同步的，解码是异步的：先画「图标 + 文件名」，字节到手再换成人话
+  /// 一样能看懂的图，并顺手按原图比例重贴一次卡片（§14.16）。
+  final Map<String, ui.Image> _images = <String, ui.Image>{};
+
+  /// 正在读的那几张。没有这一份，每一帧都会重新发起同一次读盘。
+  final Set<String> _imagesLoading = <String>{};
+
   CanvasDocument? get _doc => widget.document;
 
   bool get _readOnly => _doc == null;
@@ -256,6 +378,48 @@ class CanvasBoardState extends State<CanvasBoard>
   Size get debugStage => _stage;
   bool get debugPanning => _mode == _Interaction.panning;
   bool get debugDragging => _mode == _Interaction.dragging;
+
+  /// 正在拉线（右键拖拽建连线）。
+  bool get debugConnecting => _mode == _Interaction.connecting;
+
+  /// 拉线时指针下那张卡（null = 空白处，松手会新建一张）。
+  String? get debugConnectTarget => _connectTargetId;
+
+  /// 这张库内图片解码好了没有（画笔已经能画出它）。
+  bool debugImageLoaded(String relativePath) => _images.containsKey(relativePath);
+
+  /// 正在拖图片右下角改尺寸。
+  bool get debugResizingImage => _mode == _Interaction.resizingImage;
+
+  /// 正在划刀（右键从空白拖出去）。
+  bool get debugSlashing => _mode == _Interaction.slashing;
+
+  /// 这一刀现在切到的节点 id（松手就砍它们）。
+  Set<String> get debugSlashNodes => Set<String>.of(_slashNodes);
+
+  /// 这一刀现在切到的连线 id。
+  Set<String> get debugSlashEdges => Set<String>.of(_slashEdges);
+
+  /// 指着这个屏幕点时，命中的是哪个图片节点的手柄（没有 = null）。
+  ///
+  /// 命中的是**屏幕坐标**的方块，但要比画出来的稍大一圈：12px 的方块在
+  /// 鼠标下相当于绣花，留 14px 的半径才像「一个可以抓住的角」。
+  String? _imageHandleAt(Offset screen) {
+    final CanvasDocument? doc = _doc;
+    if (doc == null || _readOnly || _stage.isEmpty) return null;
+    // 从选中集里找：只有选中的那张才画手柄，也只有它才该被拖。
+    for (final String id in _selected) {
+      final CanvasNode? node = doc.nodeById(id);
+      if (node is! FileNode) continue;
+      if (!_isImagePath(node.file)) continue;
+      final Rect card = _rectToScreen(node.rect);
+      final Rect handle = canvasImageHandleRect(card).inflate(
+        canvasImageHandleHitRadius - canvasImageHandleSize / 2,
+      );
+      if (handle.contains(screen)) return id;
+    }
+    return null;
+  }
   bool get debugTicking => _ticker.isActive;
   bool get debugSpaceHeld => _spaceHeld;
   Rect? get debugMarquee => _marqueeWorld;
@@ -310,6 +474,12 @@ class CanvasBoardState extends State<CanvasBoard>
   Rect? debugFileTitleRect(String id) {
     final CanvasNode? node = _doc?.nodeById(id);
     return node is FileNode ? _fileTitleRect(node) : null;
+  }
+
+  /// 分组标题条的屏幕矩形（测试用）。
+  Rect? debugGroupTitleRect(String id) {
+    final CanvasNode? node = _doc?.nodeById(id);
+    return node is GroupNode ? _groupTitleRect(node) : null;
   }
 
   @override
@@ -406,9 +576,15 @@ class CanvasBoardState extends State<CanvasBoard>
   @override
   void dispose() {
     _tapWindow?.cancel();
+    _imageScaleWindow?.cancel();
     _ticker.dispose();
     _textCache.dispose();
     _markdownCache.dispose();
+    // 解码出来的图占的是原生内存，不还回去会跟着每一块打开过的板子累积。
+    for (final ui.Image image in _images.values) {
+      image.dispose();
+    }
+    _images.clear();
     _editor.dispose();
     _editorFocus.dispose();
     _search.dispose();
@@ -665,6 +841,8 @@ class CanvasBoardState extends State<CanvasBoard>
       _editingId = null;
       _editingFileBody = false;
       _editingEdgeId = null;
+      // 快照里的框是真值，旧的判据缓存作废（§14.25）。
+      _forgetGroupJudges();
     }, record: false);
   }
 
@@ -691,8 +869,77 @@ class CanvasBoardState extends State<CanvasBoard>
       _selected
         ..clear()
         ..add(node.id);
+      // 落点在 autoFit 组里就归它，框顺手撑到装下（§14.25）。
+      _refitAutoGroups();
     });
     _beginEdit(node);
+  }
+
+  /// Tab（§14.21）：选中一张卡，往右生成一张普通文字卡，再连一条边过来。
+  ///
+  /// graphif 的规矩：Tab = 给当前节点生一个「右孩子」——新卡排在选中卡
+  /// 右侧、垂直居中对齐，边从选中卡指向新卡。生成后新卡直接进编辑态，
+  /// 接着打字就是在给它写内容。一张卡加一条边是**一步**撤销。
+  ///
+  /// 同一张卡连按几次 Tab（§14.22）：孩子**从上往下排**，第二张接在最低
+  /// 那个孩子的下面，不再全部叠在正右方——叠成一摞只能看见最上面那张。
+  ///
+  /// 只认「恰好选中一张卡」：没选、选了多张、或选中的是边时都不动——
+  /// Tab 是「生孩子」的键，不是一个泛用的「往下加」的键。编辑态（§14.23）
+  /// 不走这条：那时源卡是正在编辑的那张，直接调 [_createRightFromNode]。
+  bool _createRightFromSelection() {
+    if (_selected.length != 1) return false;
+    return _createRightFromNode(_selected.first);
+  }
+
+  /// 从 [sourceId] 那张卡往右生一张新卡并连上（§14.21 / §14.22）。
+  bool _createRightFromNode(String sourceId) {
+    final CanvasDocument? doc = _doc;
+    if (doc == null || _readOnly) return false;
+    final CanvasNode? source = doc.nodeById(sourceId);
+    if (source == null) return false;
+    const double gap = 48;
+    const double vGap = 24;
+    final TextNode card = TextNode(
+      id: newCanvasId(),
+      x: 0,
+      y: 0,
+      width: canvasMinSize,
+      height: canvasMinSize,
+    );
+    // 贴合之后再落盘：`_mutate` 记的是这一刻的快照（和双击新建同一个规矩）。
+    // 先贴出真实高度，再按真实高度摆位置——顺序反了垂直居中会差半个身高。
+    _fitTextNode(card);
+    double y = source.rect.center.dy - card.height / 2;
+    // 数一数这个节点已经有多少个「还在右侧」的孩子： lowestBottom 是最下面
+    // 那个的底边。新孩子排在它下面（空缺 → 贴着选中卡垂直居中）。
+    double? lowestBottom;
+    for (final CanvasEdge edge in doc.edges) {
+      if (edge.fromNode != source.id) continue;
+      final CanvasNode? child = doc.nodeById(edge.toNode);
+      if (child == null) continue;
+      if (child.rect.left < source.rect.right) continue;
+      final double bottom = child.rect.bottom;
+      if (lowestBottom == null || bottom > lowestBottom) lowestBottom = bottom;
+    }
+    if (lowestBottom != null) y = lowestBottom + vGap;
+    card.x = source.rect.right + gap;
+    card.y = y;
+    final CanvasEdge edge = CanvasEdge(
+      id: newCanvasId(),
+      fromNode: source.id,
+      toNode: card.id,
+    );
+    _mutate(() {
+      doc.nodes.add(card);
+      doc.edges.add(edge);
+      _selected
+        ..clear()
+        ..add(card.id);
+      _refitAutoGroups();
+    });
+    _beginEdit(card);
+    return true;
   }
 
   /// 把一张卡片放到视口正中（或指定位置）并选中它。
@@ -773,6 +1020,144 @@ class CanvasBoardState extends State<CanvasBoard>
     );
   }
 
+  /// 把选中的卡**打包成一个组**（`Ctrl+G` / 右键菜单「打包成框」，§14.24）。
+  ///
+  /// [single] 为 true 时是「单个节点转成框」（`Ctrl+Shift+G`）：恰好选中
+  /// 一张，框正好包住它；为 false 时至少要两张。组框 = 选中卡片的包围盒
+  /// 外扩一圈内边距，顶部再多留一条放标题。新组压到最底层、进选中，
+  /// **一步**撤销。
+  ///
+  /// 组的成员永远是「几何上被框住的」（没有成员列表），所以打包不需要
+  /// 改任何卡片的任何字段——插一个框进去，事情就完成了。
+  ///
+  /// 打包出来的组带 `autoFit`（§14.25）：成员移到哪框跟到哪，宽高始终
+  /// 包裹成员；只有按住 `Alt` 拖拽才能把成员请出去。
+  bool _groupSelection({required bool single}) {
+    final CanvasDocument? doc = _doc;
+    if (doc == null || _readOnly) return false;
+    final List<CanvasNode> nodes = <CanvasNode>[
+      for (final String id in _selected)
+        if (doc.nodeById(id) != null) doc.nodeById(id)!,
+    ];
+    if (single ? nodes.length != 1 : nodes.length < 2) return false;
+    final Rect box = unionOf(nodes.map((CanvasNode n) => n.rect));
+    final GroupNode group = GroupNode(
+      id: newCanvasId(),
+      x: box.left - canvasGroupPadding,
+      y: box.top - canvasGroupPadding - canvasGroupTitleHeight(1),
+      width: box.width + canvasGroupPadding * 2,
+      height:
+          box.height + canvasGroupPadding * 2 + canvasGroupTitleHeight(1),
+      label: '分组',
+      autoFit: true,
+    );
+    _mutate(() {
+      doc.nodes.insert(0, group);
+      _selected
+        ..clear()
+        ..add(group.id);
+    });
+    return true;
+  }
+
+  /// Alt + 左键点在组上：**选中的卡跳进这个组**（§14.24 跨层级的跳跃式
+  /// 移动）。
+  ///
+  /// 整队平移——选中集的包围盒中心挪到组的中心，卡之间的相对排布不动，
+  /// 进去之后自己再挪到合适的位置（图上的第三步）。组框装不下就**强行
+  /// 撑开**：扩到把跳进来的卡都装下。
+  ///
+  /// 只认「点在组上」：Alt + 点普通卡不跳，照常走单击选中——组才收孩子。
+  /// 选中集为空、或选中的本来就在这个组里（全部中心都在框内）也不折腾。
+  bool _jumpSelectionIntoGroupAt(Offset world) {
+    final CanvasDocument? doc = _doc;
+    if (doc == null || _readOnly || _selected.isEmpty) return false;
+    final CanvasNode? hit = _nodeAt(world);
+    if (hit is! GroupNode) return false;
+    final List<CanvasNode> moving = <CanvasNode>[
+      for (final String id in _selected)
+        if (doc.nodeById(id) case final CanvasNode n when n.id != hit.id) n,
+    ];
+    if (moving.isEmpty) return false;
+    final bool allInside = moving.every(
+      (CanvasNode n) => hit.rect.contains(n.rect.center),
+    );
+    if (allInside) return false;
+    final Rect box = unionOf(moving.map((CanvasNode n) => n.rect));
+    final Offset delta = hit.rect.center - box.center;
+    _mutate(() {
+      for (final CanvasNode node in moving) {
+        node.x += delta.dx;
+        node.y += delta.dy;
+      }
+      // 强行撑开：组框扩到把跳进来的卡（连同内边距）都装下。
+      final Rect need = unionOf(
+        moving.map((CanvasNode n) => n.rect),
+      ).inflate(canvasGroupPadding);
+      final Rect merged = need.expandToInclude(hit.rect);
+      hit.x = merged.left;
+      hit.y = merged.top;
+      hit.width = merged.width;
+      hit.height = merged.height;
+      // 卡片换了归属，别的 autoFit 组（可能刚被掏空）重贴一遍。
+      _refitAutoGroups();
+    });
+    return true;
+  }
+
+  /// 让「打包成框」的组**始终包裹**框内的成员（§14.25）。
+  ///
+  /// 成员 = 中心落在这条组框里的节点。把组框重贴成「成员包围盒 + 内边距
+  /// + 顶部标题条」：成员移到哪组跟到哪，宽高跟着变；成员删了框就缩回去。
+  /// [exclude] 里的节点不算成员——`Alt` 拖拽逃逸时，被拖的卡不能把框拽着
+  /// 跑，不然中心永远在框内、永远逃不出去。
+  ///
+  /// 只处理 `autoFit` 的组（打包 / 转框造出来的）；手动「新建分组」的框是
+  /// 用户圈的固定区域，不参与。框里一个成员都不剩时保持原框（空框不塌）。
+  /// 嵌套时小的先贴（里层贴好，外层再包里层的新框）。
+  /// 丢掉判据缓存。撤销 / 重做 / 换文档 / 重新打开时框是从文件里读出来的
+  /// 真值，不能再拿旧缓存去判成员。
+  void _forgetGroupJudges() {
+    _groupJudge.clear();
+    _dragOriginsGroupBox.clear();
+  }
+
+  void _refitAutoGroups({bool escape = false}) {
+    final CanvasDocument? doc = _doc;
+    if (doc == null) return;
+    final List<GroupNode> groups = <GroupNode>[
+      for (final CanvasNode node in doc.nodes)
+        if (node is GroupNode && node.autoFit) node,
+    ]..sort((GroupNode a, GroupNode b) => a.width.compareTo(b.width));
+    for (final GroupNode group in groups) {
+      // ⚠️ 判成员的框**不能是刚贴出来的那个**：贴合每帧都跑，拿贴过的框
+      // 再判成员会一路缩水（框越收越紧，移出过一次的卡永远回不来）。所以
+      // 用 [_groupJudge] 里冻结的「这一段操作开始时的框」。
+      //
+      // 成员 = 中心在**判据框**（这一段拖动刚开始时的组框）里的节点。
+      //
+      // 正在被拖的卡分两种：普通拖动 —— 永远算成员，框必须跟着它走
+      // （不然拖一下就被判成「离开了」，框反而留在原地）；Alt 拖动 ——
+      // 拖到判据框外就不算，框不追它，松手就真的脱离了。
+      final Rect judge = _groupJudge[group.id] ?? group.rect;
+      final List<CanvasNode> members = <CanvasNode>[
+        for (final CanvasNode other in doc.nodes)
+          if (other.id != group.id &&
+              (judge.contains(other.rect.center) ||
+                  (_dragOrigins.containsKey(other.id) && !escape)))
+            other,
+      ];
+      if (members.isEmpty) continue;
+      final Rect need = unionOf(
+        members.map((CanvasNode n) => n.rect),
+      ).inflate(canvasGroupPadding);
+      group.x = need.left;
+      group.y = need.top - canvasGroupTitleHeight(group.scale);
+      group.width = need.width;
+      group.height = need.height + canvasGroupTitleHeight(group.scale);
+    }
+  }
+
   // ------------------------------------------------------------------ 拖放
 
   /// 把几张笔记放到白板上（引用它们，不复制正文）。
@@ -829,6 +1214,7 @@ class CanvasBoardState extends State<CanvasBoard>
       _selected
         ..clear()
         ..addAll(made.map((FileNode n) => n.id));
+      _refitAutoGroups();
     });
     return made;
   }
@@ -859,6 +1245,58 @@ class CanvasBoardState extends State<CanvasBoard>
     _notice('文件请先拖到左侧文件列表', '从列表里再拖到白板，才会变成引用笔记的卡片');
   }
 
+  /// 桌面文件落在白板上：图片导入成库内文件再落卡，其余照旧劝一句。
+  Future<void> _onDesktopDrop(PerformDropEvent event) async {
+    final List<String> paths = <String>[];
+    for (final DropItem item in event.session.items) {
+      final reader = item.dataReader;
+      if (reader == null || !reader.canProvide(Formats.fileUri)) continue;
+      // 拖放期间不能 await 平台通道，读取只能是回调式的；包一层 Completer
+      // 才能按顺序把一次拖放的几个文件都读完（和文件列表那条通道同款）。
+      final Completer<String?> done = Completer<String?>();
+      reader.getValue<Uri>(
+        Formats.fileUri,
+        (Uri? uri) {
+          if (done.isCompleted) return;
+          if (uri == null || uri.scheme != 'file') {
+            done.complete(null);
+            return;
+          }
+          try {
+            done.complete(uri.toFilePath());
+          } on UnsupportedError {
+            done.complete(null);
+          }
+        },
+        onError: (Object error) {
+          if (!done.isCompleted) done.complete(null);
+        },
+      );
+      final String? path = await done.future;
+      if (path != null) paths.add(path);
+    }
+    if (!mounted || paths.isEmpty) return;
+
+    final List<String> images = <String>[
+      for (final String path in paths)
+        if (kImageExtensions.contains(imageExtensionOf(path))) path,
+    ];
+    final Future<List<String>> Function(List<String>)? importer =
+        widget.onDropImageFiles;
+    if (images.isEmpty || importer == null) {
+      _refuseDesktopDrop();
+      return;
+    }
+    final List<String> saved = await importer(images);
+    if (!mounted || saved.isEmpty) return;
+
+    // 落点还是指针：拖放区域和画布同大小，`position.local` 直接就是画布坐标。
+    addFileCards(saved, at: _toWorld(event.position.local));
+    if (images.length < paths.length) {
+      _notice('其余文件没有导入', '白板只接图片；笔记请先拖进左侧文件列表');
+    }
+  }
+
   void _notice(String message, [String? detail]) {
     NoticeScope.maybeOf(context)?.show(
       NoticeData(message: message, detail: detail, kind: NoticeKind.error),
@@ -878,23 +1316,100 @@ class CanvasBoardState extends State<CanvasBoard>
             _selected.contains(e.id),
       );
       _selected.clear();
+      _rangeAnchorId = null;
       _editingId = null;
       _editingFileBody = false;
+      // 成员删了，autoFit 组缩回去包住剩下的（§14.25）。
+      _refitAutoGroups();
     });
   }
 
-  /// 框选松手：框到谁就选谁。
+  /// 框选松手：**方向**定判据，**按键**定并入方式（§14.13）。
   ///
-  /// 判据是**相交**而不是「完全框住」：从右下往左上拖的人，心里想的是
-  /// 「碰到的都算」。
+  /// 方向——向右拖 = 碰撞（碰到就算），向左拖 = **完全覆盖**（整张卡都得在
+  /// 框里）。从右下往左上拖的人心里想的是「只留被我整个框住的」，判据要更严。
+  ///
+  /// 按键——不按 = 替换（按下空白时已清空），`Shift` = 加选（新的不取消旧的），
+  /// `Ctrl` = 反选（框里已选的取消、未选的选中，框外不动）。键读松手那一下的：
+  /// 拖到一半再按 Shift 也是合法操作。
   void _selectInMarquee() {
     final Rect? box = _marqueeWorld;
+    final Offset? start = _marqueeStart;
+    final Offset? end = _marqueeEnd;
     final CanvasDocument? doc = _doc;
-    if (box == null || doc == null || box.width < 2 || box.height < 2) return;
+    if (box == null || start == null || end == null || doc == null) return;
+    if (box.width < 2 || box.height < 2) return;
+
+    // 向左拖 = 完全覆盖，向右拖（含竖直）= 碰撞。
+    final bool containment = end.dx < start.dx;
+    final Set<String> hits = <String>{
+      for (final CanvasNode node in doc.nodes)
+        if (_marqueeHit(node.rect, box, containment)) node.id,
+    };
+
+    final bool additive = HardwareKeyboard.instance.isShiftPressed;
+    final bool invert =
+        !additive && HardwareKeyboard.instance.isControlPressed;
     setState(() {
-      for (final CanvasNode node in doc.nodes) {
-        if (node.rect.overlaps(box)) _selected.add(node.id);
+      if (invert) {
+        for (final String id in hits) {
+          if (!_selected.remove(id)) _selected.add(id);
+        }
+      } else if (additive) {
+        _selected.addAll(hits);
+      } else {
+        _selected
+          ..clear()
+          ..addAll(hits);
       }
+      // 框选出来的选中不再以某张卡为锚，范围选择的起点就地作废。
+      _rangeAnchorId = null;
+    });
+  }
+
+  /// 框选的两种判据：碰撞 = 相交即中，完全覆盖 = 整个矩形都在框里。
+  ///
+  /// 用手写比较而不用 `Rect.containsRect`：它不含边界，紧贴着框边的那张卡
+  /// 会漏。这里的语义是「盖住」——边贴边也算盖住。
+  bool _marqueeHit(Rect node, Rect box, bool containment) => containment
+      ? box.left <= node.left &&
+            box.right >= node.right &&
+            box.top <= node.top &&
+            box.bottom >= node.bottom
+      : node.overlaps(box);
+
+  /// Shift 点击的范围选择：从锚点卡片到 [node]，两张卡的矩形撑起的包围框
+  /// 里**碰到就算**（和向右框选同一个判据，§14.13）。
+  ///
+  /// 选中是**替换**不是叠加——图上的语义是「这两角之间的都要」，不是「再加
+  /// 一片」。锚点不动：再点第三个对角，还是从原来的角重新撑框。锚点没了
+  /// （没点过 / 被删了 / 框选过）就退化成单选，顺便当起新锚点。
+  void _selectRangeFrom(CanvasNode node) {
+    final CanvasDocument? doc = _doc;
+    if (doc == null) return;
+    final CanvasNode? anchor = _rangeAnchorId == null
+        ? null
+        : doc.nodeById(_rangeAnchorId!);
+    if (anchor == null || identical(anchor, node)) {
+      setState(() {
+        _selected
+          ..clear()
+          ..add(node.id);
+        _rangeAnchorId = node.id;
+      });
+      return;
+    }
+    final Rect box = Rect.fromPoints(
+      anchor.rect.topLeft,
+      node.rect.bottomRight,
+    );
+    setState(() {
+      _selected
+        ..clear()
+        ..addAll(<String>{
+          for (final CanvasNode other in doc.nodes)
+            if (other.rect.overlaps(box)) other.id,
+        });
     });
   }
 
@@ -907,6 +1422,7 @@ class CanvasBoardState extends State<CanvasBoard>
         ..clear()
         ..addAll(doc.nodes.map((CanvasNode n) => n.id))
         ..addAll(doc.edges.map((CanvasEdge e) => e.id));
+      _rangeAnchorId = null;
     });
   }
 
@@ -1004,6 +1520,7 @@ class CanvasBoardState extends State<CanvasBoard>
       _selected
         ..clear()
         ..addAll(pasted.nodes.map((CanvasNode n) => n.id));
+      _refitAutoGroups();
     });
   }
 
@@ -1017,6 +1534,8 @@ class CanvasBoardState extends State<CanvasBoard>
         node.x += dx;
         node.y += dy;
       }
+      // Alt + 方向键 = 逃逸（和 Alt 拖拽同一个口径，§14.25）。
+      _refitAutoGroups(escape: HardwareKeyboard.instance.isAltPressed);
     });
   }
 
@@ -1067,6 +1586,8 @@ class CanvasBoardState extends State<CanvasBoard>
         node.width = w;
         node.height = h;
       }
+      // 字号变大了卡片变大，autoFit 组跟着撑（§14.25）。
+      _refitAutoGroups();
     });
   }
 
@@ -1317,6 +1838,10 @@ class CanvasBoardState extends State<CanvasBoard>
   ///
   /// 笔记不存在（被删了、改名了）就退回一个默认框，标题还看得见。
   void _fitFileNode(FileNode node) {
+    if (_isImagePath(node.file)) {
+      _fitImageNode(node);
+      return;
+    }
     final double pad = canvasCardPadding;
     if (!node.expanded) {
       final TextPainter title = TextPainter(
@@ -1364,10 +1889,87 @@ class CanvasBoardState extends State<CanvasBoard>
   /// **左上角钉住**：贴合只改宽高，卡片往下 / 往右长，标题停在原地。按中心
   /// 贴会把标题拽跑——用户点了一下，卡片却在屏幕上横着挪了一段。
   void _toggleFileExpanded(FileNode node, {bool record = true}) {
+    // 图片卡片没有「展开」这回事：它引用的是库里的图，不是一篇有正文的
+    // 笔记。展开只会变成一个 250×100 的空框（§14.15）。
+    if (_isImagePath(node.file)) return;
     _mutate(() {
       node.expanded = !node.expanded;
       _fitFileNode(node);
+      // 正文窗口变高了，autoFit 组跟着撑（§14.25）。
+      _refitAutoGroups();
     }, record: record);
+  }
+
+  /// 这张卡引用的是不是图片（按后缀判，清单和文件树共用一份）。
+  bool _isImagePath(String path) =>
+      kImageExtensions.contains(imageExtensionOf(path));
+
+  /// 图片卡片的尺寸：按原图比例装进 [canvasImageCardSide] 的方框。
+  ///
+  /// 字节还没到手时先给一个 16:10 的占位框——空着等解码会让卡片先瘦成一条、
+  /// 图到了再撑开，看着像抖了一下。
+  void _fitImageNode(FileNode node) {
+    final ui.Image? image = _images[node.file];
+    if (image == null) {
+      node.width = canvasImageCardSide;
+      node.height = canvasImageCardSide * 0.62;
+      return;
+    }
+    final double w = image.width.toDouble();
+    final double h = image.height.toDouble();
+    if (w <= 0 || h <= 0) return;
+    final double scale = canvasImageCardSide / math.max(w, h);
+    node.width = math.max(canvasMinSize, w * scale);
+    node.height = math.max(canvasMinSize, h * scale);
+  }
+
+  /// 把文档里所有图片卡片的字节排上队。解码完会自己 `setState` 重画。
+  ///
+  /// 每帧都可以调：已经在缓存里 / 已经在读的会跳过。
+  void _ensureImages() {
+    final CanvasDocument? doc = _doc;
+    final Future<Uint8List?> Function(String)? loader = widget.imageBytesOf;
+    if (doc == null || loader == null) return;
+    for (final CanvasNode node in doc.nodes) {
+      if (node is! FileNode) continue;
+      final String path = node.file;
+      if (!_isImagePath(path)) continue;
+      if (_images.containsKey(path)) continue;
+      if (!_imagesLoading.add(path)) continue;
+      unawaited(_loadImage(path, loader));
+    }
+  }
+
+  Future<void> _loadImage(
+    String path,
+    Future<Uint8List?> Function(String) loader,
+  ) async {
+    try {
+      final Uint8List? bytes = await loader(path);
+      if (bytes == null || bytes.isEmpty) return;
+      final ui.Codec codec = await ui.instantiateImageCodec(bytes);
+      final ui.FrameInfo frame = await codec.getNextFrame();
+      if (!mounted) {
+        frame.image.dispose();
+        return;
+      }
+      setState(() {
+        _images[path] = frame.image;
+        _imagesLoading.remove(path);
+        // 图到了就按原图比例重贴一次：卡片是「一扇窗」，窗户得跟画一样大。
+        final CanvasDocument? doc = _doc;
+        if (doc != null) {
+          for (final CanvasNode node in doc.nodes) {
+            if (node is FileNode && node.file == path) _fitImageNode(node);
+          }
+          _refitAutoGroups();
+        }
+      });
+    } catch (_) {
+      // 读不出来 / 解不了：卡片留在「图标 + 文件名」的样子，不弹错——
+      // 一张图打不开，不该盖住用户正在做的别的事。
+      _imagesLoading.remove(path);
+    }
   }
 
   /// 量一段正文排出来要多宽多高（**不含内边距**）。
@@ -1485,7 +2087,13 @@ class CanvasBoardState extends State<CanvasBoard>
     });
   }
 
-  void _commitEdit() {
+  /// 收下编辑框里的字。
+  ///
+  /// [restoreFocus] 为 false 时**不把键盘抢回白板**——编辑态按 `Tab` 生孩子的
+  /// 场景（§14.23）用：收完字马上要 `_beginEdit` 新卡，这里先抢一次焦点的话，
+  /// 白板的 `requestFocus` 会在新卡拿到焦点之后才生效，输入框失焦又触发一次
+  /// 提交，新卡的编辑态当场被抹掉。
+  void _commitEdit({bool restoreFocus = true}) {
     if (_editingEdgeId != null) {
       _commitEdgeEdit();
       return;
@@ -1519,7 +2127,7 @@ class CanvasBoardState extends State<CanvasBoard>
     } else {
       widget.onChanged?.call();
     }
-    if (mounted) _focus.requestFocus();
+    if (mounted && restoreFocus) _focus.requestFocus();
   }
 
   /// 把卡片里改完的正文写回那篇笔记。
@@ -1562,6 +2170,17 @@ class CanvasBoardState extends State<CanvasBoard>
 
   bool _inFileTitle(CanvasNode node, Offset screen) =>
       _fileTitleRect(node).contains(screen);
+
+  /// 分组标题条的屏幕矩形：组框顶部 [canvasGroupTitleHeight] 那一条。
+  ///
+  /// 双击它 = 改组名；双击组内**其它**空白 = 在组里新建卡片（§14.24）。
+  /// 和文件卡片的标题条同一套思路。
+  Rect _groupTitleRect(GroupNode node) => _rectToScreen(
+    Rect.fromLTWH(node.x, node.y, node.width, canvasGroupTitleHeight(node.scale)),
+  );
+
+  bool _inGroupTitle(GroupNode node, Offset screen) =>
+      _groupTitleRect(node).contains(screen);
 
   List<CanvasEdgeVisual> _edgeVisuals() =>
       buildEdgeVisuals(document: _doc, selected: _selected);
@@ -1682,10 +2301,40 @@ class CanvasBoardState extends State<CanvasBoard>
 
     final Offset world = _toWorld(e.localPosition);
 
+    // Alt + 左键（§14.24）：跨层级的跳跃式移动。选中的卡跳进按住的组里，
+    // 组装不下就强行撑开。只认组——Alt 点在普通卡 / 空白上不拦，照常走
+    // 下面的单击 / 框选。Shift / Ctrl + Alt 不算（留给以后可能的组合）。
+    if (HardwareKeyboard.instance.isAltPressed &&
+        !HardwareKeyboard.instance.isControlPressed &&
+        !HardwareKeyboard.instance.isShiftPressed &&
+        _jumpSelectionIntoGroupAt(world)) {
+      return;
+    }
+
     // 0. 选中卡片右上角那颗小图标：开详细信息面板。
     if (_detailsIconAt(e.localPosition) != null) {
       openDetails();
       return;
+    }
+
+    // 0.5 图片右下手柄：先于卡片本体判定——它压在卡片的边上，交给卡片就是
+    // 拖整张卡了。只有图片节点有这个手柄（§14.17）。
+    final String? handleId = _imageHandleAt(e.localPosition);
+    if (handleId != null) {
+      final CanvasNode? picture = _doc?.nodeById(handleId);
+      if (picture != null) {
+        setState(() {
+          _selected
+            ..clear()
+            ..add(handleId);
+          _pushHistory();
+          _mode = _Interaction.resizingImage;
+          _resizeImageId = handleId;
+          _resizeFrom = world;
+          _resizeOrigin = picture.rect;
+        });
+        return;
+      }
     }
 
     // 1. 卡片
@@ -1714,19 +2363,38 @@ class CanvasBoardState extends State<CanvasBoard>
             }
           case LinkNode(:final String url):
             widget.onOpenLink?.call(url);
+          case GroupNode group:
+            // 双击标题条 = 改组名；双击组内空白 = 在组里新建一张卡
+            // （§14.24）。组内空白双击以前被「改组名」占着，想在里面
+            // 建卡只能先建到组外再拖进来。
+            if (_inGroupTitle(group, e.localPosition)) {
+              _beginEdit(group);
+            } else {
+              createCard(at: world);
+            }
           default:
             _beginEdit(node);
         }
         return;
       }
       final bool additive = HardwareKeyboard.instance.isControlPressed;
+      final bool range =
+          !additive && HardwareKeyboard.instance.isShiftPressed;
       setState(() {
         if (additive) {
+          // Ctrl = 加 / 减选，锚点不动：范围选择还得从原来的角出发。
           if (!_selected.remove(node.id)) _selected.add(node.id);
-        } else if (!_selected.contains(node.id)) {
-          _selected
-            ..clear()
-            ..add(node.id);
+        } else if (range) {
+          _selectRangeFrom(node);
+        } else {
+          // 不按键 = 单选。但点在**已经选中**的卡片上不清别人——多选之后
+          // 要靠「按住其中一张拖」带走整组，按下就清只剩一张，组就没法拖了。
+          if (!_selected.contains(node.id)) {
+            _selected
+              ..clear()
+              ..add(node.id);
+          }
+          _rangeAnchorId = node.id;
         }
         // 一次拖动只记一步：在按下时记，不是每一帧都记。
         _pushHistory();
@@ -1734,6 +2402,17 @@ class CanvasBoardState extends State<CanvasBoard>
         _dragFrom = world;
         _dragFromScreen = e.localPosition;
         _dragMoved = false;
+        _dragEscape = false;
+        // 这一整段拖动里「谁是成员」按**按下那一刻**的框算：拖动途中框会
+        // 一帧一帧重新贴合，拿贴过的框判成员会让移出过一次边界的卡永远
+        // 回不来（§14.25）。
+        _groupJudge
+          ..clear()
+          ..addEntries(<MapEntry<String, Rect>>[
+            for (final CanvasNode other in _doc!.nodes)
+              if (other is GroupNode && other.autoFit)
+                MapEntry<String, Rect>(other.id, other.rect),
+          ]);
         _dragOrigins
           ..clear()
           ..addEntries(
@@ -1755,8 +2434,9 @@ class CanvasBoardState extends State<CanvasBoard>
         }
       });
       // 点标题条 = 展开 / 收起，但只在**松手没挪动**时算：按下就切的话，
-      // 想拖走这张卡的第一帧就会把它收起来。Ctrl 加选不动它。
+      // 想拖走这张卡的第一帧就会把它收起来。Ctrl 加选、Shift 范围选不动它。
       if (!additive &&
+          !range &&
           node is FileNode &&
           _inFileTitle(node, e.localPosition)) {
         _clickToggleId = node.id;
@@ -1773,7 +2453,13 @@ class CanvasBoardState extends State<CanvasBoard>
         return;
       }
       setState(() {
-        if (!HardwareKeyboard.instance.isControlPressed) _selected.clear();
+        // Ctrl / Shift 都是加选（§14.13）；Shift 对边没有范围选择那套——
+        // 两角撑框的语义只对卡片成立。
+        if (!HardwareKeyboard.instance.isControlPressed &&
+            !HardwareKeyboard.instance.isShiftPressed) {
+          _selected.clear();
+          _rangeAnchorId = null;
+        }
         _selected.add(edge.edge.id);
       });
       return;
@@ -1785,7 +2471,13 @@ class CanvasBoardState extends State<CanvasBoard>
       return;
     }
     setState(() {
-      if (!HardwareKeyboard.instance.isControlPressed) _selected.clear();
+      // 不按键 = 替换式框选，按下就清空（松手时框到谁就是谁）。
+      // Shift / Ctrl 框选要往现有选中上并，这里得留着（§14.13）。
+      if (!HardwareKeyboard.instance.isControlPressed &&
+          !HardwareKeyboard.instance.isShiftPressed) {
+        _selected.clear();
+        _rangeAnchorId = null;
+      }
       _mode = _Interaction.marquee;
       _marqueeStart = world;
       _marqueeEnd = world;
@@ -1809,8 +2501,53 @@ class CanvasBoardState extends State<CanvasBoard>
       });
       return;
     }
+    // 右键按着：走够 3px 才升级成「拉线」，之前一律不动——按下去的一两
+    // 像素抖动不该让右键菜单变成一条线。
+    if (_rightDown) {
+      if (_mode == _Interaction.connecting) {
+        _updateConnectPreview(e.localPosition);
+        return;
+      }
+      if (_mode == _Interaction.slashing) {
+        // 升级成劈砍的那一帧已经把「起手点 → 当前点」接进刀锋了；这里只接
+        // 之后的点。
+        _updateSlash(e.localPosition);
+        return;
+      }
+      if ((e.localPosition - _rightDownAt).distance < 3) return;
+      // 按在卡上 → 拉线；按在空地上 → 划刀（§14.19）。
+      if (_rightDownNodeId == null) {
+        // 起手点 → 当前点这一段**当场就扫一遍**：只在「下次移动」时才扫，
+        // 用户划一下就松手的这一刀会一个东西都切不到。
+        final List<Offset> stroke = <Offset>[
+          _toWorld(_rightDownAt),
+          _toWorld(e.localPosition),
+        ];
+        final ({Set<String> nodes, Set<String> edges}) hits = _slashHits(stroke);
+        setState(() {
+          _mode = _Interaction.slashing;
+          _slashPoints = stroke;
+          _slashNodes = hits.nodes;
+          _slashEdges = hits.edges;
+        });
+        return;
+      }
+      setState(() {
+        _mode = _Interaction.connecting;
+        _connectFromId = _rightDownNodeId;
+        _connectTo = _toWorld(e.localPosition);
+        _connectTargetId = null;
+      });
+      _updateConnectPreview(e.localPosition);
+      return;
+    }
+
     switch (_mode) {
       case _Interaction.idle:
+        break;
+      case _Interaction.connecting:
+      case _Interaction.slashing:
+        // 右键松手就结束；左键移动走到这里说明状态没清干净，忽略即可。
         break;
       case _Interaction.panning:
         final Offset delta = e.localPosition - _lastPointer;
@@ -1818,6 +2555,8 @@ class CanvasBoardState extends State<CanvasBoard>
         _panBy(delta);
       case _Interaction.marquee:
         setState(() => _marqueeEnd = _toWorld(e.localPosition));
+      case _Interaction.resizingImage:
+        _resizeImageTo(_toWorld(e.localPosition));
       case _Interaction.maybeDrag:
         // 3px 的死区：按下时的一两像素抖动不该挪动卡片。
         if ((e.localPosition - _dragFromScreen).distance < 3) break;
@@ -1828,11 +2567,53 @@ class CanvasBoardState extends State<CanvasBoard>
     }
   }
 
+  /// 拖角：左上角钉死，宽高跟着指针走，**保持原图比例**。
+  ///
+  /// 不保持比例的话，一张 2:1 的图会被拉成任意形状——用户拖的还是同一张图，
+  /// 只是画得变形了。取「指针相对左下角」和「相对右上角」两个方向的增量里
+  /// 变化更大的那个当主轴，另一个按比例推出来，拖起来跟手又不走形。
+  void _resizeImageTo(Offset world) {
+    final String? id = _resizeImageId;
+    final CanvasNode? node = id == null ? null : _doc?.nodeById(id);
+    if (node == null) return;
+    final Rect origin = _resizeOrigin;
+    if (origin.width <= 0 || origin.height <= 0) return;
+    final double aspect = origin.width / origin.height;
+
+    final Offset delta = world - _resizeFrom;
+    final double byWidth = (origin.width + delta.dx);
+    final double byHeight = (origin.height + delta.dy) * aspect;
+    // 谁变得多听谁的：横着拖时宽说了算，竖着拖时高说了算。
+    final double width =
+        (byWidth - origin.width).abs() >= (byHeight - origin.width).abs()
+        ? byWidth
+        : byHeight;
+    final double minWidth = math.max(canvasMinSize, canvasMinSize * aspect);
+    // ⚠️ 必须包在 setState 里。文档是**原地修改**的，`shouldRepaint` 又恒为
+    // true——不 setState 就没人让画笔重画，用户看到的会是「拖的时候不动，
+    // 松手才跳一下」（§16.3 第 19 条）。
+    setState(() {
+      node.width = math.max(minWidth, width);
+      node.height = node.width / aspect;
+    });
+  }
+
   void _dragTo(Offset screen) {
     final CanvasDocument? doc = _doc;
     if (doc == null) return;
     final Offset delta = _toWorld(screen) - _dragFrom;
     _dragMoved = true;
+    // Alt 按过一次就记住：松手时 Alt 可能早抬起来了，光看那一刻的按键
+    // 会把「按着 Alt 拖出去」误判成「普通拖动」。第一次按到 Alt 的同时把
+    // 组框记下来——松手要靠它判「有没有真的拖出框外」。
+    if (HardwareKeyboard.instance.isAltPressed && !_dragEscape) {
+      _dragEscape = true;
+      for (final CanvasNode node in doc.nodes) {
+        if (node is GroupNode && node.autoFit) {
+          _dragOriginsGroupBox[node.id] = node.rect;
+        }
+      }
+    }
     setState(() {
       for (final CanvasNode node in doc.nodes) {
         final Offset? origin = _dragOrigins[node.id];
@@ -1840,12 +2621,19 @@ class CanvasBoardState extends State<CanvasBoard>
         node.x = origin.dx + delta.dx;
         node.y = origin.dy + delta.dy;
       }
+      // autoFit 组每帧跟着成员重贴（§14.25）。`Alt` = **允许**离开：这一段
+      // 里被拖的卡不算成员，框不追——它才能真的被拖到框外去。
+      _refitAutoGroups(escape: _dragEscape);
     });
   }
 
   void _onPointerUp(PointerEvent e, {bool cancelled = false}) {
     if (_resizingDetails) {
       setState(() => _resizingDetails = false);
+      return;
+    }
+    if (_rightDown) {
+      _finishRightGesture(e, cancelled: cancelled);
       return;
     }
     if (_mode == _Interaction.idle) return;
@@ -1859,6 +2647,8 @@ class CanvasBoardState extends State<CanvasBoard>
       return;
     }
     final bool moved = _mode == _Interaction.dragging && _dragMoved;
+    // 改过尺寸也算「改过白板」：要标脏、要落盘，和拖动同一个口径。
+    final bool resized = _mode == _Interaction.resizingImage;
     // 一次「点」= 按在标题条上、松手没挪动、也没被系统取消。
     final String? toggleId =
         _mode == _Interaction.maybeDrag && !moved && !cancelled
@@ -1870,9 +2660,16 @@ class CanvasBoardState extends State<CanvasBoard>
       _marqueeStart = null;
       _marqueeEnd = null;
       _dragOrigins.clear();
+      _dragOriginsGroupBox.clear();
+      _resizeImageId = null;
     });
     _clickToggleId = null;
-    if (moved) widget.onChanged?.call();
+    // 松手是「脱离不脱离」的判决时刻（§14.25）：最后一轮 `_dragTo` 已经
+    // 按「中心在不在框内」算过成员了，这里只需把判据缓存丢掉——下一段
+    // 操作重新以松手后的框为起点。
+    _dragEscape = false;
+    _forgetGroupJudges();
+    if (moved || resized) widget.onChanged?.call();
     if (toggleId != null) {
       final CanvasNode? node = _doc?.nodeById(toggleId);
       // 历史已经在按下时记过了，这里不重复记一步。
@@ -1889,8 +2686,39 @@ class CanvasBoardState extends State<CanvasBoard>
     // 浮层里的滚轮归它自己（面板内容可能超出高度要滚），不该顺手把画布
     // 也缩放一下。
     if (_overOverlay(e.localPosition)) return;
+    // Ctrl + 滚轮压在**图片**上 = 改这张图的大小（graphif 的缩放姿势，
+    // §14.20）。压在别的卡片上仍然是缩放画布——那些卡片的尺寸是内容的
+    // 函数，改了也会被贴合顶回去。
+    if (HardwareKeyboard.instance.isControlPressed) {
+      final CanvasNode? under = _nodeAt(_toWorld(e.localPosition));
+      if (under is FileNode && _isImagePath(under.file)) {
+        _scaleImageBy(under, math.exp(-e.scrollDelta.dy / 320));
+        return;
+      }
+    }
     // 指数映射：滚一格的感觉和当前缩放无关，缩到 8% 和放到 800% 一样跟手。
     _zoomAt(e.localPosition, math.exp(-e.scrollDelta.dy / 320));
+  }
+
+  /// Ctrl + 滚轮改图片大小：等比缩放，左上角钉死。
+  ///
+  /// 滚轮是一串密集事件，每格都记一步撤销的话，滚两下要按十几次 `Ctrl+Z`
+  /// 才退得回去——所以用 700ms 的「一阵」窗口：一阵里只记第一步。
+  void _scaleImageBy(CanvasNode node, double factor) {
+    if (_readOnly || factor <= 0) return;
+    final bool fresh = _imageScaleWindow?.isActive != true;
+    _imageScaleWindow?.cancel();
+    _imageScaleWindow = Timer(const Duration(milliseconds: 700), () {});
+    if (fresh) _pushHistory();
+    setState(() {
+      final double aspect = node.height <= 0
+          ? 1
+          : node.width / node.height;
+      node.width = math.max(canvasMinSize, node.width * factor);
+      node.height = node.width / aspect;
+      _refitAutoGroups();
+    });
+    widget.onChanged?.call();
   }
 
   /// 这个位置是不是落在某个浮层上。
@@ -1916,6 +2744,13 @@ class CanvasBoardState extends State<CanvasBoard>
     if (_detailsIconAt(e.localPosition) != null) {
       if (_cursor != SystemMouseCursors.click) {
         setState(() => _cursor = SystemMouseCursors.click);
+      }
+      return;
+    }
+    // 图片右下角：斜向双箭头。只在这一小块变，卡片其它地方仍是手形。
+    if (_imageHandleAt(e.localPosition) != null) {
+      if (_cursor != SystemMouseCursors.resizeUpLeftDownRight) {
+        setState(() => _cursor = SystemMouseCursors.resizeUpLeftDownRight);
       }
       return;
     }
@@ -1950,25 +2785,421 @@ class CanvasBoardState extends State<CanvasBoard>
 
   // ----------------------------------------------------------------- 菜单
 
+  /// 右键按下：**什么都不做**，只记下按在哪。
+  ///
+  /// 三件事抢同一个键：右键菜单（点卡片 / 点空白）、方法2 的「选中一张 →
+  /// 右键另一张建连线」（点卡片）、方法1 的拉线（拖）。只有松手那一刻才
+  /// 知道是哪一种，所以这里一律推迟到 [_onPointerUp]（§14.14）。
   void _onSecondaryDown(PointerDownEvent e) {
-    final CanvasNode? node = _nodeAt(_toWorld(e.localPosition));
-    if (node != null) {
-      setState(() {
-        if (!_selected.contains(node.id)) {
-          _selected
-            ..clear()
-            ..add(node.id);
-        }
-      });
-      _showCardMenu(e.position, node);
+    _rightDown = true;
+    _rightDownAt = e.localPosition;
+    _rightDownNodeId = _nodeAt(_toWorld(e.localPosition))?.id;
+  }
+
+  /// 右键松手：三种结果在这里分道（§14.14）。
+  ///
+  /// - **拖过**（`connecting`）→ 拉出一条线：落在卡片上就成边，落在空白处
+  ///   就新建一张卡再连上；
+  /// - **点在空白** → 画布菜单；
+  /// - **点在卡片** → 恰好选中一张、且点的是**别的**卡 = 方法2 建连线；
+  ///   其余情况还是右键菜单。
+  void _finishRightGesture(PointerEvent e, {required bool cancelled}) {
+    final bool wasSlashing = _mode == _Interaction.slashing;
+    final bool wasConnecting = _mode == _Interaction.connecting;
+    // 划刀的结果要先抄出来：下面那个 setState 会把刀锋和命中集合清空，
+    // 清完再 `_cutAlongSlash()` 就只剩一把空刀了。
+    final Set<String> slashedNodes = wasSlashing
+        ? Set<String>.of(_slashNodes)
+        : const <String>{};
+    final Set<String> slashedEdges = wasSlashing
+        ? Set<String>.of(_slashEdges)
+        : const <String>{};
+    final String? fromId = _connectFromId;
+    final String? targetId = _connectTargetId;
+    final Offset? pointer = _connectTo;
+    final String? downId = _rightDownNodeId;
+    final CanvasDocument? doc = _doc;
+
+    setState(() {
+      _rightDown = false;
+      _rightDownNodeId = null;
+      _mode = _Interaction.idle;
+      _connectFromId = null;
+      _connectTo = null;
+      _connectTargetId = null;
+      _slashPoints = null;
+      _slashNodes = <String>{};
+      _slashEdges = <String>{};
+    });
+    if (cancelled) return;
+
+    // 划刀松手：把切到的东西一起砍掉，然后收工（不弹菜单、不建连线）。
+    if (wasSlashing) {
+      _cutAlongSlash(slashedNodes, slashedEdges);
       return;
     }
-    _showBoardMenu(e.position);
+
+    if (wasConnecting) {
+      final List<CanvasNode> sources = _connectSources(fromId);
+      if (sources.isEmpty || pointer == null) return;
+      final CanvasNode? target = targetId == null
+          ? null
+          : doc?.nodeById(targetId);
+      if (target != null) {
+        _connectMany(sources, target, pointer: pointer);
+      } else {
+        // 松手还落在任何一张**源头**卡上 = 反悔，什么都不建。判据用矩形而
+        // 不是 id：拖出去再拖回来时指针底下就是自己，那时「在空白处松手」
+        // 的规则不适用。
+        final bool onSource = sources.any(
+          (CanvasNode node) => node.rect.contains(pointer),
+        );
+        if (!onSource) _connectManyToBlank(sources, pointer);
+      }
+      return;
+    }
+
+    final CanvasNode? node = downId == null ? null : doc?.nodeById(downId);
+    if (node == null) {
+      _showBoardMenu(e.position);
+      return;
+    }
+    // 方法2：选中的卡里**没有**它 → 直接连（中心到中心）。选中几张就连几条：
+    // 一张是单连，多张就是多连一（§14.18）。
+    //
+    // 点的是**选中集里**的卡 → 还是菜单：否则多选之后再也弹不出菜单了。
+    final List<CanvasNode> selectedNodes = <CanvasNode>[
+      for (final String id in _selected)
+        if (doc?.nodeById(id) != null) doc!.nodeById(id)!,
+    ];
+    if (selectedNodes.isNotEmpty && !_selected.contains(node.id)) {
+      _connectMany(selectedNodes, node);
+      return;
+    }
+    setState(() {
+      if (!_selected.contains(node.id)) {
+        _selected
+          ..clear()
+          ..add(node.id);
+        _rangeAnchorId = node.id;
+      }
+    });
+    _showCardMenu(e.position, node);
+  }
+
+
+  /// 这次右键拖拽的**源头们**（§14.18）。
+  ///
+  /// 拖的起点卡在选中集里 → 选中集就是源头（多连一：每一张都连到目标）；
+  /// 不在 → 就它自己（单连）。选中集里混进来的边 id 会被 `nodeById` 过滤掉。
+  List<CanvasNode> _connectSources(String? draggedId) {
+    final CanvasDocument? doc = _doc;
+    if (doc == null || draggedId == null) return const <CanvasNode>[];
+    final CanvasNode? dragged = doc.nodeById(draggedId);
+    if (dragged == null) return const <CanvasNode>[];
+    if (!_selected.contains(draggedId)) return <CanvasNode>[dragged];
+    return <CanvasNode>[
+      for (final String id in _selected)
+        if (doc.nodeById(id) != null) doc.nodeById(id)!,
+    ];
+  }
+
+  /// 划刀途中：把新点接进刀锋，再算一遍切到了谁（§14.19）。
+  ///
+  /// 点太近就不接——每一帧都加一个点，一条直线能攒出几百段，命中测试白白
+  /// 多做几百次。
+  void _updateSlash(Offset screen) {
+    final List<Offset>? stroke = _slashPoints;
+    if (stroke == null) return;
+    final Offset world = _toWorld(screen);
+    // 抖动才丢：1 个世界像素以内不算移动（原来写的是 2/zoom，缩放小的时候
+    // 这个门槛会大到把真实的一步也吞掉）。
+    if ((world - stroke.last).distance < 1) return;
+    final List<Offset> next = <Offset>[...stroke, world];
+    final ({Set<String> nodes, Set<String> edges}) hits = _slashHits(next);
+    // ignore: avoid_print
+    setState(() {
+      _slashPoints = next;
+      _slashNodes = hits.nodes;
+      _slashEdges = hits.edges;
+    });
+  }
+
+  /// 这一刀切到了谁：矩形被线段穿过的节点 + 曲线被穿过的连线。
+  ///
+  /// 连线是贝塞尔，没有解析解，按 16 段折线近似——一刀划过去，中间那一段
+  /// 一定被切到，近似误差远小于刀锋宽度。
+  ({Set<String> nodes, Set<String> edges}) _slashHits(List<Offset> stroke) {
+    final CanvasDocument? doc = _doc;
+    if (doc == null || stroke.length < 2) {
+      return (nodes: <String>{}, edges: <String>{});
+    }
+    final Set<String> nodes = <String>{};
+    for (final CanvasNode node in doc.nodes) {
+      for (int i = 0; i + 1 < stroke.length; i++) {
+        if (segmentHitsRect(stroke[i], stroke[i + 1], node.rect)) {
+          nodes.add(node.id);
+          break;
+        }
+      }
+    }
+    final Set<String> edges = <String>{};
+    for (final CanvasEdgeVisual visual in _edgeVisuals()) {
+      final CanvasEdgeGeometry geometry = visual.geometry;
+      const int steps = 16;
+      Offset previous = geometry.pointAt(0);
+      for (int i = 1; i <= steps; i++) {
+        final Offset next = geometry.pointAt(i / steps);
+        if (polylineCrossesSegment(stroke, previous, next)) {
+          edges.add(visual.edge.id);
+          break;
+        }
+        previous = next;
+      }
+    }
+    return (nodes: nodes, edges: edges);
+  }
+
+  /// 松手：把这一刀切到的东西一起砍掉（§14.19）。
+  ///
+  /// 砍断节点 = 删掉它（连带它身上的边，和 `Delete` 一个口径）；砍断连线 =
+  /// 删掉那条边。整刀只记**一步**撤销——划一刀不该在历史里留下十几条记录。
+  void _cutAlongSlash(Set<String> nodes, Set<String> edges) {
+    final CanvasDocument? doc = _doc;
+    if (doc == null || _readOnly || (nodes.isEmpty && edges.isEmpty)) return;
+    _mutate(() {
+      doc.nodes.removeWhere((CanvasNode node) => nodes.contains(node.id));
+      doc.edges.removeWhere(
+        (CanvasEdge edge) =>
+            edges.contains(edge.id) ||
+            nodes.contains(edge.fromNode) ||
+            nodes.contains(edge.toNode),
+      );
+      _selected.removeWhere(
+        (String id) => nodes.contains(id) || edges.contains(id),
+      );
+      if (_editingId != null && nodes.contains(_editingId)) {
+        _editingId = null;
+        _editingFileBody = false;
+      }
+      if (_editingEdgeId != null && edges.contains(_editingEdgeId)) {
+        _editingEdgeId = null;
+      }
+    });
+  }
+
+  /// 把系统剪贴板里的图粘成一张图片卡片（`Ctrl+V`，§14.20 方法2）。
+  ///
+  /// 图先存进库里（外壳的 `onSaveImage`），卡片只引用那条相对路径——和拖进来
+  /// 的图同一个模型。落在指针当前的位置，和「复制粘贴卡片」的手感一致。
+  Future<void> pasteImageFromClipboard() async {
+    final Future<String?> Function(Uint8List)? saver = widget.onSaveImage;
+    if (_readOnly || saver == null) return;
+    final Uint8List? png =
+        await (widget.readClipboardImage ?? ClipboardImage.readPng)();
+    if (png == null || !mounted) return;
+    final String? relative = await saver(png);
+    if (!mounted) return;
+    if (relative == null) {
+      _notice('图片没能存进库里', '当前存储不支持保存图片');
+      return;
+    }
+    addFileCards(<String>[relative], at: _toWorld(_lastPointer));
+  }
+
+  /// 拉线途中：更新指针位置和指针下那张卡。
+  void _updateConnectPreview(Offset screen) {
+    final Offset world = _toWorld(screen);
+    final CanvasNode? target = _nodeAt(world);
+    final String? targetId = (target == null || target.id == _connectFromId)
+        ? null
+        : target.id;
+    setState(() {
+      _connectTo = world;
+      _connectTargetId = targetId;
+    });
+  }
+
+  /// 画笔要的那份预览：每个源头一条线，起点锚在源卡片**朝指针那一侧**，
+  /// 终点吸到目标卡片**朝被拖那张卡**的一侧；还没进目标就是指针本身。
+  ///
+  /// 多连一时预览画的是**一束**线——只画被拖的那张，用户会以为只连一张。
+  CanvasConnectPreview? get _connectPreview {
+    final CanvasDocument? doc = _doc;
+    final String? fromId = _connectFromId;
+    final Offset? pointer = _connectTo;
+    if (doc == null || fromId == null || pointer == null) return null;
+    final List<CanvasNode> sources = _connectSources(fromId);
+    if (sources.isEmpty) return null;
+    final CanvasNode? target = _connectTargetId == null
+        ? null
+        : doc.nodeById(_connectTargetId!);
+    final Offset end = target == null
+        ? pointer
+        : anchorOf(
+            target.rect,
+            nearestSide(target.rect, sources.first.rect.center),
+          );
+    return CanvasConnectPreview(
+      froms: <Offset>[
+        for (final CanvasNode source in sources)
+          anchorOf(source.rect, nearestSide(source.rect, pointer)),
+      ],
+      to: end,
+      targetRect: target?.rect,
+    );
+  }
+
+  /// 连边：[sources] 里每一张都连到 [target]（多连一，§14.18）。
+  ///
+  /// 给了 [pointer] 就按鼠标轨迹定两侧端点（方法1），不给就是中心到中心
+  /// （方法2 / 多连一：`fromSide` / `toSide` 留空，走自动选边）。
+  ///
+  /// 自连跳过；同向的边已经有了也不叠第二条——两条完全重合的线谁也点不中。
+  /// 一批只记**一步**撤销；建出来的边（哪怕只有一张源头的）全部进选中。
+  void _connectMany(
+    List<CanvasNode> sources,
+    CanvasNode target, {
+    Offset? pointer,
+  }) {
+    final CanvasDocument? doc = _doc;
+    if (doc == null || _readOnly || sources.isEmpty) return;
+    final List<CanvasEdge> made = <CanvasEdge>[];
+    final List<String> existing = <String>[];
+    for (final CanvasNode source in sources) {
+      if (source.id == target.id) continue;
+      CanvasEdge? same;
+      for (final CanvasEdge edge in doc.edges) {
+        if (edge.fromNode == source.id && edge.toNode == target.id) {
+          same = edge;
+          break;
+        }
+      }
+      if (same != null) {
+        existing.add(same.id);
+        continue;
+      }
+      made.add(
+        CanvasEdge(
+          id: newCanvasId(),
+          fromNode: source.id,
+          toNode: target.id,
+          fromSide: pointer == null
+              ? null
+              : nearestSide(source.rect, pointer).name,
+          toSide: pointer == null
+              ? null
+              : nearestSide(target.rect, pointer).name,
+        ),
+      );
+    }
+    if (made.isEmpty) {
+      // 一条新的都不用建：把已有的那些选中，用户至少知道自己没白拖。
+      if (existing.isEmpty) return;
+      setState(() {
+        _selected
+          ..clear()
+          ..addAll(existing);
+      });
+      return;
+    }
+    _mutate(() {
+      doc.edges.addAll(made);
+      _selected
+        ..clear()
+        ..addAll(made.map((CanvasEdge edge) => edge.id))
+        ..addAll(existing);
+    });
+  }
+
+  /// 拉到空白处松手：**在松手处新建一张卡片，把 [sources] 全部连上它**
+  /// （§14.14 方法1 / §14.18 多连一）。
+  ///
+  /// 图上说的「中心发出 / 中心接收」：新卡和这些边都不写端点边信息，走自动
+  /// 选边——两侧都取最近的边，看起来就是中心到中心。
+  void _connectManyToBlank(List<CanvasNode> sources, Offset at) {
+    final CanvasDocument? doc = _doc;
+    if (doc == null || _readOnly || sources.isEmpty) return;
+    final TextNode card = TextNode(
+      id: newCanvasId(),
+      x: at.dx - canvasMinSize / 2,
+      y: at.dy - canvasMinSize / 2,
+      width: canvasMinSize,
+      height: canvasMinSize,
+    );
+    // 贴合之后再落盘：`_mutate` 记的是这一刻的快照（和双击新建同一个规矩）。
+    _fitTextNode(card);
+    final List<CanvasEdge> made = <CanvasEdge>[
+      for (final CanvasNode source in sources)
+        CanvasEdge(id: newCanvasId(), fromNode: source.id, toNode: card.id),
+    ];
+    // 新建卡片 + 一束边是**一步**撤销：撤销一次就回到拉线之前。
+    _mutate(() {
+      doc.nodes.add(card);
+      doc.edges.addAll(made);
+      _selected
+        ..clear()
+        ..addAll(made.map((CanvasEdge edge) => edge.id));
+    });
+  }
+
+  /// 反转选中边的方向（`Ctrl+T`，§14.18 一连多）。
+  ///
+  /// `from` / `to` 和两侧端点对调；**两端箭头不换**——`fromEnd` / `toEnd` 是
+  /// 位置属性（跟「起点 / 终点」这个槽位走），反转之后箭头本来就该出现在
+  /// 线的另一端：a ──▶ b 反转成 b ──▶ a，箭头从 b 的头上挪到 a 的头上，
+  /// 正是图上第 4 步的样子。label 和颜色也不换，它们描述的是这条关系本身。
+  ///
+  /// `fromNode` / `toNode` 是 `final`，换方向只能换一个新对象（id 不变，选中
+  /// 和已存的引用都还认得）；一次 `Ctrl+T` 记一步撤销。
+  bool _reverseSelectedEdges() {
+    final CanvasDocument? doc = _doc;
+    if (doc == null || _readOnly) return false;
+    final List<CanvasEdge> edges = <CanvasEdge>[
+      for (final CanvasEdge edge in doc.edges)
+        if (_selected.contains(edge.id)) edge,
+    ];
+    if (edges.isEmpty) return false;
+    _mutate(() {
+      for (final CanvasEdge edge in edges) {
+        final int index = doc.edges.indexOf(edge);
+        if (index < 0) continue;
+        doc.edges[index] = CanvasEdge(
+          id: edge.id,
+          fromNode: edge.toNode,
+          toNode: edge.fromNode,
+          fromSide: edge.toSide,
+          toSide: edge.fromSide,
+          fromEnd: edge.fromEnd,
+          toEnd: edge.toEnd,
+          color: edge.color,
+          label: edge.label,
+          extra: edge.extra,
+        );
+      }
+    });
+    return true;
   }
 
   /// 右键卡片：换色 + 删除；文件卡片多两项（展开 / 收起、打开笔记）。
+  ///
+  /// 选中集里有**两张以上**卡片时，最上面多一项「打包成框」（§14.24，
+  /// 和 `Ctrl+G` 同一个动作）——「框」在这里就是分组，名字跟着 graphif 走。
   Future<void> _showCardMenu(Offset global, CanvasNode node) async {
+    final CanvasDocument? doc = _doc;
+    final int selectedNodeCount = doc == null
+        ? 0
+        : <String>[
+            for (final String id in _selected)
+              if (doc.nodeById(id) != null) id,
+          ].length;
     final String? picked = await _popup(global, <PopupMenuEntry<String>>[
+      if (selectedNodeCount >= 2)
+        const PopupMenuItem<String>(
+          value: 'frame',
+          height: 34,
+          child: Text('打包成框', style: TextStyle(fontSize: AppText.ui)),
+        ),
       if (node is FileNode) ...<PopupMenuEntry<String>>[
         PopupMenuItem<String>(
           value: 'toggle',
@@ -2008,6 +3239,10 @@ class CanvasBoardState extends State<CanvasBoard>
       ),
     ]);
     if (!mounted || picked == null) return;
+    if (picked == 'frame') {
+      _groupSelection(single: false);
+      return;
+    }
     if (picked == 'toggle') {
       // 撤销栈里拿到的是快照，这里的 node 对象可能已经作废：按 id 现取。
       final CanvasNode? live = _doc?.nodeById(node.id);
@@ -2166,6 +3401,28 @@ class CanvasBoardState extends State<CanvasBoard>
       }
     }
 
+    // 编辑态按 `Tab`（§14.23）：**先把正在打的字收下，再从这张卡往右长一个
+    // 节点**，新卡接着进编辑态。放在「输入框吃键盘」那道闸**前面**——此刻
+    // 键盘在输入框手里，挡在后面就永远轮不到；输入框自己不吃 `Tab`（不会打
+    // 出制表符），事件会冒泡到这里。
+    //
+    // 改的是**笔记正文**（文件卡片展开编辑）时不生孩子：那是整篇 `.md` 的
+    // 内容，不能凭空长出一张卡。但也不放行——放行就轮到焦点遍历，`Tab` 会把
+    // 焦点跳到别处、顺手把编辑提交掉，等于打一半字被打断。
+    if (event.logicalKey == LogicalKeyboardKey.tab &&
+        !keys.isControlPressed &&
+        !keys.isShiftPressed &&
+        !keys.isAltPressed) {
+      final String? editingId = _editingId;
+      if (editingId != null) {
+        if (_editingFileBody) return KeyEventResult.handled;
+        // 不还焦点：紧接着新卡就要进编辑态，中间抢一次会把它抹掉。
+        _commitEdit(restoreFocus: false);
+        if (_createRightFromNode(editingId)) return KeyEventResult.handled;
+        return KeyEventResult.ignored;
+      }
+    }
+
     // ⚠️ 键盘在**输入框里**的时候，白板一个键都不许抢。
     //
     // 判 `hasPrimaryFocus` 而不是 `hasFocus`：本板的 `Focus` 是输入框的祖先，
@@ -2189,6 +3446,22 @@ class CanvasBoardState extends State<CanvasBoard>
     }
 
     if (event.logicalKey == LogicalKeyboardKey.escape) {
+      // 拉线 / 划刀到一半按 Esc：这一下作废，别的什么都不动。
+      if (_mode == _Interaction.connecting ||
+          _mode == _Interaction.slashing) {
+        setState(() {
+          _mode = _Interaction.idle;
+          _rightDown = false;
+          _rightDownNodeId = null;
+          _connectFromId = null;
+          _connectTo = null;
+          _connectTargetId = null;
+          _slashPoints = null;
+          _slashNodes = <String>{};
+          _slashEdges = <String>{};
+        });
+        return KeyEventResult.handled;
+      }
       if (_selected.isNotEmpty) {
         setState(_selected.clear);
         return KeyEventResult.handled;
@@ -2223,12 +3496,26 @@ class CanvasBoardState extends State<CanvasBoard>
       return KeyEventResult.handled;
     }
     if (ctrl && event.logicalKey == LogicalKeyboardKey.keyV) {
-      pasteClipboard();
+      // 板内复制过卡片就先贴卡片；没有才去问系统剪贴板要图（§14.20 方法2）。
+      // 顺序反过来会让「复制了一张卡再粘」变成「粘出一张截图」。
+      if (_clipboard == null) {
+        unawaited(pasteImageFromClipboard());
+      } else {
+        pasteClipboard();
+      }
       return KeyEventResult.handled;
     }
     if (ctrl && event.logicalKey == LogicalKeyboardKey.keyD) {
       duplicateSelection();
       return KeyEventResult.handled;
+    }
+    // Ctrl+G = 把选中的卡打包成一个组；Ctrl+Shift+G = 把选中的那一张直接
+    // 转成框（§14.24）。键没成时（没选够 / 选太多）落回 ignored。
+    if (ctrl && event.logicalKey == LogicalKeyboardKey.keyG) {
+      if (_groupSelection(single: keys.isShiftPressed)) {
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
     }
     if (ctrl && event.logicalKey == LogicalKeyboardKey.keyF) {
       openSearch();
@@ -2242,12 +3529,22 @@ class CanvasBoardState extends State<CanvasBoard>
         return KeyEventResult.handled;
       }
     }
-    // Enter = 就地改文字，Ctrl+Enter = 看详细信息。
+    // Enter = 就地改文字（卡片）/ 改标签（边），Ctrl+Enter = 看详细信息。
     if (event.logicalKey == LogicalKeyboardKey.enter ||
         event.logicalKey == LogicalKeyboardKey.numpadEnter) {
       if (_selected.length != 1) return KeyEventResult.ignored;
       final CanvasNode? node = _doc?.nodeById(_selected.first);
-      if (node == null) return KeyEventResult.ignored;
+      if (node == null) {
+        // 选中的是边：Enter = 改标签（连线上也能写文字）。Ctrl+Enter 对边
+        // 没有意义——详细信息面板只认卡片，原样忽略。
+        if (ctrl) return KeyEventResult.ignored;
+        for (final CanvasEdgeVisual visual in _edgeVisuals()) {
+          if (visual.edge.id != _selected.first) continue;
+          _beginEdgeEdit(visual);
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      }
       if (ctrl) {
         openDetails();
         return KeyEventResult.handled;
@@ -2256,6 +3553,21 @@ class CanvasBoardState extends State<CanvasBoard>
       if (_editableText(node) == null) return KeyEventResult.ignored;
       _beginEdit(node);
       return KeyEventResult.handled;
+    }
+    // Ctrl+T = 反转选中边的方向（一连多，§14.18）：框选中所有边按一下，
+    // 箭头整批掉头。只动边——选中集里混着的卡片原样不动。
+    if (ctrl && event.logicalKey == LogicalKeyboardKey.keyT) {
+      if (_reverseSelectedEdges()) return KeyEventResult.handled;
+      return KeyEventResult.ignored;
+    }
+    // Tab = 从选中卡片往右生成新卡并连上（§14.21）。Shift / Ctrl / Alt +
+    // Tab 都不占用——组合键是别的软件的地盘（切焦点、切窗口）。
+    if (event.logicalKey == LogicalKeyboardKey.tab &&
+        !ctrl &&
+        !keys.isShiftPressed &&
+        !keys.isAltPressed) {
+      if (_createRightFromSelection()) return KeyEventResult.handled;
+      return KeyEventResult.ignored;
     }
     // 方向键微调：1px，按住 Shift 10px。
     final (double dx, double dy) = switch (event.logicalKey) {
@@ -2373,6 +3685,8 @@ class CanvasBoardState extends State<CanvasBoard>
         // 赋值而不 setState——正在 build，重建没有意义。
         final Size size = c.biggest;
         if (!size.isEmpty && size != _stage) _stage = size;
+        // 图片卡片的字节在这里排队：解码是异步的，回来时 setState 重画。
+        _ensureImages();
         if (!_stage.isEmpty && !identical(widget.document, _fittedDocument)) {
           _fittedDocument = widget.document;
           _camera = _cameraFor(doc, _stage);
@@ -2426,6 +3740,11 @@ class CanvasBoardState extends State<CanvasBoard>
                             fileBodies: widget.noteBodies,
                             canEdit: !_readOnly,
                             emptyHint: _emptyHint(doc),
+                            connectPreview: _connectPreview,
+                            images: _images,
+                            slash: _slashPoints,
+                            slashNodes: _slashNodes,
+                            slashEdges: _slashEdges,
                           ),
                           isComplex: true,
                           willChange: true,
@@ -2449,18 +3768,23 @@ class CanvasBoardState extends State<CanvasBoard>
           ),
         );
 
-        // 拖放区域**和画布一样大**，但只用来拦下桌面来的文件并解释一句：
-        // 落卡这件事只认左侧文件列表那一条通道。测试进程里没有原生拖放
-        // 层，建起来会异步抛异常（连 catch 都接不住），所以那里干脆不建。
-        // 光标保持 `copy`：返回 `none` 后 `onPerformDrop` 不会触发，用户就
-        // 只能看到「拖了没反应」。
+        // 拖放区域**和画布一样大**。
+        //
+        // 桌面拖进来的东西分两种（§14.20）：**图片**直接落成图片卡片（graphif
+        // 的手感，图先导入库里再引用）；其它文件（`.md` 之类）仍然只提示一句
+        // 「先拖到左侧文件列表」——笔记要走「导入成库里的笔记」那条路，白板
+        // 只认库内路径。
+        //
+        // 测试进程里没有原生拖放层，建起来会异步抛异常（连 catch 都接不住），
+        // 所以那里干脆不建。光标保持 `copy`：返回 `none` 后 `onPerformDrop`
+        // 不会触发，用户就只能看到「拖了没反应」。
         if (!systemDragAndDropAvailable) return board;
         return DropRegion(
           formats: const <DataFormat>[Formats.fileUri],
           hitTestBehavior: HitTestBehavior.translucent,
           onDropOver: (DropOverEvent event) => DropOperation.copy,
           onPerformDrop: (PerformDropEvent event) async {
-            _refuseDesktopDrop();
+            await _onDesktopDrop(event);
           },
           child: board,
         );

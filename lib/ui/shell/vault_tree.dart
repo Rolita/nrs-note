@@ -101,9 +101,17 @@ class VaultTreeState extends State<VaultTree> {
   /// 都得先问一句「这个 key 是哪种文件」。高亮和 Shift 连选是共用一套。
   final Set<String> _selectedBoards = <String>{};
 
-  /// Shift 连选的锚点：笔记 id，或者白板相对路径，两者互斥。
+  /// 选中的附件（图片 / 其它文件，相对路径）。
+  ///
+  /// 和笔记、白板分三套存：批量操作各走各的（笔记删正文、白板搬文件），
+  /// 附件暂时没有批量操作。但**高亮和 Shift 连选是同一套**——文件列表里
+  /// 除了文件夹，什么都能连选。
+  final Set<String> _selectedAssets = <String>{};
+
+  /// Shift 连选的锚点：笔记 id、白板相对路径、附件相对路径，三者互斥。
   String? _anchorId;
   String? _anchorBoardPath;
+  String? _anchorAssetPath;
 
   bool _seeded = false;
   String? _lastSelectedId;
@@ -123,6 +131,14 @@ class VaultTreeState extends State<VaultTree> {
   /// The vault-root drop area needs this: a drop that lands on a folder belongs
   /// to that folder, and the empty space underneath must not take it instead.
   String? _hoverFolder;
+
+  /// 正在拖的那次拖拽，指针最后停在哪（全局坐标）。
+  ///
+  /// 存在 State 上而不是载荷里，是因为 [Draggable.data] 是**拖拽开始时**取下的
+  /// 那一份，而拖拽期间这棵树会重建（选中态、悬停文件夹高亮）——重建出来的
+  /// 载荷是新的对象，`onDragUpdate` 只会往新的那份里写，松手时交出去的还是
+  /// 开头那份。白板拿到的指针于是永远停在按下的位置，卡片就落在列表那一侧。
+  Offset? _dragPointer;
 
   /// True while the drag is inside the vault root drop area, which has no row of
   /// its own to hover.
@@ -194,6 +210,10 @@ class VaultTreeState extends State<VaultTree> {
       for (final CanvasRef b in widget.canvases) b.relativePath,
     };
     _selectedBoards.removeWhere((String path) => !boards.contains(path));
+    final Set<String> assets = <String>{
+      for (final VaultFile file in widget.files) file.relativePath,
+    };
+    _selectedAssets.removeWhere((String path) => !assets.contains(path));
 
     final String? selected = notes.selectedId;
     if (selected != null &&
@@ -202,13 +222,18 @@ class VaultTreeState extends State<VaultTree> {
       _selected
         ..clear()
         ..add(selected);
-      // 正文换了，说明用户是从别处打开了一篇笔记：白板那半边的高亮就不该
-      // 继续挂着，否则屏幕上同时亮着两行，没人知道删除会删哪个。
+      // 正文换了，说明用户是从别处打开了一篇笔记：白板 / 附件那边的高亮
+      // 就不该继续挂着，否则屏幕上同时亮着好几行，没人知道删除会删哪个。
       _selectedBoards.clear();
+      _selectedAssets.clear();
       _anchorId = selected;
       _anchorBoardPath = null;
+      _anchorAssetPath = null;
     }
-    if (_selected.isEmpty && _selectedBoards.isEmpty && selected != null) {
+    if (_selected.isEmpty &&
+        _selectedBoards.isEmpty &&
+        _selectedAssets.isEmpty &&
+        selected != null) {
       _selected.add(selected);
       _anchorId ??= selected;
     }
@@ -275,20 +300,24 @@ class VaultTreeState extends State<VaultTree> {
         .toList(growable: false);
   }
 
-  /// 屏幕上能点选的行，按从上到下的顺序：笔记和白板，图片不算。
+  /// 屏幕上能点选的行，按从上到下的顺序：**笔记、白板、图片和其它文件**。
+  ///
+  /// 文件列表里除了文件夹，什么都能被 Shift 连选——用户不该为了选一段混合
+  /// 内容先去分辨哪个是 `.md`、哪个是 `.nrs`、哪个是图。
   ///
   /// Shift 连选要的是「这一行和那一行之间」，所以必须和渲染用的是同一份
   /// 顺序（[build] 里的 `rows`），不能各自排一遍。
-  List<({Note? note, CanvasRef? board})> _selectableRows() {
-    final List<({Note? note, CanvasRef? board})> out =
-        <({Note? note, CanvasRef? board})>[];
+  List<_Pickable> _selectableRows() {
+    final List<_Pickable> out = <_Pickable>[];
     for (final _TreeRow row in _rows(widget.notes)) {
       final _FileEntry? entry = row.entry;
       if (entry == null) continue;
       if (entry.note != null) {
-        out.add((note: entry.note, board: null));
+        out.add((note: entry.note, board: null, file: null));
       } else if (entry.canvas != null) {
-        out.add((note: null, board: entry.canvas));
+        out.add((note: null, board: entry.canvas, file: null));
+      } else if (entry.file != null) {
+        out.add((note: null, board: null, file: entry.file));
       }
     }
     return out;
@@ -301,20 +330,30 @@ class VaultTreeState extends State<VaultTree> {
         .toList(growable: false);
   }
 
+  List<VaultFile> _visibleAssets() {
+    return _rows(widget.notes)
+        .map((_TreeRow row) => row.entry?.file)
+        .whereType<VaultFile>()
+        .toList(growable: false);
+  }
+
   /// 锚点落在第几行；锚点被折叠或删掉了就是 -1。
-  int _anchorIndex(List<({Note? note, CanvasRef? board})> rows) {
+  int _anchorIndex(List<_Pickable> rows) {
     final String? id = _anchorId;
     if (id != null) {
-      final int i = rows.indexWhere(
-        (({Note? note, CanvasRef? board}) r) => r.note?.id == id,
-      );
+      final int i = rows.indexWhere((_Pickable r) => r.note?.id == id);
       if (i >= 0) return i;
     }
     final String? path = _anchorBoardPath;
-    if (path == null) return -1;
-    return rows.indexWhere(
-      (({Note? note, CanvasRef? board}) r) => r.board?.relativePath == path,
-    );
+    if (path != null) {
+      final int i = rows.indexWhere(
+        (_Pickable r) => r.board?.relativePath == path,
+      );
+      if (i >= 0) return i;
+    }
+    final String? asset = _anchorAssetPath;
+    if (asset == null) return -1;
+    return rows.indexWhere((_Pickable r) => r.file?.relativePath == asset);
   }
 
   /// Keeps only files that are actually on screen, so a collapsed folder cannot
@@ -328,6 +367,10 @@ class VaultTreeState extends State<VaultTree> {
       for (final CanvasRef b in _visibleBoards()) b.relativePath,
     };
     _selectedBoards.removeWhere((String path) => !boards.contains(path));
+    final Set<String> assets = <String>{
+      for (final VaultFile file in _visibleAssets()) file.relativePath,
+    };
+    _selectedAssets.removeWhere((String path) => !assets.contains(path));
   }
 
   void _selectOnly(Note note) {
@@ -336,8 +379,10 @@ class VaultTreeState extends State<VaultTree> {
         ..clear()
         ..add(note.id);
       _selectedBoards.clear();
+      _selectedAssets.clear();
       _anchorId = note.id;
       _anchorBoardPath = null;
+      _anchorAssetPath = null;
     });
   }
 
@@ -347,22 +392,40 @@ class VaultTreeState extends State<VaultTree> {
       _selectedBoards
         ..clear()
         ..add(board.relativePath);
+      _selectedAssets.clear();
       _anchorId = null;
       _anchorBoardPath = board.relativePath;
+      _anchorAssetPath = null;
     });
   }
 
-  /// Shift 连选：从锚点到 [note] / [board] 之间，屏幕上看得见的每一行都选中。
+  void _selectOnlyAsset(VaultFile file) {
+    setState(() {
+      _selected.clear();
+      _selectedBoards.clear();
+      _selectedAssets
+        ..clear()
+        ..add(file.relativePath);
+      _anchorId = null;
+      _anchorBoardPath = null;
+      _anchorAssetPath = file.relativePath;
+    });
+  }
+
+  /// Shift 连选：从锚点到 [note] / [board] / [file] 之间，屏幕上看得见的
+  /// 每一行都选中——**不分文件类型**。
   ///
-  /// 跨类型也照选：一段里既有笔记又有白板时，两边各自记各自的，右键哪一类
-  /// 就只对哪一类生效。
-  void _selectRangeTo({Note? note, CanvasRef? board}) {
-    final List<({Note? note, CanvasRef? board})> rows = _selectableRows();
+  /// 跨类型也照选：一段里既有笔记、又有白板、又有图片时，三边各自记各自的，
+  /// 右键哪一类就只对哪一类生效。
+  void _selectRangeTo({Note? note, CanvasRef? board, VaultFile? file}) {
+    final List<_Pickable> rows = _selectableRows();
     final int anchor = _anchorIndex(rows);
     final int index = rows.indexWhere(
-      (({Note? note, CanvasRef? board}) r) => note != null
+      (_Pickable r) => note != null
           ? r.note?.id == note.id
-          : r.board?.relativePath == board?.relativePath,
+          : (board != null
+                ? r.board?.relativePath == board.relativePath
+                : r.file?.relativePath == file?.relativePath),
     );
     if (anchor < 0 || index < 0) {
       // 锚点不见了（文件夹被折叠、那篇笔记被删）：退化成单选，别让整段
@@ -371,31 +434,27 @@ class VaultTreeState extends State<VaultTree> {
         _selectOnly(note);
       } else if (board != null) {
         _selectOnlyBoard(board);
+      } else if (file != null) {
+        _selectOnlyAsset(file);
       }
       return;
     }
     final int start = math.min(anchor, index);
     final int end = math.max(anchor, index);
-    final List<({Note? note, CanvasRef? board})> range = rows.sublist(
-      start,
-      end + 1,
-    );
+    final List<_Pickable> range = rows.sublist(start, end + 1);
     setState(() {
       _selected
         ..clear()
-        ..addAll(
-          range
-              .map((({Note? note, CanvasRef? board}) r) => r.note?.id)
-              .whereType<String>(),
-        );
+        ..addAll(range.map((_Pickable r) => r.note?.id).whereType<String>());
       _selectedBoards
         ..clear()
         ..addAll(
-          range
-              .map(
-                (({Note? note, CanvasRef? board}) r) => r.board?.relativePath,
-              )
-              .whereType<String>(),
+          range.map((_Pickable r) => r.board?.relativePath).whereType<String>(),
+        );
+      _selectedAssets
+        ..clear()
+        ..addAll(
+          range.map((_Pickable r) => r.file?.relativePath).whereType<String>(),
         );
     });
   }
@@ -405,9 +464,9 @@ class VaultTreeState extends State<VaultTree> {
   /// leaves the editor where it was rather than swapping the document out from
   /// under someone who is still picking the end of the range.
   ///
-  /// 白板走同一条路：点一下选中并打开，Shift+click 只改选中范围。区别只在
-  /// 打开的是白板视图而不是正文。
-  void _tapRow({Note? note, CanvasRef? board}) {
+  /// 白板、图片、其它附件走同一条路：点一下选中并打开，Shift+click 只改
+  /// 选中范围（不打开任何东西——用户还在挑这段的结尾）。
+  void _tapRow({Note? note, CanvasRef? board, VaultFile? file}) {
     _treeFocus.requestFocus();
     if (note != null) {
       widget.notes.setActiveFolder(note.folderPath);
@@ -419,7 +478,7 @@ class VaultTreeState extends State<VaultTree> {
     }
     if (HardwareKeyboard.instance.isShiftPressed &&
         _anchorIndex(_selectableRows()) >= 0) {
-      _selectRangeTo(note: note, board: board);
+      _selectRangeTo(note: note, board: board, file: file);
       return;
     }
     if (note != null) {
@@ -427,8 +486,15 @@ class VaultTreeState extends State<VaultTree> {
       widget.onOpenNote(note);
       return;
     }
-    _selectOnlyBoard(board!);
-    widget.onOpenCanvas?.call(board);
+    if (board != null) {
+      _selectOnlyBoard(board);
+      widget.onOpenCanvas?.call(board);
+      return;
+    }
+    if (file != null) {
+      _selectOnlyAsset(file);
+      widget.onOpenFile?.call(file);
+    }
   }
 
   Future<void> _showFileMenu(Note note, Offset position) async {
@@ -699,6 +765,7 @@ class VaultTreeState extends State<VaultTree> {
 
   void _beginDrag(Note note) {
     _hoverFolder = null;
+    _dragPointer = null;
     if (!_selected.contains(note.id)) _selectOnly(note);
   }
 
@@ -1000,8 +1067,12 @@ class VaultTreeState extends State<VaultTree> {
       data: payload,
       onDragStarted: () => _beginDrag(note),
       // The canvas needs the pointer, not the feedback chip's corner: it puts
-      // the new card where the user let go.
-      onDragUpdate: (DragUpdateDetails d) => payload.pointer = d.globalPosition,
+      // the new card where the user let go. 记在 State 上，不记在载荷里——见
+      // [_dragPointer]。
+      onDragUpdate: (DragUpdateDetails d) => _dragPointer = d.globalPosition,
+      // 松手（落到目标上或中途取消）之后清掉，下一把拖拽不会读到旧值。
+      // 目标方的 `onAcceptWithDetails` 在这之前已经跑完，读得到。
+      onDragEnd: (DraggableDetails _) => _dragPointer = null,
       // The preview names the row and, live, the folder it would land in; the
       // row itself fades while the drag is in flight.
       feedback: _dragPreview(label: () => _dragLabel(note)),
@@ -1016,11 +1087,13 @@ class VaultTreeState extends State<VaultTree> {
   /// 之后按删除时各走各的确认卡片：笔记那套会重建正文，白板那套搬文件。
   Widget _plainFileRow(_TreeRow row, _FileEntry entry) {
     final CanvasRef? board = entry.canvas;
-    return _FileRow(
+    final Widget content = _FileRow(
       title: entry.title,
       tooltip: entry.path,
       depth: row.depth,
-      selected: board != null && _selectedBoards.contains(board.relativePath),
+      selected: board != null
+          ? _selectedBoards.contains(board.relativePath)
+          : (entry.file != null && _selectedAssets.contains(entry.path)),
       active: board != null && board.relativePath == widget.activeCanvasPath,
       icon: board != null
           ? LucideIcons.layoutDashboard
@@ -1030,12 +1103,29 @@ class VaultTreeState extends State<VaultTree> {
         if (board != null) {
           _tapRow(board: board);
         } else if (entry.file != null) {
-          widget.onOpenFile?.call(entry.file!);
+          // 附件也走 _tapRow：Shift+click 要能把它算进连选范围（§14.26）。
+          _tapRow(file: entry.file);
         }
       },
       onSecondaryTapDown: board == null
           ? null
           : (TapDownDetails d) => _showCanvasMenu(board, d.globalPosition),
+    );
+    // 图片可以拖进白板（引用它，不拷贝）。白板和别的附件不能拖——白板
+    // 拖进白板没有意义，附件没有渲染方式。
+    if (board != null || entry.file == null) return content;
+    if (!kImageExtensions.contains(entry.extension.toLowerCase())) {
+      return content;
+    }
+    final VaultDragPayload payload = VaultDragPayload.image(this, entry.path);
+    return Draggable<VaultDragPayload>(
+      data: payload,
+      // 和笔记行同一个规矩：记指针（不是预览片的角），白板按它落卡。
+      onDragUpdate: (DragUpdateDetails d) => _dragPointer = d.globalPosition,
+      onDragEnd: (DraggableDetails _) => _dragPointer = null,
+      feedback: _dragPreview(label: () => entry.title),
+      childWhenDragging: Opacity(opacity: 0.4, child: content),
+      child: content,
     );
   }
 
@@ -1248,19 +1338,36 @@ class VaultTreeState extends State<VaultTree> {
 /// The whiteboard is the second drop target: it reads [notePaths] to reference
 /// the notes, and [pointer] for where the card lands. [DragTargetDetails.offset]
 /// is the *feedback chip's* top-left (`pointer - dragStartPoint`), not the
-/// pointer, so each `Draggable` keeps this field up to date in `onDragUpdate`.
+/// pointer, so the tree keeps the pointer up to date in `onDragUpdate` — on
+/// itself, since the payload handed over at drop time is the one from the
+/// start of the drag (see [VaultTreeState._dragPointer]).
 class VaultDragPayload {
-  VaultDragPayload.notes(this.tree) : folder = null;
+  VaultDragPayload.notes(this.tree)
+    : folder = null,
+      image = null;
 
-  VaultDragPayload.folder(this.tree, String this.folder);
+  VaultDragPayload.folder(this.tree, String this.folder) : image = null;
+
+  /// 拖的是一张**图片**（库内相对路径）。
+  ///
+  /// 白板对图片只存路径、不拷贝字节（§14.15）：图片留在库里，板子引用它，
+  /// 改图就是改库里那张。所以这个载荷只带一个路径，和笔记那条通道分开——
+  /// 笔记是按「落点那一刻的选中」现算的，图片就是它自己。
+  VaultDragPayload.image(this.tree, String this.image) : folder = null;
 
   final VaultTreeState tree;
 
   /// The folder being moved, or null when the drag carries the note selection.
   final String? folder;
 
+  /// 拖的图片的库内相对路径（`folder` / 笔记选中都不会和它同时成立）。
+  final String? image;
+
   /// Global pointer position of the drag's latest update.
-  Offset? pointer;
+  ///
+  /// 读的是树上的实时值，不是载荷自己的字段：载荷在拖拽开始时就被
+  /// [Draggable] 存下来了，拖拽途中重建出来的新载荷拿不到后续的更新。
+  Offset? get pointer => tree._dragPointer;
 
   /// The notes this drag would move / reference right now.
   List<String> notePaths() {
@@ -1269,7 +1376,18 @@ class VaultDragPayload {
       for (final Note note in tree._dragTargets()) note.relativePath,
     ];
   }
+
+  /// 拖进白板要引用的库内路径：图片就是它自己，其余按落点那一刻的笔记选中。
+  List<String> referencePaths() {
+    final String? picture = image;
+    if (picture != null) return <String>[picture];
+    return notePaths();
+  }
 }
+
+/// 文件列表里能被选中 / Shift 连选的一行：笔记、白板，或者别的文件
+/// （图片、附件）。三选一，另两个是 null。
+typedef _Pickable = ({Note? note, CanvasRef? board, VaultFile? file});
 
 class _TreeRow {
   const _TreeRow._({

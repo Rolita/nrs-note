@@ -16,6 +16,7 @@
 library;
 
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -25,7 +26,8 @@ import '../../core/theme/app_tokens.dart';
 import '../../core/theme/table_colors.dart';
 import '../../core/utils/canvas_document.dart';
 import '../../core/utils/canvas_geometry.dart';
-import '../../core/utils/table_model.dart' show CellColor;
+import '../../core/utils/image_file.dart';
+import '../../core/utils/table_model.dart' show CellColor, CellColorToken;
 import 'canvas_markdown.dart';
 import 'canvas_style.dart';
 
@@ -40,6 +42,14 @@ const double canvasGroupRadius = 12;
 
 /// 分组框的内边距。标题要离开边框一点，否则看着像压在线上。
 const double canvasGroupPadding = 14;
+
+/// 分组标题条占的高度（世界坐标）：上内边距 + 一行标题。
+///
+/// 双击标题条 = 改组名；双击标题条**下面**的组内空白 = 在组里新建一张卡
+/// （§14.24）。画笔排标题和命中测试共用这一个数，两边不可能对不上。
+/// [scale] 是节点的字号倍率，标题条跟着字一起放大。
+double canvasGroupTitleHeight(double scale) =>
+    canvasGroupPadding * scale + canvasGroupLabelSize * scale * 1.4;
 
 /// 分组标题的字号（世界坐标）。graphif 的 Section 标题就是这么大。
 const double canvasGroupLabelSize = AppText.title;
@@ -60,6 +70,29 @@ const double canvasFileIconSize = 14;
 
 /// 图标和标题之间的距离。
 const double canvasFileIconGap = 6;
+
+/// 图片卡片右下角那颗缩放手柄的边长（**屏幕**像素）。
+///
+/// 和卡片尺寸分开：卡片是世界坐标（缩放会变），手柄是装饰件，屏幕上永远
+/// 这么大——否则缩到 20% 时手柄只有两像素，根本按不中。
+const double canvasImageHandleSize = 12;
+
+/// 手柄的命中半径（屏幕像素）。比视觉尺寸大一圈，手指才够得着。
+const double canvasImageHandleHitRadius = 14;
+
+/// 手柄矩形（屏幕坐标）落在卡片右下角的内侧。
+Rect canvasImageHandleRect(Rect screenCard) => Rect.fromLTWH(
+  screenCard.right - canvasImageHandleSize,
+  screenCard.bottom - canvasImageHandleSize,
+  canvasImageHandleSize,
+  canvasImageHandleSize,
+);
+
+/// 图片卡片最长边的世界尺寸（§14.16）。
+///
+/// 图片按原图比例装进这个方框：横图宽 320、竖图高 320。不按原图像素铺开——
+/// 一张 4K 截图落下来就是四千世界单位，比整屏还大，缩放条得拖到底才看得全。
+const double canvasImageCardSide = 320;
 
 /// 文件卡片上显示的标题：路径最后一段去掉后缀。
 ///
@@ -254,6 +287,25 @@ class _CachedText {
 }
 
 /// 相机震动/动画状态之外，画笔需要知道的一切。
+/// 右键拖拽建连线时那束预览线（**世界**坐标）。
+///
+/// 起点 / 终点都已经由画布算好（源卡片朝指针那一侧、目标卡片朝源卡片那一
+/// 侧），画笔只负责画——吸附逻辑放在命中测试那一侧，两边才不会各算一套。
+/// 多连一时 [froms] 有一项，预览就是一束线，不是一条。
+class CanvasConnectPreview {
+  const CanvasConnectPreview({
+    required this.froms,
+    required this.to,
+    this.targetRect,
+  });
+
+  final List<Offset> froms;
+  final Offset to;
+
+  /// 指针下那张卡的矩形：画一圈高亮，告诉用户「松手就连它」。
+  final Rect? targetRect;
+}
+
 class CanvasScenePainter extends CustomPainter {
   CanvasScenePainter({
     required this.document,
@@ -268,6 +320,11 @@ class CanvasScenePainter extends CustomPainter {
     required this.fileBodies,
     required this.canEdit,
     required this.emptyHint,
+    this.connectPreview,
+    this.images = const <String, ui.Image>{},
+    this.slash,
+    this.slashNodes = const <String>{},
+    this.slashEdges = const <String>{},
   });
 
   final CanvasDocument? document;
@@ -297,6 +354,19 @@ class CanvasScenePainter extends CustomPainter {
 
   /// 空板提示的两行文字。
   final (String, String)? emptyHint;
+
+  /// 右键拖拽正在拉的那条线。null = 没在拉。
+  final CanvasConnectPreview? connectPreview;
+
+  /// 已经解码好的图片（库内相对路径 → `ui.Image`）。
+  final Map<String, ui.Image> images;
+
+  /// 正在划的刀锋（**世界**坐标，折线）。null = 没在劈砍（§14.19）。
+  final List<Offset>? slash;
+
+  /// 这一刀现在切到的节点 / 连线：松手就砍它们，拖的时候先红着提醒。
+  final Set<String> slashNodes;
+  final Set<String> slashEdges;
 
   /// 线宽 / 箭头 / 标签这些「装饰」的屏幕尺寸，换算成世界单位要除以 zoom。
   double get _px => 1 / camera.zoom;
@@ -695,13 +765,24 @@ class CanvasScenePainter extends CustomPainter {
             _paintTextNode(canvas, node, content, text);
           }
         case FileNode(:final String file):
+          // 图片卡片：字节到手就直接把图画满整张卡，不再画文件名——卡片上
+          // 唯一的正文就是那张图（§14.16）。字节还没到 / 读不出来时退回
+          // 「图标 + 文件名」，至少看得出它指向哪儿。
+          final ui.Image? picture = images[file];
+          if (picture != null) {
+            _paintImageCard(canvas, rect.deflate(1 * _px), picture);
+            break;
+          }
           final bool editingBody = node.id == editingId;
           _paintReferenceNode(
             canvas,
             node,
             content,
             color,
-            icon: LucideIcons.fileText,
+            // 引用的是图片就给个图片图标（§14.15）。
+            icon: kImageExtensions.contains(imageExtensionOf(file))
+                ? LucideIcons.image
+                : LucideIcons.fileText,
             title: canvasFileDisplayTitle(file),
             detail: editingBody || !node.expanded
                 ? null
@@ -729,6 +810,118 @@ class CanvasScenePainter extends CustomPainter {
       }
     }
     canvas.restore();
+  }
+
+  /// 图片卡片右下角那颗缩放手柄（屏幕坐标）。
+  ///
+  /// 画在卡片内容之后、`restore()` 之后（`_paintNode` 里 restore 前调不了
+  /// 屏幕坐标的东西），所以由外面统一遍历一遍选中集来画。只给**图片节点**
+  /// 画——别的卡片尺寸是内容的函数，给手柄等于骗人（§14.17）。
+  void _paintImageHandles(Canvas canvas, Size size) {
+    final CanvasDocument? doc = document;
+    if (doc == null || !canEdit) return;
+    for (final String id in selected) {
+      final CanvasNode? node = doc.nodeById(id);
+      if (node is! FileNode) continue;
+      if (!kImageExtensions.contains(imageExtensionOf(node.file))) continue;
+      final Rect card = camera.rectToScreen(node.rect, size);
+      final Rect handle = canvasImageHandleRect(card);
+      if (handle.width <= 0) continue;
+      // graphif 的图片手柄是绿的：卡片上的 accent 已经用在「选中」上，
+      // 再拿它画手柄，两个语义就混了（§14.20）。
+      final Color green = tableInkColor(
+        palette,
+        const CellColor.token(CellColorToken.green),
+      );
+      canvas.drawRect(handle, Paint()..color = green);
+      // 两根白线画成「⤡」的一半：一眼看出这是拖角的，不是装饰块。
+      final Paint mark = Paint()
+        ..color = palette.surface
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..strokeCap = StrokeCap.round;
+      final Offset a = handle.topLeft + const Offset(3, 7);
+      final Offset b = handle.bottomRight - const Offset(3, 3);
+      canvas.drawLine(Offset(a.dx, b.dy - 4), Offset(a.dx + 4, b.dy), mark);
+      canvas.drawLine(Offset(b.dx - 4, b.dy), b, mark);
+      canvas.drawLine(a + const Offset(0, 3), b - const Offset(3, 0), mark);
+    }
+  }
+
+  /// 劈砍的刀锋 + 「松手就砍它」的红色提醒（世界坐标，§14.19）。
+  ///
+  /// 刀锋用 accent 实线、2px（按 `1/zoom` 折算）；被切到的卡片套一圈红框、
+  /// 被切到的连线在原曲线上再描一道红——松手前就看得见会掉什么，比砍完
+  /// 才发现砍错了强。
+  void _paintSlash(Canvas canvas) {
+    final List<Offset>? stroke = slash;
+    if (stroke == null || stroke.length < 2) return;
+    final CanvasDocument? doc = document;
+
+    if (doc != null) {
+      for (final String id in slashNodes) {
+        final CanvasNode? node = doc.nodeById(id);
+        if (node == null) continue;
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            node.rect.inflate(2 * _px),
+            Radius.circular(canvasCardRadius),
+          ),
+          Paint()
+            ..color = palette.danger
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2 * _px,
+        );
+      }
+      for (final String id in slashEdges) {
+        for (final CanvasEdgeVisual visual in buildEdgeVisuals(
+          document: doc,
+          selected: const <String>{},
+        )) {
+          if (visual.edge.id != id) continue;
+          _paintCurve(
+            canvas,
+            visual.geometry,
+            Paint()
+              ..color = palette.danger
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 2.4 * _px
+              ..strokeCap = StrokeCap.round,
+            arrow: false,
+          );
+          break;
+        }
+      }
+    }
+
+    final Path path = Path()..moveTo(stroke.first.dx, stroke.first.dy);
+    for (int i = 1; i < stroke.length; i++) {
+      path.lineTo(stroke[i].dx, stroke[i].dy);
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = palette.accent
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2 * _px
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
+    );
+  }
+
+  /// 把图片铺满整张卡（世界坐标）。
+  ///
+  /// 卡片尺寸本来就是按原图比例贴出来的，所以 `cover` 不会真的裁掉内容；
+  /// 用 `cover` 而不是 `contain` 是为了避开浮点取整留下的半像素白边。
+  void _paintImageCard(Canvas canvas, Rect rect, ui.Image image) {
+    if (rect.width <= 0 || rect.height <= 0) return;
+    paintImage(
+      canvas: canvas,
+      rect: rect,
+      image: image,
+      fit: BoxFit.cover,
+      filterQuality: FilterQuality.medium,
+    );
   }
 
   /// 一圈虚线（世界坐标）。编辑态用它代替那圈实线。
@@ -1010,6 +1203,67 @@ class CanvasScenePainter extends CustomPainter {
     }
   }
 
+  /// 拉线预览：每个源头一条虚线 + 箭头；指针下有卡片时再给它套一圈高亮。
+  ///
+  /// 画在**世界坐标**里（和真正的边同一个空间），缩放时线跟着内容走；
+  /// 线宽、虚线长度、箭头尺寸都按 `1 / zoom` 折算，屏幕上永远是那么多像素。
+  void _paintConnectPreview(Canvas canvas) {
+    final CanvasConnectPreview? preview = connectPreview;
+    if (preview == null) return;
+
+    final Rect? target = preview.targetRect;
+    if (target != null) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          target.inflate(2 * _px),
+          Radius.circular(canvasCardRadius),
+        ),
+        Paint()
+          ..color = palette.accent
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2 * _px,
+      );
+    }
+
+    for (final Offset a in preview.froms) {
+      final Offset b = preview.to;
+      final Offset delta = b - a;
+      final double length = delta.distance;
+      if (length < 0.5) continue;
+      final Offset unit = delta / length;
+
+      final Paint stroke = Paint()
+        ..color = palette.accent
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6 * _px
+        ..strokeCap = StrokeCap.round;
+
+      // 箭头占住最后 8px，虚线在它前面停住，不然线会从箭头的尖里冒出来。
+      final double dash = 6 * _px;
+      final double gap = 4 * _px;
+      final double stop = math.max(0, length - 8 * _px);
+      for (double t = 0; t < stop; t += dash + gap) {
+        canvas.drawLine(
+          a + unit * t,
+          a + unit * math.min(t + dash, stop),
+          stroke,
+        );
+      }
+
+      final Offset back = b - unit * (8 * _px);
+      final Offset wing =
+          Offset(-unit.dy, unit.dx) * (8 * _px * math.tan(0.36));
+      canvas.drawPath(
+        Path()
+          ..moveTo(b.dx, b.dy)
+          ..lineTo(back.dx + wing.dx, back.dy + wing.dy)
+          ..lineTo(back.dx - wing.dx, back.dy - wing.dy)
+          ..close(),
+        Paint()..color = palette.accent,
+      );
+    }
+  }
+
   /// 空板提示。居中、只读、不挡指针。
   void _paintEmptyHint(Canvas canvas, Size size) {
     final (String, String)? hint = emptyHint;
@@ -1074,10 +1328,14 @@ class CanvasScenePainter extends CustomPainter {
 
     _paintEdges(canvas);
     _paintNodes(canvas);
+    // 预览压在卡片上面：拉线时要看得见指针和终点，不能被卡片盖住。
+    _paintConnectPreview(canvas);
+    _paintSlash(canvas);
 
     canvas.restore();
 
     _paintDetailsIcon(canvas, size);
+    _paintImageHandles(canvas, size);
     _paintMarquee(canvas);
     _paintEmptyHint(canvas, size);
   }

@@ -279,6 +279,58 @@ bool hitsRect(Rect rect, Offset world, {double tolerance = 0}) {
 /// 框选：矩形相交即命中。
 bool rectsIntersect(Rect a, Rect b) => a.overlaps(b);
 
+/// 两条线段是否相交（含端点接触）。劈砍用（§14.19）。
+///
+/// 用叉积判「两次转向是否相反」：两条线段相交 ⟺ 各自对另一条的两个端点
+/// 分居两侧。端点落在线上算相交——刀正好从线头切过，也该算砍断。
+bool segmentsCross(Offset a, Offset b, Offset c, Offset d) {
+  final double d1 = _cross(c, d, a);
+  final double d2 = _cross(c, d, b);
+  final double d3 = _cross(a, b, c);
+  final double d4 = _cross(a, b, d);
+  if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+      ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+    return true;
+  }
+  // 共线 / 端点贴在另一条上的情况，退化成「点在不在线段上」。
+  bool onSegment(Offset p, Offset q, Offset r) =>
+      math.min(p.dx, q.dx) <= r.dx &&
+      r.dx <= math.max(p.dx, q.dx) &&
+      math.min(p.dy, q.dy) <= r.dy &&
+      r.dy <= math.max(p.dy, q.dy);
+  if (d1 == 0 && onSegment(c, d, a)) return true;
+  if (d2 == 0 && onSegment(c, d, b)) return true;
+  if (d3 == 0 && onSegment(a, b, c)) return true;
+  if (d4 == 0 && onSegment(a, b, d)) return true;
+  return false;
+}
+
+double _cross(Offset o, Offset a, Offset b) =>
+    (a.dx - o.dx) * (b.dy - o.dy) - (a.dy - o.dy) * (b.dx - o.dx);
+
+/// 线段是否穿过矩形（含擦边）。劈砍判「这一刀有没有切到这张卡」。
+///
+/// 三种情况：端点在矩形里、线段穿过矩形的四条边、矩形整个被线段跨过。
+bool segmentHitsRect(Offset a, Offset b, Rect rect) {
+  if (rect.contains(a) || rect.contains(b)) return true;
+  final Offset tl = rect.topLeft;
+  final Offset tr = rect.topRight;
+  final Offset br = rect.bottomRight;
+  final Offset bl = rect.bottomLeft;
+  return segmentsCross(a, b, tl, tr) ||
+      segmentsCross(a, b, tr, br) ||
+      segmentsCross(a, b, br, bl) ||
+      segmentsCross(a, b, bl, tl);
+}
+
+/// 一条折线（刀锋）有没有切到线段 [a]–[b]。
+bool polylineCrossesSegment(List<Offset> stroke, Offset a, Offset b) {
+  for (int i = 0; i + 1 < stroke.length; i++) {
+    if (segmentsCross(stroke[i], stroke[i + 1], a, b)) return true;
+  }
+  return false;
+}
+
 /// 两个数之间按 [t] 插值（摄像机动效用）。
 double lerpDouble(double a, double b, double t) => a + (b - a) * t;
 

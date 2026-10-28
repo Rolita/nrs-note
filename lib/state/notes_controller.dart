@@ -2245,6 +2245,29 @@ class NotesController extends ChangeNotifier {
     );
   }
 
+  /// 给**白板**存一张图：落在那块白板所在的文件夹里，返回库内相对路径。
+  ///
+  /// 和 [saveAsset] 的区别是不依赖「当前打开着哪篇笔记」——白板不是笔记，
+  /// 粘贴截图时可能一篇都没开着。文件名带毫秒，同一秒粘两张不会互相覆盖。
+  Future<String?> saveCanvasImage(String canvasPath, Uint8List pngBytes) async {
+    final String clean = canvasPath.replaceAll('\\', '/');
+    final int slash = clean.lastIndexOf('/');
+    final String folder = slash < 0 ? '' : clean.substring(0, slash);
+    return _store.saveAsset(
+      folder,
+      _canvasImageName(DateTime.now()),
+      pngBytes,
+    );
+  }
+
+  static String _canvasImageName(DateTime now) {
+    String two(int value) => value.toString().padLeft(2, '0');
+    String three(int value) => value.toString().padLeft(3, '0');
+    return 'image_${now.year}${two(now.month)}${two(now.day)}_'
+        '${two(now.hour)}${two(now.minute)}${two(now.second)}'
+        '_${three(now.millisecond)}.png';
+  }
+
   /// Absolute path of an image referenced by the open note, for rendering.
   String? assetPathFor(String source) {
     final Note? note = _draft ?? selectedNote;

@@ -22,6 +22,19 @@ ImageProvider? imageProviderFor(String? absolutePath, String source) {
   return FileImage(File(absolutePath));
 }
 
+/// 读整张图片的原始字节（白板卡片自己解码用）。
+///
+/// 走字节而不是 `ImageProvider`：画布是一支 `CustomPainter`，它要的是
+/// `ui.Image`，拿不到 Widget 那套图片管线。读不出来返回 null，不是错误——
+/// 卡片会退回「文件名 + 图标」的样子。
+Future<Uint8List?> imageBytesAt(String absolutePath) async {
+  try {
+    return await File(absolutePath).readAsBytes();
+  } on FileSystemException {
+    return null;
+  }
+}
+
 /// 只读图片头，拿原图宽高。
 ///
 /// 「查看大图」用它算「原图 1:1 是百分之几」——整张解码一遍只为两个数字太贵
