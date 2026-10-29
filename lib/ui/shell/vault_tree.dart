@@ -155,6 +155,10 @@ class VaultTreeState extends State<VaultTree> {
   final TextEditingController _rename = TextEditingController();
   final FocusNode _renameFocus = FocusNode(debugLabel: 'vault-rename');
 
+  /// 列表自己的滚动句柄。新建文件夹后要把那一行滚进视野——名字是下一个
+  /// 动作，而它在列表里的位置由名字决定，可能压根不在屏幕上。
+  final ScrollController _scroll = ScrollController();
+
   @override
   void initState() {
     super.initState();
@@ -174,6 +178,7 @@ class VaultTreeState extends State<VaultTree> {
     _rename.dispose();
     _renameFocus.dispose();
     _treeFocus.dispose();
+    _scroll.dispose();
     _dropTarget.dispose();
     super.dispose();
   }
@@ -291,6 +296,56 @@ class VaultTreeState extends State<VaultTree> {
       current = current.isEmpty ? part : '$current/$part';
       _expanded.add(current);
     }
+  }
+
+  /// 把 [folderPath] 那一行变成输入框，并且**马上**让人能打字。
+  ///
+  /// 新建文件夹之后调用：建完就改名是同一件事的两半，中间再要求用户点一
+  /// 下、或按一次 F2，只是把一件事拆成两步。
+  ///
+  /// 三件事必须一起做，少一件这个输入框就用不了：
+  /// 1. 展开祖先，否则这一行根本不在 `rows` 里；
+  /// 2. 滚到这一行，否则它在屏幕外——懒加载的列表不会建它，输入框也就
+  ///    不存在，用户对着空白打字；
+  /// 3. 给它焦点，并把原名字整段选中，直接输入就是替换。
+  void startRenameFolder(String folderPath) {
+    final String folder = Note.normalizeFolderPath(folderPath);
+    if (folder.isEmpty) return;
+    setState(() {
+      _expandAncestors(folder);
+      _focusFolderPath = folder;
+      _focusNoteId = null;
+    });
+    _notifyExpansion();
+    _scrollToFolder(folder);
+    _beginRename(folderPath: folder, current: folder.split('/').last);
+  }
+
+  /// 把 [folder] 那一行滚进视野（已经在视野里就什么都不做）。
+  ///
+  /// 行高是统一的，所以位置可以直接算；`_rows` 和渲染用的是同一份顺序，
+  /// 算出来的第几行就是屏幕上第几行。
+  void _scrollToFolder(String folder) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      final int index = _rows(widget.notes).indexWhere(
+        (_TreeRow row) => row.folderPath == folder,
+      );
+      if (index < 0) return;
+      final double top = AppSpace.xs + index * AppLayout.rowHeight;
+      final double bottom = top + AppLayout.rowHeight;
+      final double viewport = _scroll.position.viewportDimension;
+      final double offset = _scroll.offset;
+      if (top >= offset && bottom <= offset + viewport) return;
+      _scroll.animateTo(
+        (top - (viewport - AppLayout.rowHeight) / 2).clamp(
+          0.0,
+          _scroll.position.maxScrollExtent,
+        ),
+        duration: AppMotion.fast,
+        curve: AppMotion.enter,
+      );
+    });
   }
 
   List<Note> _visibleFiles() {
@@ -1023,6 +1078,7 @@ class VaultTreeState extends State<VaultTree> {
               List<VaultDragPayload?> candidate,
               List<dynamic> rejected,
             ) => ListView.builder(
+              controller: _scroll,
               padding: const EdgeInsets.fromLTRB(
                 AppSpace.xs,
                 AppSpace.xs,
@@ -1194,6 +1250,10 @@ class VaultTreeState extends State<VaultTree> {
       depth: row.depth,
       expanded: expanded,
       dropTarget: hot,
+      // 改名中的那一行也按「选中」画：否则屏幕上只有打开的那篇笔记亮着，
+      // 看不出刚建出来的文件夹在哪儿。文件夹平时没有选中态，这个高亮只
+      // 服务于「正在编辑的这一行」。
+      selected: renaming,
       renameField: renaming ? _renameField() : null,
       onTap: () {
         _treeFocus.requestFocus();
@@ -1481,6 +1541,7 @@ class _FolderRow extends StatelessWidget {
     required this.dropTarget,
     required this.onTap,
     required this.onSecondaryTapDown,
+    this.selected = false,
     this.renameField,
   });
 
@@ -1490,6 +1551,10 @@ class _FolderRow extends StatelessWidget {
 
   /// True while a dragged note is hovering this row.
   final bool dropTarget;
+
+  /// 这一行是当前正在编辑的那一行（改名中）。文件夹没有「选中」这个状态，
+  /// 高亮只用来指出输入框属于谁。
+  final bool selected;
   final VoidCallback onTap;
   final ValueChanged<TapDownDetails> onSecondaryTapDown;
 
@@ -1508,7 +1573,7 @@ class _FolderRow extends StatelessWidget {
         child: Container(
           height: AppLayout.rowHeight,
           decoration: BoxDecoration(
-            color: dropTarget
+            color: dropTarget || selected
                 ? p.accentSoft
                 : (hovered ? p.surfaceRaised : Colors.transparent),
             borderRadius: AppRadius.smAll,
@@ -1539,7 +1604,7 @@ class _FolderRow extends StatelessWidget {
                           fontSize: AppText.ui,
                           height: 1.2,
                           fontWeight: FontWeight.w500,
-                          color: dropTarget
+                          color: dropTarget || selected
                               ? p.accent
                               : (hovered ? p.textPrimary : p.textSecondary),
                         ),

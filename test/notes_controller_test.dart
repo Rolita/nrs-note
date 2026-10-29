@@ -882,18 +882,25 @@ void main() {
     expect(notes.notesInFolder('生活'), hasLength(1));
   });
 
-  test('a new folder nests under the active folder', () async {
+  test('a new folder lands at the vault root unless a parent is given', () async {
     final NotesController notes = await _open(_MemoryStore());
 
     final String? work = await notes.createFolder('工作');
     expect(work, '工作');
     notes.setActiveFolder(work!);
 
+    // 站在「工作」里新建，它仍然落在库根：按钮要的是一个新分类，不是
+    // 在看不见的深处再挖一层。
     final String? weekly = await notes.createFolder('周报');
-    expect(weekly, '工作/周报');
-    expect(notes.activeFolder, '工作/周报');
-    expect(notes.childFoldersOf(''), contains('工作'));
-    expect(notes.childFoldersOf('工作'), contains('工作/周报'));
+    expect(weekly, '周报');
+    expect(notes.activeFolder, '周报');
+    expect(notes.childFoldersOf(''), containsAll(<String>['工作', '周报']));
+    expect(notes.childFoldersOf('工作'), isEmpty);
+
+    // 明确要子层时才给 parent。
+    final String? monthly = await notes.createFolder('月报', parent: '工作');
+    expect(monthly, '工作/月报');
+    expect(notes.childFoldersOf('工作'), contains('工作/月报'));
   });
 
   test('a file that appeared on disk turns the new note into 未命名 2', () async {

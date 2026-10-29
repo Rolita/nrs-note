@@ -1200,7 +1200,7 @@ void main() {
     expect(find.text('空文件夹'), findsNothing);
   });
 
-  testWidgets('新建文件夹 creates it outright, without asking for a name', (
+  testWidgets('新建文件夹 creates it outright, and goes straight into rename', (
     WidgetTester tester,
   ) async {
     final app = await pumpShell(tester);
@@ -1213,6 +1213,36 @@ void main() {
     // Creating a folder says nothing: the new row appearing in the tree is the
     // only feedback the app gives.
     expect(find.byKey(NoticeHost.cardKey), findsNothing);
+
+    // 建完就能打字：那一行已经变成输入框，名字整段选中，不用再点一下或
+    // 按一次 F2。
+    final Finder field = find.descendant(
+      of: find.byType(VaultTree),
+      matching: find.byType(TextField),
+    );
+    expect(field, findsOneWidget);
+    final TextField input = tester.widget<TextField>(field);
+    expect(input.controller?.text, '新建文件夹');
+    expect(input.controller?.selection.baseOffset, 0);
+    expect(
+      input.controller?.selection.extentOffset,
+      '新建文件夹'.length,
+      reason: '整段选中：直接输入就是替换，不用先删一遍',
+    );
+
+    await tester.enterText(field, '项目');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+
+    expect(app.notes.folders, <String>['项目']);
+    expect(
+      find.descendant(
+        of: find.byType(VaultTree),
+        matching: find.byType(TextField),
+      ),
+      findsNothing,
+      reason: '回车写完名字，输入框收起来',
+    );
   });
 
   testWidgets('F2 renames the clicked row, and Enter writes the new name', (

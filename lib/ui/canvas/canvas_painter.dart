@@ -54,6 +54,20 @@ double canvasGroupTitleHeight(double scale) =>
 /// 分组标题的字号（世界坐标）。graphif 的 Section 标题就是这么大。
 const double canvasGroupLabelSize = AppText.title;
 
+/// 分组的框在屏幕上缩到不足这么宽（像素）时，改用「撑满组框宽度」的画法
+/// 显示组名（§14.28）：字号按组框宽度反推，名字横向占满分组、在框里居中
+/// ——参照 graph（Project Graph）的做法。框和成员照常画，变的只有组名这
+/// 一行字。
+///
+/// 判定只看**这一组自己的框**在屏幕上有多宽，跟全局 zoom 数值无关——同一
+/// 个缩放级别下，小组早就只剩名字了，大组的框还看得清就照常显示；等大组
+/// 自己也缩到这条线以下，才轮到它。**每个分组独立**，谁小谁先换。
+const double canvasGroupLabelCollapsePx = 300;
+
+/// 这一组的框在屏幕上是不是已经小到该显示名字了。
+bool groupLabelNeedsFit(GroupNode group, double zoom) =>
+    group.rect.width * zoom < canvasGroupLabelCollapsePx;
+
 /// 文件卡片顶部那一行标题占的高度（世界坐标）。
 ///
 /// 正文从它下面开始排。贴尺寸（`_fitFileNode`）和画笔用的都是这一个数，
@@ -804,8 +818,15 @@ class CanvasScenePainter extends CustomPainter {
             detail: null,
           );
         case GroupNode(:final String? label):
+          // 组名小到读不清时换成「撑满组框」的画法（§14.28）：字号按组框
+          // 宽度反推、在框里居中。它按内容宽排出来，天然在裁剪矩形内，
+          // 不用出裁剪画。
           if (node.id != editingId) {
-            _paintGroupLabel(canvas, node, content, label);
+            if (groupLabelNeedsFit(node, camera.zoom)) {
+              _paintGroupFittedLabel(canvas, node, content);
+            } else {
+              _paintGroupLabel(canvas, node, content, label);
+            }
           }
       }
     }
@@ -1128,6 +1149,58 @@ class CanvasScenePainter extends CustomPainter {
       maxLines: 1,
     );
     painter.paint(canvas, content.topLeft);
+  }
+
+  /// 「撑满组框」的组名（§14.28）：字号按**组框宽度**反推，让名字横向占
+  /// 满分组，在框里居中——参照 graph。缩得越小它跟着等比缩，名字和框的
+  /// 相对大小永远不变，overview 里每组就是「一个框 + 一个大名字」。
+  ///
+  /// 量宽用一份固定基准字号的探针（不随 zoom 变），缓存才不会在缩放时
+  /// 一帧一帧地重建；真正的绘制按算出来的字号再取，key 里带字号。
+  void _paintGroupFittedLabel(Canvas canvas, GroupNode node, Rect content) {
+    final String name = (node.label ?? '').trim().isEmpty
+        ? '分组'
+        : node.label!.trim();
+    const double base = 100;
+    final TextPainter probe = textCache.get(
+      'group-label-probe-${node.id}',
+      text: name,
+      style: TextStyle(
+        fontSize: base,
+        height: 1.4,
+        color: canvasGroupInk(palette),
+        fontFamily: AppFonts.ui,
+        fontFamilyFallback: AppFonts.uiFallback,
+      ),
+      width: 10000,
+      maxLines: 1,
+    );
+    if (probe.width <= 0) return;
+    // 宽度定字号；再拿组框高度封顶，扁宽的组不会画出比框还高的字。
+    double fontSize = base * content.width / probe.width;
+    final double byHeight = content.height / 1.4;
+    if (fontSize > byHeight) fontSize = byHeight;
+    if (fontSize <= 0) return;
+    final TextPainter painter = textCache.get(
+      'group-label-fitted-${node.id}-${fontSize.toStringAsFixed(2)}',
+      text: name,
+      style: TextStyle(
+        fontSize: fontSize,
+        height: 1.4,
+        color: canvasGroupInk(palette),
+        fontFamily: AppFonts.ui,
+        fontFamilyFallback: AppFonts.uiFallback,
+      ),
+      width: content.width + 1,
+      maxLines: 1,
+    );
+    painter.paint(
+      canvas,
+      Offset(
+        content.left + (content.width - painter.width) / 2,
+        content.top + (content.height - painter.height) / 2,
+      ),
+    );
   }
 
   // -------------------------------------------------------------- 装饰件

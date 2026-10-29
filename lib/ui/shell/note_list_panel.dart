@@ -122,13 +122,16 @@ class NoteListPanelState extends State<NoteListPanel> {
     });
   }
 
-  /// One click, one folder — the name is picked up later with F2 / 右键重命名,
-  /// the same way an untitled note starts life as 「未命名」.
+  /// One click, one folder — and then straight into renaming it.
+  ///
+  /// 建在库根，建完立刻把这一行变成输入框：名字是下一个动作，中间再要求
+  /// 用户去点一下（或按 F2）就是多一道手续。名字不想要，Esc 就退回
+  /// 「新建文件夹」。
   Future<void> _createFolder() async {
     final NotesController notes = context.read<NotesController>();
     final String? path = await notes.createFolder('新建文件夹');
     if (!mounted || path == null) return;
-    _treeKey.currentState?.revealFolder(path);
+    _treeKey.currentState?.startRenameFolder(path);
   }
 
   /// Brings [folderPath] into view; used by the template picker's empty state.

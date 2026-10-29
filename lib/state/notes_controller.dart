@@ -636,17 +636,23 @@ class NotesController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Creates a folder inside [activeFolder]. Returns its path, or null when the
-  /// name has no usable characters left.
-  Future<String?> createFolder(String name) async {
+  /// Creates a folder under [parent] — the vault root unless the caller says
+  /// otherwise. Returns its path, or null when the name has no usable
+  /// characters left.
+  ///
+  /// 默认落在库根，而不是「当前所在的那一层」：文件夹按钮要的是「新建一个
+  /// 分类」，建在看不见的深处，用户还得先滚回去找它。
+  Future<String?> createFolder(String name, {String parent = ''}) async {
     final String cleaned = Note.slugify(name);
     if (cleaned.isEmpty) return null;
-    final String parent = _activeFolder;
-    final String freeName = _freeFolderName(parent, cleaned);
-    final String path = parent.isEmpty ? freeName : '$parent/$freeName';
+    final String at = Note.normalizeFolderPath(parent);
+    final String freeName = _freeFolderName(at, cleaned);
+    final String path = at.isEmpty ? freeName : '$at/$freeName';
     try {
       await _store.createFolder(path);
-      _folders = await _store.listFolders();
+      // 目录已经建好了，把它并进清单就够了。这里原先是 `listFolders()`，
+      // 而那是一次**整库递归**（大库上几百毫秒）——为了看到自己刚建的那
+      // 一行，先白等一次全盘扫描，按钮按下去就像卡住了。
       if (!_folders.any((String f) => f.toLowerCase() == path.toLowerCase())) {
         _folders = <String>[..._folders, path];
       }

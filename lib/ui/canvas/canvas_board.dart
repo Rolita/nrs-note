@@ -237,6 +237,13 @@ class CanvasBoardState extends State<CanvasBoard>
   /// 右键按下的那张卡（null = 按在空白上）。
   String? _rightDownNodeId;
 
+  /// 右键按下时指针底下是个**分组框**（不是卡片）。
+  ///
+  /// 分组不是节点：在组里右键拖动 = 劈砍，不是从「组」拉一条线出去。菜单
+  /// 那边还得认这个分组（改名 / 删除），所以 id 照记，只是拖动分流不走
+  /// 「拉线」那条。
+  bool _rightDownOnGroup = false;
+
   /// 右键按下的屏幕位置，3px 死区用。
   Offset _rightDownAt = Offset.zero;
 
@@ -494,6 +501,48 @@ class CanvasBoardState extends State<CanvasBoard>
     // 收不到），所以这里也要贴一次。
     _refitAllTextNodes();
     _fitFileNodes();
+    _pruneGroupEdgesSoon();
+  }
+
+  /// 丢掉「一头是分组」的连线（§14.32）。分组不是节点，这种边不该存在。
+  ///
+  /// 老版本能连上分组，文件里可能已经躺着这种边了——只在新建时堵是不够的，
+  /// 打开白板时也要清掉，否则用户看到的就是「明明说了不能连，图上还连着」。
+  /// 清完标脏，下次保存就写回去。
+  void _pruneGroupEdgesSoon() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final CanvasDocument? doc = _doc;
+      if (doc == null) return;
+      final List<CanvasEdge> kept = _edgesWithoutGroups(doc.edges, doc);
+      if (kept.length == doc.edges.length) return;
+      setState(() {
+        doc.edges
+          ..clear()
+          ..addAll(kept);
+        _selected.removeWhere(
+          (String id) => !kept.any((CanvasEdge edge) => edge.id == id),
+        );
+      });
+      widget.onChanged?.call();
+    });
+  }
+
+  /// 去掉「一头或两头是分组」的边（§14.32）。分组不是节点，不能参与连线。
+  List<CanvasEdge> _edgesWithoutGroups(
+    Iterable<CanvasEdge> edges,
+    CanvasDocument doc,
+  ) {
+    final Set<String> groups = <String>{
+      for (final CanvasNode node in doc.nodes)
+        if (node is GroupNode) node.id,
+    };
+    if (groups.isEmpty) return edges.toList(growable: false);
+    return <CanvasEdge>[
+      for (final CanvasEdge edge in edges)
+        if (!groups.contains(edge.fromNode) && !groups.contains(edge.toNode))
+          edge,
+    ];
   }
 
   @override
@@ -510,6 +559,8 @@ class CanvasBoardState extends State<CanvasBoard>
       _resetSearch();
       _refitAllTextNodes();
       _fitFileNodes();
+      // 换过来的这份文档里也可能有「连到分组」的旧边（§14.32）。
+      _pruneGroupEdgesSoon();
       return;
     }
     // 笔记正文改过：展开着的卡片是那篇笔记的窗口，正文长了窗口也得跟着长，
@@ -836,7 +887,8 @@ class CanvasBoardState extends State<CanvasBoard>
         ..nodes.clear()
         ..nodes.addAll(parsed.nodes)
         ..edges.clear()
-        ..edges.addAll(parsed.edges);
+        // 快照里也可能有连到分组的旧边（§14.32），撤销回来也不要。
+        ..edges.addAll(_edgesWithoutGroups(parsed.edges, parsed));
       _selected.clear();
       _editingId = null;
       _editingFileBody = false;
@@ -897,7 +949,9 @@ class CanvasBoardState extends State<CanvasBoard>
     final CanvasDocument? doc = _doc;
     if (doc == null || _readOnly) return false;
     final CanvasNode? source = doc.nodeById(sourceId);
-    if (source == null) return false;
+    // 分组不参与连线（§14.32）：选中的是框，Tab 什么也不做——否则会从
+    // 分组上拉出一条边，又是「分组被当成节点」。
+    if (source == null || source is GroupNode) return false;
     const double gap = 48;
     const double vGap = 24;
     final TextNode card = TextNode(
@@ -1140,13 +1194,61 @@ class CanvasBoardState extends State<CanvasBoard>
       // （不然拖一下就被判成「离开了」，框反而留在原地）；Alt 拖动 ——
       // 拖到判据框外就不算，框不追它，松手就真的脱离了。
       final Rect judge = _groupJudge[group.id] ?? group.rect;
-      final List<CanvasNode> members = <CanvasNode>[
-        for (final CanvasNode other in doc.nodes)
-          if (other.id != group.id &&
-              (judge.contains(other.rect.center) ||
-                  (_dragOrigins.containsKey(other.id) && !escape)))
-            other,
-      ];
+      // 整个框正在被拖：成员跟着一起平移，位置关系一点没变。这时按**原点**
+      // 判成员就够了，`Alt` 也不该解除成员——`Alt` 说的是「把成员拖出框」，
+      // 对「拖着整个框走」没有意义。少了这一条，Alt 拖一个装着卡片的组，
+      // 每帧都会把组里的卡判成「逃出去了」，框当场甩掉全部成员。
+      final bool groupMoving = _dragOrigins.containsKey(group.id);
+      final List<CanvasNode> members = <CanvasNode>[];
+      for (final CanvasNode other in doc.nodes) {
+        if (other.id == group.id) continue;
+        final Offset? origin = _dragOrigins[other.id];
+        if (other is GroupNode) {
+          // **包着这一组的那个框（祖先）不能当成员**，否则嵌套时两个框互相
+          // 把对方当成员、一路套娃长大（§14.33 / §14.34）。
+          //
+          // 判据是「包含关系」而不是比面积：拖动时外框会先收紧到只剩老成员，
+          // 那一刻它可能比里框还小，比面积就会把里框误判成祖先。
+          if (other.rect.contains(group.rect.topLeft) &&
+              other.rect.contains(group.rect.bottomRight)) {
+            continue;
+          }
+          // 没在动的分组：整个框都在里面才算成员，半截搭在外面的不算。
+          // **正在被拖的分组不受这条限制**——拖到一半左上角已经出去了、
+          // 中心还在框里，那时判它「不是成员」就等于不按 Alt 也能拖走。
+          if (origin == null && !judge.contains(other.rect.topLeft)) continue;
+        }
+        if (groupMoving) {
+          final Offset at = origin ?? Offset(other.x, other.y);
+          final bool wasInside = judge.contains(
+            Rect.fromLTWH(at.dx, at.dy, other.width, other.height).center,
+          );
+          if (wasInside) members.add(other);
+          continue;
+        }
+        if (origin == null) {
+          // 没在动的节点：中心在判据框里就是成员。
+          if (judge.contains(other.rect.center)) members.add(other);
+          continue;
+        }
+        // 正在被拖的节点，成员身份只看**按下那一刻**它在哪。
+        //
+        // 以前这里是「被拖的一律算成员」，于是从框外拖一张卡进来，框当场
+        // 把它吞进去、跟着它长（§14.29）——组是独立的，框外的节点跟它没
+        // 关系。普通拖动里，原本在框内的成员拖到哪框都追着它（不然一拖就
+        // 被判成「离开了」，框反而留在原地）；`Alt` 拖出去才算脱离。
+        final bool startedInside = judge.contains(
+          Rect.fromLTWH(origin.dx, origin.dy, other.width, other.height).center,
+        );
+        // 落点是不是在这个组的地盘里（判据框 = 按下那一刻的框）。
+        final bool landedInside = judge.contains(other.rect.center);
+        // 本来就在框外的节点，拖进来**不认领**（§14.35）：进组走「选中后
+        // `Alt` 点组内空白」的跳跃移入（§14.24），不是拖进去就算数。
+        if (!startedInside) continue;
+        // `Alt` = 允许离开：拖到框外就不算成员，框不追它。
+        if (escape && !landedInside) continue;
+        members.add(other);
+      }
       if (members.isEmpty) continue;
       final Rect need = unionOf(
         members.map((CanvasNode n) => n.rect),
@@ -1516,7 +1618,8 @@ class CanvasBoardState extends State<CanvasBoard>
 
     _mutate(() {
       doc.nodes.addAll(pasted.nodes);
-      doc.edges.addAll(pasted.edges);
+      // 剪贴板里的边也过一遍：分组不参与连线（§14.32）。
+      doc.edges.addAll(_edgesWithoutGroups(pasted.edges, pasted));
       _selected
         ..clear()
         ..addAll(pasted.nodes.map((CanvasNode n) => n.id));
@@ -2145,14 +2248,27 @@ class CanvasBoardState extends State<CanvasBoard>
   // ---------------------------------------------------------- hit testing
 
   /// 最上面的那张卡片。后加的在上，所以倒着找。
+  /// 指针下是什么：**卡片优先，分组垫底**（§14.30）。
+  ///
+  /// 分组不是节点，只是一个框：点框里的卡片就该是卡片；点在框的空白处才是
+  /// 这个框。嵌套时取**最小**的那个框——点内层分组就该选中内层，外框让路
+  /// （以前按 `doc.nodes` 的顺序取，先建的外框总是赢，内层分组根本点不到）。
   CanvasNode? _nodeAt(Offset world, {double tolerance = 0}) {
     final CanvasDocument? doc = _doc;
     if (doc == null) return null;
+    GroupNode? group;
     for (int i = doc.nodes.length - 1; i >= 0; i--) {
       final CanvasNode node = doc.nodes[i];
-      if (hitsRect(node.rect, world, tolerance: tolerance)) return node;
+      if (!hitsRect(node.rect, world, tolerance: tolerance)) continue;
+      if (node is! GroupNode) return node;
+      final GroupNode? best = group;
+      if (best == null ||
+          node.rect.width * node.rect.height <
+              best.rect.width * best.rect.height) {
+        group = node;
+      }
     }
-    return null;
+    return group;
   }
 
   /// 文件卡片标题条的屏幕矩形：顶部内边距 + 标题一行，整张卡那么宽。
@@ -2429,6 +2545,12 @@ class CanvasBoardState extends State<CanvasBoard>
           for (final CanvasNode other in _doc!.nodes) {
             if (other.id == node.id) continue;
             if (!box.contains(other.rect.center)) continue;
+            // 外层的框不能跟着走：它的中心有可能正好落在内层框里（内层
+            // 居中时就是），一起带走就变成「拖内层，外层也跑」——嵌套分组
+            // 要能单独拖（§14.30）。只有整个框都在里面的才是子分组。
+            if (other is GroupNode && !box.contains(other.rect.topLeft)) {
+              continue;
+            }
             _dragOrigins.putIfAbsent(other.id, () => Offset(other.x, other.y));
           }
         }
@@ -2515,8 +2637,9 @@ class CanvasBoardState extends State<CanvasBoard>
         return;
       }
       if ((e.localPosition - _rightDownAt).distance < 3) return;
-      // 按在卡上 → 拉线；按在空地上 → 划刀（§14.19）。
-      if (_rightDownNodeId == null) {
+      // 按在卡上 → 拉线；按在空地 / **分组框**上 → 划刀（§14.19 / §14.30）。
+      // 分组不是节点，在组里划一刀切的是框里的卡片和连线，不是「从组拉线」。
+      if (_rightDownNodeId == null || _rightDownOnGroup) {
         // 起手点 → 当前点这一段**当场就扫一遍**：只在「下次移动」时才扫，
         // 用户划一下就松手的这一刀会一个东西都切不到。
         final List<Offset> stroke = <Offset>[
@@ -2667,6 +2790,9 @@ class CanvasBoardState extends State<CanvasBoard>
     // 松手是「脱离不脱离」的判决时刻（§14.25）：最后一轮 `_dragTo` 已经
     // 按「中心在不在框内」算过成员了，这里只需把判据缓存丢掉——下一段
     // 操作重新以松手后的框为起点。
+    //
+    // 松手**不认领**（§14.35）：把卡拖到框里松手，它不属于这个分组——进组
+    // 走「选中后 `Alt` 点组内空白」的跳跃移入（§14.24）。
     _dragEscape = false;
     _forgetGroupJudges();
     if (moved || resized) widget.onChanged?.call();
@@ -2793,7 +2919,9 @@ class CanvasBoardState extends State<CanvasBoard>
   void _onSecondaryDown(PointerDownEvent e) {
     _rightDown = true;
     _rightDownAt = e.localPosition;
-    _rightDownNodeId = _nodeAt(_toWorld(e.localPosition))?.id;
+    final CanvasNode? hit = _nodeAt(_toWorld(e.localPosition));
+    _rightDownNodeId = hit?.id;
+    _rightDownOnGroup = hit is GroupNode;
   }
 
   /// 右键松手：三种结果在这里分道（§14.14）。
@@ -2823,6 +2951,7 @@ class CanvasBoardState extends State<CanvasBoard>
     setState(() {
       _rightDown = false;
       _rightDownNodeId = null;
+      _rightDownOnGroup = false;
       _mode = _Interaction.idle;
       _connectFromId = null;
       _connectTo = null;
@@ -2854,7 +2983,15 @@ class CanvasBoardState extends State<CanvasBoard>
         final bool onSource = sources.any(
           (CanvasNode node) => node.rect.contains(pointer),
         );
-        if (!onSource) _connectManyToBlank(sources, pointer);
+        // 压在分组框上也不算「空白处」：分组不参与连线，更不能借这条规则
+        // 在组里掉出一张新卡（§14.32）。
+        final bool onGroup =
+            doc?.nodes.any(
+              (CanvasNode node) =>
+                  node is GroupNode && node.rect.contains(pointer),
+            ) ??
+            false;
+        if (!onSource && !onGroup) _connectManyToBlank(sources, pointer);
       }
       return;
     }
@@ -2868,11 +3005,18 @@ class CanvasBoardState extends State<CanvasBoard>
     // 一张是单连，多张就是多连一（§14.18）。
     //
     // 点的是**选中集里**的卡 → 还是菜单：否则多选之后再也弹不出菜单了。
+    // 选中集里的分组不参与连线（§14.32）：先选中分组、再右键一张卡片，
+    // 不该变成「从分组连过去」——那种情况下这里就是空的，往下走菜单。
     final List<CanvasNode> selectedNodes = <CanvasNode>[
       for (final String id in _selected)
-        if (doc?.nodeById(id) != null) doc!.nodeById(id)!,
+        if (doc?.nodeById(id) case final CanvasNode node when node is! GroupNode)
+          node,
     ];
-    if (selectedNodes.isNotEmpty && !_selected.contains(node.id)) {
+    // 分组不是节点：右键落在分组框上永远只弹它自己的菜单，不会变成
+    // 「把选中的卡片连到分组」（§14.30）。
+    if (node is! GroupNode &&
+        selectedNodes.isNotEmpty &&
+        !_selected.contains(node.id)) {
       _connectMany(selectedNodes, node);
       return;
     }
@@ -2896,11 +3040,13 @@ class CanvasBoardState extends State<CanvasBoard>
     final CanvasDocument? doc = _doc;
     if (doc == null || draggedId == null) return const <CanvasNode>[];
     final CanvasNode? dragged = doc.nodeById(draggedId);
-    if (dragged == null) return const <CanvasNode>[];
+    if (dragged == null || dragged is GroupNode) return const <CanvasNode>[];
     if (!_selected.contains(draggedId)) return <CanvasNode>[dragged];
+    // 分组不是节点：多选里混着分组时它不参与拉线（§14.30）。
     return <CanvasNode>[
       for (final String id in _selected)
-        if (doc.nodeById(id) != null) doc.nodeById(id)!,
+        if (doc.nodeById(id) case final CanvasNode node when node is! GroupNode)
+          node,
     ];
   }
 
@@ -2936,6 +3082,12 @@ class CanvasBoardState extends State<CanvasBoard>
     }
     final Set<String> nodes = <String>{};
     for (final CanvasNode node in doc.nodes) {
+      // 分组不是节点，但**可以被刀砍掉**（§14.32）：只有刀**穿过框边**才算
+      // 砍到它——整刀都在框里，说明用户在组里划卡片，框不该跟着没。
+      if (node is GroupNode) {
+        if (_strokeCrossesBorder(stroke, node.rect)) nodes.add(node.id);
+        continue;
+      }
       for (int i = 0; i + 1 < stroke.length; i++) {
         if (segmentHitsRect(stroke[i], stroke[i + 1], node.rect)) {
           nodes.add(node.id);
@@ -2958,6 +3110,38 @@ class CanvasBoardState extends State<CanvasBoard>
       }
     }
     return (nodes: nodes, edges: edges);
+  }
+
+  /// 这条刀锋有没有**穿过** [rect] 的边框：里外都有点，或者某一段横穿过去。
+  ///
+  /// 和 `segmentHitsRect` 的区别就在这：「整刀都在框里」不算穿边。分组的框
+  /// 很大，用「碰到矩形」判会把「在组里划卡片」变成「删掉整个组」。
+  bool _strokeCrossesBorder(List<Offset> stroke, Rect rect) {
+    bool inside = false;
+    bool outside = false;
+    for (final Offset point in stroke) {
+      if (rect.contains(point)) {
+        inside = true;
+      } else {
+        outside = true;
+      }
+      if (inside && outside) return true;
+    }
+    if (!outside) return false;
+    // 全在外面：可能一步就跨过去了（两点都在框外，中间穿过了框）。
+    final Offset tl = rect.topLeft;
+    final Offset tr = rect.topRight;
+    final Offset br = rect.bottomRight;
+    final Offset bl = rect.bottomLeft;
+    for (int i = 0; i + 1 < stroke.length; i++) {
+      if (segmentsCross(stroke[i], stroke[i + 1], tl, tr) ||
+          segmentsCross(stroke[i], stroke[i + 1], tr, br) ||
+          segmentsCross(stroke[i], stroke[i + 1], br, bl) ||
+          segmentsCross(stroke[i], stroke[i + 1], bl, tl)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /// 松手：把这一刀切到的东西一起砍掉（§14.19）。
@@ -3011,7 +3195,10 @@ class CanvasBoardState extends State<CanvasBoard>
   void _updateConnectPreview(Offset screen) {
     final Offset world = _toWorld(screen);
     final CanvasNode? target = _nodeAt(world);
-    final String? targetId = (target == null || target.id == _connectFromId)
+    // 分组不参与连线：它不能成为目标（§14.32）。指针压在框上就当没目标，
+    // 预览线收到指针处。
+    final String? targetId =
+        (target == null || target is GroupNode || target.id == _connectFromId)
         ? null
         : target.id;
     setState(() {
@@ -3064,9 +3251,18 @@ class CanvasBoardState extends State<CanvasBoard>
   }) {
     final CanvasDocument? doc = _doc;
     if (doc == null || _readOnly || sources.isEmpty) return;
+    // 分组不参与连线（§14.32）：这里是最后一道闸，任何调用路径都过不去。
+    // **两头都要拦**——只拦目标是不够的：先选中一个分组、再右键一张卡片，
+    // 走的正是「选中集 → 目标」这条路，源头里那个分组照样会连出去。
+    if (target is GroupNode) return;
+    final List<CanvasNode> from = <CanvasNode>[
+      for (final CanvasNode source in sources)
+        if (source is! GroupNode) source,
+    ];
+    if (from.isEmpty) return;
     final List<CanvasEdge> made = <CanvasEdge>[];
     final List<String> existing = <String>[];
-    for (final CanvasNode source in sources) {
+    for (final CanvasNode source in from) {
       if (source.id == target.id) continue;
       CanvasEdge? same;
       for (final CanvasEdge edge in doc.edges) {
@@ -3453,6 +3649,7 @@ class CanvasBoardState extends State<CanvasBoard>
           _mode = _Interaction.idle;
           _rightDown = false;
           _rightDownNodeId = null;
+          _rightDownOnGroup = false;
           _connectFromId = null;
           _connectTo = null;
           _connectTargetId = null;
