@@ -871,7 +871,7 @@ class CanvasBoardState extends State<CanvasBoard>
   /// 先按 [canvasMinSize] 摆一个方块，再走 [_fitTextNode]——空文字就贴成
   /// 「刚好装下 `•••` 的宽 × 一行正文的高」。**这里不写任何尺寸常量**：
   /// 空卡片一旦有了自己的尺寸，就一定会和它显示的那三个点对不上。
-  void createCard({Offset? at}) {
+  void createCard({Offset? at, GroupNode? group}) {
     final CanvasDocument? doc = _doc;
     if (doc == null) return;
     final Offset center = at ?? _camera.center;
@@ -881,6 +881,7 @@ class CanvasBoardState extends State<CanvasBoard>
       y: center.dy - canvasMinSize / 2,
       width: canvasMinSize,
       height: canvasMinSize,
+      groupId: group?.id,
     );
     // 贴合之后再落盘：`_mutate` 记的是这一刻的快照。
     _fitTextNode(node);
@@ -889,6 +890,9 @@ class CanvasBoardState extends State<CanvasBoard>
       _selected
         ..clear()
         ..add(node.id);
+      // 双击组内空白建出来的卡天然属于这个框（§16.32）：新卡和框的
+      // 撑开在同一次 `_mutate` 里，撤销一下两者一起回去。
+      if (group != null) _refitGroups();
     });
     _beginEdit(node);
   }
@@ -2558,7 +2562,8 @@ class CanvasBoardState extends State<CanvasBoard>
             if (_inGroupTitle(group, e.localPosition)) {
               _beginEdit(group);
             } else if (!_inGroupFrame(group, e.localPosition)) {
-              createCard(at: world);
+              // 卡建在鼠标处，并直接归这个框（§16.32）。
+              createCard(at: world, group: group);
             }
           default:
             _beginEdit(node);
@@ -3567,7 +3572,7 @@ class CanvasBoardState extends State<CanvasBoard>
 
   /// 右键卡片：换色 + 删除；文件卡片多两项（展开 / 收起、打开笔记）。
   ///
-  /// 选中集里有**两张以上**卡片时，最上面多一项「打包成框」（§14.24，
+  /// 选中集里**至少一张**卡片时，最上面多一项「打包成框」（§14.24，
   /// 和 `Ctrl+G` 同一个动作）——「框」在这里就是分组，名字跟着 graphif 走。
   Future<void> _showCardMenu(Offset global, CanvasNode node) async {
     final CanvasDocument? doc = _doc;
@@ -3578,7 +3583,7 @@ class CanvasBoardState extends State<CanvasBoard>
               if (doc.nodeById(id) != null) id,
           ].length;
     final String? picked = await _popup(global, <PopupMenuEntry<String>>[
-      if (selectedNodeCount >= 2)
+      if (selectedNodeCount >= 1)
         const PopupMenuItem<String>(
           value: 'frame',
           height: 34,

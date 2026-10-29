@@ -1645,6 +1645,37 @@ void main() {
       expect(h.state.debugSelection, <String>{doc.nodes.first.id});
     });
 
+    testWidgets('只选中一张卡右键：菜单里也有「打包成框」', (
+      WidgetTester tester,
+    ) async {
+      final CanvasDocument doc = docWith(<CanvasNode>[cardAtOrigin(id: 'a')]);
+      final Harness h = await pumpBoard(tester, document: doc);
+      await tapCard(tester, h, doc.nodeById('a')!);
+      expect(h.state.debugSelection, <String>{'a'});
+
+      final TestGesture g = await tester.startGesture(
+        h.centerOf(doc.nodeById('a')!),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await g.up();
+      await tester.pumpAndSettle();
+      expect(find.text('打包成框'), findsOneWidget);
+
+      await tester.tap(find.text('打包成框'));
+      await tester.pumpAndSettle();
+
+      expect(doc.nodes, hasLength(2), reason: '单张也打包成框');
+      final CanvasNode group = doc.nodes.first;
+      expect(group, isA<GroupNode>());
+      expect(doc.nodeById('a')!.groupId, group.id);
+      expect(h.state.debugSelection, <String>{group.id});
+
+      h.state.undo();
+      await tester.pump();
+      expect(doc.nodes, hasLength(1), reason: '打包是一步撤销');
+    });
+
     testWidgets('打包一棵子树：里面的卡留在原来的组，不拆层', (
       WidgetTester tester,
     ) async {
@@ -1727,7 +1758,9 @@ void main() {
       expect(doc.nodeById('stray')!.x, closeTo(300, 1), reason: '不是成员，不跟着走');
     });
 
-    testWidgets('双击组内空白：建出卡片，但它不归这个组', (WidgetTester tester) async {
+    testWidgets('双击组内空白：新卡直接归这个组，撑开与建卡一步撤销', (
+      WidgetTester tester,
+    ) async {
       final GroupNode g = GroupNode(
         id: 'g',
         x: 0,
@@ -1738,8 +1771,8 @@ void main() {
       );
       final double title = canvasGroupTitleHeight(1);
       final CanvasDocument doc = CanvasDocument(
-        // 两张小卡守住框的左上和右下，框因此正好是 (0,0,400,300)，中间
-        // 留出一块空白，双击能落在组里、又不会压到任何卡片。
+        // 三张小卡把框钉成正好 (0,0,400,300)：左上、左下、右上。右下留出
+        // 一块空白，双击能落在组里、又不会压到任何卡片；新卡会把框撑宽。
         nodes: <CanvasNode>[
           g,
           TextNode(
@@ -1753,28 +1786,45 @@ void main() {
           ),
           TextNode(
             id: 'm2',
-            x: 236,
+            x: canvasGroupPadding,
             y: 206,
             width: 150,
             height: 80,
             text: '乙',
             groupId: 'g',
           ),
+          TextNode(
+            id: 'm3',
+            x: 336,
+            y: canvasGroupPadding + title,
+            width: 50,
+            height: 80,
+            text: '丙',
+            groupId: 'g',
+          ),
         ],
         edges: <CanvasEdge>[],
       );
       final Harness h = await pumpBoard(tester, document: doc);
+      final Rect before = g.rect;
 
-      // 组内空白（避开标题条、边缘和两张卡）。
-      await doubleTapAt(tester, h.screenOf(const Offset(200, 150)));
+      // 组内空白（避开标题条、边框带），靠右：新卡会把框撑宽。
+      await doubleTapAt(tester, h.screenOf(const Offset(370, 200)));
 
-      expect(doc.nodes, hasLength(4), reason: '组里建出一张卡');
+      expect(doc.nodes, hasLength(5), reason: '组里建出一张卡');
       final TextNode card = doc.nodes.last as TextNode;
-      expect(card.rect.center.dx, closeTo(200, 0.5));
-      expect(card.rect.center.dy, closeTo(150, 0.5));
-      expect(card.groupId, isNull, reason: '落在框里 ≠ 归这个组（显式才归组）');
+      expect(card.rect.center.dx, closeTo(370, 0.5));
+      expect(card.rect.center.dy, closeTo(200, 0.5));
+      expect(card.groupId, 'g', reason: '双击组内空白：新卡属于这个框');
+      expect(g.rect.contains(card.rect.topLeft), isTrue);
+      expect(g.rect.contains(card.rect.bottomRight), isTrue);
+      expect(g.rect.right, greaterThan(before.right), reason: '框在同一步里撑开');
       expect((doc.nodes.first as GroupNode).label, '框', reason: '没进改名');
-      await tester.pump(const Duration(milliseconds: 400));
+
+      h.state.undo();
+      await tester.pump();
+      expect(doc.nodes, hasLength(4), reason: '建卡 + 撑开是一步撤销');
+      expect(doc.nodeById('g')!.rect, before, reason: '框回到原来的大小');
     });
 
     testWidgets('Alt+点组：选中的卡跳进去，组撑到装下它们，一步撤销', (
