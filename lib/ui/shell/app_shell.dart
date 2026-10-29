@@ -864,11 +864,6 @@ class _AppShellState extends State<AppShell> {
               _openTemplatePicker,
           const SingleActivator(LogicalKeyboardKey.comma, control: true): () =>
               showSettingsDialog(context),
-          // 图谱与正文共用主区，所以是「换一屏」的快捷键，不是「开窗口」。
-          const SingleActivator(LogicalKeyboardKey.keyG, control: true): () =>
-              _selectMainView(
-                _mainView == MainView.graph ? MainView.note : MainView.graph,
-              ),
           const SingleActivator(
             LogicalKeyboardKey.keyB,
             control: true,

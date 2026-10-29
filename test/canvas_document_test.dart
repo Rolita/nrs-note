@@ -592,4 +592,77 @@ void main() {
       ]);
     });
   });
+
+  group('分组归属（显式 groupId）', () {
+    test('groupId 写进文件、读得回来', () {
+      final CanvasDocument doc = parse('''
+{"nodes":[{"id":"g","type":"group","x":0,"y":0,"width":300,"height":200},
+{"id":"a","type":"text","x":20,"y":20,"width":250,"height":120,"groupId":"g"}]}
+''');
+      expect(doc.nodeById('a')!.groupId, 'g');
+
+      final Map<String, Object?> wire = decode(encodeCanvas(doc));
+      final List<Object?> nodes = wire['nodes']! as List<Object?>;
+      expect((nodes[1]! as Map<String, Object?>)['groupId'], 'g');
+      // 顶层节点不该多出这一行。
+      expect((nodes[0]! as Map<String, Object?>).containsKey('groupId'), isFalse);
+    });
+
+    test('旧文件没有 groupId：载入时按几何一次性迁移', () {
+      // 小框（内层）包住 a；大框包住小框和 b；far 在框外。
+      final CanvasDocument doc = parse('''
+{"nodes":[
+ {"id":"outer","type":"group","x":0,"y":0,"width":800,"height":500},
+ {"id":"inner","type":"group","x":40,"y":60,"width":300,"height":200},
+ {"id":"a","type":"text","x":60,"y":90,"width":250,"height":120},
+ {"id":"b","type":"text","x":500,"y":100,"width":250,"height":120},
+ {"id":"far","type":"text","x":900,"y":600,"width":250,"height":120}
+]}
+''');
+      expect(doc.nodeById('a')!.groupId, 'inner', reason: '中心在内层框里');
+      expect(doc.nodeById('inner')!.groupId, 'outer', reason: '子分组按左上角算');
+      expect(doc.nodeById('outer')!.groupId, isNull);
+      expect(doc.nodeById('b')!.groupId, 'outer');
+      expect(doc.nodeById('far')!.groupId, isNull, reason: '框外的不认领');
+    });
+
+    test('新文件已经有 groupId：不再按几何猜', () {
+      // b 落进框里，但文件里已有另一个节点带 groupId = 新格式，所以不再
+      // 按几何迁移：b 保持「不属于任何组」。
+      final CanvasDocument fresh = parse('''
+{"nodes":[{"id":"g","type":"group","x":0,"y":0,"width":400,"height":300},
+{"id":"a","type":"text","x":50,"y":50,"width":100,"height":100,"groupId":"g"},
+{"id":"b","type":"text","x":50,"y":150,"width":100,"height":100}]}
+''');
+      expect(fresh.nodeById('b')!.groupId, isNull, reason: '落进框里也不再认领');
+    });
+
+    test('childrenOf / groupDepthOf / descendantsOf', () {
+      final CanvasDocument doc = parse('''
+{"nodes":[
+ {"id":"outer","type":"group","x":0,"y":0,"width":800,"height":500},
+ {"id":"inner","type":"group","x":40,"y":60,"width":300,"height":200,"groupId":"outer"},
+ {"id":"a","type":"text","x":60,"y":90,"width":250,"height":120,"groupId":"inner"},
+ {"id":"b","type":"text","x":500,"y":100,"width":250,"height":120,"groupId":"outer"}
+]}
+''');
+      expect(doc.childrenOf('outer').map((CanvasNode n) => n.id), <String>[
+        'inner',
+        'b',
+      ]);
+      expect(doc.groupDepthOf(doc.nodeById('a')!), 2);
+      expect(doc.groupDepthOf(doc.nodeById('outer')!), 0);
+      expect(doc.descendantsOf('outer'), <String>{'outer', 'inner', 'a', 'b'});
+    });
+
+    test('坏文件里成环的 groupId 也能安全算深度', () {
+      final CanvasDocument doc = parse('''
+{"nodes":[
+ {"id":"g1","type":"group","x":0,"y":0,"width":100,"height":100,"groupId":"g2"},
+ {"id":"g2","type":"group","x":0,"y":0,"width":100,"height":100,"groupId":"g1"}
+]}
+''');
+      expect(doc.groupDepthOf(doc.nodeById('g1')!), lessThanOrEqualTo(2));
+    });
+  });
 }

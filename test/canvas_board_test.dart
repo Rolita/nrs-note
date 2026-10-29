@@ -26,6 +26,7 @@ TextNode textNode(
   double height = 120,
   String text = '卡片',
   String? color,
+  String? groupId,
 }) => TextNode(
   id: id,
   x: x,
@@ -34,6 +35,7 @@ TextNode textNode(
   height: height,
   text: text,
   color: color,
+  groupId: groupId,
 );
 
 CanvasDocument docWith(List<CanvasNode> nodes) =>
@@ -227,11 +229,46 @@ Future<void> settleImageDecode(WidgetTester tester) async {
 }
 
 /// 一张左上角在原点的卡片。
-TextNode cardAtOrigin({String id = 'a'}) => textNode(id, x: 0, y: 0);
+TextNode cardAtOrigin({String id = 'a', String? groupId}) =>
+    textNode(id, x: 0, y: 0, groupId: groupId);
+
+/// 一个**刚好填满** [group] 的成员。
+///
+/// 让框按它重贴出来的结果和 [group] 现在的矩形一模一样——手工搭「已经贴合
+/// 好」的分组时用它，测试就不用先跑一轮贴合。注意它会占满整个框，想点框里
+/// 的空白得点标题条或内边距那一圈。
+TextNode groupMember(GroupNode group, {String id = 'm'}) {
+  final double title = canvasGroupTitleHeight(group.scale);
+  return TextNode(
+    id: id,
+    x: group.x + canvasGroupPadding,
+    y: group.y + canvasGroupPadding + title,
+    width: group.width - canvasGroupPadding * 2,
+    height: group.height - canvasGroupPadding * 2 - title,
+    text: '成员',
+    groupId: group.id,
+  );
+}
 
 /// 点一下卡片，然后把双击窗口走完（不留挂起的计时器）。
 Future<void> tapCard(WidgetTester tester, Harness h, CanvasNode node) async {
   await tester.tapAt(h.centerOf(node));
+  await tester.pump(const Duration(milliseconds: 400));
+}
+
+/// 从屏幕点 [from] 按住鼠标拖 [by]（屏幕像素），松手后落定。
+Future<void> dragBy(
+  WidgetTester tester,
+  Offset from,
+  Offset by,
+) async {
+  final TestGesture g = await tester.startGesture(
+    from,
+    kind: PointerDeviceKind.mouse,
+  );
+  await g.moveBy(by);
+  await tester.pump();
+  await g.up();
   await tester.pump(const Duration(milliseconds: 400));
 }
 
@@ -1377,20 +1414,6 @@ void main() {
   });
 
   group('分组', () {
-    testWidgets('新建的分组压在最底下', (WidgetTester tester) async {
-      final Harness h = await pumpBoard(
-        tester,
-        document: docWith(<CanvasNode>[cardAtOrigin()]),
-      );
-
-      unawaited(h.state.createGroupCard());
-      await tester.pumpAndSettle();
-
-      expect(h.nodes.length, 2);
-      expect(h.nodes.first, isA<GroupNode>(), reason: '分组是底板，排在最前面');
-      expect(h.nodes.last.id, 'a');
-    });
-
     testWidgets('拖分组把它框住的卡片一起带走', (WidgetTester tester) async {
       final CanvasDocument doc = CanvasDocument(
         nodes: <CanvasNode>[
@@ -1402,7 +1425,7 @@ void main() {
             height: 300,
             label: '一组',
           ),
-          cardAtOrigin(id: 'inside'),
+          cardAtOrigin(id: 'inside', groupId: 'g'),
           textNode('outside', x: 600, y: 0),
         ],
         edges: <CanvasEdge>[],
@@ -1423,17 +1446,28 @@ void main() {
       await g.up();
       await tester.pump();
 
-      expect(group.x, closeTo(-20, 1e-6));
       expect(inside.x, closeTo(20, 1e-6), reason: '框里的卡片跟着走');
       expect(outside.x, 600, reason: '框外的卡片不动');
+      expect(
+        group.x,
+        closeTo(inside.x - canvasGroupPadding, 1e-6),
+        reason: '框贴合到卡片',
+      );
     });
 
     testWidgets('嵌套分组一起被带走', (WidgetTester tester) async {
       final CanvasDocument doc = CanvasDocument(
         nodes: <CanvasNode>[
           GroupNode(id: 'outer', x: -100, y: -100, width: 800, height: 600),
-          GroupNode(id: 'inner', x: -40, y: -40, width: 400, height: 300),
-          cardAtOrigin(id: 'card'),
+          GroupNode(
+            id: 'inner',
+            x: -40,
+            y: -40,
+            width: 400,
+            height: 300,
+            groupId: 'outer',
+          ),
+          cardAtOrigin(id: 'card', groupId: 'inner'),
         ],
         edges: <CanvasEdge>[],
       );
@@ -1452,16 +1486,30 @@ void main() {
       await g.up();
       await tester.pump();
 
-      expect(outer.x, closeTo(-90, 1e-6));
-      expect(inner.x, closeTo(-30, 1e-6));
-      expect(card.x, closeTo(10, 1e-6));
+      expect(card.x, closeTo(10, 1e-6), reason: '卡片跟着指针走');
+      expect(
+        inner.x,
+        closeTo(card.x - canvasGroupPadding, 1e-6),
+        reason: '内层贴合到卡片',
+      );
+      expect(
+        outer.x,
+        closeTo(inner.x - canvasGroupPadding, 1e-6),
+        reason: '外层再包住内层',
+      );
     });
 
     testWidgets('双击分组标题条改标签', (WidgetTester tester) async {
+      final GroupNode g = GroupNode(
+        id: 'g',
+        x: 0,
+        y: 0,
+        width: 400,
+        height: 300,
+        label: '旧名字',
+      );
       final CanvasDocument doc = CanvasDocument(
-        nodes: <CanvasNode>[
-          GroupNode(id: 'g', x: 0, y: 0, width: 400, height: 300, label: '旧名字'),
-        ],
+        nodes: <CanvasNode>[g, groupMember(g)],
         edges: <CanvasEdge>[],
       );
       final Harness h = await pumpBoard(tester, document: doc);
@@ -1578,30 +1626,172 @@ void main() {
       expect(h.state.debugSelection, <String>{doc.nodes.first.id});
     });
 
-    testWidgets('双击组内空白：在组里建卡，组名不动', (WidgetTester tester) async {
+    testWidgets('打包一棵子树：里面的卡留在原来的组，不拆层', (
+      WidgetTester tester,
+    ) async {
+      final GroupNode g = GroupNode(
+        id: 'g',
+        x: -40,
+        y: -40,
+        width: 400,
+        height: 300,
+        label: '内层',
+      );
+      final CanvasDocument doc = docWith(<CanvasNode>[
+        g,
+        cardAtOrigin(id: 'a', groupId: 'g'),
+      ]);
+      final Harness h = await pumpBoard(tester, document: doc);
+
+      // 先把键盘焦点交给白板（点一下组框标题条），再全选。
+      await tester.tapAt(h.screenOf(g.rect.topLeft + const Offset(90, 5)));
+      await tester.pump(const Duration(milliseconds: 400));
+      h.state.selectAll();
+      await tester.pump();
+      expect(h.state.debugSelection, <String>{'g', 'a'}, reason: '全选');
+      await pressCtrl(tester, LogicalKeyboardKey.keyG);
+
+      final String outerId = doc.nodes.first.id;
+      expect(doc.nodes, hasLength(3), reason: '新组 + 老组 + 卡');
+      expect(doc.nodeById('g')!.groupId, outerId, reason: '老组挂到新组下');
+      expect(doc.nodeById('a')!.groupId, 'g', reason: '卡还在老组里，没被平铺');
+    });
+
+    testWidgets('空组自动删除：删掉最后一个成员，框跟着消失', (
+      WidgetTester tester,
+    ) async {
+      final GroupNode g = GroupNode(
+        id: 'g',
+        x: -40,
+        y: -40,
+        width: 400,
+        height: 300,
+        label: '框',
+      );
+      final CanvasDocument doc = docWith(<CanvasNode>[
+        g,
+        cardAtOrigin(id: 'a', groupId: 'g'),
+      ]);
+      final Harness h = await pumpBoard(tester, document: doc);
+
+      await tapCard(tester, h, doc.nodeById('a')!);
+      await tester.sendKeyEvent(LogicalKeyboardKey.delete);
+      await tester.pumpAndSettle();
+
+      expect(doc.nodes, isEmpty, reason: '成员没了，空组不留');
+    });
+
+    testWidgets('拖分组不带走框里不属于它的卡', (WidgetTester tester) async {
+      final GroupNode g = GroupNode(
+        id: 'g',
+        x: -40,
+        y: -40,
+        width: 400,
+        height: 300,
+        label: '框',
+      );
+      final CanvasDocument doc = docWith(<CanvasNode>[
+        g,
+        cardAtOrigin(id: 'a', groupId: 'g'),
+        // 几何上在框里，但文件里明说它不属于这个组。
+        TextNode(id: 'stray', x: 300, y: 0, width: 50, height: 50, text: '野卡'),
+      ]);
+      final Harness h = await pumpBoard(tester, document: doc);
+
+      await dragBy(
+        tester,
+        h.screenOf(const Offset(-30, -30)),
+        Offset(200 * h.zoom, 0),
+      );
+
+      expect(doc.nodeById('a')!.x, closeTo(200, 1), reason: '成员跟着组走');
+      expect(doc.nodeById('stray')!.x, closeTo(300, 1), reason: '不是成员，不跟着走');
+    });
+
+    testWidgets('双击组内空白：建出卡片，但它不归这个组', (WidgetTester tester) async {
+      final GroupNode g = GroupNode(
+        id: 'g',
+        x: 0,
+        y: 0,
+        width: 400,
+        height: 300,
+        label: '框',
+      );
+      final double title = canvasGroupTitleHeight(1);
       final CanvasDocument doc = CanvasDocument(
+        // 两张小卡守住框的左上和右下，框因此正好是 (0,0,400,300)，中间
+        // 留出一块空白，双击能落在组里、又不会压到任何卡片。
         nodes: <CanvasNode>[
-          GroupNode(id: 'g', x: 0, y: 0, width: 400, height: 300, label: '框'),
+          g,
+          TextNode(
+            id: 'm1',
+            x: canvasGroupPadding,
+            y: canvasGroupPadding + title,
+            width: 150,
+            height: 80,
+            text: '甲',
+            groupId: 'g',
+          ),
+          TextNode(
+            id: 'm2',
+            x: 236,
+            y: 206,
+            width: 150,
+            height: 80,
+            text: '乙',
+            groupId: 'g',
+          ),
         ],
         edges: <CanvasEdge>[],
       );
       final Harness h = await pumpBoard(tester, document: doc);
 
-      // 组内空白（避开标题条和边缘）。
+      // 组内空白（避开标题条、边缘和两张卡）。
       await doubleTapAt(tester, h.screenOf(const Offset(200, 150)));
 
-      expect(doc.nodes, hasLength(2), reason: '组里建出一张卡');
+      expect(doc.nodes, hasLength(4), reason: '组里建出一张卡');
       final TextNode card = doc.nodes.last as TextNode;
       expect(card.rect.center.dx, closeTo(200, 0.5));
       expect(card.rect.center.dy, closeTo(150, 0.5));
+      expect(card.groupId, isNull, reason: '落在框里 ≠ 归这个组（显式才归组）');
       expect((doc.nodes.first as GroupNode).label, '框', reason: '没进改名');
       await tester.pump(const Duration(milliseconds: 400));
     });
 
-    testWidgets('Alt+点组：选中的卡跳进去，组强行撑开，一步撤销', (WidgetTester tester) async {
+    testWidgets('Alt+点组：选中的卡跳进去，组撑到装下它们，一步撤销', (
+      WidgetTester tester,
+    ) async {
+      final GroupNode g = GroupNode(
+        id: 'g',
+        x: 0,
+        y: 0,
+        width: 400,
+        height: 300,
+        label: '框',
+      );
+      final double title = canvasGroupTitleHeight(1);
       final CanvasDocument doc = CanvasDocument(
         nodes: <CanvasNode>[
-          GroupNode(id: 'g', x: 0, y: 0, width: 400, height: 300, label: '框'),
+          g,
+          // 两张小卡把框撑成 (0,0,400,300)，中间留一块空白给 Alt 点击。
+          TextNode(
+            id: 'm1',
+            x: canvasGroupPadding,
+            y: canvasGroupPadding + title,
+            width: 150,
+            height: 80,
+            text: '甲',
+            groupId: 'g',
+          ),
+          TextNode(
+            id: 'm2',
+            x: 236,
+            y: 206,
+            width: 150,
+            height: 80,
+            text: '乙',
+            groupId: 'g',
+          ),
           textNode('a', x: 600, y: 0),
           textNode('b', x: 600, y: 200),
         ],
@@ -1615,16 +1805,18 @@ void main() {
       expect(h.state.debugSelection, <String>{'a', 'b'});
 
       await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
-      await tester.tapAt(h.centerOf(doc.nodeById('g')!));
+      await tester.tapAt(h.screenOf(const Offset(200, 150)));
       await tester.pump();
       await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
       await tester.pump(const Duration(milliseconds: 400));
 
-      final GroupNode g = doc.nodeById('g') as GroupNode;
+      final GroupNode group = doc.nodeById('g') as GroupNode;
       final CanvasNode a = doc.nodeById('a')!;
       final CanvasNode b = doc.nodeById('b')!;
-      expect(g.rect.contains(a.rect.center), isTrue, reason: 'a 跳进组里');
-      expect(g.rect.contains(b.rect.center), isTrue);
+      expect(a.groupId, 'g', reason: 'a 归这个组了');
+      expect(b.groupId, 'g');
+      expect(group.rect.contains(a.rect.center), isTrue, reason: 'a 在框里');
+      expect(group.rect.contains(b.rect.center), isTrue);
       expect(b.x - a.x, closeTo(0, 1e-6), reason: '相对排布不动');
       expect(b.y - a.y, closeTo(200, 1e-6), reason: '相对排布不动');
 
@@ -1799,28 +1991,6 @@ void main() {
       expect(g.rect.contains(a.rect.center), isTrue, reason: '没拖出去就不算脱离');
       expect(wraps(g.rect, a.rect), isTrue, reason: '框重新包住 a');
       expect(wraps(g.rect, doc.nodeById('b')!.rect), isTrue);
-    });
-
-    testWidgets('手动「新建分组」的框是固定的，不自动包裹', (WidgetTester tester) async {
-      final CanvasDocument doc = CanvasDocument(
-        nodes: <CanvasNode>[
-          GroupNode(id: 'g', x: 0, y: 0, width: 400, height: 300, label: '框'),
-          textNode('a', x: 600, y: 0),
-        ],
-        edges: <CanvasEdge>[],
-      );
-      final Harness h = await pumpBoard(tester, document: doc);
-
-      // 把 a 拖进组中心再拖出来：组框一动不动。
-      await dragNode(tester, h, doc.nodeById('a')!, const Offset(-500, 100));
-      await dragNode(tester, h, doc.nodeById('a')!, const Offset(500, -100));
-
-      final GroupNode g = doc.nodeById('g') as GroupNode;
-      expect(g.x, 0);
-      expect(g.y, 0);
-      expect(g.width, 400);
-      expect(g.height, 300);
-      expect(doc.nodeById('a')!.x, closeTo(600, 1e-6));
     });
 
     testWidgets('拖框外的卡进框里：途中、松手，框都不动（§14.29 / §14.35）', (
@@ -2027,8 +2197,8 @@ void main() {
           label: '小组',
           autoFit: true,
         ),
-        textNode('a', x: 20, y: 60),
-        textNode('b', x: 920, y: 60),
+        textNode('a', x: 20, y: 60, groupId: 'g2'),
+        textNode('b', x: 920, y: 60, groupId: 'g1'),
       ]);
       return (
         doc,
@@ -2093,11 +2263,16 @@ void main() {
       expect(h.state.debugSelection, <String>{'g1'});
       await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
       await tester.pump();
-      await tester.tapAt(h.screenOf(const Offset(300, 250)));
+      // 点大组的标题条空白：贴过之后的大组只包着 a，原来的 (300,250) 已经
+      // 在框外了。
+      await tester.tapAt(
+        h.screenOf(g2.rect.topLeft + const Offset(10, 5)),
+      );
       await tester.pump();
       await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
       await tester.pumpAndSettle();
 
+      expect(g1.groupId, 'g2', reason: '小组归大组了');
       expect(
         g2.rect.contains(g1.rect.center),
         isTrue,
@@ -2139,11 +2314,12 @@ void main() {
           height: 400,
           label: '小组',
           autoFit: true,
+          groupId: 'outer',
         ),
-        textNode('b', x: 20, y: 60),
-        textNode('c', x: 320, y: 60),
+        textNode('b', x: 20, y: 60, groupId: 'inner'),
+        textNode('c', x: 320, y: 60, groupId: 'inner'),
         // 只属于大组、不在小组里。
-        textNode('a', x: 700, y: 60),
+        textNode('a', x: 700, y: 60, groupId: 'outer'),
       ]);
       final Harness h = await pumpBoard(tester, document: doc);
       h.state.zoomOut();
@@ -2171,6 +2347,89 @@ void main() {
       // 框重新贴合之后仍然包着这两张卡（它跟着一起走，不是原地缩回去）。
       expect(wraps(inner.rect, b.rect), isTrue, reason: '框跟着走：${inner.rect}');
       expect(wraps(inner.rect, c.rect), isTrue);
+    });
+
+    testWidgets('Alt 跳跃进内层：外层跟着撑开，不会出现「子组大于父组」', (
+      WidgetTester tester,
+    ) async {
+      final double title = canvasGroupTitleHeight(1);
+      final GroupNode inner = GroupNode(
+        id: 'inner',
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 180,
+      );
+      final GroupNode outer = GroupNode(
+        id: 'outer',
+        x: inner.x - canvasGroupPadding,
+        y: inner.y - canvasGroupPadding - title,
+        width: inner.width + canvasGroupPadding * 2,
+        height: inner.height + canvasGroupPadding * 2 + title,
+      );
+      final CanvasDocument doc = docWith(<CanvasNode>[
+        outer,
+        inner..groupId = 'outer',
+        groupMember(inner, id: 'mi'),
+        textNode('far', x: 800, y: 0),
+      ]);
+      final Harness h = await pumpBoard(tester, document: doc);
+
+      await tapCard(tester, h, doc.nodeById('far')!);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+      await tester.pump();
+      await tester.tapAt(h.screenOf(inner.rect.topLeft + const Offset(90, 5)));
+      await tester.pump();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+      await tester.pumpAndSettle();
+
+      final CanvasNode far = doc.nodeById('far')!;
+      expect(far.groupId, 'inner');
+      expect(wraps(inner.rect, far.rect), isTrue, reason: '内层撑到装下它');
+      expect(wraps(outer.rect, inner.rect), isTrue, reason: '外层必须一起长大');
+    });
+
+    testWidgets('拒绝把祖先塞进自己的后代：绕成环是禁止的', (
+      WidgetTester tester,
+    ) async {
+      final GroupNode inner = GroupNode(
+        id: 'inner',
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 180,
+        groupId: 'outer',
+      );
+      final double title = canvasGroupTitleHeight(1);
+      final GroupNode outer = GroupNode(
+        id: 'outer',
+        x: inner.x - canvasGroupPadding,
+        y: inner.y - canvasGroupPadding - title,
+        width: inner.width + canvasGroupPadding * 2,
+        height: inner.height + canvasGroupPadding * 2 + title,
+      );
+      final CanvasDocument doc = docWith(<CanvasNode>[
+        outer,
+        inner,
+        groupMember(inner, id: 'mi'),
+      ]);
+      final Harness h = await pumpBoard(tester, document: doc);
+
+      // 选中外层（它的标题条在外框顶上，露在内框外面）。
+      await tester.tapAt(h.screenOf(outer.rect.topLeft + const Offset(90, 5)));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(h.state.debugSelection, <String>{'outer'});
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+      await tester.pump();
+      await tester.tapAt(h.screenOf(inner.rect.topLeft + const Offset(90, 5)));
+      await tester.pump();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+      await tester.pumpAndSettle();
+
+      expect(doc.nodeById('outer')!.groupId, isNull, reason: '外层不能当内层的孩子');
+      expect(doc.nodeById('inner')!.groupId, 'outer', reason: '层次没被改坏');
+      expect(doc.nodes, hasLength(3));
     });
   });
 
@@ -2228,12 +2487,13 @@ void main() {
           height: 400,
           label: '小组',
           autoFit: true,
+          groupId: 'outer',
         ),
-        textNode('b', x: 20, y: 60),
-        textNode('a', x: 700, y: 60),
+        textNode('b', x: 20, y: 60, groupId: 'inner'),
+        textNode('a', x: 700, y: 60, groupId: 'outer'),
         // 只属于大组的第二张：大组因此一直够宽，卡从小组 Alt 拖出来之后
         // 还能落在大组里。
-        textNode('d', x: 700, y: 300),
+        textNode('d', x: 700, y: 300, groupId: 'outer'),
       ]);
       return (
         doc,
@@ -2278,7 +2538,10 @@ void main() {
       expect(h.state.debugSelection, <String>{'a'});
       await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
       await tester.pump();
-      await tester.tapAt(h.screenOf(const Offset(300, 200)));
+      // 点小组的标题条空白：组是紧贴成员贴的，框内大半被卡片占着。
+      await tester.tapAt(
+        h.screenOf(inner.rect.topLeft + const Offset(10, 5)),
+      );
       await tester.pump();
       await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
       await tester.pumpAndSettle();
@@ -2315,24 +2578,21 @@ void main() {
       expect(wraps(inner.rect, b.rect), isTrue);
     });
 
-    testWidgets('按住 Alt：从小拖出去，落回大组里', (WidgetTester tester) async {
-      final (CanvasDocument doc, GroupNode outer, GroupNode inner) = nested();
+    testWidgets('按住 Alt：从小拖出去，直接脱离所有分组', (WidgetTester tester) async {
+      final (CanvasDocument doc, _, GroupNode inner) = nested();
       final Harness h = await pumpBoard(tester, document: doc);
       final CanvasNode b = doc.nodeById('b')!;
 
       await dragCenterTo(tester, h, b, const Offset(800, 300), alt: true);
 
+      // 归组只认显式操作：拖出去就谁都不属于了，落点是不是在大组的地盘
+      // 里无所谓（§14.35）。
+      expect(doc.nodeById('b')!.groupId, isNull, reason: 'Alt 拖出 = 脱离分组');
       expect(
         inner.rect.contains(b.rect.center),
         isFalse,
-        reason: 'Alt 才出得来',
+        reason: '框缩回去，不追它',
       );
-      expect(
-        outer.rect.contains(b.rect.center),
-        isTrue,
-        reason: '还在大组里，属于大组',
-      );
-      expect(wraps(outer.rect, b.rect), isTrue);
     });
   });
 
@@ -2358,7 +2618,10 @@ void main() {
     ) async {
       final CanvasDocument doc = docWith(<CanvasNode>[
         GroupNode(id: 'g', x: -40, y: -40, width: 400, height: 300, label: '框'),
-        cardAtOrigin(id: 'a'),
+        cardAtOrigin(id: 'a', groupId: 'g'),
+        // 第二张卡留在框里：砍掉唯一成员的话，空组会被自动删掉，「框本身
+        // 不挨刀」就测不出来了。
+        textNode('b', x: 300, y: 0, width: 50, height: 50, groupId: 'g'),
       ]);
       final Harness h = await pumpBoard(tester, document: doc);
 
@@ -2371,20 +2634,60 @@ void main() {
 
       expect(doc.nodeById('a'), isNull, reason: '框里的卡片被砍掉');
       expect(doc.nodeById('g'), isNotNull, reason: '框本身不挨刀');
-      expect(doc.nodes, hasLength(1), reason: '没走「从组拉线出去新建卡片」那条路');
+      expect(doc.nodes, hasLength(2), reason: '没走「从组拉线出去新建卡片」那条路');
       expect(doc.edges, isEmpty);
     });
 
     testWidgets('嵌套分组：点内层选中内层，点外层空白选中外层', (
       WidgetTester tester,
     ) async {
+      final double title = canvasGroupTitleHeight(1);
+      final GroupNode outer = GroupNode(
+        id: 'outer',
+        x: -100,
+        y: -100,
+        width: 800,
+        height: 600,
+      );
+      final GroupNode inner = GroupNode(
+        id: 'inner',
+        x: -40,
+        y: -40,
+        width: 400,
+        height: 300,
+        groupId: 'outer',
+      );
       final CanvasDocument doc = docWith(<CanvasNode>[
-        GroupNode(id: 'outer', x: -100, y: -100, width: 800, height: 600),
-        GroupNode(id: 'inner', x: -40, y: -40, width: 400, height: 300),
+        outer,
+        inner,
+        // 两个小卡守住大组的左上 / 右下角，大组贴出来还是 ( -100,-100,
+        // 800,600 )；中间留给内层，右下角留一块空白。
+        TextNode(
+          id: 'mo1',
+          x: outer.x + canvasGroupPadding,
+          y: outer.y + canvasGroupPadding + title,
+          width: 80,
+          height: 60,
+          text: '外甲',
+          groupId: 'outer',
+        ),
+        TextNode(
+          id: 'mo2',
+          x: outer.rect.right - canvasGroupPadding - 80,
+          y: outer.rect.bottom - canvasGroupPadding - 30,
+          width: 80,
+          height: 30,
+          text: '外乙',
+          groupId: 'outer',
+        ),
+        // 内层被一张卡填满，想点它只能点标题条那一圈。
+        groupMember(inner, id: 'mi'),
       ]);
       final Harness h = await pumpBoard(tester, document: doc);
 
-      await tester.tapAt(h.screenOf(const Offset(150, 100)));
+      await tester.tapAt(
+        h.screenOf(inner.rect.topLeft + const Offset(90, 5)),
+      );
       await tester.pump(const Duration(milliseconds: 400));
       expect(
         h.state.debugSelection,
@@ -2397,21 +2700,29 @@ void main() {
       expect(h.state.debugSelection, <String>{'outer'});
     });
 
-    testWidgets('拖内层分组：内层和它的成员一起走，外框一动不动', (
+    testWidgets('拖内层分组：内层和它的成员一起走，外层跟着包住内层', (
       WidgetTester tester,
     ) async {
       final CanvasDocument doc = docWith(<CanvasNode>[
         GroupNode(id: 'outer', x: -100, y: -100, width: 800, height: 600),
-        GroupNode(id: 'inner', x: -40, y: -40, width: 400, height: 300),
-        cardAtOrigin(id: 'a'),
+        GroupNode(
+          id: 'inner',
+          x: -40,
+          y: -40,
+          width: 400,
+          height: 300,
+          groupId: 'outer',
+        ),
+        cardAtOrigin(id: 'a', groupId: 'inner'),
       ]);
       final Harness h = await pumpBoard(tester, document: doc);
-      final GroupNode outer = doc.nodeById('outer') as GroupNode;
-      final GroupNode inner = doc.nodeById('inner') as GroupNode;
-      final Rect outerBefore = outer.rect;
+      final GroupNode innerAtStart = doc.nodeById('inner') as GroupNode;
 
       final TestGesture g = await tester.startGesture(
-        h.screenOf(const Offset(300, 240)),
+        // 抓内框**左边距**那一条：框内大部分被成员卡占着，抓中间就是拖卡片。
+        h.screenOf(
+          Offset(innerAtStart.rect.left + 4, innerAtStart.rect.center.dy),
+        ),
         kind: PointerDeviceKind.mouse,
       );
       // 屏幕位移要乘 zoom 才是世界位移（板子打开时会自动适应窗口）。
@@ -2420,9 +2731,21 @@ void main() {
       await g.up();
       await tester.pump();
 
-      expect(inner.x, closeTo(60, 1e-6), reason: '内层跟着指针走');
-      expect(doc.nodeById('a')!.x, closeTo(100, 1e-6), reason: '组里的卡片一起走');
-      expect(outer.rect, outerBefore, reason: '外层的框不属于这次拖动');
+      final GroupNode outerNow = doc.nodeById('outer') as GroupNode;
+      final GroupNode innerNow = doc.nodeById('inner') as GroupNode;
+      final CanvasNode a = doc.nodeById('a')!;
+      expect(a.x, closeTo(100, 1e-6), reason: '组里的卡片一起走');
+      expect(
+        innerNow.x,
+        closeTo(a.x - canvasGroupPadding, 1e-6),
+        reason: '内层贴合到卡片',
+      );
+      expect(
+        outerNow.rect.contains(innerNow.rect.topLeft) &&
+            outerNow.rect.contains(innerNow.rect.bottomRight),
+        isTrue,
+        reason: '外层跟着包住内层',
+      );
     });
 
     testWidgets('从卡片右键拖到分组框上松手：不建连线、也不掉出新卡', (
@@ -2452,7 +2775,7 @@ void main() {
     testWidgets('刀穿过组框边：分组被砍掉，框里的卡片留着', (WidgetTester tester) async {
       final CanvasDocument doc = docWith(<CanvasNode>[
         GroupNode(id: 'g', x: -40, y: -40, width: 400, height: 300, label: '框'),
-        cardAtOrigin(id: 'a'),
+        cardAtOrigin(id: 'a', groupId: 'g'),
       ]);
       final Harness h = await pumpBoard(tester, document: doc);
 
@@ -2463,6 +2786,7 @@ void main() {
 
       expect(doc.nodeById('g'), isNull, reason: '分组可以被刀砍掉');
       expect(doc.nodeById('a'), isNotNull, reason: '砍框不连坐框里的卡片');
+      expect(doc.nodeById('a')!.groupId, isNull, reason: '卡从框里解放出来');
     });
 
     testWidgets('先选中分组、再右键卡片：不会从分组连过去', (WidgetTester tester) async {
@@ -2491,19 +2815,27 @@ void main() {
     });
 
     testWidgets('选中分组按 Tab：不生节点、不建边', (WidgetTester tester) async {
-      final CanvasDocument doc = docWith(<CanvasNode>[
-        GroupNode(id: 'g', x: 0, y: 0, width: 400, height: 300, label: '框'),
-      ]);
+      final GroupNode g = GroupNode(
+        id: 'g',
+        x: 0,
+        y: 0,
+        width: 400,
+        height: 300,
+        label: '框',
+      );
+      final CanvasDocument doc = docWith(<CanvasNode>[g, groupMember(g)]);
       final Harness h = await pumpBoard(tester, document: doc);
 
-      await tester.tapAt(h.screenOf(const Offset(200, 150)));
+      await tester.tapAt(
+        h.screenOf(g.rect.topLeft + const Offset(10, 5)),
+      );
       await tester.pump(const Duration(milliseconds: 400));
       expect(h.state.debugSelection, <String>{'g'});
 
       await pressKey(tester, LogicalKeyboardKey.tab);
       await tester.pumpAndSettle();
 
-      expect(doc.nodes, hasLength(1), reason: 'Tab 不该从分组生出节点');
+      expect(doc.nodes, hasLength(2), reason: 'Tab 不该从分组生出节点');
       expect(doc.edges, isEmpty, reason: '更不该从分组拉出边');
     });
 
@@ -2526,8 +2858,17 @@ void main() {
     testWidgets('右键点分组：弹它自己的菜单，不会把选中的卡连到分组上', (
       WidgetTester tester,
     ) async {
+      final GroupNode g = GroupNode(
+        id: 'g',
+        x: 400,
+        y: 0,
+        width: 400,
+        height: 300,
+        label: '框',
+      );
       final CanvasDocument doc = docWith(<CanvasNode>[
-        GroupNode(id: 'g', x: 400, y: 0, width: 400, height: 300, label: '框'),
+        g,
+        groupMember(g),
         cardAtOrigin(id: 'a'),
       ]);
       final Harness h = await pumpBoard(tester, document: doc);
@@ -2536,7 +2877,8 @@ void main() {
       expect(h.state.debugSelection, <String>{'a'});
 
       await tester.tapAt(
-        h.screenOf(const Offset(700, 250)),
+        // 点的分组标题条：框里被成员卡占满了。
+        h.screenOf(g.rect.topLeft + const Offset(20, 5)),
         buttons: kSecondaryMouseButton,
       );
       await tester.pump(const Duration(milliseconds: 400));
@@ -4174,9 +4516,15 @@ void main() {
     });
 
     testWidgets('分组标题是单行，Enter 直接收下', (WidgetTester tester) async {
-      final CanvasDocument doc = docWith(<CanvasNode>[
-        GroupNode(id: 'g', x: 0, y: 0, width: 400, height: 300, label: '分组'),
-      ]);
+      final GroupNode g = GroupNode(
+        id: 'g',
+        x: 0,
+        y: 0,
+        width: 400,
+        height: 300,
+        label: '分组',
+      );
+      final CanvasDocument doc = docWith(<CanvasNode>[g, groupMember(g)]);
       final Harness h = await pumpBoard(tester, document: doc);
       // 双击标题条才是改组名；组内空白双击是建卡（§14.24）。
       await doubleTapGroupTitle(tester, h, 'g');

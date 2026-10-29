@@ -2360,7 +2360,7 @@ void main() {
     expect(find.text('关系图谱'), findsNothing);
     expect(find.text('白板'), findsNothing);
 
-    final Finder graph = find.byTooltip('关系图谱  ·  Ctrl+G');
+    final Finder graph = find.byTooltip('关系图谱');
     final Finder canvas = find.byTooltip('白板  ·  Ctrl+Shift+B');
     expect(graph, findsOneWidget);
     expect(canvas, findsOneWidget);
@@ -2379,7 +2379,7 @@ void main() {
   testWidgets('点功能栏的图谱按钮切到图谱，再点笔记标签切回来', (WidgetTester tester) async {
     await pumpShell(tester);
 
-    await tester.tap(find.byTooltip('关系图谱  ·  Ctrl+G'));
+    await tester.tap(find.byTooltip('关系图谱'));
     await tester.pumpAndSettle();
     expect(find.byType(GraphView), findsOneWidget);
 
@@ -2393,7 +2393,7 @@ void main() {
 
     expect(find.text('关系图谱'), findsNothing, reason: '没打开时没有这一页');
 
-    await tester.tap(find.byTooltip('关系图谱  ·  Ctrl+G'));
+    await tester.tap(find.byTooltip('关系图谱'));
     await tester.pumpAndSettle();
     expect(find.text('关系图谱'), findsOneWidget, reason: '打开图谱时新增这一页');
 
@@ -2428,7 +2428,7 @@ void main() {
 
     expect(find.byType(OutlinePanel), findsOneWidget, reason: '默认大纲是开着的');
 
-    await tester.tap(find.byTooltip('关系图谱  ·  Ctrl+G'));
+    await tester.tap(find.byTooltip('关系图谱'));
     await tester.pumpAndSettle();
 
     expect(find.byType(OutlinePanel), findsNothing, reason: '图谱要整块画布');
@@ -2459,7 +2459,7 @@ void main() {
       ],
     );
 
-    await tester.tap(find.byTooltip('关系图谱  ·  Ctrl+G'));
+    await tester.tap(find.byTooltip('关系图谱'));
     await tester.pumpAndSettle();
     expect(find.byType(GraphView), findsOneWidget);
 

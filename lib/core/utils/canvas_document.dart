@@ -65,6 +65,7 @@ sealed class CanvasNode {
     required this.width,
     required this.height,
     this.color,
+    this.groupId,
     double scale = 1,
     Map<String, Object?> extra = const <String, Object?>{},
   }) : _scale = _validScale(scale) ? scale : 1,
@@ -99,6 +100,15 @@ sealed class CanvasNode {
   /// `'1'`–`'6'` 预设色，或 `'#RRGGBB'` / `'#RRGGBBAA'`；`null` = 默认色。
   String? color;
 
+  /// 所属分组的 id。`null` = 不在任何分组里。
+  ///
+  /// **成员关系是显式的**：只有「打包成框」、`Alt` 点组移入、`Alt` 拖出去
+  /// 这几步会改它。画布不再按几何位置自动认领——一张卡落在框里不等于它归
+  /// 这个组（§14.35）。
+  ///
+  /// 分组自己也可以有 `groupId`（嵌套），所以每个节点都带这个字段。
+  String? groupId;
+
   /// 我们不认识的键。**原样保留**，否则用户在别的工具里设的新字段会被吃掉。
   final Map<String, Object?> extra;
 
@@ -124,6 +134,8 @@ sealed class CanvasNode {
       'width': _wireNumber(width),
       'height': _wireNumber(height),
       if (color != null) 'color': color,
+      // 只在属于某个分组时写。不在组里的卡片不该多一行。
+      if (groupId != null) 'groupId': groupId,
       // 只在调过大小的时候写。默认 1 不写，免得每张卡都多一行。
       if (scale != 1) 'scale': _wireNumber(scale),
     };
@@ -153,6 +165,7 @@ final class TextNode extends CanvasNode {
     required super.height,
     this.text = '',
     super.color,
+    super.groupId,
     super.scale,
     super.extra,
   });
@@ -178,6 +191,7 @@ final class FileNode extends CanvasNode {
     this.subpath,
     this.expanded = false,
     super.color,
+    super.groupId,
     super.scale,
     super.extra,
   });
@@ -214,6 +228,7 @@ final class LinkNode extends CanvasNode {
     required super.height,
     this.url = '',
     super.color,
+    super.groupId,
     super.scale,
     super.extra,
   });
@@ -229,9 +244,10 @@ final class LinkNode extends CanvasNode {
 
 /// 分组：一个框住若干卡片的大矩形，可以带标题。
 ///
-/// 分组和卡片一样只有世界坐标，没有「子节点相对坐标」。谁在分组里由
-/// 几何包含关系决定（见 `canvas_board.dart` 的拖动逻辑），所以嵌套分组
-/// 天然成立，也不会出现「坐标存了两份、改了一处另一处不对」。
+/// 分组和卡片一样只有世界坐标，没有「子节点相对坐标」。谁在分组里由成员的
+/// [`CanvasNode.groupId`] 显式指回来（见 `canvas_board.dart` 的贴合逻辑）：
+/// 一个组的孩子 = `groupId` 等于它的那些节点，分组自己也能有 `groupId`，
+/// 嵌套因此天然成立，也不会出现「坐标存了两份、改了一处另一处不对」。
 final class GroupNode extends CanvasNode {
   GroupNode({
     required super.id,
@@ -240,19 +256,19 @@ final class GroupNode extends CanvasNode {
     required super.width,
     required super.height,
     this.label,
-    this.autoFit = false,
+    this.autoFit = true,
     super.color,
+    super.groupId,
     super.scale,
     super.extra,
   });
 
   String? label;
 
-  /// 「打包成框」的组：框**始终自动包裹**中心落在框内的成员（§14.25）。
+  /// 分组的框**始终自动包裹**它的成员（§14.25）。
   ///
-  /// 成员移到哪组跟到哪，宽高跟着变；只有按住 `Alt` 拖拽才能把成员移出
-  /// 去。手动「新建分组」的框是用户圈的一块固定区域，不参与自动贴合。
-  /// 只在 true 时写进 JSON——老文件没有这个键就是 false，不多一行 diff。
+  /// 成员移到哪组跟到哪，宽高跟着变。白板里只有这一种框，旧文件里的
+  /// `autoFit: false` 读入时也按 true 处理。
   bool autoFit;
 
   @override
@@ -360,6 +376,46 @@ class CanvasDocument {
       if (e.fromNode == nodeId || e.toNode == nodeId) e,
   ];
 
+  /// [groupId] 这个分组的**直接**成员（含子分组）。
+  List<CanvasNode> childrenOf(String groupId) => <CanvasNode>[
+    for (final CanvasNode n in nodes)
+      if (n.groupId == groupId) n,
+  ];
+
+  /// 节点在分组树里的深度：0 = 顶层，1 = 某个组的孩子，依此类推。
+  ///
+  /// 顺着 `groupId` 往上走；遇到断链（父组不在了）或成环就停，保证
+  /// 画布那边永远不会因为一个坏文件转不出来。
+  int groupDepthOf(CanvasNode node) {
+    int depth = 0;
+    final Set<String> seen = <String>{node.id};
+    String? parent = node.groupId;
+    while (parent != null && seen.add(parent)) {
+      final CanvasNode? p = nodeById(parent);
+      if (p is! GroupNode) break;
+      depth++;
+      parent = p.groupId;
+    }
+    return depth;
+  }
+
+  /// [nodeId] 的全部后代 id（子节点、孙节点……），含自己。
+  ///
+  /// 拖一个分组时要把它带走的东西就是「后代减去自己」。成环的文件也能
+  /// 停下来（[seen] 只进不出）。
+  Set<String> descendantsOf(String nodeId) {
+    final Set<String> out = <String>{nodeId};
+    final List<String> queue = <String>[nodeId];
+    while (queue.isNotEmpty) {
+      final String id = queue.removeLast();
+      for (final CanvasNode n in nodes) {
+        if (n.groupId != id) continue;
+        if (out.add(n.id)) queue.add(n.id);
+      }
+    }
+    return out;
+  }
+
   Map<String, Object?> toJson() {
     final Map<String, Object?> out = <String, Object?>{
       'version': canvasFormatVersion,
@@ -385,6 +441,7 @@ const Set<String> _knownNodeKeys = <String>{
   'width',
   'height',
   'color',
+  'groupId',
   'scale',
   'text',
   'file',
@@ -457,6 +514,8 @@ CanvasDocument parseCanvas(String source) {
     }
   }
 
+  _migrateLegacyGroups(nodes);
+
   return CanvasDocument(
     nodes: nodes,
     edges: edges,
@@ -465,6 +524,40 @@ CanvasDocument parseCanvas(String source) {
         if (!_knownTopKeys.contains(e.key)) e.key: e.value,
     },
   );
+}
+
+/// 旧文件迁移：整份文档一个 `groupId` 都没有时，按几何**一次性**推断归属。
+///
+/// 老格式没有成员字段，谁在框里靠中心点算。新规则是「显式才归组」，不迁移
+/// 的话旧板打开后每个组都是空组，会在第一次编辑时被自动删掉——用户的分组
+/// 全没了。所以载入时把几何关系**写死**成 `groupId`，从那以后就只由显式
+/// 操作改。
+///
+/// 推断顺序：面积小的组先认（里层先占住自己的成员），外层的组再认剩下的
+/// 节点。子分组按**左上角**在不在框内算——中心在框里的可能是一个半截搭在
+/// 外面的父组，那不该变成孩子。
+void _migrateLegacyGroups(List<CanvasNode> nodes) {
+  final List<GroupNode> groups = <GroupNode>[
+    for (final CanvasNode n in nodes)
+      if (n is GroupNode) n,
+  ];
+  if (groups.isEmpty) return;
+  // 已经带 groupId = 新格式（或迁移过），不再猜。
+  if (nodes.any((CanvasNode n) => n.groupId != null)) return;
+  groups.sort(
+    (GroupNode a, GroupNode b) =>
+        (a.width * a.height).compareTo(b.width * b.height),
+  );
+  for (final GroupNode group in groups) {
+    final Rect box = group.rect;
+    for (final CanvasNode node in nodes) {
+      if (identical(node, group) || node.groupId != null) continue;
+      final bool inside = node is GroupNode
+          ? box.contains(node.rect.topLeft)
+          : box.contains(node.rect.center);
+      if (inside) node.groupId = group.id;
+    }
+  }
 }
 
 CanvasNode? _nodeOf(Map<String, Object?> json) {
@@ -477,6 +570,7 @@ CanvasNode? _nodeOf(Map<String, Object?> json) {
   final double x = _doubleOf(json['x']);
   final double y = _doubleOf(json['y']);
   final String? color = _colorOf(json['color']);
+  final String? groupId = _textOrNull(json['groupId']);
   final double scale = _scaleOf(json['scale']);
   final Map<String, Object?> extra = <String, Object?>{
     for (final MapEntry<String, Object?> e in json.entries)
@@ -493,6 +587,7 @@ CanvasNode? _nodeOf(Map<String, Object?> json) {
         height: height,
         text: json['text'] is String ? json['text']! as String : '',
         color: color,
+        groupId: groupId,
         scale: scale,
         extra: extra,
       );
@@ -507,6 +602,7 @@ CanvasNode? _nodeOf(Map<String, Object?> json) {
         subpath: _subpathOf(json['subpath']),
         expanded: json['expanded'] == true,
         color: color,
+        groupId: groupId,
         scale: scale,
         extra: extra,
       );
@@ -519,6 +615,7 @@ CanvasNode? _nodeOf(Map<String, Object?> json) {
         height: height,
         url: json['url'] is String ? json['url']! as String : '',
         color: color,
+        groupId: groupId,
         scale: scale,
         extra: extra,
       );
@@ -530,8 +627,9 @@ CanvasNode? _nodeOf(Map<String, Object?> json) {
         width: width,
         height: height,
         label: _textOrNull(json['label']),
-        autoFit: json['autoFit'] == true,
+        autoFit: true,
         color: color,
+        groupId: groupId,
         scale: scale,
         extra: extra,
       );

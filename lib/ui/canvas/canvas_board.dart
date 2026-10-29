@@ -271,24 +271,19 @@ class CanvasBoardState extends State<CanvasBoard>
   Rect _resizeOrigin = Rect.zero;
   bool _dragMoved = false;
 
-  /// 这次拖动**允许**把卡片移出 autoFit 组吗（§14.25）。
+  /// 这次拖动**允许**把卡片移出分组吗（§14.25）。
   ///
   /// 拖动途中一旦按过 `Alt` 就是 true：组框在拖的时候不追，让卡片有机会
-  /// 拖到框外。松手时按「中心还在不在**拖动前**那个框里」判去留——拖出去
-  /// 了才算脱离，只是按一下 Alt、或者在框里挪两下什么也不会发生。
+  /// 拖到框外。松手时按「中心还在不在**按下那一刻**那个框里」判去留——
+  /// 拖出去了才算脱离，只是按一下 Alt、或者在框里挪两下什么也不会发生。
   bool _dragEscape = false;
 
-  /// 按下 Alt 拖动时，各组**拖动前**的框（组 id → 矩形）。
+  /// 按下那一刻各组的位置（组 id → 矩形）。
   ///
   /// 拖动途中框会缩到只包剩下的成员，拿缩过的框判「有没有拖出去」会把
-  /// 框内的小移动也认成逃逸。这里记一份原始尺寸，松手就不再改它。
-  final Map<String, Rect> _dragOriginsGroupBox = <String, Rect>{};
-
-  /// autoFit 组「上一轮贴合**之前**」的框（组 id → 矩形）。
-  ///
-  /// 判成员只能拿贴合前的框：用刚贴出来的框，下一帧就会把移出过边界的卡
-  /// 永久踢出成员集（框只会越收越紧）。任何非贴合的改动（撤销、重建文档）
-  /// 都应该把这个缓存丢掉，见 [_forgetGroupJudges]。
+  /// 框内的小移动也认成逃逸。这里记一份按下时的尺寸，松手就用它判决。
+  /// 任何非拖动的改动（撤销、重建文档）都应该把这个缓存丢掉，
+  /// 见 [_forgetGroupJudges]。
   final Map<String, Rect> _groupJudge = <String, Rect>{};
 
   /// 正在编辑标签的边。
@@ -557,6 +552,7 @@ class CanvasBoardState extends State<CanvasBoard>
       _selected.clear();
       _detailsOpen = false;
       _resetSearch();
+      _forgetGroupJudges();
       _refitAllTextNodes();
       _fitFileNodes();
       // 换过来的这份文档里也可能有「连到分组」的旧边（§14.32）。
@@ -921,8 +917,6 @@ class CanvasBoardState extends State<CanvasBoard>
       _selected
         ..clear()
         ..add(node.id);
-      // 落点在 autoFit 组里就归它，框顺手撑到装下（§14.25）。
-      _refitAutoGroups();
     });
     _beginEdit(node);
   }
@@ -990,7 +984,6 @@ class CanvasBoardState extends State<CanvasBoard>
       _selected
         ..clear()
         ..add(card.id);
-      _refitAutoGroups();
     });
     _beginEdit(card);
     return true;
@@ -1058,22 +1051,6 @@ class CanvasBoardState extends State<CanvasBoard>
     );
   }
 
-  /// 放一个分组框。
-  Future<void> createGroupCard({Offset? at}) async {
-    if (_readOnly) return;
-    _addCard<GroupNode>(
-      GroupNode(
-        id: newCanvasId(),
-        x: 0,
-        y: 0,
-        width: 420,
-        height: 300,
-        label: '分组',
-      ),
-      at: at,
-    );
-  }
-
   /// 把选中的卡**打包成一个组**（`Ctrl+G` / 右键菜单「打包成框」，§14.24）。
   ///
   /// [single] 为 true 时是「单个节点转成框」（`Ctrl+Shift+G`）：恰好选中
@@ -1081,48 +1058,72 @@ class CanvasBoardState extends State<CanvasBoard>
   /// 外扩一圈内边距，顶部再多留一条放标题。新组压到最底层、进选中，
   /// **一步**撤销。
   ///
-  /// 组的成员永远是「几何上被框住的」（没有成员列表），所以打包不需要
-  /// 改任何卡片的任何字段——插一个框进去，事情就完成了。
-  ///
-  /// 打包出来的组带 `autoFit`（§14.25）：成员移到哪框跟到哪，宽高始终
-  /// 包裹成员；只有按住 `Alt` 拖拽才能把成员请出去。
+  /// 打包是**唯一**把卡片写进组里的常规入口：选中的节点 `groupId` 设为新组
+  /// （原本属于别的组就迁移过来）。选中一棵子树时不拆它——祖先也在选区里
+  /// 的节点保持挂在祖先下面，只搬最顶层的那几个。
   bool _groupSelection({required bool single}) {
     final CanvasDocument? doc = _doc;
     if (doc == null || _readOnly) return false;
     final List<CanvasNode> nodes = <CanvasNode>[
       for (final String id in _selected)
-        if (doc.nodeById(id) != null) doc.nodeById(id)!,
+        if (doc.nodeById(id) case final CanvasNode n) n,
     ];
     if (single ? nodes.length != 1 : nodes.length < 2) return false;
+    final String groupId = newCanvasId();
     final Rect box = unionOf(nodes.map((CanvasNode n) => n.rect));
     final GroupNode group = GroupNode(
-      id: newCanvasId(),
+      id: groupId,
       x: box.left - canvasGroupPadding,
       y: box.top - canvasGroupPadding - canvasGroupTitleHeight(1),
       width: box.width + canvasGroupPadding * 2,
       height:
           box.height + canvasGroupPadding * 2 + canvasGroupTitleHeight(1),
       label: '分组',
-      autoFit: true,
     );
     _mutate(() {
+      final Set<String> picked = <String>{
+        for (final CanvasNode n in nodes) n.id,
+      };
+      for (final CanvasNode node in nodes) {
+        if (_hasSelectedAncestor(doc, node, picked)) continue;
+        node.groupId = groupId;
+      }
       doc.nodes.insert(0, group);
       _selected
         ..clear()
         ..add(group.id);
+      _refitGroups();
     });
     return true;
+  }
+
+  /// [node] 的祖先分组里有没有在选区里的。
+  ///
+  /// 打包一棵子树（组 + 里面的卡一起选中）时，里面的卡要**留在原来的组**
+  /// 里，否则它们会被平铺成新组的直接孩子，中间那层组当场被掏空删掉。
+  bool _hasSelectedAncestor(
+    CanvasDocument doc,
+    CanvasNode node,
+    Set<String> selected,
+  ) {
+    final Set<String> seen = <String>{node.id};
+    String? parent = node.groupId;
+    while (parent != null && seen.add(parent)) {
+      if (selected.contains(parent)) return true;
+      parent = doc.nodeById(parent)?.groupId;
+    }
+    return false;
   }
 
   /// Alt + 左键点在组上：**选中的卡跳进这个组**（§14.24 跨层级的跳跃式
   /// 移动）。
   ///
-  /// 整队平移——选中集的包围盒中心挪到组的中心，卡之间的相对排布不动，
-  /// 进去之后自己再挪到合适的位置（图上的第三步）。组框装不下就**强行
-  /// 撑开**：扩到把跳进来的卡都装下。
+  /// 整队平移——选中集的包围盒中心挪到组的中心，卡之间的相对排布不动。
+  /// 归属是**显式**的（`groupId` 改写成这个组），框再按新成员重贴（装不下
+  /// 就撑开）。
   ///
   /// 只认「点在组上」：Alt + 点普通卡不跳，照常走单击选中——组才收孩子。
-  /// 选中集为空、或选中的本来就在这个组里（全部中心都在框内）也不折腾。
+  /// 组不能塞进自己的后代（会成环），这几种情况直接拒绝。
   bool _jumpSelectionIntoGroupAt(Offset world) {
     final CanvasDocument? doc = _doc;
     if (doc == null || _readOnly || _selected.isEmpty) return false;
@@ -1133,123 +1134,84 @@ class CanvasBoardState extends State<CanvasBoard>
         if (doc.nodeById(id) case final CanvasNode n when n.id != hit.id) n,
     ];
     if (moving.isEmpty) return false;
-    final bool allInside = moving.every(
-      (CanvasNode n) => hit.rect.contains(n.rect.center),
-    );
-    if (allInside) return false;
+    // 目标组是某个被移动节点的后代 → 拒绝（否则 A 组挂到 B 下、B 又是 A
+    // 的孩子，`groupId` 绕成一个环，贴合和保存都会死循环）。
+    for (final CanvasNode node in moving) {
+      if (doc.descendantsOf(node.id).contains(hit.id)) return false;
+    }
+    // 已经**直接**在这个组里：什么也不做。
+    if (moving.every((CanvasNode node) => node.groupId == hit.id)) {
+      return false;
+    }
     final Rect box = unionOf(moving.map((CanvasNode n) => n.rect));
     final Offset delta = hit.rect.center - box.center;
     _mutate(() {
-      for (final CanvasNode node in moving) {
-        node.x += delta.dx;
-        node.y += delta.dy;
+      if (delta != Offset.zero) {
+        final Set<String> movingIds = <String>{};
+        for (final CanvasNode node in moving) {
+          movingIds.addAll(doc.descendantsOf(node.id));
+        }
+        for (final CanvasNode node in doc.nodes) {
+          if (!movingIds.contains(node.id)) continue;
+          node.x += delta.dx;
+          node.y += delta.dy;
+        }
       }
-      // 强行撑开：组框扩到把跳进来的卡（连同内边距）都装下。
-      final Rect need = unionOf(
-        moving.map((CanvasNode n) => n.rect),
-      ).inflate(canvasGroupPadding);
-      final Rect merged = need.expandToInclude(hit.rect);
-      hit.x = merged.left;
-      hit.y = merged.top;
-      hit.width = merged.width;
-      hit.height = merged.height;
-      // 卡片换了归属，别的 autoFit 组（可能刚被掏空）重贴一遍。
-      _refitAutoGroups();
+      for (final CanvasNode node in moving) {
+        node.groupId = hit.id;
+      }
+      _refitGroups();
     });
     return true;
   }
 
-  /// 让「打包成框」的组**始终包裹**框内的成员（§14.25）。
-  ///
-  /// 成员 = 中心落在这条组框里的节点。把组框重贴成「成员包围盒 + 内边距
-  /// + 顶部标题条」：成员移到哪组跟到哪，宽高跟着变；成员删了框就缩回去。
-  /// [exclude] 里的节点不算成员——`Alt` 拖拽逃逸时，被拖的卡不能把框拽着
-  /// 跑，不然中心永远在框内、永远逃不出去。
-  ///
-  /// 只处理 `autoFit` 的组（打包 / 转框造出来的）；手动「新建分组」的框是
-  /// 用户圈的固定区域，不参与。框里一个成员都不剩时保持原框（空框不塌）。
-  /// 嵌套时小的先贴（里层贴好，外层再包里层的新框）。
   /// 丢掉判据缓存。撤销 / 重做 / 换文档 / 重新打开时框是从文件里读出来的
-  /// 真值，不能再拿旧缓存去判成员。
+  /// 真值，不能再拿旧缓存去判「Alt 拖出去过没有」。
   void _forgetGroupJudges() {
     _groupJudge.clear();
-    _dragOriginsGroupBox.clear();
   }
 
-  void _refitAutoGroups({bool escape = false}) {
+  /// 让分组框**始终包裹**它的成员（§14.25）。
+  ///
+  /// 成员 = `groupId` 等于这个组的节点（**显式关系**，不再按几何认领）。
+  /// 把组框重贴成「成员包围盒 + 内边距 + 顶部标题条」：成员移到哪组跟到哪，
+  /// 宽高跟着变；成员删了框就缩回去。
+  ///
+  /// [exclude] 里的节点不算成员——`Alt` 拖拽逃逸时，被拖的卡不能把框拽着
+  /// 跑，不然永远逃不出去。[prune] 为 false 时先不删空组（拖动途中框不能
+  /// 突然消失）。
+  ///
+  /// 嵌套时**深的先贴**：里层贴好，外层再包里层的新框，一直贴到稳定。
+  /// 空组（一个成员都不剩）直接从文档里删掉。
+  void _refitGroups({
+    Set<String> exclude = const <String>{},
+    bool prune = true,
+  }) {
     final CanvasDocument? doc = _doc;
     if (doc == null) return;
     final List<GroupNode> groups = <GroupNode>[
       for (final CanvasNode node in doc.nodes)
-        if (node is GroupNode && node.autoFit) node,
-    ]..sort((GroupNode a, GroupNode b) => a.width.compareTo(b.width));
+        if (node is GroupNode) node,
+    ];
+    if (groups.isEmpty) return;
+    groups.sort(
+      (GroupNode a, GroupNode b) =>
+          doc.groupDepthOf(b).compareTo(doc.groupDepthOf(a)),
+    );
+    final Set<String> dead = <String>{};
     for (final GroupNode group in groups) {
-      // ⚠️ 判成员的框**不能是刚贴出来的那个**：贴合每帧都跑，拿贴过的框
-      // 再判成员会一路缩水（框越收越紧，移出过一次的卡永远回不来）。所以
-      // 用 [_groupJudge] 里冻结的「这一段操作开始时的框」。
-      //
-      // 成员 = 中心在**判据框**（这一段拖动刚开始时的组框）里的节点。
-      //
-      // 正在被拖的卡分两种：普通拖动 —— 永远算成员，框必须跟着它走
-      // （不然拖一下就被判成「离开了」，框反而留在原地）；Alt 拖动 ——
-      // 拖到判据框外就不算，框不追它，松手就真的脱离了。
-      final Rect judge = _groupJudge[group.id] ?? group.rect;
-      // 整个框正在被拖：成员跟着一起平移，位置关系一点没变。这时按**原点**
-      // 判成员就够了，`Alt` 也不该解除成员——`Alt` 说的是「把成员拖出框」，
-      // 对「拖着整个框走」没有意义。少了这一条，Alt 拖一个装着卡片的组，
-      // 每帧都会把组里的卡判成「逃出去了」，框当场甩掉全部成员。
-      final bool groupMoving = _dragOrigins.containsKey(group.id);
-      final List<CanvasNode> members = <CanvasNode>[];
-      for (final CanvasNode other in doc.nodes) {
-        if (other.id == group.id) continue;
-        final Offset? origin = _dragOrigins[other.id];
-        if (other is GroupNode) {
-          // **包着这一组的那个框（祖先）不能当成员**，否则嵌套时两个框互相
-          // 把对方当成员、一路套娃长大（§14.33 / §14.34）。
-          //
-          // 判据是「包含关系」而不是比面积：拖动时外框会先收紧到只剩老成员，
-          // 那一刻它可能比里框还小，比面积就会把里框误判成祖先。
-          if (other.rect.contains(group.rect.topLeft) &&
-              other.rect.contains(group.rect.bottomRight)) {
-            continue;
-          }
-          // 没在动的分组：整个框都在里面才算成员，半截搭在外面的不算。
-          // **正在被拖的分组不受这条限制**——拖到一半左上角已经出去了、
-          // 中心还在框里，那时判它「不是成员」就等于不按 Alt 也能拖走。
-          if (origin == null && !judge.contains(other.rect.topLeft)) continue;
-        }
-        if (groupMoving) {
-          final Offset at = origin ?? Offset(other.x, other.y);
-          final bool wasInside = judge.contains(
-            Rect.fromLTWH(at.dx, at.dy, other.width, other.height).center,
-          );
-          if (wasInside) members.add(other);
-          continue;
-        }
-        if (origin == null) {
-          // 没在动的节点：中心在判据框里就是成员。
-          if (judge.contains(other.rect.center)) members.add(other);
-          continue;
-        }
-        // 正在被拖的节点，成员身份只看**按下那一刻**它在哪。
-        //
-        // 以前这里是「被拖的一律算成员」，于是从框外拖一张卡进来，框当场
-        // 把它吞进去、跟着它长（§14.29）——组是独立的，框外的节点跟它没
-        // 关系。普通拖动里，原本在框内的成员拖到哪框都追着它（不然一拖就
-        // 被判成「离开了」，框反而留在原地）；`Alt` 拖出去才算脱离。
-        final bool startedInside = judge.contains(
-          Rect.fromLTWH(origin.dx, origin.dy, other.width, other.height).center,
-        );
-        // 落点是不是在这个组的地盘里（判据框 = 按下那一刻的框）。
-        final bool landedInside = judge.contains(other.rect.center);
-        // 本来就在框外的节点，拖进来**不认领**（§14.35）：进组走「选中后
-        // `Alt` 点组内空白」的跳跃移入（§14.24），不是拖进去就算数。
-        if (!startedInside) continue;
-        // `Alt` = 允许离开：拖到框外就不算成员，框不追它。
-        if (escape && !landedInside) continue;
-        members.add(other);
+      final List<CanvasNode> members = <CanvasNode>[
+        for (final CanvasNode other in doc.nodes)
+          if (other.groupId == group.id &&
+              !dead.contains(other.id) &&
+              !exclude.contains(other.id))
+            other,
+      ];
+      // 不存在空组：没有成员的框直接删。
+      if (members.isEmpty) {
+        dead.add(group.id);
+        continue;
       }
-      if (members.isEmpty) continue;
       final Rect need = unionOf(
         members.map((CanvasNode n) => n.rect),
       ).inflate(canvasGroupPadding);
@@ -1258,6 +1220,8 @@ class CanvasBoardState extends State<CanvasBoard>
       group.width = need.width;
       group.height = need.height + canvasGroupTitleHeight(group.scale);
     }
+    if (dead.isEmpty || !prune) return;
+    doc.nodes.removeWhere((CanvasNode n) => dead.contains(n.id));
   }
 
   // ------------------------------------------------------------------ 拖放
@@ -1316,7 +1280,6 @@ class CanvasBoardState extends State<CanvasBoard>
       _selected
         ..clear()
         ..addAll(made.map((FileNode n) => n.id));
-      _refitAutoGroups();
     });
     return made;
   }
@@ -1410,6 +1373,10 @@ class CanvasBoardState extends State<CanvasBoard>
     final CanvasDocument? doc = _doc;
     if (doc == null || _selected.isEmpty) return;
     _mutate(() {
+      final Set<String> gone = <String>{
+        for (final CanvasNode n in doc.nodes)
+          if (_selected.contains(n.id)) n.id,
+      };
       doc.nodes.removeWhere((CanvasNode n) => _selected.contains(n.id));
       doc.edges.removeWhere(
         (CanvasEdge e) =>
@@ -1417,12 +1384,16 @@ class CanvasBoardState extends State<CanvasBoard>
             _selected.contains(e.toNode) ||
             _selected.contains(e.id),
       );
+      // 删分组 ≠ 删里面的卡：卡留下来，`groupId` 清空变成顶层节点。
+      for (final CanvasNode n in doc.nodes) {
+        if (n.groupId != null && gone.contains(n.groupId)) n.groupId = null;
+      }
       _selected.clear();
       _rangeAnchorId = null;
       _editingId = null;
       _editingFileBody = false;
-      // 成员删了，autoFit 组缩回去包住剩下的（§14.25）。
-      _refitAutoGroups();
+      // 成员删了，分组缩回去包住剩下的；没成员的组直接删掉（§14.25）。
+      _refitGroups();
     });
   }
 
@@ -1594,6 +1565,21 @@ class CanvasBoardState extends State<CanvasBoard>
       node['x'] = ((node['x'] as num?)?.toDouble() ?? 0) + offset;
       node['y'] = ((node['y'] as num?)?.toDouble() ?? 0) + offset;
     }
+    // `groupId` 跟着换 id：复制了一整个组（连同成员）时，成员继续挂在新的
+    // 那个组下。只复制了成员、没复制组，就把归属清掉——粘出来这一批里没有
+    // 那个组，留着一个指向不存在的 id 就是悬空引用。
+    for (final Object? raw in rawNodes) {
+      final Map<String, Object?> node = (raw! as Map<Object?, Object?>)
+          .cast<String, Object?>();
+      final Object? gid = node['groupId'];
+      if (gid is! String) continue;
+      final String? next = remap[gid];
+      if (next == null) {
+        node.remove('groupId');
+      } else {
+        node['groupId'] = next;
+      }
+    }
     final List<Object?> keptEdges = <Object?>[];
     for (final Object? raw in rawEdges) {
       final Map<String, Object?> edge = (raw! as Map<Object?, Object?>)
@@ -1623,7 +1609,10 @@ class CanvasBoardState extends State<CanvasBoard>
       _selected
         ..clear()
         ..addAll(pasted.nodes.map((CanvasNode n) => n.id));
-      _refitAutoGroups();
+      // 复制时可能只带走了组、没带走成员：粘出来的组要是空的，按「不存在
+      // 空组」直接删掉（§14.25）。带成员的那种，成员跟着一起平移，框本来
+      // 就还是贴合的。
+      _refitGroups();
     });
   }
 
@@ -1631,14 +1620,40 @@ class CanvasBoardState extends State<CanvasBoard>
   void nudgeSelection(double dx, double dy) {
     final CanvasDocument? doc = _doc;
     if (doc == null || _selected.isEmpty) return;
+    final bool escape = HardwareKeyboard.instance.isAltPressed;
+    // Alt + 方向键 = 逃逸（和 Alt 拖拽同一个口径，§14.25）。判据用挪动**之前**
+    // 的框——挪完再拿缩过的框判「出没出去」会把框里的小位移也认成逃逸。
+    final Map<String, Rect> boxes = <String, Rect>{
+      if (escape)
+        for (final CanvasNode node in doc.nodes)
+          if (node is GroupNode) node.id: node.rect,
+    };
     _mutate(() {
+      final Set<String> movingIds = <String>{
+        for (final CanvasNode node in doc.nodes)
+          if (_selected.contains(node.id)) node.id,
+      };
+      // 选中的是分组时，里面的成员跟着一起走（整块平移，位置关系不变）。
+      for (final String id in movingIds.toList()) {
+        movingIds.addAll(doc.descendantsOf(id));
+      }
       for (final CanvasNode node in doc.nodes) {
-        if (!_selected.contains(node.id)) continue;
+        if (!movingIds.contains(node.id)) continue;
         node.x += dx;
         node.y += dy;
       }
-      // Alt + 方向键 = 逃逸（和 Alt 拖拽同一个口径，§14.25）。
-      _refitAutoGroups(escape: HardwareKeyboard.instance.isAltPressed);
+      if (escape) {
+        for (final CanvasNode node in doc.nodes) {
+          final String? gid = node.groupId;
+          if (gid == null || !movingIds.contains(node.id)) continue;
+          // 整个组也在挪：成员跟着组刚性平移，不算脱离。
+          if (movingIds.contains(gid)) continue;
+          final Rect? box = boxes[gid];
+          if (box == null || box.contains(node.rect.center)) continue;
+          node.groupId = null;
+        }
+      }
+      _refitGroups();
     });
   }
 
@@ -1689,8 +1704,8 @@ class CanvasBoardState extends State<CanvasBoard>
         node.width = w;
         node.height = h;
       }
-      // 字号变大了卡片变大，autoFit 组跟着撑（§14.25）。
-      _refitAutoGroups();
+      // 字号变大了卡片变大，分组跟着撑（§14.25）。
+      _refitGroups();
     });
   }
 
@@ -1998,8 +2013,8 @@ class CanvasBoardState extends State<CanvasBoard>
     _mutate(() {
       node.expanded = !node.expanded;
       _fitFileNode(node);
-      // 正文窗口变高了，autoFit 组跟着撑（§14.25）。
-      _refitAutoGroups();
+      // 正文窗口变高了，分组跟着撑（§14.25）。
+      _refitGroups();
     }, record: record);
   }
 
@@ -2065,7 +2080,7 @@ class CanvasBoardState extends State<CanvasBoard>
           for (final CanvasNode node in doc.nodes) {
             if (node is FileNode && node.file == path) _fitImageNode(node);
           }
-          _refitAutoGroups();
+          _refitGroups();
         }
       });
     } catch (_) {
@@ -2262,8 +2277,10 @@ class CanvasBoardState extends State<CanvasBoard>
       if (!hitsRect(node.rect, world, tolerance: tolerance)) continue;
       if (node is! GroupNode) return node;
       final GroupNode? best = group;
+      // 面积相同取**索引小**的那个（新打包的组压在最底层，索引最小）：
+      // 两个框一样大时，用户要的是刚刚建出来的那个。
       if (best == null ||
-          node.rect.width * node.rect.height <
+          node.rect.width * node.rect.height <=
               best.rect.width * best.rect.height) {
         group = node;
       }
@@ -2519,14 +2536,14 @@ class CanvasBoardState extends State<CanvasBoard>
         _dragFromScreen = e.localPosition;
         _dragMoved = false;
         _dragEscape = false;
-        // 这一整段拖动里「谁是成员」按**按下那一刻**的框算：拖动途中框会
-        // 一帧一帧重新贴合，拿贴过的框判成员会让移出过一次边界的卡永远
-        // 回不来（§14.25）。
+        // 这一整段拖动里「有没有拖出框」按**按下那一刻**的框算：拖动途中
+        // 框会一帧一帧重新贴合，拿贴过的框判逃逸会把框内的小移动也认成
+        // 脱离（§14.25）。
         _groupJudge
           ..clear()
           ..addEntries(<MapEntry<String, Rect>>[
             for (final CanvasNode other in _doc!.nodes)
-              if (other is GroupNode && other.autoFit)
+              if (other is GroupNode)
                 MapEntry<String, Rect>(other.id, other.rect),
           ]);
         _dragOrigins
@@ -2539,18 +2556,12 @@ class CanvasBoardState extends State<CanvasBoard>
                       MapEntry<String, Offset>(n.id, Offset(n.x, n.y)),
                 ),
           );
-        // 拖分组时把它框住的卡片一起带走（嵌套分组也会被带一层）。
+        // 拖分组只带走 `groupId` 指向它的节点（递归带子分组），**绝不按
+        // 几何扩张**：框里一张不归它的卡，移动这个组时它一步也不动。
         if (node is GroupNode) {
-          final Rect box = node.rect;
-          for (final CanvasNode other in _doc!.nodes) {
-            if (other.id == node.id) continue;
-            if (!box.contains(other.rect.center)) continue;
-            // 外层的框不能跟着走：它的中心有可能正好落在内层框里（内层
-            // 居中时就是），一起带走就变成「拖内层，外层也跑」——嵌套分组
-            // 要能单独拖（§14.30）。只有整个框都在里面的才是子分组。
-            if (other is GroupNode && !box.contains(other.rect.topLeft)) {
-              continue;
-            }
+          for (final String id in _doc!.descendantsOf(node.id)) {
+            final CanvasNode? other = _doc!.nodeById(id);
+            if (other == null) continue;
             _dragOrigins.putIfAbsent(other.id, () => Offset(other.x, other.y));
           }
         }
@@ -2727,16 +2738,9 @@ class CanvasBoardState extends State<CanvasBoard>
     final Offset delta = _toWorld(screen) - _dragFrom;
     _dragMoved = true;
     // Alt 按过一次就记住：松手时 Alt 可能早抬起来了，光看那一刻的按键
-    // 会把「按着 Alt 拖出去」误判成「普通拖动」。第一次按到 Alt 的同时把
-    // 组框记下来——松手要靠它判「有没有真的拖出框外」。
-    if (HardwareKeyboard.instance.isAltPressed && !_dragEscape) {
-      _dragEscape = true;
-      for (final CanvasNode node in doc.nodes) {
-        if (node is GroupNode && node.autoFit) {
-          _dragOriginsGroupBox[node.id] = node.rect;
-        }
-      }
-    }
+    // 会把「按着 Alt 拖出去」误判成「普通拖动」。判据框已经在按下时存进
+    // [_groupJudge] 了，这里只把标志位立起来。
+    if (HardwareKeyboard.instance.isAltPressed) _dragEscape = true;
     setState(() {
       for (final CanvasNode node in doc.nodes) {
         final Offset? origin = _dragOrigins[node.id];
@@ -2744,10 +2748,31 @@ class CanvasBoardState extends State<CanvasBoard>
         node.x = origin.dx + delta.dx;
         node.y = origin.dy + delta.dy;
       }
-      // autoFit 组每帧跟着成员重贴（§14.25）。`Alt` = **允许**离开：这一段
-      // 里被拖的卡不算成员，框不追——它才能真的被拖到框外去。
-      _refitAutoGroups(escape: _dragEscape);
+      // 分组每帧跟着成员重贴（§14.25）。`Alt` = **允许**离开：被拖的成员
+      // 这一段不算成员，框不追——它才能真的被拖到框外去。拖动途中先别删
+      // 空组（框不能在半路上突然消失）。
+      _refitGroups(exclude: _escapeExcluded(), prune: false);
     });
+  }
+
+  /// `Alt` 拖拽时要**排除在贴合之外**的节点。
+  ///
+  /// 被拖的成员不算它那个组的成员——框不追它，它才能真的被拖到框外去。
+  /// 但如果整个组也在被拖，成员跟着组刚性平移、位置关系一点没变，照常
+  /// 算成员（不然拖着组走，组会一路甩掉自己的卡片）。
+  Set<String> _escapeExcluded() {
+    if (!_dragEscape) return const <String>{};
+    final CanvasDocument? doc = _doc;
+    if (doc == null) return const <String>{};
+    final Set<String> out = <String>{};
+    for (final CanvasNode node in doc.nodes) {
+      if (!_dragOrigins.containsKey(node.id)) continue;
+      final String? gid = node.groupId;
+      if (gid == null) continue;
+      if (_dragOrigins.containsKey(gid)) continue;
+      out.add(node.id);
+    }
+    return out;
   }
 
   void _onPointerUp(PointerEvent e, {bool cancelled = false}) {
@@ -2778,23 +2803,33 @@ class CanvasBoardState extends State<CanvasBoard>
         ? _clickToggleId
         : null;
 
+    final CanvasDocument? doc = _doc;
     setState(() {
+      if (_dragEscape && doc != null) {
+        // 松手是「脱离不脱离」的判决时刻（§14.25）：中心被拖到按下那一刻
+        // 的框外，才真的脱离分组（`groupId` 置空）。框里挪两下不算。
+        for (final CanvasNode node in doc.nodes) {
+          final String? gid = node.groupId;
+          if (gid == null || !_dragOrigins.containsKey(node.id)) continue;
+          // 整个组也在被拖：成员跟着组刚性平移，位置关系没变，不算脱离。
+          if (_dragOrigins.containsKey(gid)) continue;
+          final Rect? box = _groupJudge[gid];
+          if (box == null || box.contains(node.rect.center)) continue;
+          node.groupId = null;
+        }
+      }
       _mode = _Interaction.idle;
       _marqueeStart = null;
       _marqueeEnd = null;
       _dragOrigins.clear();
-      _dragOriginsGroupBox.clear();
       _resizeImageId = null;
+      _dragEscape = false;
+      _forgetGroupJudges();
+      // 松手后再贴一次：拖动途中淡出的成员已经彻底离开了，框收回去；空组
+      // 这时候才删（途中不删，免得框在半路上消失）。
+      _refitGroups();
     });
     _clickToggleId = null;
-    // 松手是「脱离不脱离」的判决时刻（§14.25）：最后一轮 `_dragTo` 已经
-    // 按「中心在不在框内」算过成员了，这里只需把判据缓存丢掉——下一段
-    // 操作重新以松手后的框为起点。
-    //
-    // 松手**不认领**（§14.35）：把卡拖到框里松手，它不属于这个分组——进组
-    // 走「选中后 `Alt` 点组内空白」的跳跃移入（§14.24）。
-    _dragEscape = false;
-    _forgetGroupJudges();
     if (moved || resized) widget.onChanged?.call();
     if (toggleId != null) {
       final CanvasNode? node = _doc?.nodeById(toggleId);
@@ -2842,7 +2877,7 @@ class CanvasBoardState extends State<CanvasBoard>
           : node.width / node.height;
       node.width = math.max(canvasMinSize, node.width * factor);
       node.height = node.width / aspect;
-      _refitAutoGroups();
+      _refitGroups();
     });
     widget.onChanged?.call();
   }
@@ -3169,6 +3204,14 @@ class CanvasBoardState extends State<CanvasBoard>
       if (_editingEdgeId != null && edges.contains(_editingEdgeId)) {
         _editingEdgeId = null;
       }
+      // 砍掉分组 ≠ 砍掉里面的卡：卡留下来，`groupId` 清空变成顶层节点；
+      // 剩下的组重贴一遍（顺手删掉被掏空的框）。
+      for (final CanvasNode node in doc.nodes) {
+        if (node.groupId != null && nodes.contains(node.groupId)) {
+          node.groupId = null;
+        }
+      }
+      _refitGroups();
     });
   }
 
@@ -3477,11 +3520,6 @@ class CanvasBoardState extends State<CanvasBoard>
         height: 34,
         child: Text('新建链接卡片', style: TextStyle(fontSize: AppText.ui)),
       ),
-      const PopupMenuItem<String>(
-        value: 'group',
-        height: 34,
-        child: Text('新建分组', style: TextStyle(fontSize: AppText.ui)),
-      ),
       const PopupMenuDivider(),
       const PopupMenuItem<String>(
         value: 'fit',
@@ -3504,8 +3542,6 @@ class CanvasBoardState extends State<CanvasBoard>
         await createFileCard(at: at);
       case 'link':
         await createLinkCard(at: at);
-      case 'group':
-        await createGroupCard(at: at);
     }
   }
 

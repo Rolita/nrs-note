@@ -79,7 +79,6 @@ class AppRail extends StatelessWidget {
           _RailButton(
             icon: LucideIcons.gitFork,
             tooltip: '关系图谱',
-            shortcut: 'Ctrl+G',
             selected: graphActive,
             onPressed: onOpenGraph,
           ),
