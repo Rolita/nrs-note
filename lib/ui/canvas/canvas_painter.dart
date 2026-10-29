@@ -758,6 +758,28 @@ class CanvasScenePainter extends CustomPainter {
     // 卡片内容裁剪在圆角内，长文本不会溢到卡片外面。
     canvas.save();
     canvas.clipRRect(rrect);
+    // 分组标题栏（§16.30）：顶部一条比框线还淡的面 + 一根下沿细线。框本身
+    // 仍然不填底（§7.8），有面的只有这一条——它既是组名的落款条，也是
+    // 「选中 / 拖框 / 拉线」的手柄。缩到「撑满组框」画法时整框就是名字，
+    // 不画条。
+    if (isGroup && !groupLabelNeedsFit(node, camera.zoom)) {
+      final Rect band = Rect.fromLTWH(
+        rect.left,
+        rect.top,
+        rect.width,
+        canvasGroupTitleHeight(node.scale),
+      ).deflate(0.5 * _px);
+      if (band.width > 0 && band.height > 0) {
+        canvas.drawRect(band, Paint()..color = style.groupHeader);
+        canvas.drawLine(
+          Offset(band.left, band.bottom),
+          Offset(band.right, band.bottom),
+          Paint()
+            ..color = style.groupOutline
+            ..strokeWidth = 1 * _px,
+        );
+      }
+    }
     // 内边距也跟着字号倍率走：字放大一倍、内边距还是 12，卡片就会显得很挤。
     final double pad =
         (isGroup ? canvasGroupPadding : canvasCardPadding) * node.scale;
@@ -1129,6 +1151,9 @@ class CanvasScenePainter extends CustomPainter {
     doc.paint(canvas, Offset(content.left, top));
   }
 
+  /// 分组标题：排进顶部那条标题栏，**垂直居中**（§16.30）。
+  ///
+  /// 和编辑态输入框的居中方式一致——一进编辑字不会上下跳一下。
   void _paintGroupLabel(
     Canvas canvas,
     GroupNode node,
@@ -1148,7 +1173,11 @@ class CanvasScenePainter extends CustomPainter {
       width: content.width,
       maxLines: 1,
     );
-    painter.paint(canvas, content.topLeft);
+    final double band = canvasGroupTitleHeight(node.scale);
+    painter.paint(
+      canvas,
+      Offset(content.left, node.rect.top + (band - painter.height) / 2),
+    );
   }
 
   /// 「撑满组框」的组名（§14.28）：字号按**组框宽度**反推，让名字横向占

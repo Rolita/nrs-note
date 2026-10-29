@@ -25,6 +25,7 @@ class CanvasStyle {
     required this.axisLabel,
     required this.cardFill,
     required this.groupOutline,
+    required this.groupHeader,
     required this.accent,
     required this.accentSoft,
     required this.selectionFill,
@@ -47,6 +48,8 @@ class CanvasStyle {
     // 卡片只比画布亮一点点：轮廓由那根描边交代，不靠色块和投影。
     cardFill: p.surfaceRaised.withValues(alpha: 0.72),
     groupOutline: p.textPrimary.withValues(alpha: 0.22),
+    // 标题栏比框线还淡：它是一条「这是谁」的落款条，不是第二层框。
+    groupHeader: p.textPrimary.withValues(alpha: 0.055),
     accent: p.accent,
     accentSoft: p.accentSoft,
     selectionFill: p.accentSoft.withValues(alpha: 0.40),
@@ -78,6 +81,9 @@ class CanvasStyle {
 
   /// 分组框的描边。
   final Color groupOutline;
+
+  /// 分组标题栏的底色。框本身仍然不填底（§7.8），只有顶部这一条有面。
+  final Color groupHeader;
 
   final Color accent;
   final Color accentSoft;
