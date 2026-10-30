@@ -1,75 +1,43 @@
 import 'package:flutter/material.dart';
 
-import '../../core/app_enums.dart';
-import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import 'main_view.dart';
 import 'title_bar_content.dart';
 
-/// Browser build: same three regions as the desktop strip — views, tabs,
-/// outline — minus the window buttons, because a page cannot minimize,
+/// Browser build: the same regions as the desktop strip — the sidebar toggle and
+/// the panel toggles — minus the window buttons, because a page cannot minimize,
 /// maximize or drag its own window.
+///
+/// 和桌面端一样，这不是一条横带：标签条顶在页面最上面，这一层只是浮在它上面
+/// 的几颗按钮（见 [TitleBarLayout]）。
 class AppTitleBar extends StatelessWidget {
   const AppTitleBar({
     super.key,
-    required this.view,
-    required this.onSelectView,
     required this.onToggleSidebar,
-    required this.onCreateNote,
     required this.mainView,
-    required this.onSelectMainView,
-    required this.graphOpen,
-    required this.onCloseGraph,
-    required this.imageTitle,
-    required this.onCloseImage,
-    required this.canvasTitle,
-    required this.onCloseCanvas,
-    required this.leftInset,
     required this.rightInset,
+    this.showSidebarToggle = true,
   });
 
-  final SidebarView view;
-  final ValueChanged<SidebarView> onSelectView;
   final VoidCallback onToggleSidebar;
-  final VoidCallback onCreateNote;
   final MainView mainView;
-  final ValueChanged<MainView> onSelectMainView;
-  final bool graphOpen;
-  final VoidCallback onCloseGraph;
-  final String? imageTitle;
-  final VoidCallback onCloseImage;
-  final String? canvasTitle;
-  final VoidCallback onCloseCanvas;
-  final double leftInset;
   final double rightInset;
+  final bool showSidebarToggle;
 
   @override
   Widget build(BuildContext context) {
-    final AppPalette p = context.palette;
-    return Container(
+    return SizedBox(
       height: AppLayout.titleBarHeight,
-      decoration: BoxDecoration(
-        color: p.canvas,
-        border: Border(bottom: BorderSide(color: p.outlineSoft)),
-      ),
       child: TitleBarLayout(
-        view: view,
-        onSelectView: onSelectView,
         onToggleSidebar: onToggleSidebar,
-        onCreateNote: onCreateNote,
+        showSidebarToggle: showSidebarToggle,
         mainView: mainView,
-        onSelectMainView: onSelectMainView,
-        graphOpen: graphOpen,
-        onCloseGraph: onCloseGraph,
-        imageTitle: imageTitle,
-        onCloseImage: onCloseImage,
-        canvasTitle: canvasTitle,
-        onCloseCanvas: onCloseCanvas,
-        leftInset: leftInset,
         rightInset: rightInset,
-        // No window to drag in a tab.
-        grip: const SizedBox.expand(),
+        captionWidth: 0,
       ),
     );
   }
 }
+
+/// 标签条上没被标签占住的那一段。浏览器里没有窗口可拖，留空。
+Widget titleBarGrip() => const SizedBox.expand();

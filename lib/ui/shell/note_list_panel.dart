@@ -37,6 +37,8 @@ class NoteListPanel extends StatefulWidget {
     this.onOpenCanvas,
     this.onDeleteCanvas,
     this.onOpenFile,
+    this.onSplit,
+    this.onClosePane,
   });
 
   final SidebarView view;
@@ -64,6 +66,14 @@ class NoteListPanel extends StatefulWidget {
   final ValueChanged<List<CanvasRef>>? onDeleteCanvas;
 
   final ValueChanged<VaultFile>? onOpenFile;
+
+  /// 把这个格子上下切成两半。`null` = 侧边栏没有分块（比如单独预览时）。
+  ///
+  /// 分割本身是外壳的事：它持有那棵树。面板只负责给一个按钮。
+  final VoidCallback? onSplit;
+
+  /// 关掉这一格。`null` = 只剩这一格了，没得关。
+  final VoidCallback? onClosePane;
 
   @override
   State<NoteListPanel> createState() => NoteListPanelState();
@@ -320,7 +330,11 @@ class NoteListPanelState extends State<NoteListPanel> {
                       ),
                     ),
                     const Spacer(),
-                    _SortButton(settings: settings, notes: notes, showLabel: true),
+                    _SortButton(
+                      settings: settings,
+                      notes: notes,
+                      showLabel: true,
+                    ),
                   ],
                 ),
               ),
@@ -381,7 +395,9 @@ class NoteListPanelState extends State<NoteListPanel> {
           // One button, two faces: it always offers the opposite of what the
           // tree is showing right now.
           action(
-            _allExpanded ? LucideIcons.chevronsDownUp : LucideIcons.chevronsUpDown,
+            _allExpanded
+                ? LucideIcons.chevronsDownUp
+                : LucideIcons.chevronsUpDown,
             _allExpanded ? '全部收起' : '全部展开',
             () {
               final VaultTreeState? tree = _treeKey.currentState;
@@ -454,6 +470,24 @@ class NoteListPanelState extends State<NoteListPanel> {
               ),
             ),
             ?trailing,
+            // 分块的两个入口。放在所有视图共用的头部里，而不是各视图自己
+            // 加一遍——「这一格怎么分」和「这一格显示什么」是两件事。
+            if (widget.onSplit != null)
+              AppIconButton(
+                icon: LucideIcons.rows2,
+                tooltip: '上下分割',
+                size: 24,
+                iconSize: AppIconSize.sm - 2,
+                onPressed: widget.onSplit,
+              ),
+            if (widget.onClosePane != null)
+              AppIconButton(
+                icon: LucideIcons.x,
+                tooltip: '关掉这一格',
+                size: 24,
+                iconSize: AppIconSize.sm - 2,
+                onPressed: widget.onClosePane,
+              ),
             if (notes.isFiltered) ...<Widget>[
               const SizedBox(width: AppSpace.sm),
               AppTextButton(
@@ -524,7 +558,10 @@ class NoteListPanelState extends State<NoteListPanel> {
                   focusedBorder: InputBorder.none,
                   contentPadding: EdgeInsets.zero,
                   hintText: '输入并开始搜索...',
-                  hintStyle: TextStyle(fontSize: AppText.ui, color: p.textTertiary),
+                  hintStyle: TextStyle(
+                    fontSize: AppText.ui,
+                    color: p.textTertiary,
+                  ),
                 ),
               ),
             ),
@@ -622,11 +659,7 @@ class NoteListPanelState extends State<NoteListPanel> {
         padding: const EdgeInsets.all(AppSpace.xl),
         child: Text(
           '给笔记打上 #标签,\n它们会按使用次数出现在这里。',
-          style: TextStyle(
-            fontSize: 11.5,
-            height: 1.7,
-            color: p.textTertiary,
-          ),
+          style: TextStyle(fontSize: 11.5, height: 1.7, color: p.textTertiary),
         ),
       );
     }
@@ -679,7 +712,9 @@ class NoteListPanelState extends State<NoteListPanel> {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: AppText.ui,
-                        fontWeight: selected ? FontWeight.w500 : FontWeight.w400,
+                        fontWeight: selected
+                            ? FontWeight.w500
+                            : FontWeight.w400,
                         color: selected ? p.textPrimary : p.textSecondary,
                       ),
                     ),
@@ -718,7 +753,10 @@ class NoteListPanelState extends State<NoteListPanel> {
           if (notes.isFiltered)
             Text(
               '筛选出 $visibleCount 篇',
-              style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
+              style: TextStyle(
+                fontSize: AppText.caption,
+                color: p.textTertiary,
+              ),
             ),
         ],
       ),
@@ -1102,7 +1140,11 @@ class _SortTriggerState extends State<_SortTrigger> {
                   ),
                 ],
               )
-            : Icon(LucideIcons.arrowUpDown, size: AppIconSize.sm - 2, color: foreground),
+            : Icon(
+                LucideIcons.arrowUpDown,
+                size: AppIconSize.sm - 2,
+                color: foreground,
+              ),
       ),
     );
   }

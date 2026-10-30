@@ -185,10 +185,23 @@ abstract final class AppLayout {
   /// the first tab — starts one strip *after* the sidebar ends.
   static const double resizeHandleWidth = 5;
 
-  /// The app's own caption. Tall enough for a 32px control plus 4px of air on
-  /// each side, which is what makes the tabs read as sitting *in* the bar
-  /// rather than being squeezed by it.
+  /// 窗口顶上那条带子：**标签条和顶栏是同一条**。
+  ///
+  /// 顶栏不再单独占一行——它只剩几颗按钮，浮在标签条上面（见
+  /// `title_bar_content.dart`）。用户原话：「让 tab 还是在顶部栏显示啊。为什么
+  /// 往下移了？」所以标签条顶到窗口最上面，`titleBarHeight` 就是它的高度。
   static const double titleBarHeight = 40;
+
+  /// 一格顶上那条标签条。**和顶栏同高**：它就是窗口最上面那条带子。
+  ///
+  /// 分屏之后每一格各有一条（见 `pane_tab_strip.dart`），上面那一格的标签条
+  /// 正好落在窗口顶上。
+  static const double paneTabStripHeight = titleBarHeight;
+
+  /// 标签条上一页的高度。
+  ///
+  /// 36 = 40 的带子里留 4px 上沿，加上标签自己的 2px 下划线正好压在纸面的边上。
+  static const double paneTabHeight = 36;
 
   /// Comfortable measure for prose (~72 characters).
   static const double proseMaxWidth = 720;

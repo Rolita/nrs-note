@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>NRS · 壳子方向 · 浅壳深纸</title>
+<style>
+  :root {
+    --page: #0C0D0F;
+    --page2: #111215;
+    --line: #212329;
+    --t1: #E9EAEC;
+    --t2: #9EA2A9;
+    --t3: #656971;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--page); color: var(--t1);
+    font-family: var(--sans); font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+  svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .wrap { width: min(1320px, calc(100% - 48px)); margin: 0 auto; }
+
+  /* ------------------------------------------------------------- masthead */
+  .masthead { padding: 56px 0 0; }
+  .kicker { font-family: var(--mono); font-size: 10px; letter-spacing: .18em; color: var(--t3); text-transform: uppercase; }
+  .masthead h1 { margin: 12px 0 0; font-size: 32px; font-weight: 620; letter-spacing: -.6px; line-height: 1.25; }
+  .masthead p { margin: 14px 0 0; max-width: 800px; font-size: 13px; line-height: 1.9; color: var(--t2); }
+  .masthead p b { color: var(--t1); font-weight: 600; }
+
+  .index { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 30px 0 0; }
+  .index a {
+    display: block; padding: 13px 14px 14px;
+    border: 1px solid var(--line); border-radius: 8px;
+    text-decoration: none; color: inherit; background: var(--page2);
+    transition: border-color .15s ease;
+  }
+  .index a:hover { border-color: #363941; }
+  .index b { display: block; font-family: var(--mono); font-size: 10px; color: var(--t3); letter-spacing: .12em; margin-bottom: 6px; }
+  .index span { font-size: 13.5px; font-weight: 600; }
+  .index em { display: block; font-style: normal; font-size: 11px; color: var(--t3); margin-top: 4px; }
+  .index .sw { display: flex; gap: 3px; margin-top: 10px; }
+  .index .sw i { width: 16px; height: 6px; border-radius: 1px; display: block; }
+
+  .xlink { margin-top: 16px; font-family: var(--mono); font-size: 10.5px; color: var(--t3); letter-spacing: .04em; }
+  .xlink a { color: var(--t2); text-decoration: none; border-bottom: 1px solid var(--line); padding-bottom: 1px; }
+  .xlink a:hover { color: var(--t1); }
+
+  /* ------------------------------------------------------------------ dir */
+  .dir { padding: 54px 0 6px; }
+  .dir-head { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+  .badge {
+    width: 34px; height: 34px; flex: none; border-radius: 6px;
+    display: grid; place-items: center;
+    font-family: var(--mono); font-size: 12px; color: var(--t2);
+    border: 1px solid var(--line);
+  }
+  .dir-head h2 { margin: 0; font-size: 19px; font-weight: 620; letter-spacing: -.2px; display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+  .dir-head h2 small { font-family: var(--mono); font-size: 10px; font-weight: 400; color: var(--t3); letter-spacing: .14em; text-transform: uppercase; }
+  .dir-head p { margin: 7px 0 0; font-size: 12.5px; line-height: 1.85; color: var(--t2); max-width: 740px; }
+  .keys { margin-left: auto; display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+  .keys span { font-family: var(--mono); font-size: 10px; color: var(--t3); border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; }
+
+  .stage { position: relative; margin-top: 16px; overflow: hidden; border-radius: 10px; border: 1px solid var(--line); background: #08080A; }
+  .mock { position: absolute; left: 0; top: 0; width: 1240px; height: 640px; transform-origin: top left; overflow: hidden; }
+
+  .dir-foot { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; margin-top: 14px; padding-bottom: 8px; }
+  .dir-foot div { font-size: 11.5px; line-height: 1.85; color: var(--t3); }
+  .dir-foot b { display: block; font-family: var(--mono); font-size: 9.5px; font-weight: 400; letter-spacing: .14em; color: var(--t2); margin-bottom: 5px; text-transform: uppercase; }
+
+  .outro {
+    margin-top: 40px; padding: 24px 26px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--page2);
+    display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 28px;
+  }
+  .outro h3 { margin: 0 0 10px; font-size: 13px; font-weight: 620; }
+  .outro ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 7px; }
+  .outro li { position: relative; padding-left: 13px; font-size: 11.5px; line-height: 1.85; color: var(--t3); }
+  .outro li::before { content: ""; position: absolute; left: 0; top: 8px; width: 4px; height: 4px; border-radius: 50%; background: #4A4E57; }
+  .outro li b { color: var(--t2); font-weight: 600; }
+  .pick { display: inline-block; font-size: 13px; font-weight: 620; border-bottom: 1px solid #4A4E57; padding-bottom: 3px; }
+  .outro-side p { margin: 10px 0 0; font-size: 11.5px; line-height: 1.85; color: var(--t3); }
+  .pagefoot { padding: 24px 0 44px; text-align: center; font-family: var(--mono); font-size: 10px; color: var(--t3); }
+
+  /* ================================================================
+     四版共用的骨架：浅色壳子 + 深色纸
+     ================================================================ */
+  .mock {
+    --paper: #121316;
+    --paper-t1: #EDEEF0;
+    --paper-t2: #A0A4AB;
+    --paper-t3: #6E727A;
+    --paper-line: #26282D;
+    --paper-hi: #1C1E22;
+
+    --c1: #17181B;
+    --c2: #5C6068;
+    --c3: #7C8088;
+    --cline: #DCDDDF;
+    --csel: #FFFFFF;
+    --topH: 48px;
+
+    font-family: var(--sans);
+  }
+
+  .top {
+    height: var(--topH); flex: none;
+    display: flex; align-items: flex-end; gap: 2px;
+    padding: 0 16px;
+  }
+  .brand {
+    align-self: center; font-size: 12px; font-weight: 700; letter-spacing: .16em;
+    color: var(--c1); margin-right: 14px;
+  }
+  .tabs { display: flex; align-items: flex-end; gap: 2px; height: 100%; }
+  .tab {
+    height: 32px; padding: 0 14px; display: flex; align-items: center; gap: 8px;
+    font-size: 12.5px; color: var(--c3); border-radius: 6px 6px 0 0;
+  }
+  .tab .x { font-size: 9px; opacity: .7; }
+  .tab.add { padding: 0 9px; font-size: 14px; }
+  .win { margin-left: auto; align-self: center; display: flex; gap: 16px; color: var(--c3); font-size: 11px; }
+  .win i { font-style: normal; }
+
+  .body { display: flex; height: calc(100% - var(--topH)); }
+  .rail { width: 52px; flex: none; padding: 12px 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .ico { width: 34px; height: 34px; display: grid; place-items: center; color: var(--c3); border-radius: 6px; }
+  .ico.on { color: var(--c1); }
+  .rail .sp { flex: 1; }
+
+  .side { width: 272px; flex: none; padding: 14px 12px; }
+  .side h4 {
+    margin: 0 6px 10px; display: flex; align-items: baseline; justify-content: space-between;
+    font-size: 10.5px; font-weight: 500; letter-spacing: .12em; color: var(--c3); text-transform: uppercase;
+  }
+  .side h4 .n { font-family: var(--mono); font-size: 10px; letter-spacing: 0; }
+  .row { height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 9px; border-radius: 5px; font-size: 13px; color: var(--c2); }
+  .row .n { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--c3); font-variant-numeric: tabular-nums; }
+
+  .panel { width: 258px; flex: none; padding: 14px 12px; }
+  .panel h4 { margin: 0 6px 10px; font-size: 10.5px; font-weight: 500; letter-spacing: .12em; color: var(--c3); text-transform: uppercase; }
+  .orow { height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 9px; border-radius: 5px; font-size: 12.5px; color: var(--c2); }
+  .orow.on { color: var(--c1); font-weight: 500; }
+  .orow.h { padding-left: 21px; font-size: 12px; color: var(--c3); }
+
+  /* ---------------- 深色纸：四版完全一致，只换接缝 ---------------- */
+  .doc { flex: 1; min-width: 0; background: var(--paper); color: var(--paper-t1); padding: 32px 48px; }
+  .doc h3 { margin: 0; font-size: 25px; font-weight: 600; letter-spacing: -.3px; }
+  .doc .meta { font-family: var(--mono); font-size: 10.5px; color: var(--paper-t3); margin: 7px 0 20px; font-variant-numeric: tabular-nums; }
+  .doc p { margin: 0 0 13px; font-size: 13.5px; line-height: 1.95; color: var(--paper-t2); }
+  .doc p em {
+    font-style: normal; color: var(--paper-t1); font-weight: 500;
+    background: linear-gradient(transparent 62%, #2B2E34 62%);
+  }
+  .doc code { font-family: var(--mono); font-size: 11.5px; color: var(--paper-t1); background: var(--paper-hi); border-radius: 3px; padding: 1px 5px; }
+  .doc table { width: 100%; border-collapse: collapse; margin: 4px 0 15px; font-size: 13px; }
+  .doc th, .doc td { padding: 8px 0; text-align: left; font-weight: 400; color: var(--paper-t2); border-bottom: 1px solid var(--paper-line); }
+  .doc th { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--paper-t3); padding-bottom: 6px; }
+  .doc td.v { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .doc td.hi { color: var(--paper-t1); font-weight: 600; }
+  .doc .chk { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--paper-t2); }
+  .doc .chk b {
+    width: 14px; height: 14px; flex: none; border: 1px solid #3A3D44; border-radius: 3px;
+    display: grid; place-items: center; font-size: 9px; color: var(--paper-t1);
+  }
+
+  /* ================================================================
+     A · 硬接缝  —— 三块平贴，只有 1px 线
+     ================================================================ */
+  .m-a { background: #F5F5F6; }
+  .m-a .top { background: #F5F5F6; border-bottom: 1px solid var(--cline); }
+  .m-a .tab.on { background: #FFFFFF; color: var(--c1); font-weight: 600; box-shadow: inset 0 -2px 0 var(--c1); }
+  .m-a .rail { background: #F5F5F6; border-right: 1px solid var(--cline); }
+  .m-a .ico.on { background: #E7E8EA; }
+  .m-a .side { background: #EFEFF1; border-right: 1px solid var(--cline); }
+  .m-a .row.on { background: var(--csel); color: var(--c1); font-weight: 500; box-shadow: inset 2px 0 0 var(--c1); }
+  .m-a .panel { background: #EFEFF1; border-left: 1px solid var(--cline); }
+  .m-a .orow.on { background: #E4E5E8; }
+
+  /* ================================================================
+     B · 浮岛  —— 深色纸是一张卡，浮在浅色台面上
+     ================================================================ */
+  .m-b { background: #E9EAEC; }
+  .m-b .top { background: #F7F7F8; border-bottom: 1px solid #DDDEE0; align-items: center; }
+  .m-b .tabs { align-items: center; }
+  .m-b .tab { height: 28px; border-radius: 7px; }
+  .m-b .tab.on { background: var(--paper); color: var(--paper-t1); font-weight: 500; }
+  .m-b .body { padding: 10px; gap: 10px; }
+  .m-b .rail { background: #F7F7F8; border-radius: 9px; }
+  .m-b .ico.on { background: #E7E8EA; }
+  .m-b .side { background: #F7F7F8; border-radius: 9px; }
+  .m-b .row.on { background: #FFFFFF; color: var(--c1); font-weight: 500; box-shadow: 0 1px 2px rgba(20,22,28,.07); }
+  .m-b .doc {
+    border-radius: 10px;
+    box-shadow: 0 16px 34px rgba(12,14,18,.30), 0 3px 6px rgba(12,14,18,.18);
+  }
+  .m-b .panel { background: #F7F7F8; border-radius: 9px; }
+  .m-b .orow.on { background: #FFFFFF; box-shadow: 0 1px 2px rgba(20,22,28,.07); }
+
+  /* ================================================================
+     C · 一面  —— 浅色那边完全不分块，深色是开的一个窗
+     ================================================================ */
+  .m-c { background: #F4F4F5; --topH: 56px; }
+  .m-c .top { background: #F4F4F5; }
+  .m-c .tab.on { background: #FFFFFF; color: var(--c1); font-weight: 600; box-shadow: 0 1px 3px rgba(20,22,28,.08); }
+  .m-c .rail { background: #F4F4F5; }
+  .m-c .ico.on { background: #FFFFFF; box-shadow: 0 1px 2px rgba(20,22,28,.10); }
+  .m-c .side { background: #F4F4F5; padding-left: 4px; padding-top: 20px; }
+  .m-c .side h4, .m-c .panel h4 { margin-left: 9px; }
+  .m-c .row.on { background: #FFFFFF; color: var(--c1); font-weight: 500; box-shadow: 0 1px 2px rgba(20,22,28,.10); }
+  .m-c .panel { background: #F4F4F5; padding-right: 4px; }
+  .m-c .orow.on { background: #FFFFFF; box-shadow: 0 1px 2px rgba(20,22,28,.10); }
+  /* 浅色那一面把光溢到纸上：左右各一道，顶上再来一道 */
+  .m-c .doc {
+    box-shadow:
+      inset 24px 0 36px -22px rgba(255,255,255,.20),
+      inset -24px 0 36px -22px rgba(255,255,255,.20),
+      inset 0 14px 28px -16px rgba(255,255,255,.16);
+  }
+
+  /* ================================================================
+     D · 标签桥  —— 标签对到纸的左边缘，深色从顶栏直接漏下来
+     ================================================================ */
+  .m-d { background: #F4F4F5; }
+  .m-d .top { background: #F4F4F5; border-bottom: 1px solid var(--cline); padding-left: 0; gap: 0; }
+  .m-d .brand { position: relative; width: 324px; flex: none; margin: 0; padding-left: 16px; display: flex; align-items: center; }
+  /* 侧栏的正文从 52 + 12 + 9 = 73px 起，标题必须落在同一条竖线上 */
+  .m-d .brand .fh {
+    position: absolute; left: 73px; top: 50%; transform: translateY(-50%);
+    font-size: 10.5px; font-weight: 500; letter-spacing: .12em;
+    color: var(--c3); text-transform: uppercase;
+  }
+  .m-d .brand .fh .n { font-family: var(--mono); letter-spacing: 0; }
+  .m-d .tab.on {
+    background: var(--paper); color: var(--paper-t1); font-weight: 500;
+    /* 往下一格盖掉顶栏那条下边框，深色才真的漏进纸里 */
+    box-shadow: 0 1px 0 0 var(--paper);
+  }
+  .m-d .rail { background: #F4F4F5; border-right: 1px solid var(--cline); }
+  .m-d .ico.on { background: #E7E8EA; }
+  .m-d .side { background: #EFEFF1; border-right: 1px solid var(--cline); padding-top: 8px; }
+  .m-d .row.on { background: var(--csel); color: var(--c1); font-weight: 500; box-shadow: inset 2px 0 0 var(--c1); }
+  .m-d .panel { background: #EFEFF1; border-left: 1px solid var(--cline); }
+  .m-d .orow.on { background: #E4E5E8; }
+
+  @media (max-width: 1100px) {
+    .index { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .dir-foot { grid-template-columns: 1fr; gap: 12px; }
+    .outro { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-note" viewBox="0 0 24 24"><path d="M6 3.5h8.5L19 8v12.5H6z"/><path d="M14.5 3.5V8H19"/></symbol>
+  <symbol id="i-graph" viewBox="0 0 24 24"><circle cx="12" cy="6" r="2.2"/><circle cx="6" cy="17.5" r="2.2"/><circle cx="18" cy="17.5" r="2.2"/><path d="M11 8 7 15.6M13 8l4 7.6"/></symbol>
+  <symbol id="i-board" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="1.2"/><path d="M3.5 9.5h17"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="1.2"/><path d="m6 15.5 4-4 3 3 2-2 3 3"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="5.6"/><path d="m15.2 15.2 4 4"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.8"/><path d="M12 3.5v2.4M12 18.1v2.4M3.5 12h2.4M18.1 12h2.4M6 6l1.7 1.7M16.3 16.3 18 18M18 6l-1.7 1.7M7.7 16.3 6 18"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></symbol>
+</svg>
+
+<main class="wrap">
+
+  <header class="masthead">
+    <div class="kicker">NRS · 界面方向 · 第四稿</div>
+    <h1>浅壳深纸：夹心怎么接才不别扭</h1>
+    <p>
+      侧边栏浅、编辑区深，中间那道缝是整张界面最响的一笔——<b>接得好是设计，接不好像 bug</b>。
+      这一稿四个方向都在回答同一个问题：<b>浅色和深色之间那条边，到底该怎么处理</b>。
+      骨架完全一样（同一篇《九月复盘》、同一棵树、同一份大纲），只有接法不同。
+    </p>
+
+    <nav class="index">
+      <a href="#d1"><b>01</b><span>硬接缝</span><em>平贴 · 1px 线</em>
+        <div class="sw"><i style="background:#F5F5F6"></i><i style="background:#EFEFF1"></i><i style="background:#121316"></i><i style="background:#EDEEF0"></i></div>
+      </a>
+      <a href="#d2"><b>02</b><span>浮岛</span><em>深色纸是一张卡</em>
+        <div class="sw"><i style="background:#F7F7F8"></i><i style="background:#E9EAEC"></i><i style="background:#131417"></i><i style="background:#EDEEF0"></i></div>
+      </a>
+      <a href="#d3"><b>03</b><span>一面</span><em>浅色不分块 · 溢光</em>
+        <div class="sw"><i style="background:#F4F4F5"></i><i style="background:#FFFFFF"></i><i style="background:#121316"></i><i style="background:#EDEEF0"></i></div>
+      </a>
+      <a href="#d4"><b>04</b><span>标签桥</span><em>标签对到纸边</em>
+        <div class="sw"><i style="background:#F4F4F5"></i><i style="background:#EFEFF1"></i><i style="background:#121316"></i><i style="background:#EDEEF0"></i></div>
+      </a>
+    </nav>
+
+    <div class="xlink">
+      这一稿是新的 · 前面两稿仍在
+      <a href="shell-directions.html">四个方向</a> ·
+      <a href="shell-quiet.html">灰阶四则</a>
+    </div>
+  </header>
+
+  <!-- ============================================================ 01 -->
+  <section class="dir" id="d1">
+    <div class="dir-head">
+      <span class="badge">01</span>
+      <div>
+        <h2>硬接缝 <small>Seam</small></h2>
+        <p>三块平贴在一起，浅色那边靠 1px 的线分块，深浅之间一根线都不画——那个明度落差本身就是线。最老实的一版，也最容易判断「这个配色到底行不行」。</p>
+      </div>
+      <div class="keys"><span>平贴</span><span>1px 线</span><span>0 圆角</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="mock m-a">
+        <div class="top">
+          <div class="brand">NRS</div>
+          <div class="tabs">
+            <div class="tab on">九月复盘<span class="x">×</span></div>
+            <div class="tab">周报 · W39<span class="x">×</span></div>
+            <div class="tab add">+</div>
+          </div>
+          <div class="win"><i>–</i><i>□</i><i>×</i></div>
+        </div>
+        <div class="body">
+          <div class="rail">
+            <span class="ico"><svg width="16" height="16"><use href="#i-search"/></svg></span>
+            <span class="ico on"><svg width="16" height="16"><use href="#i-note"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-graph"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-board"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-image"/></svg></span>
+            <span class="sp"></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-gear"/></svg></span>
+          </div>
+          <div class="side">
+            <h4><span>文件</span><span class="n">5</span></h4>
+            <div class="row">收件箱<span class="n">4</span></div>
+            <div class="row on">九月复盘</div>
+            <div class="row">周报 · W39</div>
+            <div class="row">白板<span class="n">2</span></div>
+            <div class="row">归档<span class="n">18</span></div>
+          </div>
+          <div class="doc">
+            <h3>九月复盘</h3>
+            <div class="meta">2026-09-30 · 1,284 字 · 已同步</div>
+            <p>这一周的重点是把壳子收干净：浅色留给「不是正文的地方」，<em>纸自己暗下去</em>。剩下的交给明度，<code>chrome</code> 只负责壳子。</p>
+            <table>
+              <tr><th>区域</th><th>达成</th><th>备注</th></tr>
+              <tr><td>华东</td><td class="v">92%</td><td class="hi">领先</td></tr>
+              <tr><td>华南</td><td class="v">87%</td><td>待复核</td></tr>
+              <tr><td>西南</td><td class="v">83%</td><td>—</td></tr>
+            </table>
+            <p>下面这条勾掉的事，是这一轮唯一改动的结构。</p>
+            <div class="chk"><b>✓</b>编辑区深 / 侧栏浅</div>
+          </div>
+          <div class="panel">
+            <h4>大纲</h4>
+            <div class="orow on">九月复盘</div>
+            <div class="orow h">本周结论</div>
+            <div class="orow h">下周计划</div>
+            <div class="orow">表格</div>
+            <div class="orow h">高亮</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dir-foot">
+      <div><b>接法</b>深浅之间不画线，靠明度落差当边界；浅色内部才用 1px 线。</div>
+      <div><b>细节</b>当前标签是白底 + 2px 黑下划线；选中行白底 + 2px 黑竖线。</div>
+      <div><b>风险</b>最直接，也最容易被看成「两套主题拼起来」。</div>
+    </div>
+  </section>
+
+  <!-- ============================================================ 02 -->
+  <section class="dir" id="d2">
+    <div class="dir-head">
+      <span class="badge">02</span>
+      <div>
+        <h2>浮岛 <small>Card</small></h2>
+        <p>把深色纸做成一张卡：圆角 10px、四周留 10px 的浅色台面、带一层很轻的投影。这样深浅之间不是「一条缝」，而是「一张纸压在台面上」，读起来是物体关系而不是分区关系。</p>
+      </div>
+      <div class="keys"><span>圆角 10px</span><span>留 10px 台面</span><span>轻投影</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="mock m-b">
+        <div class="top">
+          <div class="brand">NRS</div>
+          <div class="tabs">
+            <div class="tab on">九月复盘<span class="x">×</span></div>
+            <div class="tab">周报 · W39<span class="x">×</span></div>
+            <div class="tab add">+</div>
+          </div>
+          <div class="win"><i>–</i><i>□</i><i>×</i></div>
+        </div>
+        <div class="body">
+          <div class="rail">
+            <span class="ico"><svg width="16" height="16"><use href="#i-search"/></svg></span>
+            <span class="ico on"><svg width="16" height="16"><use href="#i-note"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-graph"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-board"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-image"/></svg></span>
+            <span class="sp"></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-gear"/></svg></span>
+          </div>
+          <div class="side">
+            <h4><span>文件</span><span class="n">5</span></h4>
+            <div class="row">收件箱<span class="n">4</span></div>
+            <div class="row on">九月复盘</div>
+            <div class="row">周报 · W39</div>
+            <div class="row">白板<span class="n">2</span></div>
+            <div class="row">归档<span class="n">18</span></div>
+          </div>
+          <div class="doc">
+            <h3>九月复盘</h3>
+            <div class="meta">2026-09-30 · 1,284 字 · 已同步</div>
+            <p>这一周的重点是把壳子收干净：浅色留给「不是正文的地方」，<em>纸自己暗下去</em>。剩下的交给明度，<code>chrome</code> 只负责壳子。</p>
+            <table>
+              <tr><th>区域</th><th>达成</th><th>备注</th></tr>
+              <tr><td>华东</td><td class="v">92%</td><td class="hi">领先</td></tr>
+              <tr><td>华南</td><td class="v">87%</td><td>待复核</td></tr>
+              <tr><td>西南</td><td class="v">83%</td><td>—</td></tr>
+            </table>
+            <p>下面这条勾掉的事，是这一轮唯一改动的结构。</p>
+            <div class="chk"><b>✓</b>编辑区深 / 侧栏浅</div>
+          </div>
+          <div class="panel">
+            <h4>大纲</h4>
+            <div class="orow on">九月复盘</div>
+            <div class="orow h">本周结论</div>
+            <div class="orow h">下周计划</div>
+            <div class="orow">表格</div>
+            <div class="orow h">高亮</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dir-foot">
+      <div><b>接法</b>深浅之间隔一圈浅色台面，纸有圆角和投影，是「压在上面」。</div>
+      <div><b>细节</b>当前标签也做成深色小胶囊，和纸呼应；浅色三块都带 9px 圆角。</div>
+      <div><b>风险</b>卡片+投影一旦多了就显软；纸会变窄（左右各让 10px）。</div>
+    </div>
+  </section>
+
+  <!-- ============================================================ 03 -->
+  <section class="dir" id="d3">
+    <div class="dir-head">
+      <span class="badge">03</span>
+      <div>
+        <h2>一面 <small>Surface</small></h2>
+        <p>浅色那边彻底不分块：没有线、没有底色差，顶栏、功能栏、侧栏、右栏是一整块，只剩一列图标和一列文字。深色的纸是这块面上开的一个窗，窗口边缘有一圈极淡的光溢进去。最安静、也最自信的一版。</p>
+      </div>
+      <div class="keys"><span>浅色不分块</span><span>零分隔线</span><span>边缘溢光</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="mock m-c">
+        <div class="top">
+          <div class="brand">NRS</div>
+          <div class="tabs">
+            <div class="tab on">九月复盘<span class="x">×</span></div>
+            <div class="tab">周报 · W39<span class="x">×</span></div>
+            <div class="tab add">+</div>
+          </div>
+          <div class="win"><i>–</i><i>□</i><i>×</i></div>
+        </div>
+        <div class="body">
+          <div class="rail">
+            <span class="ico"><svg width="16" height="16"><use href="#i-search"/></svg></span>
+            <span class="ico on"><svg width="16" height="16"><use href="#i-note"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-graph"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-board"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-image"/></svg></span>
+            <span class="sp"></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-gear"/></svg></span>
+          </div>
+          <div class="side">
+            <h4><span>文件</span><span class="n">5</span></h4>
+            <div class="row">收件箱<span class="n">4</span></div>
+            <div class="row on">九月复盘</div>
+            <div class="row">周报 · W39</div>
+            <div class="row">白板<span class="n">2</span></div>
+            <div class="row">归档<span class="n">18</span></div>
+          </div>
+          <div class="doc">
+            <h3>九月复盘</h3>
+            <div class="meta">2026-09-30 · 1,284 字 · 已同步</div>
+            <p>这一周的重点是把壳子收干净：浅色留给「不是正文的地方」，<em>纸自己暗下去</em>。剩下的交给明度，<code>chrome</code> 只负责壳子。</p>
+            <table>
+              <tr><th>区域</th><th>达成</th><th>备注</th></tr>
+              <tr><td>华东</td><td class="v">92%</td><td class="hi">领先</td></tr>
+              <tr><td>华南</td><td class="v">87%</td><td>待复核</td></tr>
+              <tr><td>西南</td><td class="v">83%</td><td>—</td></tr>
+            </table>
+            <p>下面这条勾掉的事，是这一轮唯一改动的结构。</p>
+            <div class="chk"><b>✓</b>编辑区深 / 侧栏浅</div>
+          </div>
+          <div class="panel">
+            <h4>大纲</h4>
+            <div class="orow on">九月复盘</div>
+            <div class="orow h">本周结论</div>
+            <div class="orow h">下周计划</div>
+            <div class="orow">表格</div>
+            <div class="orow h">高亮</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dir-foot">
+      <div><b>接法</b>浅色一侧一根线都没有，靠留白和缩进分层次；深浅之间只有明度。</div>
+      <div><b>细节</b>选中的行和当前标签都是白底浮起（1px 投影），不用色块也不用竖线。</div>
+      <div><b>风险</b>浅色那边没有分区，文件多了容易糊；右栏和正文的分界要靠在纸边上。</div>
+    </div>
+  </section>
+
+  <!-- ============================================================ 04 -->
+  <section class="dir" id="d4">
+    <div class="dir-head">
+      <span class="badge">04</span>
+      <div>
+        <h2>标签桥 <small>Bridge</small></h2>
+        <p>把标签栏的左端对到纸的左边缘上，当前标签填成纸色、盖掉顶栏那条下边框——深色从顶栏直接漏进纸里，上下连成一片。顶栏左边那 324px 顺理成章给了「文件」这个标题，侧栏里就不用再写一遍。</p>
+      </div>
+      <div class="keys"><span>标签对齐纸边</span><span>深色上下贯通</span><span>标题上移</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="mock m-d">
+        <div class="top">
+          <div class="brand">NRS<span class="fh">文件 <span class="n">5</span></span></div>
+          <div class="tabs">
+            <div class="tab on">九月复盘<span class="x">×</span></div>
+            <div class="tab">周报 · W39<span class="x">×</span></div>
+            <div class="tab add">+</div>
+          </div>
+          <div class="win"><i>–</i><i>□</i><i>×</i></div>
+        </div>
+        <div class="body">
+          <div class="rail">
+            <span class="ico"><svg width="16" height="16"><use href="#i-search"/></svg></span>
+            <span class="ico on"><svg width="16" height="16"><use href="#i-note"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-graph"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-board"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-image"/></svg></span>
+            <span class="sp"></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-gear"/></svg></span>
+          </div>
+          <div class="side">
+            <div class="row">收件箱<span class="n">4</span></div>
+            <div class="row on">九月复盘</div>
+            <div class="row">周报 · W39</div>
+            <div class="row">白板<span class="n">2</span></div>
+            <div class="row">归档<span class="n">18</span></div>
+          </div>
+          <div class="doc">
+            <h3>九月复盘</h3>
+            <div class="meta">2026-09-30 · 1,284 字 · 已同步</div>
+            <p>这一周的重点是把壳子收干净：浅色留给「不是正文的地方」，<em>纸自己暗下去</em>。剩下的交给明度，<code>chrome</code> 只负责壳子。</p>
+            <table>
+              <tr><th>区域</th><th>达成</th><th>备注</th></tr>
+              <tr><td>华东</td><td class="v">92%</td><td class="hi">领先</td></tr>
+              <tr><td>华南</td><td class="v">87%</td><td>待复核</td></tr>
+              <tr><td>西南</td><td class="v">83%</td><td>—</td></tr>
+            </table>
+            <p>下面这条勾掉的事，是这一轮唯一改动的结构。</p>
+            <div class="chk"><b>✓</b>编辑区深 / 侧栏浅</div>
+          </div>
+          <div class="panel">
+            <h4>大纲</h4>
+            <div class="orow on">九月复盘</div>
+            <div class="orow h">本周结论</div>
+            <div class="orow h">下周计划</div>
+            <div class="orow">表格</div>
+            <div class="orow h">高亮</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dir-foot">
+      <div><b>接法</b>标签栏左端对齐纸边，当前标签是深色，把深色从顶栏接进纸里。</div>
+      <div><b>细节</b>顶栏左段改放「文件 + 数量」，侧栏省掉一行标题；其余仍是 1px 线分块。</div>
+      <div><b>风险</b>标签只能在纸的宽度内排（约 658px），开多了要横向滚动。</div>
+    </div>
+  </section>
+
+  <section class="outro">
+    <div>
+      <h3>四版的差别只在「那条边」</h3>
+      <ul>
+        <li><b>01 硬接缝</b>不画线，让明度落差当边界——最干净，也最容易被读成两套主题。</li>
+        <li><b>02 浮岛</b>用圆角 + 台面 + 投影把深浅变成「物体关系」，纸变窄 20px。</li>
+        <li><b>03 一面</b>浅色那边取消所有分区，深色成为面上唯一的窗口——最安静。</li>
+        <li><b>04 标签桥</b>把深色从顶栏接进纸里，上下贯通，顺带把侧栏标题挪到顶栏。</li>
+        <li><b>共性风险</b>浅色壳子会把纸衬得更黑，正文对比度反而要<b>往下压一点</b>（纸别用纯黑，用 `#121316`）。</li>
+      </ul>
+    </div>
+    <div class="outro-side">
+      <span class="pick">回我 1 / 2 / 3 / 4</span>
+      <p>也能混：「3 的一面 + 4 的标签桥」「1 的接缝 + 2 的圆角」——混的时候我只换接法，不动骨架。</p>
+      <p>要连顶栏一起深、只留两侧浅色，说一声，那是另一种夹心。</p>
+    </div>
+  </section>
+
+  <div class="pagefoot">四张图内容一致 · 1240 × 640 绘制 · 随窗口等比缩放</div>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const MOCK_W = 1240;
+  const MOCK_H = 640;
+
+  const only = new URLSearchParams(location.search).get("only");
+  if (only) {
+    const id = "d" + only.replace(/\D/g, "");
+    document.querySelectorAll(".dir").forEach((sec) => {
+      if (sec.id !== id) sec.remove();
+    });
+    document.querySelectorAll(".index a").forEach((a) => {
+      if (a.getAttribute("href") !== "#" + id) a.remove();
+    });
+  }
+
+  function fit() {
+    document.querySelectorAll(".stage").forEach((stage) => {
+      const mock = stage.querySelector(".mock");
+      if (!mock) return;
+      const s = Math.min(1.25, stage.clientWidth / MOCK_W);
+      mock.style.transform = "scale(" + s + ")";
+      stage.style.height = Math.round(MOCK_H * s) + "px";
+    });
+  }
+
+  window.addEventListener("resize", fit);
+  fit();
+})();
+</script>
+</body>
+</html>

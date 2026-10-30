@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NRS · 首屏重构 v2</title>
+<style>
+/* ============================================================================
+   深灰 · 书桌。打开后的第一屏。
+   只有一块深灰外壳、一张纸、一个索引卡。没有第二套颜色，没有光效。
+   ========================================================================== */
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --chrome:#141517;          /* 顶栏 / 功能栏 / 左右侧栏：同一个颜色 */
+  --desk:#0b0c0e;            /* 书桌：比外壳更深，纸才浮得起来 */
+  --page:#1a1b1e;
+  --page-head:#18191c;
+  --raised:#202125;
+  --sunken:#111214;
+  --line:#27292e;
+  --line-soft:#1e2024;
+  --rule:#2e3137;
+  --text:#e8e6e1;
+  --text-2:#a4a6ac;
+  --text-3:#70737a;
+  --accent:#c9a86e;
+  --accent-2:#dcc08a;
+  --accent-soft:#2a2418;
+  --on-accent:#191307;
+  --link:#8faec9;
+  --success:#7cbf9f;
+  --danger:#df7d78;
+  --warn:#d9a05e;
+  --sel:rgba(201,168,110,.24);
+  --ring:rgba(201,168,110,.30);
+  --hover:rgba(255,255,255,.045);
+  --hover-2:rgba(255,255,255,.075);
+  --page-shadow:0 22px 58px rgba(0,0,0,.38),0 1px 0 rgba(255,255,255,.03) inset;
+  --ui:13px; --caption:11.5px; --doc:15.5px; --h1:30px; --h2:21px; --h3:17px;
+  --r-sm:6px; --r-md:8px; --r-lg:11px; --r-xl:14px;
+  --display:"Georgia","Source Han Serif CN","思源宋体 CN","Noto Serif SC","SimSun","STSong",serif;
+  --ui-font:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI",sans-serif;
+  --mono:"Cascadia Code","Cascadia Mono",Consolas,"Microsoft YaHei UI",monospace;
+}
+html,body{height:100%;overflow:hidden;background:var(--desk)}
+body{
+  font:var(--ui)/1.45 var(--ui-font);color:var(--text);
+  -webkit-font-smoothing:antialiased;
+  font-variant-numeric:tabular-nums;
+}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+svg{display:block;flex:none}
+::selection{background:var(--sel);color:var(--text)}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:transparent;border-radius:99px;border:3px solid transparent;background-clip:content-box}
+:hover::-webkit-scrollbar-thumb{background:#2f3238;border:3px solid transparent;background-clip:content-box}
+:hover::-webkit-scrollbar-thumb:hover{background:#3b3e45;border:3px solid transparent;background-clip:content-box}
+
+/* ================================================================== 顶栏 */
+.app{height:100vh;display:flex;flex-direction:column;border-radius:0;background:var(--desk)}
+.topbar{
+  height:44px;flex:none;display:flex;align-items:center;padding:0 0 0 8px;
+  background:var(--chrome);border-bottom:1px solid var(--line-soft);position:relative;user-select:none;
+}
+.bar-btn{
+  width:28px;height:28px;display:grid;place-items:center;border-radius:var(--r-sm);
+  color:var(--text-3);transition:background .12s ease,color .12s ease;
+}
+.bar-btn:hover{background:var(--hover);color:var(--text)}
+.brand{display:flex;align-items:center;gap:9px;margin-left:7px;padding-right:10px}
+.brand .mark{
+  width:22px;height:22px;display:grid;place-items:center;border:1px solid var(--line);
+  border-radius:6px;color:var(--accent);font-family:var(--display);font-size:13px;line-height:1;
+  background:rgba(255,255,255,.012);
+}
+.brand .word{font-size:12px;font-weight:600;letter-spacing:1.5px;color:var(--text-2)}
+.topsearch{
+  position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:min(380px,34vw);height:28px;display:flex;align-items:center;gap:8px;
+  padding:0 10px;border:1px solid var(--line-soft);border-radius:7px;
+  background:var(--sunken);color:var(--text-3);font-size:12px;
+  transition:border-color .12s ease,background .12s ease,color .12s ease;
+}
+.topsearch:hover{border-color:var(--line);color:var(--text-2);background:#121316}
+.topsearch svg{width:13px;height:13px;opacity:.9}
+.topsearch .spacer{flex:1}
+.win-btns{margin-left:auto;height:100%;display:flex;align-items:stretch;border-left:1px solid var(--line-soft)}
+.cap{width:46px;height:100%;display:grid;place-items:center;color:var(--text-2);transition:background .1s linear,color .1s linear}
+.cap:hover{background:var(--hover);color:var(--text)}
+.cap-close:hover{background:#c42b1c;color:#fff}
+.cap svg{width:10px;height:10px;stroke:currentColor;fill:none;stroke-width:1.1}
+
+/* ============================================================ 外壳 / 功能栏 */
+.shell{flex:1;min-height:0;display:flex;background:var(--desk)}
+.rail{
+  width:46px;flex:none;display:flex;flex-direction:column;align-items:center;
+  padding:10px 0 8px;gap:2px;background:var(--chrome);
+  border-right:1px solid var(--line-soft);
+}
+.rail-btn{
+  position:relative;width:32px;height:32px;display:grid;place-items:center;
+  border-radius:var(--r-md);color:var(--text-3);
+  transition:background .12s ease,color .12s ease;
+}
+.rail-btn:hover{background:var(--hover);color:var(--text)}
+.rail-btn.on{background:var(--accent-soft);color:var(--accent)}
+.rail-btn.on::before{
+  content:"";position:absolute;left:-7px;top:50%;transform:translateY(-50%);
+  width:2px;height:14px;border-radius:0 2px 2px 0;background:var(--accent);
+}
+.rail-spacer{flex:1}
+.rail-sep{width:18px;height:1px;background:var(--line-soft);margin:5px 0}
+
+/* ================================================================ 资料库 */
+.library{
+  width:300px;flex:none;min-height:0;display:flex;flex-direction:column;
+  background:var(--chrome);border-right:1px solid var(--line-soft);
+}
+.lib-top{padding:7px 8px 0}
+.sec-head{
+  height:28px;display:flex;align-items:center;gap:6px;padding:0 7px;
+  color:var(--text-3);font-size:10.5px;font-weight:600;letter-spacing:.55px;
+}
+.sec-head .count{font-weight:400;letter-spacing:0;color:var(--text-3);opacity:.75}
+.sec-head .spacer{flex:1}
+.sec-head .actions{display:flex;align-items:center;gap:0}
+.icon-btn{
+  width:23px;height:23px;display:grid;place-items:center;border-radius:5px;
+  color:var(--text-3);transition:background .12s ease,color .12s ease;
+}
+.icon-btn:hover{background:var(--hover-2);color:var(--text)}
+.icon-btn svg{width:13.5px;height:13.5px;stroke-width:1.6}
+
+/* 打开的文档：横向 tab 竖过来，像 VS Code 的 Open Editors */
+.open-list{padding:0 8px 7px;max-height:160px;overflow:auto}
+.doc-row{
+  position:relative;height:31px;display:flex;align-items:center;gap:8px;
+  padding:0 8px 0 7px;border-radius:var(--r-sm);color:var(--text-2);
+  font-size:12.5px;transition:background .12s ease,color .12s ease;
+}
+.doc-row:hover{background:var(--hover);color:var(--text)}
+.doc-row.on{background:var(--accent-soft);color:var(--text)}
+.doc-row.on::before{
+  content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);
+  width:2px;height:16px;border-radius:0 2px 2px 0;background:var(--accent);
+}
+.doc-row .ficon{width:14px;height:14px;color:var(--text-3)}
+.doc-row.on .ficon{color:var(--accent)}
+.doc-row .dname{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.doc-row .tx{
+  width:18px;height:18px;display:grid;place-items:center;border-radius:4px;
+  color:var(--text-3);opacity:0;transition:opacity .12s ease,background .12s ease,color .12s ease;
+}
+.doc-row:hover .tx,.doc-row.on .tx{opacity:.9}
+.doc-row .tx:hover{background:var(--hover-2);color:var(--text);opacity:1}
+.doc-row .tx svg{width:11px;height:11px;stroke-width:1.8}
+
+.files-sec{flex:1;min-height:0;display:flex;flex-direction:column;border-top:1px solid var(--line-soft);padding-top:4px}
+.tree{flex:1;overflow:auto;padding:2px 8px 12px}
+.tree-row{
+  height:30px;display:flex;align-items:center;padding:0 8px;border-radius:var(--r-sm);
+  color:var(--text-2);font-size:12.5px;gap:0;
+  transition:background .12s ease,color .12s ease;
+}
+.tree-row:hover{background:var(--hover);color:var(--text)}
+.tree-row.sel{background:#1e2024;color:var(--text)}
+.tree-row .twisty{width:12px;height:12px;color:var(--text-3);margin-right:4px;opacity:.8}
+.tree-row .ficon{width:14px;height:14px;color:var(--text-3);margin-right:7px;opacity:.95}
+.tree-row.folder .name{color:var(--text-2);font-weight:500}
+.tree-row.folder:hover .name{color:var(--text)}
+.tree-row .name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.05px}
+.tree-row.sel .name{font-weight:600}
+.tree-row .meta{
+  font-size:10.5px;color:var(--text-3);opacity:0;letter-spacing:0;
+  transition:opacity .12s ease;white-space:nowrap;
+}
+.tree-row:hover .meta,.tree-row.sel .meta{opacity:1}
+.tree-row.folder .meta{opacity:1;font-size:10px;opacity:.65}
+.indent-1{padding-left:45px}
+.indent-1 .ficon{margin-left:0}
+.tree-gap{height:7px}
+.lib-foot{
+  height:28px;flex:none;display:flex;align-items:center;padding:0 14px;
+  border-top:1px solid var(--line-soft);color:var(--text-3);font-size:10.5px;letter-spacing:.1px;
+}
+.lib-foot b{color:var(--text-2);font-weight:600}
+.lib-foot .sep{margin:0 5px;opacity:.5}
+
+/* ================================================================== 书桌 */
+.desk{flex:1;min-width:0;display:flex;justify-content:center;gap:16px;padding:18px;background:var(--desk)}
+
+/* 纸 */
+.page{
+  flex:1;min-width:0;max-width:900px;display:flex;flex-direction:column;overflow:hidden;
+  background:var(--page);border:1px solid #26282c;border-radius:12px;
+  box-shadow:var(--page-shadow);
+  animation:rise .24s ease-out both;
+}
+@keyframes rise{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+
+.page-head{
+  height:48px;flex:none;display:flex;align-items:center;gap:5px;
+  padding:0 14px 0 12px;background:var(--page-head);
+  border-bottom:1px solid var(--line-soft);
+}
+.page-nav{display:flex;align-items:center;gap:0;margin-right:5px}
+.nav-btn{
+  width:25px;height:25px;display:grid;place-items:center;border-radius:5px;
+  color:var(--text-3);transition:background .12s ease,color .12s ease;
+}
+.nav-btn:hover{background:var(--hover-2);color:var(--text)}
+.nav-btn.disabled{opacity:.32;pointer-events:none}
+.nav-btn svg{width:14px;height:14px;stroke-width:1.7}
+.path{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-3);letter-spacing:.1px;white-space:nowrap;overflow:hidden}
+.path .crumb{color:var(--text-3)}
+.path .chev{width:10px;height:10px;opacity:.55}
+.path .cur{color:var(--text-2);overflow:hidden;text-overflow:ellipsis}
+.page-tools{margin-left:auto;display:flex;align-items:center;gap:1px}
+.doc-btn{
+  width:26px;height:26px;display:grid;place-items:center;border-radius:5px;
+  color:var(--text-3);transition:background .12s ease,color .12s ease;
+}
+.doc-btn:hover{background:var(--hover-2);color:var(--text)}
+.doc-btn.on{background:var(--accent-soft);color:var(--accent)}
+.doc-btn svg{width:15px;height:15px;stroke-width:1.6}
+.act-div{width:1px;height:14px;background:var(--line);margin:0 5px}
+
+.page-scroll{flex:1;min-height:0;overflow:auto;padding:46px 64px 90px}
+.doc{max-width:700px;margin:0 auto;color:var(--text)}
+.doc h1{
+  font-family:var(--display);font-size:var(--h1);line-height:1.3;font-weight:600;
+  letter-spacing:-.35px;margin:0 0 9px;color:var(--text);
+}
+.doc .meta{
+  display:flex;align-items:center;flex-wrap:wrap;gap:10px;
+  font-size:11.5px;color:var(--text-3);margin:0 0 30px;letter-spacing:.15px;
+}
+.doc .meta .dot{width:3px;height:3px;border-radius:50%;background:var(--text-3);opacity:.55}
+.doc .tag{
+  display:inline-flex;align-items:center;height:20px;padding:0 7px;gap:3px;
+  border:1px solid var(--line);border-radius:5px;background:rgba(255,255,255,.012);
+  font-size:10.5px;color:var(--text-2);letter-spacing:.1px;
+}
+.doc .tag .hash{color:var(--text-3);font-size:10px}
+.doc p{font-size:var(--doc);line-height:1.8;margin:0 0 15px;letter-spacing:.05px}
+.doc p.muted{color:var(--text-2)}
+.doc h2{
+  font-family:var(--display);font-size:var(--h2);line-height:1.4;font-weight:600;
+  letter-spacing:-.1px;margin:30px 0 10px;color:var(--text);
+}
+.doc h3{
+  font-family:var(--display);font-size:var(--h3);line-height:1.5;font-weight:600;
+  margin:22px 0 8px;color:var(--text);
+}
+.doc ul,.doc ol{margin:0 0 15px;padding-left:22px;color:var(--text)}
+.doc li{font-size:var(--doc);line-height:1.8;margin:4px 0}
+.doc li::marker{color:var(--text-3)}
+.doc a{color:var(--link);text-decoration:none;border-bottom:1px solid rgba(143,174,201,.3)}
+.doc a:hover{border-bottom-color:var(--link)}
+.doc code{
+  font-family:var(--mono);font-size:12.5px;color:var(--text);
+  background:var(--sunken);border:1px solid var(--line-soft);
+  border-radius:4px;padding:1px 4px;letter-spacing:0;
+}
+.doc pre{
+  position:relative;margin:0 0 17px;padding:15px 18px;
+  background:var(--sunken);border:1px solid var(--line-soft);border-radius:var(--r-lg);
+  overflow:auto;
+}
+.doc pre code{
+  background:none;border:0;padding:0;font-size:12.5px;line-height:1.7;
+  color:var(--text-2);letter-spacing:0;
+}
+.doc .k{color:var(--accent)}
+.doc .s{color:var(--success)}
+.doc .f{color:var(--link)}
+.doc .c{color:var(--text-3)}
+.doc blockquote{
+  margin:0 0 17px;padding:2px 0 2px 15px;border-left:2px solid var(--accent);
+  color:var(--text-2);font-size:calc(var(--doc) - .5px);line-height:1.8;
+}
+.doc hr{border:0;border-top:1px solid var(--rule);margin:24px 0}
+.doc .task{display:flex;align-items:flex-start;gap:9px;margin:7px 0;font-size:var(--doc);line-height:1.7}
+.doc .box{width:15px;height:15px;flex:none;margin-top:5px;border:1.4px solid var(--line);border-radius:4px;background:rgba(255,255,255,.012)}
+.doc .task.done .box{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.doc .task.done span{color:var(--text-3)}
+.doc table{width:100%;border-collapse:separate;border-spacing:0;margin:0 0 17px;font-size:13.5px}
+.doc th{
+  text-align:left;font-weight:600;font-size:10.5px;letter-spacing:.45px;color:var(--text-2);
+  padding:7px 10px;border-bottom:1px solid var(--rule);
+}
+.doc td{padding:8px 10px;border-bottom:1px solid var(--line-soft);color:var(--text)}
+.doc tr:last-child td{border-bottom:0}
+
+.page-foot{
+  height:30px;flex:none;display:flex;align-items:center;gap:12px;padding:0 16px 0 14px;
+  background:var(--page-head);border-top:1px solid var(--line-soft);
+  font-size:10.5px;color:var(--text-3);letter-spacing:.1px;
+}
+.page-foot .spacer{flex:1}
+.page-foot .ok{width:5px;height:5px;border-radius:50%;background:var(--success);box-shadow:0 0 0 3px rgba(124,191,159,.08)}
+.page-foot b{color:var(--text-2);font-weight:600}
+.page-foot .sep{opacity:.45}
+
+/* ================================================================ 大纲卡 */
+.outline{
+  width:220px;flex:none;align-self:flex-start;max-height:100%;display:flex;flex-direction:column;overflow:hidden;
+  background:var(--chrome);border:1px solid var(--line-soft);border-radius:10px;
+  box-shadow:0 14px 34px rgba(0,0,0,.26);
+  animation:fadeIn .3s .03s ease-out both;
+}
+.ol-head{
+  height:40px;flex:none;display:flex;align-items:center;gap:7px;padding:0 11px 0 15px;
+  border-bottom:1px solid var(--line-soft);
+}
+.ol-head .t{font-size:10.5px;font-weight:600;letter-spacing:.55px;color:var(--text-3)}
+.ol-head .count{font-size:10px;color:var(--text-3);opacity:.7}
+.ol-head .spacer{flex:1}
+.ol-head .icon-btn{width:22px;height:22px}
+.ol-head .icon-btn svg{width:13px;height:13px}
+.ol-list{flex:0 1 auto;min-height:0;overflow:auto;padding:7px 8px 10px}
+.ol{
+  position:relative;height:30px;display:flex;align-items:center;padding:0 9px;border-radius:var(--r-sm);
+  font-size:12.5px;font-weight:500;color:var(--text-2);transition:background .12s ease,color .12s ease;
+}
+.ol:hover{background:var(--hover);color:var(--text)}
+.ol.h3{padding-left:26px;font-size:11.5px;font-weight:400;color:var(--text-3)}
+.ol.sel{background:color-mix(in srgb,var(--accent) 8%,transparent);color:var(--accent);font-weight:600}
+.ol.sel::before{
+  content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);
+  width:2px;height:15px;border-radius:0 2px 2px 0;background:var(--accent);
+}
+
+/* 小屏：先收起大纲卡，页面自然变宽 */
+@media (max-width:1120px){
+  .outline{display:none}
+  .page-scroll{padding-left:48px;padding-right:48px}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important}
+}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-chev-l" viewBox="0 0 24 24"><path d="m14.5 5-7 7 7 7"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="m9.5 5 7 7-7 7"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="m5 9 7 7 7-7"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1a2 2 0 0 1 1.5.7l1 1.2h7.4A2.5 2.5 0 0 1 21 9.4v7.1a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 4.5 4.5"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M11.6 3.6H5.4A1.8 1.8 0 0 0 3.6 5.4v6.2a2 2 0 0 0 .6 1.4l7.4 7.4a2 2 0 0 0 2.8 0l6.2-6.2a2 2 0 0 0 0-2.8L13.2 4.2a2 2 0 0 0-1.6-.6Z"/><circle cx="8.2" cy="8.2" r="1.4"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M12 3.2v2M12 18.8v2M20.8 12h-2M5.2 12h-2M18.2 5.8l-1.4 1.4M7.2 16.8l-1.4 1.4M18.2 18.2l-1.4-1.4M7.2 7.2 5.8 5.8"/></symbol>
+  <symbol id="i-toc" viewBox="0 0 24 24"><path d="M4 6.5h2M4 12h2M4 17.5h2M9.5 6.5H20M9.5 12H20M9.5 17.5H20"/></symbol>
+  <symbol id="i-table" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M9.5 9.5v10M15.5 9.5v10"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="9.5" r="1.6"/><path d="m5 17 4.5-4.5 3 3 2.5-2.5 4 4"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M13.5 3.5H7A2.5 2.5 0 0 0 4.5 6v12A2.5 2.5 0 0 0 7 20.5h10a2.5 2.5 0 0 0 2.5-2.5V9.5z"/><path d="M13.5 3.5v6h6"/></symbol>
+  <symbol id="i-canvas" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 14h6v6h-6z"/><path d="M10 7h4a3 3 0 0 1 3 3v4" stroke-dasharray="2 2.6"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.25" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.25" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1.25" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-type" viewBox="0 0 24 24"><path d="M5 6.5V5h14v1.5M12 5v14M9 19h6"/></symbol>
+  <symbol id="i-focus" viewBox="0 0 24 24"><path d="M4 8.5V6a2 2 0 0 1 2-2h2.5M15.5 4H18a2 2 0 0 1 2 2v2.5M20 15.5V18a2 2 0 0 1-2 2h-2.5M8.5 20H6a2 2 0 0 1-2-2v-2.5"/><circle cx="12" cy="12" r="2.2"/></symbol>
+  <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.4 0 2-.9 2-1.9 0-1.5-1.3-1.8-1.3-3 0-.9.7-1.6 1.7-1.6h1.4a3.7 3.7 0 0 0 3.7-3.7c0-3.5-3.4-6.8-7.5-6.8Z"/><circle cx="7.6" cy="9.2" r="1"/><circle cx="11" cy="6.9" r="1"/><circle cx="15.3" cy="8.2" r="1"/></symbol>
+  <symbol id="i-sort" viewBox="0 0 24 24"><path d="M4 7h11M4 12h8M4 17h5M17 8v9M17 17l2.5-2.5M17 17l-2.5-2.5"/></symbol>
+  <symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 4H4v4M16 4h4v4M8 20H4v-4M16 20h4v-4"/></symbol>
+  <symbol id="i-folder-plus" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.1a2 2 0 0 1 1.5.7l1 1.2h7.4A2.5 2.5 0 0 1 21 9.4v7.1a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/><path d="M12 11v5M9.5 13.5h5"/></symbol>
+  <symbol id="i-file-plus" viewBox="0 0 24 24"><path d="M13.5 3.5H7A2.5 2.5 0 0 0 4.5 6v12A2.5 2.5 0 0 0 7 20.5h10a2.5 2.5 0 0 0 2.5-2.5V9.5z"/><path d="M13.5 3.5v6h6M12 12.5v5M9.5 15h5"/></symbol>
+  <symbol id="i-hash" viewBox="0 0 24 24"><path d="M9.5 4 7.5 20M16.5 4l-2 16M4.5 9h15M3.5 15h15"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 6.5h15M9.5 3.5h5M7 6.5l.8 13a2 2 0 0 0 2 1.9h4.4a2 2 0 0 0 2-1.9l.8-13M10 10.5v7M14 10.5v7"/></symbol>
+  <symbol id="i-blocks" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.4"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.4"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.4"/><path d="M17 13.5v7M13.5 17h7"/></symbol>
+  <symbol id="i-graph" viewBox="0 0 24 24"><circle cx="6" cy="7" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="12" cy="17.5" r="2.4"/><path d="m8 8.3 5.5 6.8M16.3 8l-2.8 7.1M7 9.5l3 5.7"/></symbol>
+  <symbol id="i-canvas2" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 14h6v6h-6zM5.8 19.5H9M19.5 5.8V9"/><path d="M10 7h2.5A2.5 2.5 0 0 1 15 9.5V14" stroke-dasharray="2 2.6"/></symbol>
+  <symbol id="i-min" viewBox="0 0 10 10"><path d="M0 5.5h10"/></symbol>
+  <symbol id="i-max" viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9"/></symbol>
+  <symbol id="i-close" viewBox="0 0 10 10"><path d="M.5.5l9 9M9.5.5l-9 9"/></symbol>
+  <symbol id="i-panel-left" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15"/></symbol>
+  <symbol id="i-panel-right" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M14.5 4.5v15"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></symbol>
+</defs></svg>
+
+<div class="app">
+  <!-- ================================================================ 顶栏 -->
+  <header class="topbar">
+    <button class="bar-btn" title="收起侧栏  ·  Ctrl+\"><svg style="width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round"><use href="#i-panel-left"/></svg></button>
+    <div class="brand">
+      <span class="mark">N</span>
+      <span class="word">NRS</span>
+    </div>
+    <button class="topsearch" title="搜索笔记">
+      <svg style="stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round"><use href="#i-search"/></svg>
+      <span>搜索笔记</span>
+      <span class="spacer"></span>
+    </button>
+    <div class="win-btns">
+      <button class="cap" title="最小化"><svg><use href="#i-min"/></svg></button>
+      <button class="cap" title="最大化"><svg><use href="#i-max"/></svg></button>
+      <button class="cap cap-close" title="关闭"><svg><use href="#i-close"/></svg></button>
+    </div>
+  </header>
+
+  <div class="shell">
+    <!-- ============================================================ 功能栏 -->
+    <nav class="rail">
+      <button class="rail-btn" title="标签"><svg style="width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round"><use href="#i-tag"/></svg></button>
+      <button class="rail-btn" title="插入模板  ·  Ctrl+P"><svg style="width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round"><use href="#i-blocks"/></svg></button>
+      <button class="rail-btn" title="关系图谱"><svg style="width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round"><use href="#i-graph"/></svg></button>
+      <button class="rail-btn" title="白板  ·  Ctrl+Shift+B"><svg style="width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round"><use href="#i-canvas2"/></svg></button>
+      <div class="rail-spacer"></div>
+      <div class="rail-sep"></div>
+      <button class="rail-btn" title="回收站"><svg style="width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round"><use href="#i-trash"/></svg></button>
+      <button class="rail-btn" title="设置  ·  Ctrl+,"><svg style="width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round"><use href="#i-settings"/></svg></button>
+    </nav>
+
+    <!-- ============================================================ 资料库 -->
+    <aside class="library">
+      <div class="lib-top">
+        <div class="sec-head"><span>打开的文档</span><span class="count">4</span></div>
+        <div class="open-list">
+          <div class="doc-row on">
+            <svg class="ficon" style="stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round"><use href="#i-file"/></svg>
+            <span class="dname">Markdown 语法</span>
+            <button class="tx" title="关闭"><svg style="stroke:currentColor;fill:none;stroke-linecap:round"><use href="#i-x"/></svg></button>
+          </div>
+          <div class="doc-row">
+            <svg class="ficon" style="stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round"><use href="#i-file"/></svg>
+            <span class="dname">读书笔记 · 深度工作</span>
+            <button class="tx" title="关闭"><svg style="stroke:currentColor;fill:none;stroke-linecap:round"><use href="#i-x"/></svg></button>
+          </div>
+          <div class="doc-row">
+            <svg class="ficon" style="stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round"><use href="#i-file"/></svg>
+            <span class="dname">周报 2026-W42</span>
+            <button class="tx" title="关闭"><svg style="stroke:currentColor;fill:none;stroke-linecap:round"><use href="#i-x"/></svg></button>
+          </div>
+          <div class="doc-row">
+            <svg class="ficon" style="stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round"><use href="#i-canvas"/></svg>
+            <span class="dname">未命名白板 3</span>
+            <button class="tx" title="关闭"><svg style="stroke:currentColor;fill:none;stroke-linecap:round"><use href="#i-x"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <section class="files-sec">
+        <div class="sec-head">
+          <span>文件</span><span class="count">864</span>
+          <span class="spacer"></span>
+          <span class="actions">
+            <button class="icon-btn" title="排序方式"><svg style="stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round"><use href="#i-sort"/></svg></button>
+            <button class="icon-btn" title="全部展开"><svg style="stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round"><use href="#i-expand"/></svg></button>
+            <button class="icon-btn" title="新建文件夹"><svg style="stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round"><use href="#i-folder-plus"/></svg></button>
+            <button class="icon-btn" title="新建笔记  ·  Ctrl+N"><svg style="stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round"><use href="#i-file-plus"/></svg></button>
+          </span>
+        </div>
+        <div class="tree">
+          <div class="tree-row folder">
+            <svg class="twisty" style="stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round"><use href="#i-chev-d"/></svg>
+            <svg class="ficon" style="stroke:currentColor;fill:none;stroke-width:1.55;stroke-linecap:round;stroke-linejoin:round"><use href="#i-folder"/></svg>
+            <span class="name">日常</span><span class="meta">12</span>
+          </div>
+          <div class="tree-row indent-1"><span class="name">2026-10-20 周一</span></div>
+          <div class="tree-row indent-1 sel"><span class="name">Markdown 语法</span><span class="meta">1 248 字</span></div>
+          <div class="tree-row indent-1"><span class="name">灵感碎片</span></div>
+          <div class="tree-gap"></div>
+          <div class="tree-row folder">
+            <svg class="twisty" style="stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round"><use href="#i-chev-d"/></svg>
+            <svg class="ficon" style="stroke:currentColor;fill:none;stroke-width:1.55;stroke-linecap:round;stroke-linejoin:round"><use href="#i-folder"/></svg>
+            <span class="name">读书</span><span class="meta">8</span>
+          </div>
+          <div class="tree-row indent-1"><span class="name">深度工作</span></div>
+          <div class="tree-row indent-1"><span class="name">如何阅读一本书</span></div>
+          <div class="tree-gap"></div>
+          <div class="tree-row folder">
+            <svg class="twisty" style="stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round"><use href="#i-chev-d"/></svg>
+            <svg class="ficon" style="stroke:currentColor;fill:none;stroke-width:1.55;stroke-linecap:round;stroke-linejoin:round"><use href="#i-folder"/></svg>
+            <span class="name">项目 / NRS</span><span class="meta">4</span>
+          </div>
+          <div class="tree-row indent-1"><span class="name">进度</span><span class="meta">126/143</span></div>
+          <div class="tree-row indent-1">
+            <svg class="ficon" style="stroke:currentColor;fill:none;stroke-width:1.55;stroke-linecap:round;stroke-linejoin:round"><use href="#i-canvas"/></svg>
+            <span class="name">未命名白板 3</span>
+          </div>
+          <div class="tree-row indent-1">
+            <svg class="ficon" style="stroke:currentColor;fill:none;stroke-width:1.55;stroke-linecap:round;stroke-linejoin:round"><use href="#i-canvas"/></svg>
+            <span class="name">设计板</span>
+          </div>
+          <div class="tree-gap"></div>
+          <div class="tree-row folder">
+            <svg class="twisty" style="stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round"><use href="#i-chev-r"/></svg>
+            <svg class="ficon" style="stroke:currentColor;fill:none;stroke-width:1.55;stroke-linecap:round;stroke-linejoin:round"><use href="#i-folder"/></svg>
+            <span class="name">归档</span><span class="meta">0</span>
+          </div>
+          <div class="tree-row folder">
+            <svg class="twisty" style="stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round"><use href="#i-chev-r"/></svg>
+            <svg class="ficon" style="stroke:currentColor;fill:none;stroke-width:1.55;stroke-linecap:round;stroke-linejoin:round"><use href="#i-folder"/></svg>
+            <span class="name">templates</span>
+          </div>
+        </div>
+      </section>
+      <div class="lib-foot"><b>864</b><span class="sep">·</span>35.0 万字</div>
+    </aside>
+
+    <!-- ============================================================== 书桌 -->
+    <main class="desk">
+      <article class="page">
+        <header class="page-head">
+          <div class="page-nav">
+            <button class="nav-btn" title="后退"><svg style="stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round"><use href="#i-chev-l"/></svg></button>
+            <button class="nav-btn disabled" title="前进"><svg style="stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round"><use href="#i-chev-r"/></svg></button>
+          </div>
+          <div class="path">
+            <span class="crumb">日常</span>
+            <svg class="chev" style="stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round"><use href="#i-chev-r"/></svg>
+            <span class="cur">Markdown 语法</span>
+          </div>
+          <div class="page-tools">
+            <button class="doc-btn on" title="大纲  ·  Ctrl+Shift+O"><svg style="stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round"><use href="#i-toc"/></svg></button>
+            <button class="doc-btn" title="表格"><svg style="stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round"><use href="#i-table"/></svg></button>
+            <button class="doc-btn" title="图片"><svg style="stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round"><use href="#i-image"/></svg></button>
+            <span class="act-div"></span>
+            <button class="doc-btn" title="打字机模式"><svg style="stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round"><use href="#i-type"/></svg></button>
+            <button class="doc-btn" title="专注模式  ·  Ctrl+Shift+F"><svg style="stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round"><use href="#i-focus"/></svg></button>
+            <button class="doc-btn" title="排版"><svg style="stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round"><use href="#i-palette"/></svg></button>
+            <button class="doc-btn" title="更多"><svg style="stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round"><use href="#i-more"/></svg></button>
+          </div>
+        </header>
+
+        <div class="page-scroll">
+          <div class="doc">
+            <h1>Markdown 语法</h1>
+            <div class="meta">
+              <span>10 月 20 日 01:12</span><span class="dot"></span>
+              <span>1 248 字</span><span class="dot"></span>
+              <span class="tag"><span class="hash">#</span>入门</span>
+              <span class="tag"><span class="hash">#</span>速查</span>
+            </div>
+
+            <p>这是一份随手记的语法清单。这里的东西都试过一遍了，留作以后翻。写作不是记录想法，而是产生想法——想法只有在被写下来的那一刻才真正存在。</p>
+
+            <h2>标题与段落</h2>
+            <p class="muted">用 <code>#</code> 到 <code>######</code> 表示六级标题。段落之间空一行，行内换行不产生新段落。回到 <a href="#">界面重构方案</a> 的讨论。</p>
+
+            <h3>强调</h3>
+            <ul>
+              <li><code>**粗体**</code> → <strong>粗体</strong></li>
+              <li><code>*斜体*</code> → <em>斜体</em></li>
+              <li><code>`代码`</code> → <code>代码</code></li>
+            </ul>
+
+            <h2>代码块</h2>
+            <pre><code><span class="c">// 行高与字号共用同一份测量</span>
+<span class="k">final</span> hits = notes.<span class="f">searchHits</span>(query);
+<span class="k">for</span> (final hit <span class="k">in</span> hits) {
+  <span class="f">debugPrint</span>(<span class="s">'${hit.note.fileName} · ${hit.matchCount}'</span>);
+}</code></pre>
+
+            <blockquote>写作不是记录想法，而是产生想法。想法只有在被写下来的那一刻才真正存在。</blockquote>
+
+            <h2>任务清单</h2>
+            <div class="task done"><span class="box"><svg style="width:9px;height:9px;stroke:currentColor;fill:none;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round"><use href="#i-check"/></svg></span><span>把手绘标题栏接进 shell</span></div>
+            <div class="task done"><span class="box"><svg style="width:9px;height:9px;stroke:currentColor;fill:none;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round"><use href="#i-check"/></svg></span><span>tab 对齐编辑器左边缘</span></div>
+            <div class="task"><span class="box"></span><span>把 hover 反馈统一成一套</span></div>
+          </div>
+        </div>
+
+        <footer class="page-foot">
+          <span class="ok"></span><span>已保存</span>
+          <span>行 42,列 8</span>
+          <span class="spacer"></span>
+          <span>待办 <b>2/4</b></span>
+          <span class="sep">·</span>
+          <span><b>1 248</b> 字</span>
+          <span class="sep">·</span>
+          <span><b>1 612</b> 字符</span>
+          <span class="sep">·</span>
+          <span>约 <b>4</b> 分钟</span>
+        </footer>
+      </article>
+
+      <aside class="outline">
+        <header class="ol-head">
+          <span class="t">本篇大纲</span><span class="count">4</span>
+          <span class="spacer"></span>
+          <button class="icon-btn" title="收起大纲"><svg style="stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round"><use href="#i-panel-right"/></svg></button>
+        </header>
+        <div class="ol-list">
+          <div class="ol sel">标题与段落</div>
+          <div class="ol h3">强调</div>
+          <div class="ol">代码块</div>
+          <div class="ol">任务清单</div>
+        </div>
+      </aside>
+    </main>
+  </div>
+</div>
+
+<script>
+if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  document.documentElement.dataset.reduced = '1';
+}
+</script>
+</body>
+</html>

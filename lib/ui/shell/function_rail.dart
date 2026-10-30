@@ -31,6 +31,7 @@ class AppRail extends StatelessWidget {
     required this.onOpenSettings,
     this.graphActive = false,
     this.canvasActive = false,
+    this.topInset = 0,
   });
 
   final SidebarView view;
@@ -48,6 +49,12 @@ class AppRail extends StatelessWidget {
   final bool graphActive;
   final bool canvasActive;
 
+  /// 顶上要给浮在标签条上的那颗「收起侧边栏」让出来的高度。
+  ///
+  /// 标签条现在顶到窗口最上面，那颗开关正好落在功能栏的头顶上——不让开就会
+  /// 盖住第一颗按钮。
+  final double topInset;
+
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
@@ -61,7 +68,16 @@ class AppRail extends StatelessWidget {
       ),
       child: Column(
         children: <Widget>[
-          const SizedBox(height: AppSpace.sm),
+          SizedBox(height: topInset > 0 ? topInset : AppSpace.sm),
+          // 搜索入口从顶栏搬到这里：顶栏那两个「文件 / 搜索」按钮和侧边栏自己
+          // 的标签条重复，已经并进标签条了，功能栏得留一个直达的。
+          _RailButton(
+            icon: SidebarView.search.icon,
+            tooltip: SidebarView.search.label,
+            selected: view == SidebarView.search,
+            onPressed: () => onSelectView(SidebarView.search),
+          ),
+          const SizedBox(height: AppSpace.xs),
           _RailButton(
             icon: SidebarView.tags.icon,
             tooltip: SidebarView.tags.label,

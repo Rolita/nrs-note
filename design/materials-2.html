@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>NRS · 材质 · 第二批</title>
+<style>
+  :root {
+    --page: #0E0F11;
+    --panel: #141518;
+    --line: #23252B;
+    --t1: #E9EAEC;
+    --t2: #9EA2A9;
+    --t3: #6B6F77;
+
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+    --serif: Georgia, "Songti SC", "Source Han Serif SC", "SimSun", serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+
+    --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: radial-gradient(120% 80% at 50% -10%, #17181C 0%, #0E0F11 55%, #0B0C0E 100%);
+    color: var(--t1); font-family: var(--sans); font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { width: min(1320px, calc(100% - 48px)); margin: 0 auto; }
+
+  .masthead { padding: 60px 0 0; }
+  .kicker { font-family: var(--mono); font-size: 10px; letter-spacing: .2em; color: var(--t3); text-transform: uppercase; }
+  h1 { margin: 14px 0 0; font-size: 34px; font-weight: 600; letter-spacing: -.8px; line-height: 1.22; }
+  .lead { margin: 16px 0 0; max-width: 790px; font-size: 13.5px; line-height: 1.95; color: var(--t2); }
+  .lead b { color: var(--t1); font-weight: 600; }
+  .lead em { font-style: normal; color: var(--t1); }
+
+  .materials { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px 24px; margin: 40px 0 0; }
+  .mat { margin: 0; }
+  .surf {
+    position: relative; height: 356px; border-radius: 12px; overflow: hidden;
+    box-shadow: 0 22px 48px rgba(0,0,0,.45), 0 2px 4px rgba(0,0,0,.3);
+  }
+  .surf::before {
+    content: ""; position: absolute; inset: 0; z-index: 1;
+    background-image: var(--grain); background-size: 180px 180px;
+    opacity: var(--grainA, .16); mix-blend-mode: overlay; pointer-events: none;
+  }
+  .surf::after {
+    content: ""; position: absolute; inset: 0; z-index: 2; pointer-events: none;
+    background: var(--sheen, none);
+  }
+  .frag { position: relative; z-index: 3; padding: 38px 42px; height: 100%; display: flex; flex-direction: column; }
+  .frag h4 { margin: 0; font-size: 27px; font-weight: 600; letter-spacing: -.4px; color: var(--ink); }
+  .frag .meta { font-family: var(--mono); font-size: 10px; letter-spacing: .06em; color: var(--ink2); margin: 8px 0 18px; opacity: .85; }
+  .frag p { margin: 0; font-size: 13px; line-height: 1.95; color: var(--ink2); max-width: 470px; }
+  .frag .rule { margin: 18px 0 0; height: 1px; background: var(--line2); }
+  .frag .row { display: flex; align-items: baseline; gap: 14px; padding-top: 12px; font-size: 12.5px; color: var(--ink2); }
+  .frag .row b { color: var(--ink); font-weight: 600; margin-left: auto; font-family: var(--mono); }
+  .frag .row .k { color: var(--ink); }
+  .frag .foot { margin-top: auto; display: flex; align-items: center; gap: 10px; }
+  .frag .pill { font-size: 10.5px; letter-spacing: .04em; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line2); color: var(--ink2); }
+  .frag .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--ink2); opacity: .7; }
+
+  figcaption { padding: 14px 2px 0; }
+  .mname { display: flex; align-items: baseline; gap: 9px; }
+  .mname b { font-size: 15px; font-weight: 600; letter-spacing: -.1px; }
+  .mname small { font-family: var(--mono); font-size: 9.5px; letter-spacing: .16em; color: var(--t3); text-transform: uppercase; }
+  .mname .tag { margin-left: auto; font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em; color: var(--t3); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; }
+  .mdesc { margin: 7px 0 0; font-size: 12px; line-height: 1.8; color: var(--t2); max-width: 540px; }
+  .mattr { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 13px 0 0; }
+  .mattr div { display: grid; gap: 5px; }
+  .mattr dt { font-family: var(--mono); font-size: 9px; letter-spacing: .14em; color: var(--t3); text-transform: uppercase; }
+  .mattr .bar { height: 3px; border-radius: 2px; background: #1E2026; overflow: hidden; }
+  .mattr .bar i { display: block; height: 100%; width: var(--v); background: #7F858E; border-radius: 2px; }
+  .mimpl { margin: 13px 0 0; font-family: var(--mono); font-size: 10.5px; line-height: 1.75; color: var(--t3); }
+  .mimpl b { color: var(--t2); font-weight: 400; }
+
+  /* ================================================================
+     07 宣纸
+     ================================================================ */
+  .m-xuan {
+    --ink: #2A2620; --ink2: #6C6558; --line2: rgba(42,38,32,.12);
+    --grainA: .26;
+    --sheen: radial-gradient(120% 90% at 22% 0%, rgba(255,255,255,.62) 0%, transparent 58%),
+             radial-gradient(90% 80% at 86% 108%, rgba(150,132,104,.14) 0%, transparent 58%);
+  }
+  .m-xuan .surf {
+    background:
+      repeating-linear-gradient(91deg, rgba(178,164,138,.035) 0 1px, transparent 1px 29px),
+      linear-gradient(158deg, #FCFAF4 0%, #F7F3E9 56%, #F0EBDD 100%);
+  }
+  .m-xuan .frag h4 { font-family: var(--serif); font-weight: 500; letter-spacing: .02em; font-size: 28px; }
+  .m-xuan .frag p { font-family: var(--serif); font-size: 14.5px; line-height: 2.1; color: #5F5849; }
+  .m-xuan .frag .rule { background: rgba(42,38,32,.09); }
+  .m-xuan .frag .pill { border-color: rgba(42,38,32,.14); color: #6C6558; }
+
+  /* ================================================================
+     08 新闻纸
+     ================================================================ */
+  .m-news {
+    --ink: #26241F; --ink2: #5E5A50; --line2: rgba(38,36,31,.16);
+    --grainA: .28;
+    --sheen: radial-gradient(100% 80% at 30% 0%, rgba(255,255,255,.34) 0%, transparent 55%),
+             radial-gradient(40% 30% at 78% 84%, rgba(120,110,88,.10) 0%, transparent 60%);
+  }
+  .m-news .surf { background: linear-gradient(160deg, #E6E3DA 0%, #DDD9CE 48%, #D1CDC1 100%); }
+  .m-news .frag h4 { font-family: var(--serif); font-weight: 700; letter-spacing: -.2px; font-size: 27px; }
+  .m-news .frag p {
+    font-family: var(--serif); font-size: 12.5px; line-height: 1.72; color: #4E4A41;
+    column-count: 2; column-gap: 22px; column-rule: 1px solid rgba(38,36,31,.16);
+    max-width: none;
+  }
+  .m-news .frag .pill { border-color: rgba(38,36,31,.18); color: #5E5A50; }
+
+  /* ================================================================
+     09 陶瓷
+     ================================================================ */
+  .m-porcelain {
+    --ink: #22262A; --ink2: #59606A; --line2: rgba(34,38,42,.13);
+    --grainA: .05;
+    --sheen: radial-gradient(58% 44% at 26% 6%, rgba(255,255,255,.95) 0%, rgba(255,255,255,0) 62%),
+             radial-gradient(70% 40% at 76% 104%, rgba(120,128,140,.18) 0%, transparent 66%),
+             linear-gradient(180deg, rgba(255,255,255,.35) 0%, transparent 12%);
+  }
+  .m-porcelain .surf {
+    border-radius: 20px;
+    background: linear-gradient(166deg, #FFFFFF 0%, #FAF9F6 38%, #EFEDE7 100%);
+  }
+  .m-porcelain .frag h4 { font-weight: 600; letter-spacing: -.3px; font-size: 27px; }
+  .m-porcelain .frag p { font-size: 13.5px; color: #59606A; }
+  .m-porcelain .frag .rule { background: rgba(34,38,42,.10); }
+  .m-porcelain .frag .pill { border-color: rgba(34,38,42,.16); color: #59606A; }
+
+  /* ================================================================
+     10 黑板
+     ================================================================ */
+  .m-board {
+    --ink: #EDEDE8; --ink2: #B6B9B5; --line2: rgba(237,237,232,.16);
+    --grainA: .34;
+    --sheen: radial-gradient(46% 40% at 24% 12%, rgba(255,255,255,.055) 0%, transparent 62%),
+             radial-gradient(38% 34% at 78% 78%, rgba(255,255,255,.035) 0%, transparent 64%),
+             radial-gradient(120% 100% at 50% 50%, transparent 52%, rgba(0,0,0,.42) 100%);
+  }
+  .m-board .surf { background: linear-gradient(160deg, #1C2023 0%, #15181B 52%, #0F1214 100%); }
+  .m-board .frag h4 { font-weight: 300; letter-spacing: .03em; font-size: 30px; }
+  .m-board .frag p { font-weight: 300; font-size: 14.5px; line-height: 2.15; color: #B6B9B5; }
+  .m-board .frag .rule { background: rgba(237,237,232,.14); }
+  .m-board .frag .pill { border-color: rgba(237,237,232,.20); color: #B6B9B5; }
+
+  /* ================================================================
+     11 皮革
+     ================================================================ */
+  .m-leather {
+    --ink: #F2E6D6; --ink2: #C3AC94; --line2: rgba(242,230,214,.24);
+    --grainA: .34;
+    --sheen: radial-gradient(110% 80% at 26% 0%, rgba(255,236,212,.16) 0%, transparent 56%),
+             radial-gradient(90% 90% at 82% 108%, rgba(0,0,0,.34) 0%, transparent 62%);
+  }
+  .m-leather .surf { background: linear-gradient(160deg, #7C5741 0%, #5F4030 54%, #4A3125 100%); }
+  /* 粒面不能靠平铺圆点——那一定是一张网格。放大噪点再轻模糊，孔才是不规则的 */
+  .m-leather .surf::before { background-size: 64px 64px; opacity: .58; filter: blur(.35px); }
+  .m-leather .frag h4 { font-family: var(--serif); font-weight: 600; letter-spacing: .01em; font-size: 27px; }
+  .m-leather .frag p { font-family: var(--serif); font-size: 14px; line-height: 2.0; color: #C3AC94; }
+  /* 皮上的分隔不是线，是缝线 */
+  .m-leather .frag .rule { height: 0; background: none; border-top: 1px dashed rgba(242,230,214,.30); }
+  .m-leather .frag .pill { border-color: rgba(242,230,214,.26); color: #C3AC94; }
+
+  /* ================================================================
+     12 毡布
+     ================================================================ */
+  .m-felt {
+    --ink: #EAECEF; --ink2: #AEB5BD; --line2: rgba(234,236,239,.14);
+    --grainA: .42;
+    --sheen: radial-gradient(118% 100% at 50% 48%, transparent 48%, rgba(0,0,0,.32) 100%),
+             linear-gradient(180deg, rgba(255,255,255,.06) 0%, transparent 9%);
+  }
+  .m-felt .surf { background: linear-gradient(160deg, #59606A 0%, #4A5058 56%, #3D434A 100%); }
+  /* 毡布的关键是「毛」：颗粒放大一倍、轻微模糊，周期就看不出是噪点 */
+  .m-felt .surf::before { background-size: 84px 84px; opacity: .55; filter: blur(.5px); }
+  .m-felt .frag h4 { font-weight: 500; letter-spacing: .01em; font-size: 26px; }
+  .m-felt .frag p { font-size: 13px; color: #AEB5BD; }
+  .m-felt .frag .rule { background: rgba(234,236,239,.12); }
+  .m-felt .frag .pill { border-color: rgba(234,236,239,.18); color: #AEB5BD; }
+
+  /* ================================================================
+     13 混凝土
+     ================================================================ */
+  .m-concrete {
+    --ink: #1D1F1F; --ink2: #4C4F4E; --line2: rgba(29,31,31,.18);
+    --grainA: .34;
+    --sheen: radial-gradient(110% 90% at 30% 0%, rgba(255,255,255,.30) 0%, transparent 58%),
+             radial-gradient(90% 80% at 84% 108%, rgba(0,0,0,.20) 0%, transparent 62%);
+  }
+  .m-concrete .surf {
+    background:
+      radial-gradient(circle at 18% 26%, rgba(60,62,61,.10) 0 1.6px, transparent 2px),
+      linear-gradient(160deg, #9EA09E 0%, #8D8F8D 46%, #7B7D7B 100%);
+    background-size: 27px 27px, 100% 100%;
+  }
+  .m-concrete .surf::before { background-size: 70px 70px; opacity: .45; filter: blur(.3px); }
+  .m-concrete .frag h4 { font-weight: 500; letter-spacing: -.2px; font-size: 26px; }
+  .m-concrete .frag p { font-size: 13px; color: #4C4F4E; }
+  .m-concrete .frag .rule { background: rgba(29,31,31,.16); box-shadow: 0 1px 0 rgba(255,255,255,.28); }
+  .m-concrete .frag .pill { border-color: rgba(29,31,31,.22); color: #4C4F4E; }
+
+  /* ================================================================
+     14 软木
+     ================================================================ */
+  .m-cork {
+    --ink: #2A1C10; --ink2: #5E4526; --line2: rgba(42,28,16,.20);
+    --grainA: .30;
+    --sheen: radial-gradient(110% 80% at 26% 0%, rgba(255,236,206,.34) 0%, transparent 56%),
+             radial-gradient(90% 90% at 82% 108%, rgba(70,44,18,.24) 0%, transparent 62%);
+  }
+  .m-cork .surf {
+    background:
+      radial-gradient(circle at 20% 30%, rgba(120,80,40,.16) 0 1.5px, transparent 2px),
+      radial-gradient(circle at 88% 18%, rgba(240,206,160,.12) 0 1.3px, transparent 1.8px),
+      linear-gradient(160deg, #CD9E66 0%, #BB8A52 50%, #A67541 100%);
+    background-size: 19px 19px, 31px 31px, 100% 100%;
+  }
+  .m-cork .surf::before { background-size: 56px 56px; opacity: .5; filter: blur(.25px); }
+  .m-cork .frag h4 { font-weight: 600; letter-spacing: -.2px; font-size: 26px; }
+  .m-cork .frag p { font-size: 13px; color: #5E4526; }
+  .m-cork .frag .pill { border-color: rgba(42,28,16,.22); color: #5E4526; }
+
+  /* ================================================================
+     材质谱
+     ================================================================ */
+  .spectrum-head {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    margin: 54px 0 0; padding-bottom: 11px; border-bottom: 1px solid var(--line);
+  }
+  .spectrum-head b { font-size: 14px; font-weight: 600; }
+  .spectrum-head span { font-size: 11.5px; color: var(--t3); }
+  .legend { margin-left: auto; display: flex; gap: 16px; font-family: var(--mono); font-size: 9.5px; color: var(--t3); }
+  .legend i { display: inline-block; width: 5px; height: 5px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+  .legend .a i { background: #C9CDD4; }
+  .legend .b i { border: 1px solid #4A4E57; }
+
+  .spectrum { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 22px; margin: 22px 0 0; }
+  .fam h5 {
+    margin: 0 0 10px; font-family: var(--mono); font-size: 9.5px; font-weight: 400;
+    letter-spacing: .16em; color: var(--t3); text-transform: uppercase;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11.5px; color: var(--t3);
+    border: 1px solid #1F2126; border-radius: 999px; padding: 3px 9px;
+  }
+  .chip i { width: 5px; height: 5px; border-radius: 50%; border: 1px solid #454A53; }
+  .chip.on { color: var(--t2); border-color: #2C2F36; }
+  .chip.on i { background: #C9CDD4; border-color: #C9CDD4; }
+
+  /* ================================================================
+     结尾
+     ================================================================ */
+  .outro {
+    margin-top: 46px; padding: 26px 28px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+    display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 30px;
+  }
+  .outro h3 { margin: 0 0 12px; font-size: 13px; font-weight: 600; }
+  .rec { margin: 0; padding: 0; list-style: none; display: grid; gap: 11px; }
+  .rec li { font-size: 12px; line-height: 1.85; color: var(--t3); }
+  .rec li b { color: var(--t1); font-weight: 600; }
+  .rec li em { font-style: normal; color: var(--t2); }
+  .pick { display: inline-block; margin-top: 4px; font-size: 13px; font-weight: 600; border-bottom: 1px solid #3A3E46; padding-bottom: 3px; }
+  .outro-side p { margin: 11px 0 0; font-size: 11.5px; line-height: 1.85; color: var(--t3); }
+
+  .xlink { margin-top: 18px; font-family: var(--mono); font-size: 10.5px; color: var(--t3); }
+  .xlink a { color: var(--t2); text-decoration: none; border-bottom: 1px solid var(--line); padding-bottom: 1px; }
+  .xlink a:hover { color: var(--t1); }
+  .pagefoot { padding: 26px 0 46px; text-align: center; font-family: var(--mono); font-size: 10px; color: var(--t3); }
+
+  @media (max-width: 1100px) {
+    .materials { grid-template-columns: 1fr; }
+    .spectrum { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .outro { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<main class="wrap">
+
+  <header class="masthead">
+    <div class="kicker">NRS · 材质 · 第二批</div>
+    <h1>还有 8 种，以及一张铺开的地图</h1>
+    <p class="lead">
+      上一张板挑了六个，这里把剩下的补上。但更重要的是最后那张<b>材质谱</b>——
+      一共 28 种，已经展开的 14 种标实心点。<b>看到边界，就不用再问「还有吗」</b>，
+      而是开始问「哪一种配得上这个产品」。
+    </p>
+  </header>
+
+  <div class="materials">
+
+    <!-- ---------------------------------------------------- 07 宣纸 -->
+    <figure class="mat m-xuan">
+      <div class="surf">
+        <div class="frag">
+          <h4>九月复盘</h4>
+          <div class="meta">2026-09-30 · 1,284 字</div>
+          <p>这一周的重点是把壳子收干净：四块区域合成一片，正文仍然落在纸上。剩下的交给明度，纸自己会说话。</p>
+          <div class="rule"></div>
+          <div class="row"><span class="k">华东</span><span>达成</span><b>92%</b></div>
+          <div class="foot"><span class="dot"></span><span class="pill">已同步</span></div>
+        </div>
+      </div>
+      <figcaption>
+        <div class="mname"><b>宣纸</b><small>Xuan Paper</small><span class="tag">东方</span></div>
+        <p class="mdesc">比哑光纸更白、更薄，有一道道极淡的帘纹。字像渗进去的。它天生该配宋体或楷体，配黑体就废了。</p>
+        <dl class="mattr">
+          <div><dt>光泽</dt><div class="bar"><i style="--v:4%"></i></div></div>
+          <div><dt>温度</dt><div class="bar"><i style="--v:62%"></i></div></div>
+          <div><dt>颗粒</dt><div class="bar"><i style="--v:26%"></i></div></div>
+          <div><dt>厚度</dt><div class="bar"><i style="--v:8%"></i></div></div>
+        </dl>
+        <div class="mimpl"><b>Flutter</b> 底色 + 噪点 + 一组 29px 周期的竖帘纹（3% 白），几乎免费。</div>
+      </figcaption>
+    </figure>
+
+    <!-- ---------------------------------------------------- 08 新闻纸 -->
+    <figure class="mat m-news">
+      <div class="surf">
+        <div class="frag">
+          <h4>九月复盘</h4>
+          <div class="meta">2026-09-30 · 1,284 字</div>
+          <p>这一周的重点是把壳子收干净：四块区域合成一片，正文仍然落在纸上。剩下的交给明度。上一稿把面板从窗口边缘拿下来，这一稿又贴了回去，因为玻璃那层模糊在低端机上跑不动。分栏不是为了好看，是因为新闻纸本来就该分栏——一行太长，眼睛回行会丢。</p>
+          <div class="rule"></div>
+          <div class="row"><span class="k">华东</span><span>达成</span><b>92%</b></div>
+          <div class="foot"><span class="dot"></span><span class="pill">已同步</span></div>
+        </div>
+      </div>
+      <figcaption>
+        <div class="mname"><b>新闻纸</b><small>Newsprint</small><span class="tag">这格是特例</span></div>
+        <p class="mdesc">灰白偏黄、吃墨、便宜。这一格故意多给了一段并分了栏——<b>材质会反过来规定结构</b>，新闻纸天生是分栏的，单栏反而浪费了它的宽度。</p>
+        <dl class="mattr">
+          <div><dt>光泽</dt><div class="bar"><i style="--v:5%"></i></div></div>
+          <div><dt>温度</dt><div class="bar"><i style="--v:40%"></i></div></div>
+          <div><dt>颗粒</dt><div class="bar"><i style="--v:38%"></i></div></div>
+          <div><dt>厚度</dt><div class="bar"><i style="--v:6%"></i></div></div>
+        </dl>
+        <div class="mimpl"><b>Flutter</b> 分栏要自己做（`Wrap` 或两列 `Column` 对齐），行高比纸紧 15%。</div>
+      </figcaption>
+    </figure>
+
+    <!-- ---------------------------------------------------- 09 陶瓷 -->
+    <figure class="mat m-porcelain">
+      <div class="surf">
+        <div class="frag">
+          <h4>九月复盘</h4>
+          <div class="meta">2026-09-30 · 1,284 字</div>
+          <p>这一周的重点是把壳子收干净：四块区域合成一片，正文仍然落在纸上。剩下的交给明度，釉面只负责反光。</p>
+          <div class="rule"></div>
+          <div class="row"><span class="k">华东</span><span>达成</span><b>92%</b></div>
+          <div class="foot"><span class="dot"></span><span class="pill">已同步</span></div>
+        </div>
+      </div>
+      <figcaption>
+        <div class="mname"><b>陶瓷</b><small>Porcelain</small><span class="tag">润</span></div>
+        <p class="mdesc">纯白、有釉、圆角大。它和纸的区别全在<b>那一块反光</b>——去掉高光，它立刻变成一张白纸。所以用它就必须敢给高光。</p>
+        <dl class="mattr">
+          <div><dt>光泽</dt><div class="bar"><i style="--v:82%"></i></div></div>
+          <div><dt>温度</dt><div class="bar"><i style="--v:44%"></i></div></div>
+          <div><dt>颗粒</dt><div class="bar"><i style="--v:4%"></i></div></div>
+          <div><dt>厚度</dt><div class="bar"><i style="--v:34%"></i></div></div>
+        </dl>
+        <div class="mimpl"><b>Flutter</b> 三层渐变叠一块椭圆高光，圆角要跟着放大到 20px，否则不像瓷。</div>
+      </figcaption>
+    </figure>
+
+    <!-- ---------------------------------------------------- 10 黑板 -->
+    <figure class="mat m-board">
+      <div class="surf">
+        <div class="frag">
+          <h4>九月复盘</h4>
+          <div class="meta">2026-09-30 · 1,284 字</div>
+          <p>这一周的重点是把壳子收干净：四块区域合成一片，正文仍然落在纸上。剩下的交给明度，黑板什么都不负责。</p>
+          <div class="rule"></div>
+          <div class="row"><span class="k">华东</span><span>达成</span><b>92%</b></div>
+          <div class="foot"><span class="dot"></span><span class="pill">已同步</span></div>
+        </div>
+      </div>
+      <figcaption>
+        <div class="mname"><b>黑板</b><small>Chalkboard</small><span class="tag">写</span></div>
+        <p class="mdesc">深、哑、有粉笔灰。字要细、要松、要留空，写满了就糊。它是唯一一个<b>「留白即内容」</b>的材质。</p>
+        <dl class="mattr">
+          <div><dt>光泽</dt><div class="bar"><i style="--v:3%"></i></div></div>
+          <div><dt>温度</dt><div class="bar"><i style="--v:36%"></i></div></div>
+          <div><dt>颗粒</dt><div class="bar"><i style="--v:52%"></i></div></div>
+          <div><dt>厚度</dt><div class="bar"><i style="--v:76%"></i></div></div>
+        </dl>
+        <div class="mimpl"><b>Flutter</b> 深底 + 重噪点 + 两团极淡的白雾；字重压到 300，行高给到 2.1。</div>
+      </figcaption>
+    </figure>
+
+    <!-- ---------------------------------------------------- 11 皮革 -->
+    <figure class="mat m-leather">
+      <div class="surf">
+        <div class="frag">
+          <h4>九月复盘</h4>
+          <div class="meta">2026-09-30 · 1,284 字</div>
+          <p>这一周的重点是把壳子收干净：四块区域合成一片，正文仍然落在纸上。剩下的交给明度，皮只负责手感。</p>
+          <div class="rule"></div>
+          <div class="row"><span class="k">华东</span><span>达成</span><b>92%</b></div>
+          <div class="foot"><span class="dot"></span><span class="pill">已同步</span></div>
+        </div>
+      </div>
+      <figcaption>
+        <div class="mname"><b>皮革</b><small>Leather</small><span class="tag">触</span></div>
+        <p class="mdesc">颗粒、暗、漫反射。它最不像「屏幕」，所以只能当<b>外壳</b>用——整块正文铺满皮会像一页皮封面，读不了字。</p>
+        <dl class="mattr">
+          <div><dt>光泽</dt><div class="bar"><i style="--v:18%"></i></div></div>
+          <div><dt>温度</dt><div class="bar"><i style="--v:82%"></i></div></div>
+          <div><dt>颗粒</dt><div class="bar"><i style="--v:64%"></i></div></div>
+          <div><dt>厚度</dt><div class="bar"><i style="--v:58%"></i></div></div>
+        </dl>
+        <div class="mimpl"><b>Flutter</b> 粒面靠「64px 噪点 + .35px 模糊」，平铺圆点一定会变成网格；分隔线换成 1px 虚线（缝线）。</div>
+      </figcaption>
+    </figure>
+
+    <!-- ---------------------------------------------------- 12 毡布 -->
+    <figure class="mat m-felt">
+      <div class="surf">
+        <div class="frag">
+          <h4>九月复盘</h4>
+          <div class="meta">2026-09-30 · 1,284 字</div>
+          <p>这一周的重点是把壳子收干净：四块区域合成一片，正文仍然落在纸上。剩下的交给明度，布只负责吸光。</p>
+          <div class="rule"></div>
+          <div class="row"><span class="k">华东</span><span>达成</span><b>92%</b></div>
+          <div class="foot"><span class="dot"></span><span class="pill">已同步</span></div>
+        </div>
+      </div>
+      <figcaption>
+        <div class="mname"><b>毡布</b><small>Felt</small><span class="tag">软</span></div>
+        <p class="mdesc">完全吸光，一点高光都没有，边缘是毛的。它让深色变「软」，代价是<b>所有线都会糊</b>——这版里分隔线只能靠明度差，不能画。</p>
+        <dl class="mattr">
+          <div><dt>光泽</dt><div class="bar"><i style="--v:2%"></i></div></div>
+          <div><dt>温度</dt><div class="bar"><i style="--v:54%"></i></div></div>
+          <div><dt>颗粒</dt><div class="bar"><i style="--v:88%"></i></div></div>
+          <div><dt>厚度</dt><div class="bar"><i style="--v:44%"></i></div></div>
+        </dl>
+        <div class="mimpl"><b>Flutter</b> 噪点开到 .42 且放大到 2 倍尺寸，再加一圈内阴影当厚度。</div>
+      </figcaption>
+    </figure>
+
+    <!-- ---------------------------------------------------- 13 混凝土 -->
+    <figure class="mat m-concrete">
+      <div class="surf">
+        <div class="frag">
+          <h4>九月复盘</h4>
+          <div class="meta">2026-09-30 · 1,284 字</div>
+          <p>这一周的重点是把壳子收干净：四块区域合成一片，正文仍然落在纸上。剩下的交给明度，水泥只负责重量。</p>
+          <div class="rule"></div>
+          <div class="row"><span class="k">华东</span><span>达成</span><b>92%</b></div>
+          <div class="foot"><span class="dot"></span><span class="pill">已同步</span></div>
+        </div>
+      </div>
+      <figcaption>
+        <div class="mname"><b>混凝土</b><small>Concrete</small><span class="tag">沉</span></div>
+        <p class="mdesc">中灰、有气孔、粗糙。它比岩板亮、比纸冷，站在「工业」这一侧。适合当<b>背景</b>，不适合当正文底——灰底上的字永远不如白底舒服。</p>
+        <dl class="mattr">
+          <div><dt>光泽</dt><div class="bar"><i style="--v:6%"></i></div></div>
+          <div><dt>温度</dt><div class="bar"><i style="--v:30%"></i></div></div>
+          <div><dt>颗粒</dt><div class="bar"><i style="--v:70%"></i></div></div>
+          <div><dt>厚度</dt><div class="bar"><i style="--v:86%"></i></div></div>
+        </dl>
+        <div class="mimpl"><b>Flutter</b> 70px 大噪点打底（.45）+ 一层 10% 的气孔；分隔线用「暗线 + 下方 1px 白」。</div>
+      </figcaption>
+    </figure>
+
+    <!-- ---------------------------------------------------- 14 软木 -->
+    <figure class="mat m-cork">
+      <div class="surf">
+        <div class="frag">
+          <h4>九月复盘</h4>
+          <div class="meta">2026-09-30 · 1,284 字</div>
+          <p>这一周的重点是把壳子收干净：四块区域合成一片，正文仍然落在纸上。剩下的交给明度，软木只负责钉东西。</p>
+          <div class="rule"></div>
+          <div class="row"><span class="k">华东</span><span>达成</span><b>92%</b></div>
+          <div class="foot"><span class="dot"></span><span class="pill">已同步</span></div>
+        </div>
+      </div>
+      <figcaption>
+        <div class="mname"><b>软木</b><small>Cork</small><span class="tag">钉</span></div>
+        <p class="mdesc">暖、粗、有碎屑感。它是唯一一个<b>自带「可以往上钉东西」暗示</b>的材质——适合白板 / 卡片视图，不适合长文。</p>
+        <dl class="mattr">
+          <div><dt>光泽</dt><div class="bar"><i style="--v:5%"></i></div></div>
+          <div><dt>温度</dt><div class="bar"><i style="--v:90%"></i></div></div>
+          <div><dt>颗粒</dt><div class="bar"><i style="--v:76%"></i></div></div>
+          <div><dt>厚度</dt><div class="bar"><i style="--v:62%"></i></div></div>
+        </dl>
+        <div class="mimpl"><b>Flutter</b> 56px 大噪点当碎屑 + 两层极淡圆点；卡片要能投影，投影是这个材质的一半。</div>
+      </figcaption>
+    </figure>
+
+  </div>
+
+  <!-- ================================================================ 谱 -->
+  <div class="spectrum-head">
+    <b>材质谱</b>
+    <span>28 种，实心点是已经展开的 14 种</span>
+    <div class="legend"><span class="a"><i></i>已展开</span><span class="b"><i></i>没展开</span></div>
+  </div>
+
+  <div class="spectrum">
+    <div class="fam">
+      <h5>纸与墨</h5>
+      <div class="chips">
+        <span class="chip on"><i></i>哑光纸</span>
+        <span class="chip on"><i></i>牛皮纸</span>
+        <span class="chip on"><i></i>宣纸</span>
+        <span class="chip on"><i></i>新闻纸</span>
+        <span class="chip"><i></i>硫酸纸</span>
+        <span class="chip"><i></i>卡纸</span>
+        <span class="chip"><i></i>瓦楞</span>
+      </div>
+    </div>
+    <div class="fam">
+      <h5>矿物</h5>
+      <div class="chips">
+        <span class="chip on"><i></i>岩板</span>
+        <span class="chip on"><i></i>混凝土</span>
+        <span class="chip on"><i></i>陶瓷</span>
+        <span class="chip"><i></i>大理石</span>
+        <span class="chip"><i></i>水磨石</span>
+        <span class="chip"><i></i>石膏</span>
+      </div>
+    </div>
+    <div class="fam">
+      <h5>金属</h5>
+      <div class="chips">
+        <span class="chip on"><i></i>阳极铝</span>
+        <span class="chip on"><i></i>深空灰铝</span>
+        <span class="chip"><i></i>钛</span>
+        <span class="chip"><i></i>拉丝钢</span>
+        <span class="chip"><i></i>黄铜</span>
+        <span class="chip"><i></i>碳纤维</span>
+      </div>
+    </div>
+    <div class="fam">
+      <h5>有机</h5>
+      <div class="chips">
+        <span class="chip on"><i></i>皮革</span>
+        <span class="chip on"><i></i>毡布</span>
+        <span class="chip on"><i></i>软木</span>
+        <span class="chip"><i></i>木纹</span>
+        <span class="chip"><i></i>帆布</span>
+        <span class="chip"><i></i>竹</span>
+      </div>
+    </div>
+    <div class="fam">
+      <h5>光学</h5>
+      <div class="chips">
+        <span class="chip on"><i></i>磨砂玻璃</span>
+        <span class="chip"><i></i>亚克力</span>
+        <span class="chip"><i></i>湿墨</span>
+      </div>
+    </div>
+  </div>
+
+  <section class="outro">
+    <div>
+      <h3>如果让我替你选</h3>
+      <ul class="rec">
+        <li><b>哑光纸</b> — 写字这件事只有它不抢戏。纤维、暖白、零光泽，读八小时不累。它的「缺点」是没有记忆点，但笔记软件不需要记忆点，需要的是<b>坐得住</b>。</li>
+        <li><b>岩板</b> — 如果你要深色，别用玻璃也别用铝。岩板是唯一一个<b>深而不冷、暗而不闪</b>的，而且实现成本几乎为零。</li>
+        <li><b>深空灰铝</b> — 如果你希望它看起来像个工具（而不是本子），铝是对的。但只建议用在<b>壳子</b>上，正文还是得回到纸或岩板。</li>
+        <li><em>其余 11 种不是不好，是各有各的代价</em>：玻璃要性能，皮革只能当外壳，软木只能当白板，混凝土灰底读字累，黑板写不满就空。</li>
+      </ul>
+    </div>
+    <div class="outro-side">
+      <span class="pick">回我材质名</span>
+      <p>选一个主材质（正文用什么），如果愿意再选一个副材质（壳子用什么）。定下来我就按它排结构。</p>
+      <p>谱里打空心点的那些，想看哪个说一声，我单独展开。</p>
+    </div>
+  </section>
+
+  <div class="xlink">
+    <a href="materials.html">第一批六个</a> ·
+    <a href="shell-split.html">浅壳深纸</a> ·
+    <a href="shell-quiet.html">灰阶四则</a> ·
+    <a href="shell-directions.html">四个方向</a>
+  </div>
+
+  <div class="pagefoot">8 个样本内容一致（新闻纸那格是故意的例外）· 1:1 实际尺寸</div>
+</main>
+</body>
+</html>

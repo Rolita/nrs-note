@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>NRS · 两套主题：纸 / 石</title>
+<style>
+  :root {
+    --page: #0C0D0F;
+    --panel: #141518;
+    --line: #22242A;
+    --t1: #E9EAEC;
+    --t2: #9EA2A9;
+    --t3: #6B6F77;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+    --serif: Georgia, "Songti SC", "Source Han Serif SC", "SimSun", serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+    --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+    /* 细齿：只留高频，没有低频那层，所以是「齿」不是「花」——纸的哑光靠它 */
+    --grainFine: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='m'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.05' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23m)'/%3E%3C/svg%3E");
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: radial-gradient(120% 80% at 50% -10%, #15161A 0%, #0C0D0F 55%, #09090B 100%);
+    color: var(--t1); font-family: var(--sans); font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { width: min(1320px, calc(100% - 48px)); margin: 0 auto; }
+  svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+  .masthead { padding: 58px 0 0; }
+  .kicker { font-family: var(--mono); font-size: 10px; letter-spacing: .2em; color: var(--t3); text-transform: uppercase; }
+  h1 { margin: 14px 0 0; font-size: 33px; font-weight: 600; letter-spacing: -.8px; line-height: 1.24; }
+  .lead { margin: 15px 0 0; max-width: 810px; font-size: 13.5px; line-height: 1.95; color: var(--t2); }
+  .lead b { color: var(--t1); font-weight: 600; }
+
+  .picked { display: flex; gap: 10px; margin: 24px 0 0; flex-wrap: wrap; }
+  .swatch {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 14px 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  }
+  .swatch i { width: 26px; height: 26px; border-radius: 5px; display: block; box-shadow: inset 0 0 0 1px rgba(255,255,255,.07); }
+  .swatch .nm { font-size: 12.5px; font-weight: 600; }
+  .swatch .rl { font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em; color: var(--t3); margin-top: 2px; }
+
+  .theme { padding: 54px 0 0; }
+  .theme-head { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 16px; }
+  .badge {
+    width: 34px; height: 34px; flex: none; border-radius: 6px; display: grid; place-items: center;
+    font-family: var(--mono); font-size: 12px; color: var(--t2); border: 1px solid var(--line);
+  }
+  .theme-head h2 { margin: 0; font-size: 19px; font-weight: 620; display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+  .theme-head h2 small { font-family: var(--mono); font-size: 10px; font-weight: 400; color: var(--t3); letter-spacing: .14em; text-transform: uppercase; }
+  .theme-head p { margin: 6px 0 0; font-size: 12.5px; line-height: 1.85; color: var(--t2); max-width: 760px; }
+  .keys { margin-left: auto; display: flex; gap: 5px; flex-wrap: wrap; }
+  .keys span { font-family: var(--mono); font-size: 10px; color: var(--t3); border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; }
+
+  .stage {
+    position: relative; overflow: hidden; border-radius: 12px; border: 1px solid rgba(255,255,255,.10);
+    background: #08080A; box-shadow: 0 30px 70px rgba(0,0,0,.5);
+  }
+  .mock {
+    position: absolute; left: 0; top: 0; width: 1240px; height: 640px;
+    transform-origin: top left; overflow: hidden; font-family: var(--sans);
+  }
+  .cap { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; margin: 13px 2px 0; }
+  .cap div { font-size: 11.5px; line-height: 1.85; color: var(--t3); }
+  .cap b { display: block; font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--t2); margin-bottom: 4px; text-transform: uppercase; }
+
+  /* ================================================================
+     共用骨架（两套主题只有材质不同）
+     ================================================================ */
+  .mock::before {
+    content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+    background-image: var(--grain);
+  }
+  .top {
+    position: relative; z-index: 2;
+    height: 44px; display: flex; align-items: flex-end; gap: 2px;
+    padding: 0 16px; background: var(--chrome2);
+  }
+  .brand { align-self: center; font-family: var(--mono); font-size: 10.5px; letter-spacing: .22em; color: var(--t3); margin-right: 16px; }
+  .tabs { display: flex; align-items: flex-end; gap: 3px; height: 100%; padding-top: 10px; }
+  /* 标签是浮在顶栏里的一枚小片：四周留缝、四角全圆，不去假装和下面的表面连成一片
+     （标签在文件树上方，底下不是纸，接不上） */
+  .tab { height: 30px; padding: 0 12px; margin-bottom: 3px; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--t3); border-radius: 5px; }
+  .tab .x { font-size: 9px; opacity: .55; }
+  .tab.add { padding: 0 9px; font-size: 13px; }
+  .win { margin-left: auto; align-self: center; display: flex; gap: 16px; color: var(--t3); font-size: 11px; }
+  .win i { font-style: normal; }
+
+  .body { position: relative; z-index: 1; display: flex; height: calc(100% - 44px); }
+
+  .rail { width: 56px; flex: none; background: var(--chrome2); padding: 14px 0; display: flex; flex-direction: column; align-items: center; gap: 5px; }
+  .ico { width: 32px; height: 32px; display: grid; place-items: center; color: var(--t3); border-radius: 5px; }
+  .ico.on { color: var(--t1); background: var(--raised); }
+  .rail .sp { flex: 1; }
+
+  .side { width: 280px; flex: none; background: var(--chrome); padding: 16px 14px; }
+  .side h4 {
+    margin: 0 8px 12px; display: flex; align-items: baseline; justify-content: space-between;
+    font-family: var(--mono); font-size: 9.5px; font-weight: 400; letter-spacing: .16em;
+    color: var(--t3); text-transform: uppercase;
+  }
+  .side h4 .n { letter-spacing: 0; }
+  .row { height: 33px; display: flex; align-items: center; gap: 9px; padding: 0 9px; border-radius: 4px; font-size: 13px; color: var(--t2); }
+  .row .n { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--t3); font-variant-numeric: tabular-nums; }
+  .row.on { color: var(--t1); background: var(--sel); font-weight: 500; }
+  .row.on::before { content: ""; width: 2px; height: 12px; background: var(--accent); border-radius: 1px; margin-right: -2px; }
+
+  .paper { flex: 1; min-width: 0; position: relative; background: var(--paper); }
+  .paper::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background-image: var(--paperGrain); background-size: var(--paperGrainSize); opacity: var(--paperGrainA);
+    mix-blend-mode: var(--paperGrainBlend);
+  }
+  .doc { position: relative; padding: 34px 46px; height: 100%; }
+  .doc h1 { margin: 0; font-family: var(--serif); font-size: 30px; font-weight: 600; letter-spacing: -.2px; color: var(--ink); line-height: 1.2; }
+  .doc .meta { font-family: var(--mono); font-size: 10px; letter-spacing: .06em; color: var(--ink3); margin: 9px 0 20px; }
+  .doc p { margin: 0 0 12px; font-family: var(--serif); font-size: 14.5px; line-height: 1.95; color: var(--ink2); }
+  .doc h2 { margin: 20px 0 10px; font-family: var(--serif); font-size: 17px; font-weight: 600; color: var(--ink); }
+  .doc .chk { display: flex; align-items: center; gap: 9px; font-family: var(--serif); font-size: 14px; color: var(--ink2); height: 26px; }
+  .doc .chk b {
+    width: 13px; height: 13px; flex: none; border: 1px solid var(--boxLine);
+    display: grid; place-items: center; font-size: 8px; color: var(--paper); font-family: var(--sans);
+  }
+  .doc .chk.done { color: var(--ink3); }
+  .doc .chk.done b { background: var(--ink); border-color: var(--ink); }
+  .doc .chk.done span { text-decoration: line-through; text-decoration-color: var(--strike); }
+  .doc table { width: 100%; border-collapse: collapse; margin: 6px 0 0; }
+  .doc th, .doc td {
+    text-align: left; padding: 7px 0; font-weight: 400; font-family: var(--serif);
+    font-size: 13.5px; color: var(--ink2); border-bottom: 1px solid var(--rule);
+  }
+  .doc th {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--ink3); border-bottom-color: var(--ruleStrong);
+  }
+  .doc td.v { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .doc td.hi { color: var(--ink); font-weight: 600; }
+
+  .panel { width: 258px; flex: none; background: var(--chrome); padding: 16px 14px; }
+  .panel h4 { margin: 0 8px 12px; font-family: var(--mono); font-size: 9.5px; font-weight: 400; letter-spacing: .16em; color: var(--t3); text-transform: uppercase; }
+  .orow { height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 9px; border-radius: 4px; font-size: 12.5px; color: var(--t2); }
+  .orow.on { color: var(--t1); background: var(--sel); font-weight: 500; }
+  .orow.h { padding-left: 21px; font-size: 12px; color: var(--t3); }
+  .panel .foot { margin: 18px 8px 0; padding-top: 14px; border-top: 1px solid var(--seamLine); font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em; color: var(--t3); line-height: 1.9; }
+
+  /* ================================================================
+     浅色 · 哑光纸
+     ================================================================ */
+  .th-paper {
+    --chrome: #E0D5BC;
+    --chrome2: #E9DFCB;
+    --paper: #FBF7EE;
+    --raised: #D5C9AE;
+    --tabOn: #EFE6D3;
+    --sel: rgba(35,32,27,.085);
+    --seamLine: #C9BEA4;
+    --t1: #23201B; --t2: #574F42; --t3: #7E7768;
+    --ink: #23201B; --ink2: #574F42; --ink3: #7E7768;
+    --rule: #DCD2BC; --ruleStrong: #C9BEA4;
+    --boxLine: #B0A791; --strike: rgba(126,119,104,.5);
+    --accent: #23201B;
+    --paperGrain: var(--grainFine); --paperGrainSize: 160px; --paperGrainA: .52; --paperGrainBlend: multiply;
+    background: #EDE5D2;
+  }
+  .th-paper::before { background-size: 230px 230px; opacity: .34; mix-blend-mode: multiply; }
+  .th-paper .top { box-shadow: inset 0 -1px 0 var(--seamLine); }
+  .th-paper .rail { box-shadow: inset -1px 0 0 var(--seamLine); }
+  .th-paper .side { box-shadow: inset -1px 0 0 var(--seamLine); }
+  .th-paper .panel { box-shadow: inset 1px 0 0 var(--seamLine); }
+  /* 纸比壳亮一档，接缝是纸压出来的影 */
+  .th-paper .paper {
+    box-shadow:
+      inset 1px 0 0 rgba(35,32,27,.10), inset -1px 0 0 rgba(35,32,27,.10),
+      inset 0 9px 18px -14px rgba(35,32,27,.28);
+  }
+  .th-paper .tab.on {
+    background: var(--tabOn); color: var(--ink); font-weight: 500;
+    box-shadow: 0 1px 2px rgba(35,32,27,.11), inset 0 1px 0 rgba(255,255,255,.75);
+  }
+
+  /* ================================================================
+     深色 · 岩板
+     ================================================================ */
+  .th-slate {
+    --chrome: #14161A;
+    --chrome2: #171A1E;
+    --paper: #1F2328;
+    --raised: #282D34;
+    --tabOn: #262B32;
+    --sel: #282D34;
+    --seamLine: #0C0E10;
+    --t1: #E6E8EA; --t2: #9AA0A6; --t3: #6E747A;
+    --ink: #EAECEE; --ink2: #A2A8AE; --ink3: #6E747A;
+    --rule: #262A30; --ruleStrong: #2E333A;
+    --boxLine: #3C424A; --strike: rgba(110,116,122,.65);
+    --accent: #E6E8EA;
+    --paperGrain: var(--grain); --paperGrainSize: 130px; --paperGrainA: .42; --paperGrainBlend: overlay;
+    background: #101215;
+  }
+  .th-slate::before { background-size: 110px 110px; opacity: .40; mix-blend-mode: overlay; filter: blur(.3px); }
+  /* 石上的分隔是刻出来的槽：一条暗线，下面一道极淡的亮 */
+  .th-slate .top { box-shadow: inset 0 -1px 0 var(--seamLine), inset 0 -2px 0 rgba(255,255,255,.035); }
+  .th-slate .rail { box-shadow: inset -1px 0 0 var(--seamLine), inset -2px 0 0 rgba(255,255,255,.03); }
+  .th-slate .side { box-shadow: inset -1px 0 0 var(--seamLine), inset -2px 0 0 rgba(255,255,255,.03); }
+  .th-slate .panel { box-shadow: inset 1px 0 0 var(--seamLine), inset 2px 0 0 rgba(255,255,255,.03); }
+  .th-slate .paper {
+    box-shadow:
+      inset 1px 0 0 rgba(0,0,0,.5), inset -1px 0 0 rgba(0,0,0,.5),
+      inset 0 10px 20px -16px rgba(0,0,0,.7);
+  }
+  .th-slate .tab.on {
+    background: var(--tabOn); color: var(--ink); font-weight: 500;
+    box-shadow: 0 1px 2px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.055);
+  }
+
+  /* ================================================================
+     token 表
+     ================================================================ */
+  .spec { margin: 54px 0 0; }
+  .spec-head { display: flex; align-items: baseline; gap: 12px; padding-bottom: 11px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .spec-head b { font-size: 14px; font-weight: 600; }
+  .spec-head span { font-size: 11.5px; color: var(--t3); }
+  table.tok { width: 100%; border-collapse: collapse; margin: 4px 0 0; }
+  table.tok th, table.tok td { text-align: left; padding: 9px 0; border-bottom: 1px solid #1C1E23; font-size: 11.5px; vertical-align: middle; }
+  table.tok th { font-family: var(--mono); font-size: 9px; letter-spacing: .14em; font-weight: 400; color: var(--t3); text-transform: uppercase; }
+  table.tok td:first-child { font-family: var(--mono); font-size: 11px; color: var(--t2); width: 180px; }
+  table.tok td.cell { width: 210px; }
+  table.tok td.cell span { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 10.5px; color: var(--t3); }
+  table.tok td.cell i { width: 11px; height: 11px; border-radius: 2px; display: block; box-shadow: inset 0 0 0 1px rgba(255,255,255,.10); }
+  table.tok td.note { color: var(--t3); font-size: 11px; }
+
+  .next {
+    margin-top: 44px; padding: 24px 26px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--panel);
+    display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 28px;
+  }
+  .next h3 { margin: 0 0 11px; font-size: 13px; font-weight: 600; }
+  .steps { margin: 0; padding: 0; list-style: none; display: grid; gap: 9px; counter-reset: s; }
+  .steps li { position: relative; padding-left: 22px; font-size: 12px; line-height: 1.85; color: var(--t3); }
+  .steps li::before {
+    content: counter(s); counter-increment: s; position: absolute; left: 0; top: 2px;
+    font-family: var(--mono); font-size: 9px; color: #5A5F68;
+    border: 1px solid #2A2D34; border-radius: 3px; width: 15px; height: 15px; display: grid; place-items: center;
+  }
+  .steps li b { color: var(--t2); font-weight: 600; }
+  .next-side p { margin: 0 0 10px; font-size: 11.5px; line-height: 1.85; color: var(--t3); }
+  .next-side b { color: var(--t2); font-weight: 600; }
+
+  .xlink { margin-top: 20px; font-family: var(--mono); font-size: 10.5px; color: var(--t3); }
+  .xlink a { color: var(--t2); text-decoration: none; border-bottom: 1px solid var(--line); padding-bottom: 1px; }
+  .xlink a:hover { color: var(--t1); }
+  .pagefoot { padding: 26px 0 46px; text-align: center; font-family: var(--mono); font-size: 10px; color: var(--t3); }
+
+  @media (max-width: 1000px) {
+    .cap { grid-template-columns: 1fr; gap: 10px; }
+    .next { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-note" viewBox="0 0 24 24"><path d="M6 3.5h8.5L19 8v12.5H6z"/><path d="M14.5 3.5V8H19"/></symbol>
+  <symbol id="i-graph" viewBox="0 0 24 24"><circle cx="12" cy="6" r="2.2"/><circle cx="6" cy="17.5" r="2.2"/><circle cx="18" cy="17.5" r="2.2"/><path d="M11 8 7 15.6M13 8l4 7.6"/></symbol>
+  <symbol id="i-board" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="1.2"/><path d="M3.5 9.5h17"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="1.2"/><path d="m6 15.5 4-4 3 3 2-2 3 3"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="5.6"/><path d="m15.2 15.2 4 4"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.8"/><path d="M12 3.5v2.4M12 18.1v2.4M3.5 12h2.4M18.1 12h2.4M6 6l1.7 1.7M16.3 16.3 18 18M18 6l-1.7 1.7M7.7 16.3 6 18"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></symbol>
+</svg>
+
+<main class="wrap">
+
+  <header class="masthead">
+    <div class="kicker">NRS · 两套主题</div>
+    <h1>同一副骨架，两种材质：纸与石</h1>
+    <p class="lead">
+      浅色主题整块用<b>哑光纸</b>，深色主题整块用<b>岩板</b>。两套的<b>尺寸、字号、行高、间距一模一样</b>——
+      切换时不该有任何东西跳动，变的只有表面：纸靠「比壳亮一档 + 一道压痕」分层，
+      石靠「刻出来的槽」分层。同一个产品，两种材质。
+    </p>
+    <div class="picked">
+      <div class="swatch"><i style="background:#FBF7EE"></i><div><div class="nm">浅色 · 哑光纸</div><div class="rl">PAPER / #FBF7EE · 落成 #E9E5DC</div></div></div>
+      <div class="swatch"><i style="background:#1F2328"></i><div><div class="nm">深色 · 岩板</div><div class="rl">SLATE / #1F2328 · 落成 #22262C</div></div></div>
+    </div>
+  </header>
+
+  <!-- ============================================================ 浅 -->
+  <section class="theme">
+    <div class="theme-head">
+      <span class="badge">01</span>
+      <div>
+        <h2>浅色 · 哑光纸 <small>Paper</small></h2>
+        <p>壳是一层暖灰，纸是<b>唯一有纹理的面</b>：壳 `#E0D5BC`、纸 `#FBF7EE`（颗粒压暗后落成 `#E9E5DC`），只靠明度差分区，中间不加投影；分隔是印在纸上的墨线。正文走衬线，字像印上去的。</p>
+      </div>
+      <div class="keys"><span>暖白</span><span>衬线正文</span><span>墨线分隔</span><span>压痕接缝</span></div>
+    </div>
+    <div class="stage">
+      <div class="mock th-paper">
+        <div class="top">
+          <div class="brand">NRS</div>
+          <div class="tabs">
+            <div class="tab on">九月复盘<span class="x">×</span></div>
+            <div class="tab">周报 · W39<span class="x">×</span></div>
+            <div class="tab add">+</div>
+          </div>
+          <div class="win"><i>–</i><i>□</i><i>×</i></div>
+        </div>
+        <div class="body">
+          <div class="rail">
+            <span class="ico"><svg width="15" height="15"><use href="#i-search"/></svg></span>
+            <span class="ico on"><svg width="15" height="15"><use href="#i-note"/></svg></span>
+            <span class="ico"><svg width="15" height="15"><use href="#i-graph"/></svg></span>
+            <span class="ico"><svg width="15" height="15"><use href="#i-board"/></svg></span>
+            <span class="ico"><svg width="15" height="15"><use href="#i-image"/></svg></span>
+            <span class="sp"></span>
+            <span class="ico"><svg width="15" height="15"><use href="#i-gear"/></svg></span>
+          </div>
+          <div class="side">
+            <h4><span>文件</span><span class="n">05</span></h4>
+            <div class="row">收件箱<span class="n">04</span></div>
+            <div class="row on">九月复盘</div>
+            <div class="row">周报 · W39</div>
+            <div class="row">白板<span class="n">02</span></div>
+            <div class="row">归档<span class="n">18</span></div>
+          </div>
+          <div class="paper">
+            <div class="doc">
+              <h1>九月复盘</h1>
+              <div class="meta">2026-09-30 · 1,284 字 · 已同步</div>
+              <p>这一周的重点是把壳子收干净：暖白的纸留在中间，纸不发光，也不抢戏，它只负责让人愿意坐下来。</p>
+              <h2>本周结论</h2>
+              <div class="chk done"><b>✓</b><span>顶栏 / 功能栏 / 侧栏 同色</span></div>
+              <div class="chk"><b></b><span>正文回到纸的暖白，不用纯白</span></div>
+              <div class="chk"><b></b><span>表格横线降到 6% 墨</span></div>
+              <table>
+                <tr><th>区域</th><th>达成</th><th>备注</th></tr>
+                <tr><td>华东</td><td class="v">92%</td><td class="hi">领先</td></tr>
+                <tr><td>华南</td><td class="v">87%</td><td>待复核</td></tr>
+                <tr><td>西南</td><td class="v">83%</td><td>—</td></tr>
+              </table>
+            </div>
+          </div>
+          <div class="panel">
+            <h4>大纲</h4>
+            <div class="orow on">九月复盘</div>
+            <div class="orow h">本周结论</div>
+            <div class="orow h">下周计划</div>
+            <div class="orow">表格</div>
+            <div class="orow h">高亮</div>
+            <div class="foot">纸 #FBF7EE<br>壳 #E0D5BC</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="cap">
+      <div><b>分层</b>壳 `#E0D5BC` → 纸 `#FBF7EE`，只差一档明度，不加投影</div>
+      <div><b>分隔</b>1px 墨线 `#DCD4C2`；表格横线更淡，`#E1D9C7`</div>
+      <div><b>强调</b>选中 = 6% 墨底 + 2px 墨竖线；光标与手柄都是墨色</div>
+    </div>
+  </section>
+
+  <!-- ============================================================ 深 -->
+  <section class="theme">
+    <div class="theme-head">
+      <span class="badge">02</span>
+      <div>
+        <h2>深色 · 岩板 <small>Slate</small></h2>
+        <p>同一副骨架换成石：壳 `#14161A`、纸 `#1F2328`，分隔不是线而是<b>刻出来的槽</b>——一条暗线，下面补一道极淡的亮。石面也有砂，只是走 overlay，颗粒往<b>亮</b>里跳而不是往暗里沉。字还是衬线，只是墨换成了石上的灰白。</p>
+      </div>
+      <div class="keys"><span>冷灰</span><span>刻槽分隔</span><span>衬线正文</span><span>同骨架</span></div>
+    </div>
+    <div class="stage">
+      <div class="mock th-slate">
+        <div class="top">
+          <div class="brand">NRS</div>
+          <div class="tabs">
+            <div class="tab on">九月复盘<span class="x">×</span></div>
+            <div class="tab">周报 · W39<span class="x">×</span></div>
+            <div class="tab add">+</div>
+          </div>
+          <div class="win"><i>–</i><i>□</i><i>×</i></div>
+        </div>
+        <div class="body">
+          <div class="rail">
+            <span class="ico"><svg width="15" height="15"><use href="#i-search"/></svg></span>
+            <span class="ico on"><svg width="15" height="15"><use href="#i-note"/></svg></span>
+            <span class="ico"><svg width="15" height="15"><use href="#i-graph"/></svg></span>
+            <span class="ico"><svg width="15" height="15"><use href="#i-board"/></svg></span>
+            <span class="ico"><svg width="15" height="15"><use href="#i-image"/></svg></span>
+            <span class="sp"></span>
+            <span class="ico"><svg width="15" height="15"><use href="#i-gear"/></svg></span>
+          </div>
+          <div class="side">
+            <h4><span>文件</span><span class="n">05</span></h4>
+            <div class="row">收件箱<span class="n">04</span></div>
+            <div class="row on">九月复盘</div>
+            <div class="row">周报 · W39</div>
+            <div class="row">白板<span class="n">02</span></div>
+            <div class="row">归档<span class="n">18</span></div>
+          </div>
+          <div class="paper">
+            <div class="doc">
+              <h1>九月复盘</h1>
+              <div class="meta">2026-09-30 · 1,284 字 · 已同步</div>
+              <p>这一周的重点是把壳子收干净：冷灰的石退到边框上，纸暗下去一档，字浮上来。石头不抢戏，它只负责让人坐得住。</p>
+              <h2>本周结论</h2>
+              <div class="chk done"><b>✓</b><span>顶栏 / 功能栏 / 侧栏 同色</span></div>
+              <div class="chk"><b></b><span>正文回到纸的暖白，不用纯白</span></div>
+              <div class="chk"><b></b><span>表格横线降到 6% 墨</span></div>
+              <table>
+                <tr><th>区域</th><th>达成</th><th>备注</th></tr>
+                <tr><td>华东</td><td class="v">92%</td><td class="hi">领先</td></tr>
+                <tr><td>华南</td><td class="v">87%</td><td>待复核</td></tr>
+                <tr><td>西南</td><td class="v">83%</td><td>—</td></tr>
+              </table>
+            </div>
+          </div>
+          <div class="panel">
+            <h4>大纲</h4>
+            <div class="orow on">九月复盘</div>
+            <div class="orow h">本周结论</div>
+            <div class="orow h">下周计划</div>
+            <div class="orow">表格</div>
+            <div class="orow h">高亮</div>
+            <div class="foot">纸 #1F2328<br>壳 #14161A</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="cap">
+      <div><b>分层</b>壳 `#14161A` → 纸 `#1F2328`，同样只差一档</div>
+      <div><b>分隔</b>暗槽 `#0C0E10` + 下方 1px 亮 `rgba(255,255,255,.035)`</div>
+      <div><b>强调</b>选中 = `#24282E` 底 + 2px 灰白竖线；光标是灰白</div>
+    </div>
+  </section>
+
+  <!-- ============================================================ token -->
+  <section class="spec">
+    <div class="spec-head">
+      <b>落代码：一张表管两套</b>
+      <span>同一组 `AppPalette` 字段，两套值；结构代码一行都不用改</span>
+    </div>
+    <table class="tok">
+      <tr><th>Token</th><th>浅色 · 纸</th><th>深色 · 石</th><th>说明</th></tr>
+      <tr><td>chrome</td>
+        <td class="cell"><span><i style="background:#E0D5BC"></i>#E0D5BC</span></td>
+        <td class="cell"><span><i style="background:#14161A"></i>#14161A</span></td>
+        <td class="note">侧栏 / 右栏</td></tr>
+      <tr><td>chromeRaised</td>
+        <td class="cell"><span><i style="background:#E9DFCB"></i>#E9DFCB</span></td>
+        <td class="cell"><span><i style="background:#171A1E"></i>#171A1E</span></td>
+        <td class="note">顶栏 / 功能栏</td></tr>
+      <tr><td>surface</td>
+        <td class="cell"><span><i style="background:#FBF7EE"></i>#FBF7EE</span></td>
+        <td class="cell"><span><i style="background:#1F2328"></i>#1F2328</span></td>
+        <td class="note">正文纸</td></tr>
+      <tr><td>surfaceRaised</td>
+        <td class="cell"><span><i style="background:#D5C9AE"></i>#D5C9AE</span></td>
+        <td class="cell"><span><i style="background:#24282E"></i>#24282E</span></td>
+        <td class="note">选中行 / 悬停</td></tr>
+      <tr><td>outline</td>
+        <td class="cell"><span><i style="background:#C9BEA4"></i>#C9BEA4</span></td>
+        <td class="cell"><span><i style="background:#0C0E10"></i>#0C0E10</span></td>
+        <td class="note">分隔（墨线 / 刻槽）</td></tr>
+      <tr><td>rule</td>
+        <td class="cell"><span><i style="background:#DCD2BC"></i>#DCD2BC</span></td>
+        <td class="cell"><span><i style="background:#262A30"></i>#262A30</span></td>
+        <td class="note">表格横线</td></tr>
+      <tr><td>textPrimary</td>
+        <td class="cell"><span><i style="background:#23201B"></i>#23201B</span></td>
+        <td class="cell"><span><i style="background:#E6E8EA"></i>#E6E8EA</span></td>
+        <td class="note">正文 / 标题</td></tr>
+      <tr><td>textSecondary</td>
+        <td class="cell"><span><i style="background:#574F42"></i>#574F42</span></td>
+        <td class="cell"><span><i style="background:#9AA0A6"></i>#9AA0A6</span></td>
+        <td class="note">次要文字</td></tr>
+      <tr><td>textTertiary</td>
+        <td class="cell"><span><i style="background:#7E7768"></i>#7E7768</span></td>
+        <td class="cell"><span><i style="background:#6E747A"></i>#6E747A</span></td>
+        <td class="note">标签 / 元信息</td></tr>
+      <tr><td>accent</td>
+        <td class="cell"><span><i style="background:#23201B"></i>#23201B</span></td>
+        <td class="cell"><span><i style="background:#E6E8EA"></i>#E6E8EA</span></td>
+        <td class="note">选中竖线 / 光标</td></tr>
+      <tr><td>selection</td>
+        <td class="cell"><span><i style="background:#D9CFB6"></i>#D9CFB6</span></td>
+        <td class="cell"><span><i style="background:#2E343B"></i>#2E343B</span></td>
+        <td class="note">文本选区（样机里没出现）</td></tr>
+    </table>
+  </section>
+
+  <section class="next">
+    <div>
+      <h3>落地顺序</h3>
+      <ul class="steps">
+        <li><b>先做两套值。</b>`AppPalette.paper` 和 `AppPalette.slate` 各一份，字段一一对应；`SettingsController.palette` 按明暗返回其中之一。</li>
+        <li><b>把分隔从「线」改成「槽」。</b>浅色是 1px 墨线，深色是「暗线 + 下方 1px 亮」。写一个 `hairline()` 小工具，两套共用。</li>
+        <li><b>加噪点。</b>纸一层细齿噪点（2 octave、160px、multiply 52%；深色改 overlay 42%），壳不加——纹理只给阅读面。噪点缓存成一张图，别每帧重算。</li>
+        <li><b>正文换衬线。</b>标题 / 正文 / 表格用衬线，UI 标签一律无衬线——这是「纸」在字上的证据。</li>
+      </ul>
+    </div>
+    <div class="next-side">
+      <p><b>需要你定两件事</b>：一是正文到底用不用衬线（用，纸味才出来；不用，材质只剩颜色）；二是浅色的暖度够不够，`#FBF7EE` 已经偏米，再暖就发黄。</p>
+      <p>定了我直接改 `app_palette.dart` + `app_theme.dart`，然后跑 analyze 和测试。</p>
+    </div>
+  </section>
+
+  <div class="xlink">
+    <a href="materials.html">材质第一批</a> ·
+    <a href="materials-2.html">材质第二批 + 谱</a> ·
+    <a href="shell-split.html">浅壳深纸</a> ·
+    <a href="shell-quiet.html">灰阶四则</a> ·
+    <a href="shell-directions.html">四个方向</a>
+  </div>
+
+  <div class="pagefoot">两套骨架完全一致 · 1240 × 640 · 只有材质不同</div>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  const MOCK_W = 1240, MOCK_H = 640;
+  function fit() {
+    document.querySelectorAll(".stage").forEach((stage) => {
+      const mock = stage.querySelector(".mock");
+      if (!mock) return;
+      const s = Math.min(1.25, stage.clientWidth / MOCK_W);
+      mock.style.transform = "scale(" + s + ")";
+      stage.style.height = Math.round(MOCK_H * s) + "px";
+    });
+  }
+  window.addEventListener("resize", fit);
+  fit();
+})();
+</script>
+</body>
+</html>

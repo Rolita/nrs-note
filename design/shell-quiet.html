@@ -1,0 +1,1004 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>NRS · 壳子方向 · 灰阶四则</title>
+<style>
+  :root {
+    --page: #0C0D0F;
+    --page2: #111215;
+    --line: #212329;
+    --t1: #E9EAEC;
+    --t2: #9EA2A9;
+    --t3: #656971;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--page); color: var(--t1);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    font-size: 13px;
+  }
+  svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+  .wrap { width: min(1320px, calc(100% - 48px)); margin: 0 auto; }
+
+  /* ------------------------------------------------------------- masthead */
+  .masthead { padding: 56px 0 0; }
+  .kicker {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .18em;
+    color: var(--t3); text-transform: uppercase;
+  }
+  .masthead h1 {
+    margin: 12px 0 0; font-size: 32px; font-weight: 620; letter-spacing: -.6px;
+    line-height: 1.25;
+  }
+  .masthead p {
+    margin: 14px 0 0; max-width: 780px;
+    font-size: 13px; line-height: 1.9; color: var(--t2);
+  }
+  .masthead p b { color: var(--t1); font-weight: 600; }
+  .ramp {
+    display: flex; align-items: center; gap: 10px; margin: 22px 0 0;
+    font-family: var(--mono); font-size: 10px; color: var(--t3);
+  }
+  .ramp i { width: 34px; height: 10px; border-radius: 2px; display: block; }
+
+  .index {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px; margin: 30px 0 0;
+  }
+  .index a {
+    display: block; padding: 13px 14px 14px;
+    border: 1px solid var(--line); border-radius: 8px;
+    text-decoration: none; color: inherit; background: var(--page2);
+    transition: border-color .15s ease;
+  }
+  .index a:hover { border-color: #363941; }
+  .index b {
+    display: block; font-family: var(--mono); font-size: 10px;
+    color: var(--t3); letter-spacing: .12em; margin-bottom: 6px;
+  }
+  .index span { font-size: 13.5px; font-weight: 600; }
+  .index em { display: block; font-style: normal; font-size: 11px; color: var(--t3); margin-top: 4px; }
+  .index .sw { display: flex; gap: 3px; margin-top: 10px; }
+  .index .sw i { width: 14px; height: 6px; border-radius: 1px; display: block; }
+
+  .xlink {
+    margin-top: 16px; font-family: var(--mono); font-size: 10.5px;
+    color: var(--t3); letter-spacing: .04em;
+  }
+  .xlink a { color: var(--t2); text-decoration: none; border-bottom: 1px solid var(--line); padding-bottom: 1px; }
+  .xlink a:hover { color: var(--t1); }
+
+  /* ------------------------------------------------------------------ dir */
+  .dir { padding: 54px 0 6px; }
+  .dir-head { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+  .badge {
+    width: 34px; height: 34px; flex: none; border-radius: 6px;
+    display: grid; place-items: center;
+    font-family: var(--mono); font-size: 12px; color: var(--t2);
+    border: 1px solid var(--line);
+  }
+  .dir-head h2 {
+    margin: 0; font-size: 19px; font-weight: 620; letter-spacing: -.2px;
+    display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+  }
+  .dir-head h2 small {
+    font-family: var(--mono); font-size: 10px; font-weight: 400;
+    color: var(--t3); letter-spacing: .14em; text-transform: uppercase;
+  }
+  .dir-head p {
+    margin: 7px 0 0; font-size: 12.5px; line-height: 1.85;
+    color: var(--t2); max-width: 720px;
+  }
+  .keys { margin-left: auto; display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+  .keys span {
+    font-family: var(--mono); font-size: 10px; color: var(--t3);
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px;
+  }
+
+  .stage {
+    position: relative; margin-top: 16px; overflow: hidden;
+    border-radius: 10px; border: 1px solid var(--line);
+    background: #08080A;
+  }
+  .mock {
+    position: absolute; left: 0; top: 0;
+    width: 1240px; height: 640px;
+    transform-origin: top left;
+    overflow: hidden;
+  }
+
+  .dir-foot {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 22px; margin-top: 14px; padding-bottom: 8px;
+  }
+  .dir-foot div { font-size: 11.5px; line-height: 1.85; color: var(--t3); }
+  .dir-foot b {
+    display: block; font-family: var(--mono); font-size: 9.5px; font-weight: 400;
+    letter-spacing: .14em; color: var(--t2); margin-bottom: 5px; text-transform: uppercase;
+  }
+
+  .outro {
+    margin-top: 40px; padding: 24px 26px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--page2);
+    display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 28px;
+  }
+  .outro h3 { margin: 0 0 10px; font-size: 13px; font-weight: 620; }
+  .outro ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 7px; }
+  .outro li { position: relative; padding-left: 13px; font-size: 11.5px; line-height: 1.85; color: var(--t3); }
+  .outro li::before {
+    content: ""; position: absolute; left: 0; top: 8px;
+    width: 4px; height: 4px; border-radius: 50%; background: #4A4E57;
+  }
+  .outro li b { color: var(--t2); font-weight: 600; }
+  .pick { display: inline-block; font-size: 13px; font-weight: 620; border-bottom: 1px solid #4A4E57; padding-bottom: 3px; }
+  .outro-side p { margin: 10px 0 0; font-size: 11.5px; line-height: 1.85; color: var(--t3); }
+  .pagefoot { padding: 24px 0 44px; text-align: center; font-family: var(--mono); font-size: 10px; color: var(--t3); }
+
+  /* ================================================================
+     01 · 白纸  PAPER  —— 浅灰当底，白当纸
+     ================================================================ */
+  .m-p {
+    background: #F4F4F5; color: #17181B;
+    font-family: var(--sans);
+    --p-paper: #FFFFFF;
+    --p-panel: #FAFAFA;
+    --p-line: #E4E5E8;
+    --p-line2: #D6D7DB;
+    --p-t1: #17181B;
+    --p-t2: #5C6068;
+    --p-t3: #70747C;
+  }
+  .p-top {
+    height: 48px; display: flex; align-items: center; gap: 4px;
+    padding: 0 16px; background: var(--p-paper);
+    border-bottom: 1px solid var(--p-line);
+  }
+  .p-brand {
+    font-size: 12px; font-weight: 700; letter-spacing: .16em; color: var(--p-t1);
+    margin-right: 14px;
+  }
+  .p-tabs { display: flex; align-items: center; height: 100%; gap: 2px; }
+  .p-tab {
+    height: 100%; padding: 0 13px; display: flex; align-items: center; gap: 7px;
+    font-size: 12.5px; color: var(--p-t3);
+    box-shadow: inset 0 -2px 0 transparent;
+  }
+  .p-tab.on { color: var(--p-t1); font-weight: 600; box-shadow: inset 0 -2px 0 var(--p-t1); }
+  .p-tab .x { font-size: 9px; color: var(--p-t3); }
+  .p-tab.add { padding: 0 9px; color: var(--p-t3); font-size: 14px; }
+  .p-win { margin-left: auto; display: flex; gap: 16px; color: var(--p-t3); font-size: 11px; }
+  .p-win i { font-style: normal; }
+
+  .p-body { display: flex; height: calc(100% - 48px); }
+  .p-rail {
+    width: 52px; flex: none; padding: 12px 0;
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    background: var(--p-panel); border-right: 1px solid var(--p-line);
+  }
+  .p-rail .ico {
+    position: relative; width: 34px; height: 34px;
+    display: grid; place-items: center; color: var(--p-t3);
+  }
+  .p-rail .ico.on { color: var(--p-t1); }
+  .p-rail .ico.on::before {
+    content: ""; position: absolute; left: -9px; top: 8px; bottom: 8px;
+    width: 2px; background: var(--p-t1);
+  }
+  .p-rail .sp { flex: 1; }
+
+  .p-side {
+    width: 272px; flex: none; background: var(--p-panel);
+    border-right: 1px solid var(--p-line); padding: 14px 12px 12px;
+  }
+  .p-side h4 {
+    margin: 0 4px 10px; display: flex; align-items: baseline; justify-content: space-between;
+    font-size: 10.5px; font-weight: 500; letter-spacing: .12em;
+    color: var(--p-t3); text-transform: uppercase;
+  }
+  .p-side h4 .n { font-family: var(--mono); font-size: 10px; letter-spacing: 0; }
+  .p-row {
+    height: 34px; display: flex; align-items: center; gap: 8px;
+    padding: 0 9px; border-radius: 4px;
+    font-size: 13px; color: var(--p-t2);
+  }
+  .p-row .n { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--p-t3); font-variant-numeric: tabular-nums; }
+  .p-row.on {
+    color: var(--p-t1); font-weight: 500;
+    background: var(--p-paper); border: 1px solid var(--p-line2);
+    box-shadow: inset 2px 0 0 var(--p-t1);
+  }
+
+  .p-doc { flex: 1; min-width: 0; background: var(--p-paper); padding: 32px 48px; }
+  .p-doc h3 { margin: 0; font-size: 26px; font-weight: 620; letter-spacing: -.4px; }
+  .p-meta {
+    font-family: var(--mono); font-size: 10.5px; color: var(--p-t3);
+    margin: 7px 0 20px; font-variant-numeric: tabular-nums;
+  }
+  .p-doc p { margin: 0 0 13px; font-size: 13.5px; line-height: 1.95; color: var(--p-t2); }
+  .p-doc p em {
+    font-style: normal; color: var(--p-t1); font-weight: 500;
+    background: linear-gradient(transparent 62%, #ECEDEF 62%);
+  }
+  .p-doc code {
+    font-family: var(--mono); font-size: 11.5px; color: var(--p-t1);
+    background: #F1F2F4; border-radius: 3px; padding: 1px 5px;
+  }
+  .p-tbl { width: 100%; border-collapse: collapse; margin: 4px 0 15px; font-size: 13px; }
+  .p-tbl th, .p-tbl td {
+    padding: 8px 0; text-align: left; font-weight: 400; color: var(--p-t2);
+    border-bottom: 1px solid var(--p-line);
+  }
+  .p-tbl th {
+    font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--p-t3);
+    padding-bottom: 6px;
+  }
+  .p-tbl td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .p-tbl td.hi { color: var(--p-t1); font-weight: 600; }
+  .p-chk { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--p-t2); }
+  .p-chk b {
+    width: 14px; height: 14px; flex: none; border: 1px solid var(--p-t1);
+    display: grid; place-items: center; font-size: 9px; color: var(--p-t1);
+  }
+
+  .p-panel {
+    width: 258px; flex: none; background: var(--p-panel);
+    border-left: 1px solid var(--p-line); padding: 14px 12px;
+  }
+  .p-panel h4 {
+    margin: 0 4px 10px; font-size: 10.5px; font-weight: 500;
+    letter-spacing: .12em; color: var(--p-t3); text-transform: uppercase;
+  }
+  .p-orow {
+    height: 32px; display: flex; align-items: center; gap: 8px;
+    padding: 0 9px; border-radius: 4px; font-size: 12.5px; color: var(--p-t2);
+  }
+  .p-orow.on { color: var(--p-t1); font-weight: 500; }
+  .p-orow.on::before {
+    content: ""; width: 4px; height: 4px; background: var(--p-t1); margin-right: 2px;
+  }
+  .p-orow.h { padding-left: 21px; font-size: 12px; color: var(--p-t3); }
+
+  /* ================================================================
+     02 · 石墨  GRAPHITE  —— 深灰当底，纸亮一档
+     ================================================================ */
+  .m-g {
+    background: #0E0F11; color: #E8E9EC; font-family: var(--sans);
+    --g-paper: #17181B;
+    --g-panel: #121316;
+    --g-line: #22242A;
+    --g-line2: #2C2E35;
+    --g-t1: #E8E9EC;
+    --g-t2: #9DA1A8;
+    --g-t3: #7B7F87;
+  }
+  .g-top {
+    height: 48px; display: flex; align-items: flex-end; gap: 2px;
+    padding: 0 16px; background: #101113;
+    border-bottom: 1px solid var(--g-line);
+  }
+  .g-brand {
+    align-self: center; font-size: 12px; font-weight: 700; letter-spacing: .16em;
+    color: var(--g-t1); margin-right: 14px;
+  }
+  .g-tabs { display: flex; align-items: flex-end; gap: 2px; height: 100%; padding-top: 10px; }
+  .g-tab {
+    height: 30px; padding: 0 13px; display: flex; align-items: center; gap: 7px;
+    font-size: 12.5px; color: var(--g-t3); border-radius: 6px 6px 0 0;
+  }
+  .g-tab.on {
+    color: var(--g-t1); background: var(--g-paper);
+    /* 往下一格把顶栏的下边框盖掉，标签才真的接在纸面上 */
+    box-shadow: inset 0 1px 0 var(--g-line2), 0 1px 0 0 var(--g-paper);
+  }
+  .g-tab .x { font-size: 9px; color: var(--g-t3); }
+  .g-tab.add { padding: 0 9px; font-size: 14px; }
+  .g-win { margin-left: auto; align-self: center; display: flex; gap: 14px; color: var(--g-t3); font-size: 11px; }
+  .g-win i { font-style: normal; }
+
+  .g-body { display: flex; height: calc(100% - 48px); }
+  .g-rail {
+    width: 52px; flex: none; padding: 10px 0;
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+  }
+  .g-rail .ico {
+    width: 32px; height: 32px; border-radius: 6px;
+    display: grid; place-items: center; color: var(--g-t3);
+  }
+  .g-rail .ico.on { color: var(--g-t1); background: #1C1D21; }
+  .g-rail .sp { flex: 1; }
+
+  .g-side { width: 272px; flex: none; padding: 14px 12px 12px; }
+  .g-side h4 {
+    margin: 0 6px 10px; display: flex; align-items: baseline; justify-content: space-between;
+    font-size: 10.5px; font-weight: 500; letter-spacing: .12em;
+    color: var(--g-t3); text-transform: uppercase;
+  }
+  .g-side h4 .n { font-family: var(--mono); font-size: 10px; letter-spacing: 0; }
+  .g-row {
+    height: 32px; display: flex; align-items: center; gap: 8px;
+    padding: 0 9px; border-radius: 5px; font-size: 13px; color: var(--g-t2);
+  }
+  .g-row .n { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--g-t3); font-variant-numeric: tabular-nums; }
+  .g-row.on { color: var(--g-t1); background: #1D1E22; font-weight: 500; }
+
+  .g-doc {
+    flex: 1; min-width: 0; background: var(--g-paper);
+    padding: 32px 48px; border-left: 1px solid var(--g-line);
+  }
+  .g-doc h3 { margin: 0; font-size: 25px; font-weight: 600; letter-spacing: -.3px; }
+  .g-meta {
+    font-family: var(--mono); font-size: 10.5px; color: var(--g-t3);
+    margin: 7px 0 20px; font-variant-numeric: tabular-nums;
+  }
+  .g-doc p { margin: 0 0 13px; font-size: 13.5px; line-height: 1.95; color: var(--g-t2); }
+  .g-doc p em {
+    font-style: normal; color: var(--g-t1); font-weight: 500;
+    background: linear-gradient(transparent 62%, #262830 62%);
+  }
+  .g-doc code {
+    font-family: var(--mono); font-size: 11.5px; color: var(--g-t1);
+    background: #202127; border-radius: 3px; padding: 1px 5px;
+  }
+  .g-tbl { width: 100%; border-collapse: collapse; margin: 4px 0 15px; font-size: 13px; }
+  .g-tbl th, .g-tbl td {
+    padding: 8px 0; text-align: left; font-weight: 400; color: var(--g-t2);
+    border-bottom: 1px solid var(--g-line);
+  }
+  .g-tbl th { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--g-t3); padding-bottom: 6px; }
+  .g-tbl td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .g-tbl td.hi { color: var(--g-t1); font-weight: 600; }
+  .g-chk { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--g-t2); }
+  .g-chk b {
+    width: 14px; height: 14px; flex: none; border: 1px solid var(--g-line2); border-radius: 3px;
+    display: grid; place-items: center; font-size: 9px; color: var(--g-t1);
+  }
+
+  .g-panel {
+    width: 258px; flex: none; border-left: 1px solid var(--g-line); padding: 14px 12px;
+  }
+  .g-panel h4 {
+    margin: 0 6px 10px; font-size: 10.5px; font-weight: 500;
+    letter-spacing: .12em; color: var(--g-t3); text-transform: uppercase;
+  }
+  .g-orow {
+    height: 30px; display: flex; align-items: center; gap: 8px;
+    padding: 0 9px; border-radius: 5px; font-size: 12.5px; color: var(--g-t2);
+  }
+  .g-orow.on { color: var(--g-t1); font-weight: 500; }
+  .g-orow.on::before { content: ""; width: 2px; height: 11px; background: var(--g-t1); border-radius: 1px; }
+  .g-orow.h { padding-left: 21px; font-size: 12px; color: var(--g-t3); }
+
+  /* ================================================================
+     03 · 灰阶  TONAL  —— 不用一根线，全靠明度分层
+     ================================================================ */
+  .m-t {
+    background: #1B1C1F; color: #ECEDEF; font-family: var(--sans);
+    --t-shell: #26272B;
+    --t-panel: #2C2D32;
+    --t-paper: #33343A;
+    --t-hi: #3D3E45;
+    --t-t1: #F2F3F5;
+    --t-t2: #C2C5CB;
+    --t-t3: #9BA0A8;
+  }
+  .t-top {
+    height: 52px; display: flex; align-items: center; gap: 10px;
+    padding: 0 18px;
+  }
+  .t-brand {
+    font-size: 12px; font-weight: 700; letter-spacing: .16em; color: var(--t-t1);
+    margin-right: 8px;
+  }
+  .t-tabs { display: flex; gap: 4px; align-items: center; }
+  .t-tab {
+    height: 30px; padding: 0 13px; border-radius: 7px;
+    display: flex; align-items: center; gap: 7px;
+    font-size: 12.5px; color: var(--t-t3);
+  }
+  .t-tab.on { color: var(--t-t1); background: var(--t-paper); font-weight: 500; }
+  .t-tab .x { font-size: 9px; color: var(--t-t3); }
+  .t-tab.add { width: 30px; padding: 0; justify-content: center; font-size: 14px; }
+  .t-win { margin-left: auto; display: flex; gap: 8px; }
+  .t-win i {
+    width: 9px; height: 9px; border-radius: 50%; background: #4A4B52; display: block;
+  }
+  .t-win i:last-child { background: #5C5D66; }
+
+  .t-body { display: flex; height: calc(100% - 52px); padding: 0 14px 14px; gap: 10px; }
+  .t-rail {
+    width: 50px; flex: none; border-radius: 12px; background: var(--t-panel);
+    padding: 12px 0; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  }
+  .t-rail .ico {
+    width: 34px; height: 34px; border-radius: 9px;
+    display: grid; place-items: center; color: var(--t-t3);
+  }
+  .t-rail .ico.on { color: var(--t-t1); background: var(--t-hi); }
+  .t-rail .sp { flex: 1; }
+
+  .t-side {
+    width: 268px; flex: none; border-radius: 12px; background: var(--t-panel);
+    padding: 15px 12px 12px;
+  }
+  .t-side h4 {
+    margin: 0 8px 10px; display: flex; align-items: baseline; justify-content: space-between;
+    font-size: 10.5px; font-weight: 500; letter-spacing: .12em;
+    color: var(--t-t3); text-transform: uppercase;
+  }
+  .t-side h4 .n { font-family: var(--mono); font-size: 10px; letter-spacing: 0; }
+  .t-row {
+    height: 34px; display: flex; align-items: center; gap: 8px;
+    padding: 0 10px; border-radius: 8px; font-size: 13px; color: var(--t-t2);
+  }
+  .t-row .n { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--t-t3); font-variant-numeric: tabular-nums; }
+  .t-row.on { color: var(--t-t1); background: var(--t-paper); font-weight: 500; }
+
+  .t-doc {
+    flex: 1; min-width: 0; border-radius: 12px; background: var(--t-paper);
+    padding: 32px 46px;
+  }
+  .t-doc h3 { margin: 0; font-size: 25px; font-weight: 600; letter-spacing: -.3px; }
+  .t-meta {
+    font-family: var(--mono); font-size: 10.5px; color: var(--t-t3);
+    margin: 7px 0 20px; font-variant-numeric: tabular-nums;
+  }
+  .t-doc p { margin: 0 0 13px; font-size: 13.5px; line-height: 1.95; color: var(--t-t2); }
+  .t-doc p em {
+    font-style: normal; color: var(--t-t1); font-weight: 500;
+    background: linear-gradient(transparent 62%, #47484F 62%);
+  }
+  .t-doc code {
+    font-family: var(--mono); font-size: 11.5px; color: var(--t-t1);
+    background: #3E3F46; border-radius: 3px; padding: 1px 5px;
+  }
+  .t-tbl { width: 100%; border-collapse: separate; border-spacing: 0; margin: 4px 0 15px; font-size: 13px; }
+  .t-tbl th, .t-tbl td { padding: 8px 10px; text-align: left; font-weight: 400; color: var(--t-t2); }
+  .t-tbl th { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--t-t3); }
+  .t-tbl tr:nth-child(even) td { background: #3A3B41; }
+  .t-tbl td:first-child { border-radius: 5px 0 0 5px; }
+  .t-tbl td:last-child { border-radius: 0 5px 5px 0; }
+  .t-tbl td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .t-tbl td.hi { color: var(--t-t1); font-weight: 600; }
+  .t-chk { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--t-t2); }
+  .t-chk b {
+    width: 14px; height: 14px; flex: none; border-radius: 4px;
+    display: grid; place-items: center; font-size: 9px;
+    color: #2C2D32; background: #E6E7EA;
+  }
+
+  .t-panel {
+    width: 254px; flex: none; border-radius: 12px; background: var(--t-panel);
+    padding: 15px 12px;
+  }
+  .t-panel h4 {
+    margin: 0 8px 10px; font-size: 10.5px; font-weight: 500;
+    letter-spacing: .12em; color: var(--t-t3); text-transform: uppercase;
+  }
+  .t-orow {
+    height: 32px; display: flex; align-items: center; gap: 8px;
+    padding: 0 10px; border-radius: 8px; font-size: 12.5px; color: var(--t-t2);
+  }
+  .t-orow.on { color: var(--t-t1); background: var(--t-hi); font-weight: 500; }
+  .t-orow.h { padding-left: 22px; font-size: 12px; color: var(--t-t3); }
+
+  /* ================================================================
+     04 · 墨线  INK  —— 纯黑，只剩 1px 线
+     ================================================================ */
+  .m-k {
+    background: #000; color: #F2F2F2; font-family: var(--sans);
+    --k-line: #262626;
+    --k-line2: #3D3D3D;
+    --k-t1: #F2F2F2;
+    --k-t2: #8C8C8C;
+    --k-t3: #6B6B6B;
+  }
+  .k-top {
+    height: 46px; display: flex; align-items: center; gap: 14px;
+    padding: 0 18px; border-bottom: 1px solid var(--k-line);
+  }
+  .k-brand {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .2em; color: var(--k-t1);
+  }
+  .k-tabs { display: flex; gap: 6px; align-items: center; }
+  .k-tab {
+    height: 24px; padding: 0 10px; display: flex; align-items: center; gap: 9px;
+    font-size: 11.5px; color: var(--k-t3); border: 1px solid transparent;
+  }
+  .k-tab.on { color: var(--k-t1); border-color: var(--k-line2); }
+  .k-tab .x { font-size: 9px; }
+  .k-tab.add { padding: 0 8px; font-family: var(--mono); }
+  .k-win { margin-left: auto; display: flex; gap: 6px; }
+  .k-win i {
+    width: 20px; height: 18px; display: grid; place-items: center;
+    font-style: normal; font-size: 9px; color: var(--k-t3);
+    border: 1px solid var(--k-line);
+  }
+
+  .k-body { display: flex; height: calc(100% - 46px); }
+  .k-rail {
+    width: 50px; flex: none; padding: 12px 0;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    border-right: 1px solid var(--k-line);
+  }
+  .k-rail .ico {
+    width: 30px; height: 30px; display: grid; place-items: center;
+    color: var(--k-t3); border: 1px solid transparent;
+  }
+  .k-rail .ico.on { color: var(--k-t1); border-color: var(--k-line2); }
+  .k-rail .sp { flex: 1; }
+
+  .k-side { width: 266px; flex: none; padding: 14px 0 0; border-right: 1px solid var(--k-line); }
+  .k-side h4 {
+    margin: 0 16px 12px; display: flex; align-items: baseline; justify-content: space-between;
+    font-family: var(--mono); font-size: 9.5px; font-weight: 400; letter-spacing: .16em;
+    color: var(--k-t3); text-transform: uppercase;
+  }
+  .k-row {
+    height: 34px; display: flex; align-items: center; gap: 8px;
+    padding: 0 16px; font-size: 12.5px; color: var(--k-t2);
+    border-top: 1px solid var(--k-line);
+  }
+  .k-row .n { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--k-t3); font-variant-numeric: tabular-nums; }
+  .k-row.on { color: var(--k-t1); box-shadow: inset 2px 0 0 var(--k-t1); }
+  .k-row.on::before { content: "▸"; font-size: 9px; color: var(--k-t1); margin-right: -2px; }
+
+  .k-doc { flex: 1; min-width: 0; padding: 30px 44px; }
+  .k-doc h3 { margin: 0; font-size: 24px; font-weight: 500; letter-spacing: -.1px; }
+  .k-meta {
+    font-family: var(--mono); font-size: 10px; color: var(--k-t3);
+    margin: 8px 0 22px; letter-spacing: .06em; font-variant-numeric: tabular-nums;
+  }
+  .k-doc p { margin: 0 0 13px; font-size: 13px; line-height: 1.95; color: var(--k-t2); }
+  .k-doc p em {
+    font-style: normal; color: var(--k-t1);
+    border-bottom: 1px solid var(--k-line2);
+  }
+  .k-doc code {
+    font-family: var(--mono); font-size: 11px; color: var(--k-t1);
+    border: 1px solid var(--k-line); padding: 0 4px;
+  }
+  .k-tbl { width: 100%; border-collapse: collapse; margin: 2px 0 16px; font-size: 12.5px; }
+  .k-tbl th, .k-tbl td {
+    padding: 8px 0; text-align: left; font-weight: 400; color: var(--k-t2);
+    border-bottom: 1px solid var(--k-line);
+  }
+  .k-tbl th {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--k-t3);
+    border-bottom-color: var(--k-line2);
+  }
+  .k-tbl td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .k-tbl td.hi { color: var(--k-t1); }
+  .k-chk { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--k-t2); }
+  .k-chk b {
+    width: 13px; height: 13px; flex: none; border: 1px solid var(--k-line2);
+    display: grid; place-items: center; font-size: 8px; color: var(--k-t1);
+  }
+
+  .k-panel { width: 250px; flex: none; border-left: 1px solid var(--k-line); padding: 14px 0 0; }
+  .k-panel h4 {
+    margin: 0 16px 12px; font-family: var(--mono); font-size: 9.5px; font-weight: 400;
+    letter-spacing: .16em; color: var(--k-t3); text-transform: uppercase;
+  }
+  .k-orow {
+    height: 30px; display: flex; align-items: center; gap: 8px;
+    padding: 0 16px; font-size: 12px; color: var(--k-t2);
+    border-top: 1px solid var(--k-line);
+  }
+  .k-orow.on { color: var(--k-t1); }
+  .k-orow.on::before { content: "▸"; font-size: 9px; }
+  .k-orow.h { padding-left: 30px; font-size: 11.5px; color: var(--k-t3); }
+
+  @media (max-width: 1100px) {
+    .index { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .dir-foot { grid-template-columns: 1fr; gap: 12px; }
+    .outro { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-note" viewBox="0 0 24 24"><path d="M6 3.5h8.5L19 8v12.5H6z"/><path d="M14.5 3.5V8H19"/></symbol>
+  <symbol id="i-graph" viewBox="0 0 24 24"><circle cx="12" cy="6" r="2.2"/><circle cx="6" cy="17.5" r="2.2"/><circle cx="18" cy="17.5" r="2.2"/><path d="M11 8 7 15.6M13 8l4 7.6"/></symbol>
+  <symbol id="i-board" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="1.2"/><path d="M3.5 9.5h17"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="1.2"/><path d="m6 15.5 4-4 3 3 2-2 3 3"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="5.6"/><path d="m15.2 15.2 4 4"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.8"/><path d="M12 3.5v2.4M12 18.1v2.4M3.5 12h2.4M18.1 12h2.4M6 6l1.7 1.7M16.3 16.3 18 18M18 6l-1.7 1.7M7.7 16.3 6 18"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></symbol>
+</svg>
+
+<main class="wrap">
+
+  <header class="masthead">
+    <div class="kicker">NRS · 界面方向 · 第三稿</div>
+    <h1>灰阶四则：把颜色关掉，看结构还站不站得住</h1>
+    <p>
+      上一稿的四种语言太吵了。这一稿只用<b>浅灰、灰、深灰、黑</b>——四个方向不是四种配色，
+      而是灰阶上的<b>四个刻度</b>：01 拿浅灰当底、白当纸；02 深灰当底、纸亮一档；
+      03 一根线都不用，只靠明度分层；04 退到纯黑，剩下 1px 的线。
+      颜色拿掉之后，能分出高下的只剩<b>排版、留白、以及「选中」长什么样</b>——这才是这一稿真正在比的东西。
+    </p>
+    <div class="ramp">
+      <span>RAMP</span>
+      <i style="background:#F4F4F5"></i><i style="background:#D6D7DB"></i>
+      <i style="background:#8E929A"></i><i style="background:#3A3B41"></i>
+      <i style="background:#1B1C1F"></i><i style="background:#000"></i>
+      <span>#F4F4F5 → #000000</span>
+    </div>
+
+    <nav class="index">
+      <a href="#d1">
+        <b>01</b><span>白纸</span><em>浅灰底 / 白纸 / 4px</em>
+        <div class="sw"><i style="background:#F4F4F5"></i><i style="background:#FFFFFF"></i><i style="background:#E4E5E8"></i><i style="background:#17181B"></i></div>
+      </a>
+      <a href="#d2">
+        <b>02</b><span>石墨</span><em>深灰底 / 纸亮一档</em>
+        <div class="sw"><i style="background:#0E0F11"></i><i style="background:#17181B"></i><i style="background:#22242A"></i><i style="background:#E8E9EC"></i></div>
+      </a>
+      <a href="#d3">
+        <b>03</b><span>灰阶</span><em>无边框 / 纯明度</em>
+        <div class="sw"><i style="background:#26272B"></i><i style="background:#2C2D32"></i><i style="background:#33343A"></i><i style="background:#F2F3F5"></i></div>
+      </a>
+      <a href="#d4">
+        <b>04</b><span>墨线</span><em>纯黑 / 1px 线</em>
+        <div class="sw"><i style="background:#000000"></i><i style="background:#262626"></i><i style="background:#575757"></i><i style="background:#F2F2F2"></i></div>
+      </a>
+    </nav>
+
+    <div class="xlink">
+      上一稿 <a href="shell-directions.html">四个方向</a> ·
+      这一稿 <a href="shell-quiet.html">灰阶四则</a> ·
+      下一稿 <a href="shell-split.html">浅壳深纸</a>
+    </div>
+  </header>
+
+  <!-- ============================================================ 01 -->
+  <section class="dir" id="d1">
+    <div class="dir-head">
+      <span class="badge">01</span>
+      <div>
+        <h2>白纸 <small>Paper</small></h2>
+        <p>窗口是浅灰，纸是纯白，两者之间只有一根 1px 的浅灰线。没有投影、没有圆角堆叠，靠留白和字重分主次。选中不用底色，用一根 2px 的黑竖线——像目录里被笔划了一道。</p>
+      </div>
+      <div class="keys"><span>浅色</span><span>零投影</span><span>2px 黑竖线</span><span>下划线标签</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="mock m-p">
+        <div class="p-top">
+          <div class="p-brand">NRS</div>
+          <div class="p-tabs">
+            <div class="p-tab on">九月复盘<span class="x">×</span></div>
+            <div class="p-tab">周报 · W39<span class="x">×</span></div>
+            <div class="p-tab add">+</div>
+          </div>
+          <div class="p-win"><i>–</i><i>□</i><i>×</i></div>
+        </div>
+        <div class="p-body">
+          <div class="p-rail">
+            <span class="ico"><svg width="16" height="16"><use href="#i-search"/></svg></span>
+            <span class="ico on"><svg width="16" height="16"><use href="#i-note"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-graph"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-board"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-image"/></svg></span>
+            <span class="sp"></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-gear"/></svg></span>
+          </div>
+          <div class="p-side">
+            <h4><span>文件</span><span class="n">5</span></h4>
+            <div class="p-row">收件箱<span class="n">4</span></div>
+            <div class="p-row on">九月复盘</div>
+            <div class="p-row">周报 · W39</div>
+            <div class="p-row">白板<span class="n">2</span></div>
+            <div class="p-row">归档<span class="n">18</span></div>
+          </div>
+          <div class="p-doc">
+            <h3>九月复盘</h3>
+            <div class="p-meta">2026-09-30 · 1,284 字 · 已同步</div>
+            <p>这一周的重点是把壳子收干净：四块区域合成一片，<em>正文仍然落在纸上</em>。剩下的交给明度，<code>chrome</code> 只负责「不是纸的地方」。</p>
+            <table class="p-tbl">
+              <tr><th>区域</th><th>达成</th><th>备注</th></tr>
+              <tr><td>华东</td><td class="num">92%</td><td class="hi">领先</td></tr>
+              <tr><td>华南</td><td class="num">87%</td><td>待复核</td></tr>
+              <tr><td>西南</td><td class="num">83%</td><td>—</td></tr>
+            </table>
+            <p>下面这条勾掉的事，是这一轮唯一改动的结构。</p>
+            <div class="p-chk"><b>✓</b>顶栏 / 功能栏 / 侧栏 同色</div>
+          </div>
+          <div class="p-panel">
+            <h4>大纲</h4>
+            <div class="p-orow on">九月复盘</div>
+            <div class="p-orow h">本周结论</div>
+            <div class="p-orow h">下周计划</div>
+            <div class="p-orow">表格</div>
+            <div class="p-orow h">高亮</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dir-foot">
+      <div><b>结构</b>窗口浅灰 / 侧栏灰白 / 正文纯白，三层只用一根 1px 线隔开，没有阴影。</div>
+      <div><b>装饰</b>标签是压在底线上的一道 2px 下划线；选中行是白底 + 黑竖线；圆角一律 4px。</div>
+      <div><b>落地</b>最容易落到 Flutter 的一版：`chrome` 换浅色、`outline` 换 `#E4E5E8`，其余 token 不动。</div>
+    </div>
+  </section>
+
+  <!-- ============================================================ 02 -->
+  <section class="dir" id="d2">
+    <div class="dir-head">
+      <span class="badge">02</span>
+      <div>
+        <h2>石墨 <small>Graphite</small></h2>
+        <p>离现在的代码最近的一版，但把上一步的「近白强调」也一起收掉了：壳子是深灰，纸只比它亮一档，标签直接长成纸的一部分（圆角 6px、和正文同色、没有下边框），选中的行只给一层更浅的灰。整张界面只有明度，没有别的手段。</p>
+      </div>
+      <div class="keys"><span>深色</span><span>纸亮一档</span><span>标签并入纸</span><span>6px 圆角</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="mock m-g">
+        <div class="g-top">
+          <div class="g-brand">NRS</div>
+          <div class="g-tabs">
+            <div class="g-tab on">九月复盘<span class="x">×</span></div>
+            <div class="g-tab">周报 · W39<span class="x">×</span></div>
+            <div class="g-tab add">+</div>
+          </div>
+          <div class="g-win"><i>–</i><i>□</i><i>×</i></div>
+        </div>
+        <div class="g-body">
+          <div class="g-rail">
+            <span class="ico"><svg width="16" height="16"><use href="#i-search"/></svg></span>
+            <span class="ico on"><svg width="16" height="16"><use href="#i-note"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-graph"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-board"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-image"/></svg></span>
+            <span class="sp"></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-gear"/></svg></span>
+          </div>
+          <div class="g-side">
+            <h4><span>文件</span><span class="n">5</span></h4>
+            <div class="g-row">收件箱<span class="n">4</span></div>
+            <div class="g-row on">九月复盘</div>
+            <div class="g-row">周报 · W39</div>
+            <div class="g-row">白板<span class="n">2</span></div>
+            <div class="g-row">归档<span class="n">18</span></div>
+          </div>
+          <div class="g-doc">
+            <h3>九月复盘</h3>
+            <div class="g-meta">2026-09-30 · 1,284 字 · 已同步</div>
+            <p>这一周的重点是把壳子收干净：四块区域合成一片，<em>正文仍然落在纸上</em>。剩下的交给明度，<code>chrome</code> 只负责「不是纸的地方」。</p>
+            <table class="g-tbl">
+              <tr><th>区域</th><th>达成</th><th>备注</th></tr>
+              <tr><td>华东</td><td class="num">92%</td><td class="hi">领先</td></tr>
+              <tr><td>华南</td><td class="num">87%</td><td>待复核</td></tr>
+              <tr><td>西南</td><td class="num">83%</td><td>—</td></tr>
+            </table>
+            <p>下面这条勾掉的事，是这一轮唯一改动的结构。</p>
+            <div class="g-chk"><b>✓</b>顶栏 / 功能栏 / 侧栏 同色</div>
+          </div>
+          <div class="g-panel">
+            <h4>大纲</h4>
+            <div class="g-orow on">九月复盘</div>
+            <div class="g-orow h">本周结论</div>
+            <div class="g-orow h">下周计划</div>
+            <div class="g-orow">表格</div>
+            <div class="g-orow h">高亮</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dir-foot">
+      <div><b>结构</b>顶栏 / 侧栏 / 右栏同色（`#0E0F11` 一档），只有正文是 `#17181B`。</div>
+      <div><b>装饰</b>当前标签填成纸色、去掉下边框，看着像「从纸上长出来」；选中行只换底色。</div>
+      <div><b>落地</b>把现有 `AppPalette.graphite` 的 `accent` 从近白改成中性灰即可，改动最小。</div>
+    </div>
+  </section>
+
+  <!-- ============================================================ 03 -->
+  <section class="dir" id="d3">
+    <div class="dir-head">
+      <span class="badge">03</span>
+      <div>
+        <h2>灰阶 <small>Tonal</small></h2>
+        <p>把「分隔线」整个删掉：窗口、面板、纸、选中行，四层全靠明度差（`#26272B → #2C2D32 → #33343A → #3D3E45`）。圆角放到 12px，面板彼此留 10px 缝，像四张叠在一起的灰纸。最安静的一版，也最考验对比度够不够。</p>
+      </div>
+      <div class="keys"><span>零边框</span><span>12px 圆角</span><span>明度分层</span><span>留缝</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="mock m-t">
+        <div class="t-top">
+          <div class="t-brand">NRS</div>
+          <div class="t-tabs">
+            <div class="t-tab on">九月复盘<span class="x">×</span></div>
+            <div class="t-tab">周报 · W39<span class="x">×</span></div>
+            <div class="t-tab add">+</div>
+          </div>
+          <div class="t-win"><i></i><i></i><i></i></div>
+        </div>
+        <div class="t-body">
+          <div class="t-rail">
+            <span class="ico"><svg width="16" height="16"><use href="#i-search"/></svg></span>
+            <span class="ico on"><svg width="16" height="16"><use href="#i-note"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-graph"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-board"/></svg></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-image"/></svg></span>
+            <span class="sp"></span>
+            <span class="ico"><svg width="16" height="16"><use href="#i-gear"/></svg></span>
+          </div>
+          <div class="t-side">
+            <h4><span>文件</span><span class="n">5</span></h4>
+            <div class="t-row">收件箱<span class="n">4</span></div>
+            <div class="t-row on">九月复盘</div>
+            <div class="t-row">周报 · W39</div>
+            <div class="t-row">白板<span class="n">2</span></div>
+            <div class="t-row">归档<span class="n">18</span></div>
+          </div>
+          <div class="t-doc">
+            <h3>九月复盘</h3>
+            <div class="t-meta">2026-09-30 · 1,284 字 · 已同步</div>
+            <p>这一周的重点是把壳子收干净：四块区域合成一片，<em>正文仍然落在纸上</em>。剩下的交给明度，<code>chrome</code> 只负责「不是纸的地方」。</p>
+            <table class="t-tbl">
+              <tr><th>区域</th><th>达成</th><th>备注</th></tr>
+              <tr><td>华东</td><td class="num">92%</td><td class="hi">领先</td></tr>
+              <tr><td>华南</td><td class="num">87%</td><td>待复核</td></tr>
+              <tr><td>西南</td><td class="num">83%</td><td>—</td></tr>
+            </table>
+            <p>下面这条勾掉的事，是这一轮唯一改动的结构。</p>
+            <div class="t-chk"><b>✓</b>顶栏 / 功能栏 / 侧栏 同色</div>
+          </div>
+          <div class="t-panel">
+            <h4>大纲</h4>
+            <div class="t-orow on">九月复盘</div>
+            <div class="t-orow h">本周结论</div>
+            <div class="t-orow h">下周计划</div>
+            <div class="t-orow">表格</div>
+            <div class="t-orow h">高亮</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dir-foot">
+      <div><b>结构</b>四块面板互不接触，靠 10px 缝 + 明度差分层；一根线都不画。</div>
+      <div><b>装饰</b>表格没有横线，用隔行浅灰代替；选中行 = 比纸再亮一档；圆角 12px。</div>
+      <div><b>落地</b>要新加 `surfaceTint` 一档（`#3D3E45`）当 hover/选中；表格的斑马底要能关掉线。</div>
+    </div>
+  </section>
+
+  <!-- ============================================================ 04 -->
+  <section class="dir" id="d4">
+    <div class="dir-head">
+      <span class="badge">04</span>
+      <div>
+        <h2>墨线 <small>Ink</small></h2>
+        <p>退到纯黑，把「填充」这个概念也去掉：所有区域都是黑的，边界只有 1px 的灰线，选中靠反白和一个小三角。圆角为 0，数字全部等宽，表头用等宽大写字母。最硬的一版，也最不容易过时。</p>
+      </div>
+      <div class="keys"><span>纯黑</span><span>1px 线</span><span>0 圆角</span><span>反白选中</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="mock m-k">
+        <div class="k-top">
+          <div class="k-brand">NRS</div>
+          <div class="k-tabs">
+            <div class="k-tab on">九月复盘<span class="x">×</span></div>
+            <div class="k-tab">周报 · W39<span class="x">×</span></div>
+            <div class="k-tab add">+</div>
+          </div>
+          <div class="k-win"><i>–</i><i>□</i><i>×</i></div>
+        </div>
+        <div class="k-body">
+          <div class="k-rail">
+            <span class="ico"><svg width="15" height="15"><use href="#i-search"/></svg></span>
+            <span class="ico on"><svg width="15" height="15"><use href="#i-note"/></svg></span>
+            <span class="ico"><svg width="15" height="15"><use href="#i-graph"/></svg></span>
+            <span class="ico"><svg width="15" height="15"><use href="#i-board"/></svg></span>
+            <span class="ico"><svg width="15" height="15"><use href="#i-image"/></svg></span>
+            <span class="sp"></span>
+            <span class="ico"><svg width="15" height="15"><use href="#i-gear"/></svg></span>
+          </div>
+          <div class="k-side">
+            <h4><span>文件</span><span>05</span></h4>
+            <div class="k-row">收件箱<span class="n">04</span></div>
+            <div class="k-row on">九月复盘</div>
+            <div class="k-row">周报 · W39</div>
+            <div class="k-row">白板<span class="n">02</span></div>
+            <div class="k-row">归档<span class="n">18</span></div>
+          </div>
+          <div class="k-doc">
+            <h3>九月复盘</h3>
+            <div class="k-meta">2026-09-30 / 1,284 字 / 已同步</div>
+            <p>这一周的重点是把壳子收干净：四块区域合成一片，<em>正文仍然落在纸上</em>。剩下的交给明度，<code>chrome</code> 只负责「不是纸的地方」。</p>
+            <table class="k-tbl">
+              <tr><th>区域</th><th>达成</th><th>备注</th></tr>
+              <tr><td>华东</td><td class="num">92%</td><td class="hi">领先</td></tr>
+              <tr><td>华南</td><td class="num">87%</td><td>待复核</td></tr>
+              <tr><td>西南</td><td class="num">83%</td><td>—</td></tr>
+            </table>
+            <p>下面这条勾掉的事，是这一轮唯一改动的结构。</p>
+            <div class="k-chk"><b>✓</b>顶栏 / 功能栏 / 侧栏 同色</div>
+          </div>
+          <div class="k-panel">
+            <h4>大纲</h4>
+            <div class="k-orow on">九月复盘</div>
+            <div class="k-orow h">本周结论</div>
+            <div class="k-orow h">下周计划</div>
+            <div class="k-orow">表格</div>
+            <div class="k-orow h">高亮</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dir-foot">
+      <div><b>结构</b>所有区域同色（纯黑），只靠 1px 线分区；顶栏 46px、右栏 250px，都比其他三版更紧。</div>
+      <div><b>装饰</b>标签是方框，选中行反白描边 + `▸`；侧栏每行一条上边线；数字补零对齐。</div>
+      <div><b>落地</b>唯一要新造的是「选中」样式：现在靠 `accentSoft` 底色，这版要改成描边。</div>
+    </div>
+  </section>
+
+  <section class="outro">
+    <div>
+      <h3>四版的差别在哪</h3>
+      <ul>
+        <li><b>底色</b>01 浅灰 / 02 深灰 / 03 中灰 / 04 纯黑——四个刻度各取一端。</li>
+        <li><b>怎么分区</b>01 一根 1px 线；02 明度一档；03 留缝 + 明度两档；04 只有线。</li>
+        <li><b>「选中」长什么样</b>01 黑竖线 / 02 更浅的底 / 03 再亮一档 / 04 反白描边 + 三角。</li>
+        <li><b>圆角</b>4 / 6 / 12 / 0——同一套骨架，四种手感。</li>
+        <li><b>风险</b>01 在强光下对比度最紧；03 没有线，弱屏上分不出层；04 长文里满屏线会累。</li>
+      </ul>
+    </div>
+    <div class="outro-side">
+      <span class="pick">回我 1 / 2 / 3 / 4</span>
+      <p>也可以混：「2 的底 + 4 的选中」「1 的排版 + 2 的纸」。混的时候我只换 token 和选中样式，不动骨架。</p>
+      <p>要全浅色（白天模式）说一声，我把 03、04 整个翻过来再出一版。</p>
+    </div>
+  </section>
+
+  <div class="pagefoot">四张图内容一致 · 1240 × 640 绘制 · 随窗口等比缩放</div>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const MOCK_W = 1240;
+  const MOCK_H = 640;
+
+  const only = new URLSearchParams(location.search).get("only");
+  if (only) {
+    const id = "d" + only.replace(/\D/g, "");
+    document.querySelectorAll(".dir").forEach((sec) => {
+      if (sec.id !== id) sec.remove();
+    });
+    document.querySelectorAll(".index a").forEach((a) => {
+      if (a.getAttribute("href") !== "#" + id) a.remove();
+    });
+  }
+
+  function fit() {
+    document.querySelectorAll(".stage").forEach((stage) => {
+      const mock = stage.querySelector(".mock");
+      if (!mock) return;
+      const s = Math.min(1.25, stage.clientWidth / MOCK_W);
+      mock.style.transform = "scale(" + s + ")";
+      stage.style.height = Math.round(MOCK_H * s) + "px";
+    });
+  }
+
+  window.addEventListener("resize", fit);
+  fit();
+})();
+</script>
+</body>
+</html>

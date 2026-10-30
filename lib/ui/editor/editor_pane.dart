@@ -29,7 +29,32 @@ class EditorPane extends StatefulWidget {
     this.onOpenSearch,
     this.showSearchHighlights = false,
     this.bodyValue,
+    this.noteId,
+    this.readOnly = false,
+    this.onSplit,
+    this.onClosePane,
   });
+
+  /// 把这一格切成两半：`Axis.horizontal` 是左右，`Axis.vertical` 是上下。
+  ///
+  /// 切哪一格、切出来的新格装什么，都由外壳决定——面板只负责把按钮画在
+  /// 自己头上。`null` 时这两颗按钮不画。
+  final ValueChanged<Axis>? onSplit;
+
+  /// 关掉这一格。只剩一格时外壳传 `null`——容器总得留一格。
+  final VoidCallback? onClosePane;
+
+  /// 只看这一篇，不跟着全局选中走。
+  ///
+  /// 分屏时非聚焦的那几格用得上：它们各看各的，只有聚焦的那格绑草稿。
+  /// `null` = 老行为（`draft ?? selectedNote`）。
+  final String? noteId;
+
+  /// 只读。非聚焦的笔记格用它——分屏是为了同时看，不是为了同时写。
+  ///
+  /// 真正能写的那一格由「点一下它」决定：点了才绑草稿，撤销栈、自动保存
+  /// 和冲突检测都只服务那一格，不用把这三套东西复制成多份。
+  final bool readOnly;
 
   final void Function(Note note) onDelete;
   final ValueChanged<int>? onCursorLineChanged;
@@ -415,7 +440,10 @@ class EditorPaneState extends State<EditorPane> {
     final AppPalette p = context.palette;
     final NotesController notes = context.watch<NotesController>();
     final SettingsController settings = context.watch<SettingsController>();
-    final Note? note = notes.draft ?? notes.selectedNote;
+    final String? pinned = widget.noteId;
+    final Note? note = pinned == null
+        ? (notes.draft ?? notes.selectedNote)
+        : notes.noteById(pinned);
 
     if (note == null) return _noSelection(p, notes);
 
@@ -427,8 +455,8 @@ class EditorPaneState extends State<EditorPane> {
     }
 
     // The task checkboxes drawn by the live renderer write straight back into
-    // the draft.
-    _body.onExternalChange = notes.updateBody;
+    // the draft. 只读的那一格不写回：它显示的不是草稿，是另一篇笔记。
+    _body.onExternalChange = widget.readOnly ? null : notes.updateBody;
 
     return Container(
       color: p.surface,
@@ -598,6 +626,32 @@ class EditorPaneState extends State<EditorPane> {
             ),
           ),
           const SizedBox(width: AppSpace.sm),
+          // 分割 / 关掉这一格。放在专注模式左边：它们是「这一格怎么摆」，
+          // 专注模式是「整个窗口怎么摆」，越靠右的越关乎全局。
+          if (widget.onSplit != null) ...<Widget>[
+            AppIconButton(
+              icon: LucideIcons.columns2,
+              tooltip: '左右分屏',
+              size: AppLayout.buttonHeight,
+              iconSize: AppIconSize.sm - 2,
+              onPressed: () => widget.onSplit!(Axis.horizontal),
+            ),
+            AppIconButton(
+              icon: LucideIcons.rows2,
+              tooltip: '上下分屏',
+              size: AppLayout.buttonHeight,
+              iconSize: AppIconSize.sm - 2,
+              onPressed: () => widget.onSplit!(Axis.vertical),
+            ),
+          ],
+          if (widget.onClosePane != null)
+            AppIconButton(
+              icon: LucideIcons.x,
+              tooltip: '关掉这一格',
+              size: AppLayout.buttonHeight,
+              iconSize: AppIconSize.sm - 2,
+              onPressed: widget.onClosePane,
+            ),
           AppIconButton(
             icon: LucideIcons.maximize,
             tooltip: '专注模式',
@@ -706,7 +760,9 @@ class EditorPaneState extends State<EditorPane> {
         child: TextField(
           controller: _title,
           focusNode: _titleFocus,
-          onChanged: notes.updateTitle,
+          // 只读的那一格标题也不许改：改的是另一篇笔记的名字，用户没打算动它。
+          onChanged: widget.readOnly ? null : notes.updateTitle,
+          readOnly: widget.readOnly,
           cursorColor: p.accent,
           cursorWidth: 1.8,
           // Same rule as the body: highlight the title's glyphs, not the
@@ -806,7 +862,8 @@ class EditorPaneState extends State<EditorPane> {
           imageProviderFor(notes.assetPathFor(source), source),
       // 「查看大图」要知道原图多大，尺寸得从磁盘上那张文件读。
       imagePathFor: (String source) => notes.assetPathFor(source),
-      onChanged: notes.updateBody,
+      onChanged: widget.readOnly ? null : notes.updateBody,
+      readOnly: widget.readOnly,
       onTopLineChanged: _onTopLine,
       onLineTopProbe: (double? Function(int line)? probe) =>
           _lineTopProbe = probe,

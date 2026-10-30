@@ -1,0 +1,1262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>四个方向：整个界面换一套样子</title>
+<style>
+  :root {
+    --sans: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+    --serif: "Songti SC", "STSong", "SimSun", Georgia, serif;
+    --kai: "KaiTi", "STKaiti", "Kaiti SC", "Songti SC", serif;
+    --mono: "Cascadia Code", Consolas, "Liberation Mono", monospace;
+
+    --page: #0A0A0C;
+    --panel: #131316;
+    --line: #24242A;
+    --line-soft: #1B1B20;
+    --t1: #E9E9EC;
+    --t2: #9A9AA4;
+    --t3: #6B6B76;
+    --gold: #D6B14A;
+    --gold-ink: #201A06;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--page); }
+  body {
+    color: var(--t1);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { width: min(1320px, calc(100% - 48px)); margin: 0 auto; }
+
+  /* ------------------------------------------------------------- masthead */
+  .masthead { padding: 40px 0 24px; border-bottom: 1px solid var(--line-soft); }
+  .kicker {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; letter-spacing: .14em; font-weight: 600;
+    color: var(--t3); text-transform: uppercase;
+  }
+  .kicker i { width: 6px; height: 6px; border-radius: 50%; background: var(--gold); }
+  h1 {
+    margin: 10px 0 0; font-size: 32px; line-height: 1.25;
+    font-weight: 700; letter-spacing: -.6px;
+  }
+  .lede {
+    max-width: 860px; margin: 12px 0 0;
+    font-size: 13.5px; line-height: 1.95; color: var(--t2);
+  }
+  .lede b { color: var(--t1); font-weight: 600; }
+  .lede code {
+    font-family: var(--mono); font-size: .86em;
+    background: #1B1B20; border-radius: 4px; padding: 1px 5px; color: var(--t1);
+  }
+  .index {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px; margin-top: 22px;
+  }
+  .index a {
+    display: block; padding: 12px 14px;
+    border: 1px solid var(--line); border-radius: 10px;
+    text-decoration: none; color: inherit; background: var(--panel);
+    transition: border-color .15s ease, transform .15s ease;
+  }
+  .index a:hover { border-color: #3A3A44; transform: translateY(-2px); }
+  .index b {
+    display: block; font-family: var(--mono); font-size: 10px;
+    color: var(--t3); letter-spacing: .12em; margin-bottom: 5px;
+  }
+  .index span { font-size: 14px; font-weight: 650; }
+  .index em {
+    display: block; font-style: normal; font-size: 11px;
+    color: var(--t3); margin-top: 4px;
+  }
+
+  .xlink {
+    margin-top: 16px; font-family: var(--mono); font-size: 10.5px;
+    color: var(--t3); letter-spacing: .04em;
+  }
+  .xlink a { color: var(--t2); text-decoration: none; border-bottom: 1px solid var(--line); padding-bottom: 1px; }
+  .xlink a:hover { color: var(--t1); }
+
+  /* ------------------------------------------------------------------ dir */
+  .dir { padding: 44px 0 8px; }
+  .dir-head { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .num {
+    width: 46px; height: 46px; flex: none; border-radius: 12px;
+    display: grid; place-items: center;
+    font-family: var(--mono); font-size: 15px; font-weight: 700;
+    background: #1A1A1F; color: var(--t2);
+    border: 1px solid var(--line);
+  }
+  .dir-head h2 {
+    margin: 0; font-size: 21px; font-weight: 700; letter-spacing: -.3px;
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  }
+  .dir-head h2 small {
+    font-size: 11px; font-weight: 500; color: var(--t3);
+    letter-spacing: .1em; text-transform: uppercase;
+  }
+  .dir-head p {
+    margin: 6px 0 0; font-size: 12.5px; line-height: 1.75;
+    color: var(--t2); max-width: 760px;
+  }
+  .keys { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .keys span {
+    font-size: 10.5px; color: var(--t2);
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 3px 9px; white-space: nowrap;
+  }
+
+  .stage {
+    position: relative; margin-top: 16px; overflow: hidden;
+    border-radius: 14px; border: 1px solid var(--line);
+    background: #08080A;
+  }
+  .mock {
+    position: absolute; left: 0; top: 0;
+    width: 1240px; height: 640px;
+    transform-origin: top left;
+    overflow: hidden;
+  }
+
+  .dir-foot {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 22px; margin-top: 14px; padding-bottom: 10px;
+  }
+  .dir-foot div { font-size: 11.5px; line-height: 1.8; color: var(--t3); }
+  .dir-foot b {
+    display: block; font-size: 10px; letter-spacing: .12em;
+    color: var(--t2); margin-bottom: 5px; text-transform: uppercase;
+  }
+
+  .outro {
+    margin-top: 34px; padding: 22px 24px;
+    border: 1px solid var(--line); border-radius: 12px;
+    background: var(--panel);
+    display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 26px;
+  }
+  .outro h3 { margin: 0 0 8px; font-size: 13px; font-weight: 650; }
+  .outro ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+  .outro li {
+    position: relative; padding-left: 14px;
+    font-size: 11.5px; line-height: 1.8; color: var(--t3);
+  }
+  .outro li::before {
+    content: ""; position: absolute; left: 0; top: 8px;
+    width: 5px; height: 5px; border-radius: 50%; background: var(--gold);
+  }
+  .outro li b { color: var(--t2); font-weight: 600; }
+  .pick {
+    display: inline-block; font-size: 13px; font-weight: 650;
+    border-bottom: 2px solid var(--gold); padding-bottom: 3px;
+  }
+  .outro-side p { margin: 9px 0 0; font-size: 11.5px; line-height: 1.8; color: var(--t3); }
+  .pagefoot { padding: 22px 0 40px; text-align: center; font-size: 10.5px; color: var(--t3); }
+
+  /* ================================================================
+     A · 极光玻璃
+     ================================================================ */
+  .mock.a { background: #0A0B12; }
+  .mock.a::before {
+    content: ""; position: absolute; inset: -18%;
+    background:
+      radial-gradient(34% 40% at 16% 10%, #4655C9 0%, transparent 62%),
+      radial-gradient(30% 36% at 84% 6%, #8E45C4 0%, transparent 64%),
+      radial-gradient(40% 44% at 66% 96%, #1F8F92 0%, transparent 62%),
+      radial-gradient(26% 30% at 6% 92%, #B04C74 0%, transparent 62%);
+    filter: blur(64px) saturate(1.2);
+    opacity: .62;
+  }
+  .mock.a::after {
+    content: ""; position: absolute; inset: 0;
+    background: radial-gradient(120% 90% at 50% 0%, transparent 30%, rgba(4,5,9,.72) 100%);
+  }
+  .a-inner { position: relative; z-index: 2; height: 100%; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+
+  .a-top {
+    height: 54px; flex: none;
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 14px;
+    border-radius: 16px;
+    background: linear-gradient(150deg, rgba(255,255,255,.09), rgba(255,255,255,.028));
+    border: 1px solid rgba(255,255,255,.11);
+    backdrop-filter: blur(24px) saturate(150%);
+    box-shadow: 0 18px 44px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.16);
+  }
+  .a-brand {
+    width: 26px; height: 26px; border-radius: 8px; flex: none;
+    background: linear-gradient(140deg, #A9B2FF, #7C6BE8 45%, #C46BB0);
+    box-shadow: 0 0 18px rgba(139,148,242,.55), inset 0 1px 0 rgba(255,255,255,.5);
+    display: grid; place-items: center;
+    font-size: 11px; font-weight: 800; color: #14162E;
+  }
+  .a-tabs { display: flex; gap: 6px; align-items: center; }
+  .a-tab {
+    position: relative; height: 32px; padding: 0 14px; border-radius: 10px;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: rgba(233,235,245,.62);
+    background: transparent;
+  }
+  .a-tab.on {
+    color: #F2F3FA;
+    background: rgba(255,255,255,.10);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.20), 0 6px 18px rgba(0,0,0,.35);
+  }
+  .a-tab.on::after {
+    content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px;
+    border-radius: 2px;
+    background: linear-gradient(90deg, #8B94F2, #C46BB0 60%, #4FD1C0);
+    box-shadow: 0 0 12px rgba(139,148,242,.85);
+  }
+  .a-tab .x { font-size: 9px; opacity: .45; }
+  .a-tab.add { width: 30px; padding: 0; justify-content: center; color: rgba(255,255,255,.4); }
+  .a-win { margin-left: auto; display: flex; gap: 8px; }
+  .a-win i {
+    width: 11px; height: 11px; border-radius: 50%;
+    background: rgba(255,255,255,.16);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.25);
+  }
+  .a-win i:last-child { background: rgba(224,120,120,.55); }
+
+  .a-body { flex: 1; display: flex; gap: 14px; min-height: 0; }
+  .a-isl {
+    border-radius: 18px;
+    background: linear-gradient(158deg, rgba(255,255,255,.075), rgba(255,255,255,.022));
+    border: 1px solid rgba(255,255,255,.10);
+    backdrop-filter: blur(26px) saturate(140%);
+    box-shadow: 0 22px 50px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.14);
+    overflow: hidden;
+  }
+  .a-rail {
+    width: 58px; flex: none; padding: 10px 0;
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+  }
+  .a-rail .ico {
+    width: 36px; height: 36px; border-radius: 11px;
+    display: grid; place-items: center; color: rgba(233,235,245,.5);
+  }
+  .a-rail .ico.on {
+    color: #F2F3FA;
+    background: linear-gradient(150deg, rgba(139,148,242,.55), rgba(196,107,176,.35));
+    box-shadow: 0 8px 20px rgba(90,96,190,.45), inset 0 1px 0 rgba(255,255,255,.28);
+  }
+  .a-rail .gap { flex: 1; }
+
+  .a-side { width: 296px; flex: none; padding: 14px 12px; }
+  .a-side h4 {
+    margin: 0 0 10px; padding: 0 8px;
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+    color: rgba(233,235,245,.42); font-weight: 600;
+  }
+  .a-row {
+    height: 34px; border-radius: 10px; padding: 0 10px;
+    display: flex; align-items: center; gap: 9px;
+    font-size: 12.5px; color: rgba(233,235,245,.70);
+  }
+  .a-row .n { margin-left: auto; font-size: 10px; color: rgba(233,235,245,.35); }
+  .a-row.on {
+    color: #F4F5FC;
+    background: linear-gradient(90deg, rgba(139,148,242,.26), rgba(139,148,242,.04) 70%, transparent);
+    box-shadow: inset 0 0 0 1px rgba(139,148,242,.30);
+  }
+  .a-row.on::before {
+    content: ""; width: 2px; height: 16px; border-radius: 2px;
+    background: #A9B2FF; box-shadow: 0 0 10px #8B94F2;
+    margin-left: -10px; margin-right: 8px;
+  }
+
+  .a-doc { flex: 1; padding: 30px 40px; min-width: 0;
+    /* 纸比两侧的玻璃更亮一档：整张界面里只有它是「纸」 */
+    background: linear-gradient(158deg, rgba(255,255,255,.115), rgba(255,255,255,.052));
+    box-shadow: 0 26px 60px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.2);
+  }
+  .a-doc h3 {
+    margin: 0 0 6px; font-size: 30px; font-weight: 700; letter-spacing: -.6px;
+    background: linear-gradient(100deg, #FFFFFF, #C9CDF2 55%, #E6C2DE);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .a-meta { font-size: 10.5px; color: rgba(233,235,245,.36); letter-spacing: .04em; margin-bottom: 18px; }
+  .a-p { margin: 0 0 12px; font-size: 13px; line-height: 1.95; color: rgba(233,235,245,.78); }
+  .a-p em {
+    font-style: normal; color: #DCE0FF;
+    background: linear-gradient(transparent 62%, rgba(139,148,242,.35) 62%);
+  }
+  .a-code {
+    font-family: var(--mono); font-size: 11px;
+    background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.09);
+    border-radius: 6px; padding: 1px 5px; color: #CBD0F5;
+  }
+  .a-tbl { width: 100%; border-collapse: separate; border-spacing: 0; margin: 6px 0 14px; font-size: 12px; }
+  .a-tbl th, .a-tbl td {
+    padding: 9px 12px; text-align: left; font-weight: 400;
+    color: rgba(233,235,245,.78);
+    border-bottom: 1px solid rgba(255,255,255,.07);
+  }
+  .a-tbl th { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: rgba(233,235,245,.38); }
+  .a-tbl tr.on td { background: rgba(139,148,242,.10); }
+  .a-tbl td.hi { color: #B9BFFF; }
+
+  .a-chk {
+    display: inline-flex; align-items: center; gap: 8px; margin-top: 2px;
+    padding: 5px 12px 5px 8px; border-radius: 999px; font-size: 12px;
+    color: rgba(233,235,245,.72);
+    background: rgba(255,255,255,.05);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+  }
+  .a-chk b {
+    width: 15px; height: 15px; border-radius: 5px;
+    display: grid; place-items: center; font-size: 9px; font-weight: 700;
+    color: #12142A; background: linear-gradient(160deg, #AEB6FF, #7B84E8);
+    box-shadow: 0 0 10px rgba(139,148,242,.55);
+  }
+
+  .a-panel { width: 268px; flex: none; padding: 14px 12px; }
+  .a-orow {
+    height: 32px; display: flex; align-items: center; padding: 0 10px;
+    border-radius: 9px; font-size: 12px; color: rgba(233,235,245,.58);
+  }
+  .a-orow.on {
+    color: #EAECFB;
+    background: rgba(255,255,255,.07);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.09);
+  }
+  .a-orow.h { padding-left: 22px; color: rgba(233,235,245,.38); font-size: 11.5px; }
+
+  /* ================================================================
+     B · 装饰艺术（黄铜与墨绿）
+     ================================================================ */
+  .mock.b { background: #071310; color: #EDE6D6; font-family: var(--serif); }
+  .b-inner { height: 100%; display: flex; flex-direction: column; position: relative; }
+  .b-inner::before {
+    content: ""; position: absolute; inset: 8px; pointer-events: none;
+    border: 1px solid rgba(200,162,74,.22);
+  }
+  .b-inner::after {
+    content: ""; position: absolute; inset: 11px; pointer-events: none;
+    border: 1px solid rgba(200,162,74,.10);
+  }
+  .b-top {
+    height: 58px; flex: none; position: relative;
+    display: flex; align-items: center; padding: 0 26px;
+    border-bottom: 1px solid rgba(200,162,74,.30);
+  }
+  .b-top::after {
+    content: ""; position: absolute; left: 26px; right: 26px; bottom: -4px; height: 1px;
+    background: rgba(200,162,74,.14);
+  }
+  .b-mark {
+    font-size: 11px; letter-spacing: .42em; color: #C8A24A;
+    text-transform: uppercase; margin-right: 26px;
+  }
+  .b-tabs { display: flex; gap: 8px; }
+  .b-tab {
+    position: relative; height: 30px; padding: 0 18px;
+    display: flex; align-items: center;
+    font-size: 11.5px; letter-spacing: .16em; color: rgba(237,230,214,.5);
+    clip-path: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
+    background: rgba(200,162,74,.05);
+  }
+  .b-tab.on {
+    color: #12100A;
+    background: linear-gradient(180deg, #E3C574, #C8A24A 60%, #A9852F);
+    font-weight: 600;
+  }
+  .b-win { margin-left: auto; display: flex; gap: 14px; align-items: center; }
+  .b-win span {
+    font-size: 10px; letter-spacing: .2em; color: rgba(237,230,214,.42);
+  }
+
+  .b-body { flex: 1; display: flex; min-height: 0; }
+  .b-rail {
+    width: 54px; flex: none; padding: 16px 0;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    border-right: 1px solid rgba(200,162,74,.22);
+  }
+  .b-rail .ico {
+    width: 30px; height: 30px; display: grid; place-items: center;
+    color: rgba(237,230,214,.40);
+    border: 1px solid transparent;
+  }
+  .b-rail .ico.on {
+    color: #E3C574; border-color: rgba(200,162,74,.55);
+    box-shadow: inset 0 0 0 2px #071310, inset 0 0 0 3px rgba(200,162,74,.25);
+  }
+  .b-rail .gap { flex: 1; }
+
+  .b-side {
+    width: 300px; flex: none; padding: 18px 18px 14px;
+    border-right: 1px solid rgba(200,162,74,.22);
+    position: relative;
+  }
+  .b-side h4 {
+    margin: 0 0 14px; display: flex; align-items: center; gap: 10px;
+    font-size: 10px; letter-spacing: .34em; color: #C8A24A; text-transform: uppercase;
+  }
+  .b-side h4::before, .b-side h4::after {
+    content: ""; height: 1px; flex: 1; background: rgba(200,162,74,.28);
+  }
+  .b-row {
+    height: 36px; display: flex; align-items: center; gap: 12px;
+    font-size: 13px; color: rgba(237,230,214,.62);
+    border-bottom: 1px solid rgba(200,162,74,.10);
+  }
+  .b-row .rn {
+    width: 18px; font-family: var(--serif); font-size: 10.5px;
+    letter-spacing: .06em; color: rgba(200,162,74,.65);
+  }
+  .b-row .n { margin-left: auto; font-size: 10px; color: rgba(237,230,214,.32); }
+  .b-row.on { color: #F6EFDF; }
+  .b-row.on .rn { color: #E3C574; }
+  .b-row.on::after {
+    content: "◆"; font-size: 6px; color: #E3C574; margin-left: 8px;
+  }
+
+  .b-doc { flex: 1; padding: 30px 44px; min-width: 0; position: relative; }
+  .b-doc::before, .b-doc::after {
+    content: ""; position: absolute; width: 30px; height: 30px; pointer-events: none;
+  }
+  .b-doc::before {
+    left: 18px; top: 18px;
+    border-left: 1px solid rgba(200,162,74,.45); border-top: 1px solid rgba(200,162,74,.45);
+  }
+  .b-doc::after {
+    right: 18px; bottom: 18px;
+    border-right: 1px solid rgba(200,162,74,.45); border-bottom: 1px solid rgba(200,162,74,.45);
+  }
+  .b-doc h3 {
+    margin: 0; font-size: 34px; font-weight: 500; letter-spacing: .06em;
+    color: #F7F0E0;
+  }
+  .b-rule {
+    display: flex; align-items: center; gap: 10px; margin: 10px 0 14px;
+    color: #C8A24A; font-size: 8px;
+  }
+  .b-rule::before, .b-rule::after { content: ""; height: 1px; flex: 1; background: rgba(200,162,74,.32); }
+  .b-meta {
+    font-size: 9.5px; letter-spacing: .22em; color: rgba(237,230,214,.38);
+    text-transform: uppercase; margin-bottom: 16px;
+  }
+  .b-p { margin: 0 0 12px; font-size: 13.5px; line-height: 2.05; color: rgba(237,230,214,.80); }
+  .b-p.first::first-letter {
+    float: left; font-size: 44px; line-height: .92; padding: 4px 10px 0 0;
+    color: #E3C574; font-weight: 500;
+  }
+  .b-p em { font-style: normal; color: #E3C574; }
+  .b-tbl { width: 100%; border-collapse: collapse; margin: 4px 0 14px; font-size: 12px; }
+  .b-tbl th, .b-tbl td {
+    padding: 8px 10px; text-align: left; font-weight: 400;
+    color: rgba(237,230,214,.78);
+    border-bottom: 1px solid rgba(200,162,74,.16);
+  }
+  .b-tbl th {
+    font-size: 9.5px; letter-spacing: .2em; text-transform: uppercase;
+    color: #C8A24A; border-top: 1px solid rgba(200,162,74,.42);
+    border-bottom: 1px solid rgba(200,162,74,.42);
+  }
+  .b-tbl tr:last-child td { border-bottom: 1px solid rgba(200,162,74,.42); }
+  .b-tbl td.hi { color: #E3C574; }
+
+  .b-chk {
+    display: flex; align-items: center; gap: 10px; margin-top: 4px;
+    font-size: 12.5px; letter-spacing: .04em; color: rgba(237,230,214,.74);
+  }
+  .b-chk b {
+    width: 15px; height: 15px; flex: none;
+    display: grid; place-items: center; font-size: 9px;
+    color: #0A1712; background: #C8A24A;
+    box-shadow: inset 0 0 0 1px #E7CE8C, 0 0 0 2px rgba(200,162,74,.16);
+  }
+
+  .b-panel { width: 272px; flex: none; padding: 18px; border-left: 1px solid rgba(200,162,74,.22); }
+  .b-panel h4 {
+    margin: 0 0 14px; font-size: 10px; letter-spacing: .34em;
+    color: #C8A24A; text-transform: uppercase;
+  }
+  .b-orow {
+    display: flex; align-items: baseline; gap: 8px; height: 32px;
+    font-size: 12px; color: rgba(237,230,214,.60);
+  }
+  .b-orow .d {
+    flex: 1; border-bottom: 1px dotted rgba(200,162,74,.28); transform: translateY(-3px);
+  }
+  .b-orow .rn { font-size: 9.5px; color: rgba(200,162,74,.55); }
+  .b-orow.on { color: #F7F0E0; }
+  .b-orow.on .rn { color: #E3C574; }
+
+  /* ================================================================
+     C · 霓虹终端
+     ================================================================ */
+  .mock.c {
+    background: #04070A; color: #C8E6E6; font-family: var(--mono);
+  }
+  .mock.c::before {
+    content: ""; position: absolute; inset: 0;
+    background-image:
+      repeating-linear-gradient(0deg, rgba(80,220,220,.055) 0 1px, transparent 1px 32px),
+      repeating-linear-gradient(90deg, rgba(80,220,220,.055) 0 1px, transparent 1px 32px);
+  }
+  .mock.c::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background:
+      repeating-linear-gradient(0deg, rgba(0,0,0,.22) 0 1px, transparent 1px 3px),
+      radial-gradient(120% 100% at 50% 50%, transparent 45%, rgba(0,0,0,.72) 100%);
+  }
+  .c-inner { position: relative; z-index: 2; height: 100%; display: flex; flex-direction: column; }
+  .c-top {
+    height: 48px; flex: none; display: flex; align-items: center; gap: 0;
+    border-bottom: 1px solid rgba(79,227,224,.22);
+    box-shadow: 0 1px 0 rgba(79,227,224,.08), 0 10px 26px rgba(0,0,0,.6);
+  }
+  .c-brand {
+    padding: 0 16px; font-size: 10px; letter-spacing: .26em; color: #4FE3E0;
+    border-right: 1px solid rgba(79,227,224,.18); height: 100%;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .c-brand i {
+    width: 7px; height: 7px; background: #4FE3E0; border-radius: 1px;
+    box-shadow: 0 0 10px #4FE3E0;
+  }
+  .c-tabs { display: flex; height: 100%; }
+  .c-tab {
+    position: relative; padding: 0 18px; height: 100%;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; color: rgba(200,230,230,.42);
+    border-right: 1px solid rgba(79,227,224,.12);
+  }
+  .c-tab .slot { font-size: 9px; color: rgba(79,227,224,.45); letter-spacing: .1em; }
+  .c-tab.on {
+    color: #EAFFFF;
+    background: linear-gradient(180deg, rgba(79,227,224,.16), rgba(79,227,224,.02));
+    box-shadow: inset 0 2px 0 #4FE3E0, 0 0 22px rgba(79,227,224,.18);
+  }
+  .c-tab.on .slot { color: #4FE3E0; }
+  .c-stat { margin-left: auto; display: flex; align-items: center; gap: 16px; padding: 0 16px; }
+  .c-stat span { font-size: 9.5px; letter-spacing: .14em; color: rgba(200,230,230,.38); }
+  .c-stat .bars { display: flex; gap: 2px; align-items: flex-end; }
+  .c-stat .bars i { width: 3px; background: #4FE3E0; box-shadow: 0 0 6px rgba(79,227,224,.7); }
+
+  .c-body { flex: 1; display: flex; min-height: 0; }
+  .c-rail {
+    width: 52px; flex: none; display: flex; flex-direction: column; align-items: center;
+    padding: 14px 0; gap: 6px;
+    border-right: 1px solid rgba(79,227,224,.16);
+  }
+  .c-rail .vert {
+    writing-mode: vertical-rl; font-size: 8px; letter-spacing: .34em;
+    color: rgba(79,227,224,.35); margin-bottom: 8px;
+  }
+  .c-rail .ico {
+    width: 32px; height: 32px; display: grid; place-items: center;
+    color: rgba(200,230,230,.34); position: relative;
+  }
+  .c-rail .ico.on {
+    color: #EAFFFF;
+    background: rgba(79,227,224,.10);
+    box-shadow: inset 0 0 0 1px rgba(79,227,224,.45), 0 0 18px rgba(79,227,224,.22);
+  }
+  .c-rail .ico.on::before {
+    content: ""; position: absolute; left: -1px; top: 4px; bottom: 4px; width: 2px;
+    background: #4FE3E0; box-shadow: 0 0 8px #4FE3E0;
+  }
+  .c-rail .gap { flex: 1; }
+
+  .c-side {
+    width: 288px; flex: none; padding: 14px 12px;
+    border-right: 1px solid rgba(79,227,224,.16);
+  }
+  .c-side h4 {
+    margin: 0 0 10px; padding: 0 4px;
+    font-size: 9px; letter-spacing: .24em; color: rgba(79,227,224,.55);
+    display: flex; justify-content: space-between;
+  }
+  .c-row {
+    height: 32px; display: flex; align-items: center; gap: 10px;
+    padding: 0 6px; font-size: 12px; color: rgba(200,230,230,.55);
+    border-left: 1px solid transparent;
+  }
+  .c-row .ix { font-size: 9px; color: rgba(79,227,224,.35); }
+  .c-row .dots { flex: 1; border-bottom: 1px dotted rgba(79,227,224,.18); transform: translateY(-3px); }
+  .c-row .n { font-size: 10px; color: rgba(200,230,230,.30); }
+  .c-row.on {
+    color: #EAFFFF;
+    background: linear-gradient(90deg, rgba(79,227,224,.14), transparent 85%);
+    border-left: 2px solid #4FE3E0;
+    box-shadow: inset 0 0 24px rgba(79,227,224,.10);
+  }
+  .c-row.on .ix { color: #4FE3E0; }
+
+  .c-doc { flex: 1; padding: 26px 34px; min-width: 0; position: relative; }
+  .c-doc::before, .c-doc::after,
+  .c-doc > .br::before, .c-doc > .br::after {
+    content: ""; position: absolute; width: 22px; height: 22px; pointer-events: none;
+  }
+  .c-doc::before { left: 12px; top: 12px; border-left: 1px solid rgba(79,227,224,.5); border-top: 1px solid rgba(79,227,224,.5); }
+  .c-doc::after { right: 12px; bottom: 12px; border-right: 1px solid rgba(79,227,224,.5); border-bottom: 1px solid rgba(79,227,224,.5); }
+  .c-doc > .br::before { right: 12px; top: 12px; border-right: 1px solid rgba(79,227,224,.5); border-top: 1px solid rgba(79,227,224,.5); }
+  .c-doc > .br::after { left: 12px; bottom: 12px; border-left: 1px solid rgba(79,227,224,.5); border-bottom: 1px solid rgba(79,227,224,.5); }
+  .c-doc h3 {
+    margin: 0 0 6px; font-size: 26px; font-weight: 600; letter-spacing: .02em; color: #EAFFFF;
+    text-shadow: 0 0 22px rgba(79,227,224,.35);
+  }
+  .c-doc h3::before { content: "## "; color: rgba(79,227,224,.55); }
+  .c-meta { font-size: 9.5px; letter-spacing: .16em; color: rgba(200,230,230,.32); margin-bottom: 16px; }
+  .c-p { margin: 0 0 12px; font-size: 12.5px; line-height: 1.95; color: rgba(200,230,230,.72); }
+  .c-p b { color: #EAFFFF; font-weight: 500; }
+  .c-p em {
+    font-style: normal; color: #04070A; background: #4FE3E0;
+    padding: 1px 4px; box-shadow: 0 0 16px rgba(79,227,224,.5);
+  }
+  .c-tbl { width: 100%; border-collapse: collapse; margin: 4px 0 14px; font-size: 11.5px; }
+  .c-tbl th, .c-tbl td {
+    padding: 7px 10px; text-align: left; font-weight: 400;
+    color: rgba(200,230,230,.70);
+    border: 1px solid rgba(79,227,224,.18);
+  }
+  .c-tbl th { font-size: 9px; letter-spacing: .18em; color: #4FE3E0; background: rgba(79,227,224,.06); }
+  .c-tbl tr.on td { background: rgba(79,227,224,.10); color: #EAFFFF; }
+  .c-tbl td.warn { color: #FF5C9D; text-shadow: 0 0 12px rgba(255,92,157,.5); }
+  .c-chk { display: flex; align-items: center; gap: 9px; font-size: 11.5px; color: rgba(200,230,230,.62); }
+  .c-chk b {
+    width: 12px; height: 12px; display: grid; place-items: center;
+    border: 1px solid #4FE3E0; color: #04070A; background: #4FE3E0;
+    font-size: 9px; box-shadow: 0 0 12px rgba(79,227,224,.6);
+  }
+
+  .c-panel {
+    width: 264px; flex: none; padding: 14px 12px;
+    border-left: 1px solid rgba(79,227,224,.16);
+  }
+  .c-panel h4 {
+    margin: 0 0 10px; font-size: 9px; letter-spacing: .24em; color: rgba(79,227,224,.55);
+  }
+  .c-orow {
+    height: 30px; display: flex; align-items: center; gap: 8px;
+    font-size: 11.5px; color: rgba(200,230,230,.52);
+  }
+  .c-orow .b { color: rgba(79,227,224,.30); font-size: 9px; }
+  .c-orow.on { color: #EAFFFF; }
+  .c-orow.on .b { color: #4FE3E0; }
+  .c-orow.h { padding-left: 16px; color: rgba(200,230,230,.34); }
+
+  .c-status {
+    height: 26px; flex: none; display: flex; align-items: center; gap: 18px;
+    padding: 0 14px; font-size: 9px; letter-spacing: .14em;
+    color: rgba(79,227,224,.55);
+    border-top: 1px solid rgba(79,227,224,.18);
+    background: linear-gradient(180deg, rgba(79,227,224,.05), transparent);
+  }
+  .c-status .cur { width: 6px; height: 11px; background: #4FE3E0; box-shadow: 0 0 10px #4FE3E0; }
+  .c-status .right { margin-left: auto; display: flex; gap: 18px; }
+
+  /* ================================================================
+     D · 夜的手帐
+     ================================================================ */
+  .mock.d { background: #171310; color: #EADCC6; }
+  .mock.d::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background-image:
+      radial-gradient(circle at 20% 30%, rgba(255,255,255,.022) 0 1px, transparent 1px),
+      radial-gradient(circle at 70% 60%, rgba(255,255,255,.018) 0 1px, transparent 1px);
+    background-size: 7px 7px, 11px 11px;
+  }
+  .d-inner { position: relative; height: 100%; display: flex; flex-direction: column; }
+  .d-top {
+    height: 54px; flex: none; display: flex; align-items: center; gap: 10px;
+    padding: 0 18px;
+    border-bottom: 1px solid #2A231C;
+    background: linear-gradient(180deg, #1C1713, #171310);
+  }
+  .d-brand {
+    font-family: var(--kai); font-size: 15px; color: #D9B98A;
+    letter-spacing: .1em; margin-right: 8px;
+  }
+  .d-tabs { display: flex; gap: 4px; align-items: flex-end; height: 100%; padding-top: 12px; }
+  .d-tab {
+    position: relative; height: 34px; padding: 0 16px;
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--kai); font-size: 13px; color: #8C7C68;
+    background: #1E1915; border: 1px solid #2A231C; border-bottom: 0;
+    border-radius: 7px 7px 0 0;
+  }
+  .d-tab.on {
+    color: #F3E7D3; background: #241E19;
+    box-shadow: 0 -2px 0 #C98A5E inset;
+  }
+  .d-tab.on::before {
+    content: ""; position: absolute; top: -7px; left: 14px; width: 42px; height: 11px;
+    background: repeating-linear-gradient(90deg, rgba(201,138,94,.42) 0 5px, rgba(232,199,154,.28) 5px 9px);
+    transform: rotate(-3deg); border-radius: 1px;
+  }
+  .d-win { margin-left: auto; display: flex; gap: 10px; }
+  .d-win span {
+    width: 22px; height: 22px; display: grid; place-items: center;
+    color: #7A6A57; border: 1px solid #2E2620; border-radius: 5px; font-size: 10px;
+  }
+
+  .d-body { flex: 1; display: flex; min-height: 0; }
+  .d-rail {
+    width: 56px; flex: none; padding: 14px 0;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    border-right: 1px solid #2A231C;
+    background: linear-gradient(90deg, #1A1511, #171310);
+  }
+  .d-rail .ico {
+    width: 34px; height: 34px; display: grid; place-items: center;
+    color: #7E6E5A; border-radius: 8px;
+  }
+  .d-rail .ico.on {
+    color: #2A2018; background: #D9B98A;
+    box-shadow: 0 2px 0 #8A6A44;
+  }
+  .d-rail .gap { flex: 1; }
+
+  .d-side {
+    width: 300px; flex: none; padding: 16px 14px 12px;
+    border-right: 1px solid #2A231C;
+    position: relative;
+    /* 红色页边线只画在纸上（.d-doc），索引导卡这边不再重复一道 */
+  }
+  .d-side h4 {
+    margin: 0 0 10px; font-family: var(--kai); font-size: 13px;
+    color: #D9B98A; letter-spacing: .08em;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .d-row {
+    height: 32px; display: flex; align-items: center; gap: 8px;
+    font-size: 12.5px; color: #A5947D;
+    border-bottom: 1px dotted #332A22;
+  }
+  .d-row .dt { font-family: var(--mono); font-size: 9px; color: #6E5F4D; }
+  .d-row .dots { flex: 1; }
+  .d-row .n { font-family: var(--mono); font-size: 9.5px; color: #6E5F4D; }
+  .d-row.on { color: #F3E7D3; }
+  .d-row.on::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%; background: #C98A5E;
+    box-shadow: 0 0 0 3px rgba(201,138,94,.16); margin-left: -12px; margin-right: 6px;
+  }
+  .d-stamp {
+    position: absolute; left: 14px; bottom: 14px;
+    width: 62px; height: 62px; border-radius: 50%;
+    border: 1.5px solid rgba(201,90,74,.45);
+    display: grid; place-items: center; text-align: center;
+    font-family: var(--kai); font-size: 9px; line-height: 1.25;
+    color: rgba(201,90,74,.75); transform: rotate(-11deg);
+  }
+
+  .d-doc {
+    flex: 1; padding: 26px 40px 20px 46px; min-width: 0;
+    background:
+      linear-gradient(90deg, transparent 34px, rgba(201,90,74,.22) 34px 35px, transparent 35px),
+      repeating-linear-gradient(180deg, transparent 0 31px, rgba(234,220,198,.055) 31px 32px);
+  }
+  .d-doc h3 {
+    margin: 0; font-family: var(--kai); font-size: 30px; font-weight: 400;
+    letter-spacing: .06em; color: #F6EBD8;
+  }
+  .d-meta { font-family: var(--mono); font-size: 9.5px; color: #7E6E5A; margin: 4px 0 14px; letter-spacing: .06em; }
+  .d-p { margin: 0 0 12px; font-size: 13px; line-height: 2; color: #CBBB9F; }
+  .d-p em {
+    font-style: normal; color: #F6EBD8;
+    background: linear-gradient(transparent 58%, rgba(217,185,138,.38) 58%);
+  }
+  .d-tbl { width: 100%; border-collapse: collapse; margin: 6px 0 14px; font-size: 12px; }
+  .d-tbl th, .d-tbl td {
+    padding: 7px 10px; text-align: left; font-weight: 400; color: #C6B69B;
+    border-bottom: 1px solid #332A22;
+  }
+  .d-tbl th { font-family: var(--kai); font-size: 12px; color: #D9B98A; }
+  .d-tbl td.hi { color: #E0A47A; }
+  .d-chk { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #A5947D; }
+  .d-chk b {
+    width: 13px; height: 13px; border: 1px solid #6E5F4D; border-radius: 2px;
+    display: grid; place-items: center; font-size: 9px; color: #171310; background: #D9B98A;
+    border-color: #D9B98A; transform: rotate(-2deg);
+  }
+
+  .d-panel {
+    width: 280px; flex: none; padding: 18px 16px;
+    border-left: 1px solid #2A231C;
+    position: relative;
+  }
+  .d-note {
+    position: relative; padding: 16px 14px 18px;
+    background: linear-gradient(170deg, #2A2318, #241E15);
+    border: 1px solid #3A3024; border-radius: 3px;
+    transform: rotate(-1.2deg);
+    box-shadow: 0 12px 26px rgba(0,0,0,.42);
+  }
+  .d-note::before {
+    content: ""; position: absolute; top: -9px; left: 50%; margin-left: -28px;
+    width: 56px; height: 16px;
+    background: repeating-linear-gradient(45deg, rgba(201,138,94,.5) 0 5px, rgba(232,199,154,.34) 5px 9px);
+    transform: rotate(-2deg);
+  }
+  .d-note h5 {
+    margin: 0 0 8px; font-family: var(--kai); font-size: 14px; font-weight: 400;
+    color: #E8C79A; letter-spacing: .06em;
+  }
+  .d-note ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 7px; }
+  .d-note li {
+    position: relative; padding-left: 14px;
+    font-size: 11.5px; line-height: 1.7; color: #B9A98E;
+  }
+  .d-note li::before { content: "·"; position: absolute; left: 4px; color: #C98A5E; }
+  .d-toc { margin-top: 22px; }
+  .d-toc h4 {
+    margin: 0 0 8px; font-family: var(--kai); font-size: 12.5px; color: #8C7C68; letter-spacing: .1em;
+  }
+  .d-orow {
+    height: 30px; display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: #9A8A74; border-bottom: 1px dotted #332A22;
+  }
+  .d-orow .dots { flex: 1; }
+  .d-orow.on { color: #F3E7D3; }
+
+  @media (max-width: 1100px) {
+    .index { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .dir-foot { grid-template-columns: 1fr; gap: 12px; }
+    .outro { grid-template-columns: 1fr; }
+    .keys { margin-left: 0; justify-content: flex-start; }
+  }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-files" viewBox="0 0 24 24"><path d="M4 6.5A1.5 1.5 0 0 1 5.5 5H9l2 2.5h6.5A1.5 1.5 0 0 1 19 9v8.5A1.5 1.5 0 0 1 17.5 19h-12A1.5 1.5 0 0 1 4 17.5z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="M15 15l4.5 4.5"/></symbol>
+    <symbol id="i-tags" viewBox="0 0 24 24"><path d="M4 7.5V5.5A1.5 1.5 0 0 1 5.5 4h5L20 13.5 13.5 20 4 10.5z"/><circle cx="8.5" cy="8.5" r="1.2"/></symbol>
+    <symbol id="i-graph" viewBox="0 0 24 24"><circle cx="12" cy="6" r="2.4"/><circle cx="6" cy="17" r="2.4"/><circle cx="18" cy="17" r="2.4"/><path d="M10.6 8.1 7.2 14.8M13.4 8.1l3.4 6.7M8.4 17h7.2"/></symbol>
+    <symbol id="i-canvas" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7.5 15.5l3-6 3 3 3-5"/></symbol>
+    <symbol id="i-tmpl" viewBox="0 0 24 24"><rect x="4" y="4" width="11" height="11" rx="2"/><path d="M9 20h9a2 2 0 0 0 2-2V9"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M9.5 7V5h5v2M7 7l.8 12h8.4L17 7"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.6M12 18.4V21M3 12h2.6M18.4 12H21M5.6 5.6l1.9 1.9M16.5 16.5l1.9 1.9M18.4 5.6l-1.9 1.9M7.5 16.5l-1.9 1.9"/></symbol>
+    <symbol id="i-outline" viewBox="0 0 24 24"><path d="M4 6h16M4 11h10M7 16h13"/></symbol>
+    <symbol id="i-table" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M10 10v9"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.4"/><path d="M5 17l4.5-4.5 3 3L16 12l3.5 3.5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  </defs>
+</svg>
+
+<header class="masthead">
+  <div class="wrap">
+    <div class="kicker"><i></i>NRS · 界面方向探索 · 第二回</div>
+    <h1>四个方向：不是换色，是换一套语言</h1>
+    <p class="lede">
+      上一版只动了配色和细节，壳子还是那个壳子。这一回四个方向<b>连结构一起改</b>：
+      面板是悬浮还是贴边、标签是药丸还是铭牌、侧栏是列表还是索引卡、字是黑体还是宋楷、
+      分隔靠发丝还是靠光。四张图里<b>内容完全一样</b>（同一篇《九月复盘》、同一棵树、同一份大纲），
+      只有语言不同——这样比才公平。
+    </p>
+    <div class="index">
+      <a href="#a"><b>方向 A</b><span>极光玻璃</span><em>悬浮岛 · 毛玻璃 · 极光底</em></a>
+      <a href="#b"><b>方向 B</b><span>装饰艺术</span><em>黄铜 · 双线框 · 衬线</em></a>
+      <a href="#c"><b>方向 C</b><span>霓虹终端</span><em>网格 · 角标 · 等宽</em></a>
+      <a href="#d"><b>方向 D</b><span>夜的手帐</span><em>纸纹 · 胶带 · 楷体</em></a>
+    </div>
+    <div class="xlink">
+      这一稿保留不动 · 后面两稿：
+      <a href="shell-quiet.html">灰阶四则（只用灰阶）</a> ·
+      <a href="shell-split.html">浅壳深纸（侧栏浅 / 编辑区深）</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ============================================================ A -->
+  <section class="dir" id="a">
+    <div class="dir-head">
+      <div class="num">A</div>
+      <div>
+        <h2>极光玻璃 <small>Aurora Glass</small></h2>
+        <p>四块区域从「贴边的面板」变成「浮在极光上的玻璃岛」：12px 的缝、22px 的模糊、一层顶高光。
+           底下的极光慢慢流动，玻璃自己不带色，只把身后的光吸上来。标签是药丸，当前那页底下压一条三色渐变。</p>
+      </div>
+      <div class="keys"><span>悬浮岛</span><span>毛玻璃</span><span>极光底</span><span>发光描边</span><span>药丸标签</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="mock a">
+        <div class="a-inner">
+          <div class="a-top">
+            <div class="a-brand">N</div>
+            <div class="a-tabs">
+              <div class="a-tab on">九月复盘 <span class="x">✕</span></div>
+              <div class="a-tab">周报 · W39 <span class="x">✕</span></div>
+              <div class="a-tab add">＋</div>
+            </div>
+            <div class="a-win"><i></i><i></i><i></i></div>
+          </div>
+
+          <div class="a-body">
+            <div class="a-isl a-rail">
+              <div class="ico on"><svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-tags"/></svg></div>
+              <div class="ico"><svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-tmpl"/></svg></div>
+              <div class="ico"><svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-graph"/></svg></div>
+              <div class="ico"><svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-canvas"/></svg></div>
+              <div class="gap"></div>
+              <div class="ico"><svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-trash"/></svg></div>
+              <div class="ico"><svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-gear"/></svg></div>
+            </div>
+
+            <div class="a-isl a-side">
+              <h4><span>文件</span><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-plus"/></svg></h4>
+              <div class="a-row">收件箱<span class="n">4</span></div>
+              <div class="a-row on">九月复盘</div>
+              <div class="a-row">周报 · W39</div>
+              <div class="a-row">白板<span class="n">2</span></div>
+              <div class="a-row">归档<span class="n">18</span></div>
+            </div>
+
+            <div class="a-isl a-doc">
+              <h3>九月复盘</h3>
+              <div class="a-meta">2026-09-30 · 1,284 字 · 已同步</div>
+              <p class="a-p">这一周的重点是把壳子收干净：四块区域合成一片玻璃，<em>正文仍然落在最亮的那张纸上</em>。剩下的颜色交给语义，<span class="a-code">chrome</span> 只负责「不是纸的地方」。</p>
+              <table class="a-tbl">
+                <tr><th>区域</th><th>达成</th><th>备注</th></tr>
+                <tr class="on"><td>华东</td><td>92%</td><td class="hi">领先</td></tr>
+                <tr><td>华南</td><td>87%</td><td>待复核</td></tr>
+                <tr><td>西南</td><td>83%</td><td>—</td></tr>
+              </table>
+              <div class="a-p">下面这条勾掉的事，是这一轮唯一改动的结构。</div>
+              <div class="a-chk"><b>✓</b>顶栏 / 功能栏 / 侧栏 同色</div>
+            </div>
+
+            <div class="a-isl a-panel">
+              <h4><span>大纲</span></h4>
+              <div class="a-orow on">九月复盘</div>
+              <div class="a-orow h">本周结论</div>
+              <div class="a-orow h">下周计划</div>
+              <div class="a-orow">表格</div>
+              <div class="a-orow h">高亮</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dir-foot">
+      <div><b>布局</b>四块面板全部脱离窗口边缘，缝里透出极光；窗口按钮变成三颗圆点。</div>
+      <div><b>装饰</b>玻璃自带顶高光与外投影，选中行是一条带辉光的渐变洗。</div>
+      <div><b>落地</b>BackdropFilter 每个岛一层（四层模糊，低端机要限帧）；极光是两张静态渐变图 + 缓慢位移。</div>
+    </div>
+  </section>
+
+  <!-- ============================================================ B -->
+  <section class="dir" id="b">
+    <div class="dir-head">
+      <div class="num">B</div>
+      <div>
+        <h2>装饰艺术 <small>Art Deco</small></h2>
+        <p>墨绿底、黄铜线、双线内框。四角有 L 形角标，区域之间是「一根实线 + 一根更淡的线」的间距，
+           标签切成缺角的铭牌，当前那页是黄铜底压深字。正文用宋体，首字下沉；侧栏行首是罗马数字。</p>
+      </div>
+      <div class="keys"><span>黄铜</span><span>双线框</span><span>缺角铭牌</span><span>宋体首字</span><span>罗马数字</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="mock b">
+        <div class="b-inner">
+          <div class="b-top">
+            <div class="b-mark">N R S</div>
+            <div class="b-tabs">
+              <div class="b-tab on">九 月 复 盘</div>
+              <div class="b-tab">周 报 · W39</div>
+            </div>
+            <div class="b-win"><span>—</span><span>▢</span><span>✕</span></div>
+          </div>
+
+          <div class="b-body">
+            <div class="b-rail">
+              <div class="ico on"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-tags"/></svg></div>
+              <div class="ico"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-tmpl"/></svg></div>
+              <div class="ico"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-graph"/></svg></div>
+              <div class="ico"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-canvas"/></svg></div>
+              <div class="gap"></div>
+              <div class="ico"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-trash"/></svg></div>
+              <div class="ico"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-gear"/></svg></div>
+            </div>
+
+            <div class="b-side">
+              <h4>文 件</h4>
+              <div class="b-row"><span class="rn">Ⅰ</span>收件箱<span class="n">4</span></div>
+              <div class="b-row on"><span class="rn">Ⅱ</span>九月复盘</div>
+              <div class="b-row"><span class="rn">Ⅲ</span>周报 · W39</div>
+              <div class="b-row"><span class="rn">Ⅳ</span>白板<span class="n">2</span></div>
+              <div class="b-row"><span class="rn">Ⅴ</span>归档<span class="n">18</span></div>
+            </div>
+
+            <div class="b-doc">
+              <h3>九月复盘</h3>
+              <div class="b-rule">◆</div>
+              <div class="b-meta">2026 · 09 · 30 &nbsp;·&nbsp; 1,284 字 &nbsp;·&nbsp; 已同步</div>
+              <p class="b-p first">这一周的重点是把壳子收干净：四块区域合成一片，正文仍然落在最亮的那张纸上。剩下的颜色交给语义，<em>chrome</em> 只负责「不是纸的地方」。</p>
+              <table class="b-tbl">
+                <tr><th>区域</th><th>达成</th><th>备注</th></tr>
+                <tr><td>华东</td><td>92%</td><td class="hi">领先</td></tr>
+                <tr><td>华南</td><td>87%</td><td>待复核</td></tr>
+                <tr><td>西南</td><td>83%</td><td>—</td></tr>
+              </table>
+              <p class="b-p">下面这条勾掉的事，是这一轮唯一改动的结构。</p>
+              <div class="b-chk"><b>✓</b>顶栏 / 功能栏 / 侧栏 同色</div>
+            </div>
+
+            <div class="b-panel">
+              <h4>目 录</h4>
+              <div class="b-orow on"><span class="rn">Ⅰ</span>九月复盘<span class="d"></span></div>
+              <div class="b-orow"><span class="rn">Ⅱ</span>本周结论<span class="d"></span></div>
+              <div class="b-orow"><span class="rn">Ⅲ</span>下周计划<span class="d"></span></div>
+              <div class="b-orow"><span class="rn">Ⅳ</span>表格<span class="d"></span></div>
+              <div class="b-orow"><span class="rn">Ⅴ</span>高亮<span class="d"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dir-foot">
+      <div><b>布局</b>仍贴边，但每条边都是「实线 + 4px 后的淡线」，四角有 L 形角标。</div>
+      <div><b>装饰</b>缺角铭牌标签、黄铜菱形分隔、首字下沉、双线表头。</div>
+      <div><b>落地</b>最省：clip-path 换 ShapeBorder，双线与角标都是画线，不需要新资源。</div>
+    </div>
+  </section>
+
+  <!-- ============================================================ C -->
+  <section class="dir" id="c">
+    <div class="dir-head">
+      <div class="num">C</div>
+      <div>
+        <h2>霓虹终端 <small>Neon HUD</small></h2>
+        <p>底是网格 + 扫描线，所有面板靠 1px 青色线分隔，编辑区四角有角标。字体全等宽，
+           标签是 <code>SLOT 01</code> 这样的插槽，侧栏每行带序号与点线，底部一条状态带。
+           警告色是品红，只在一处出现——「待复核」。</p>
+      </div>
+      <div class="keys"><span>网格底</span><span>四角标</span><span>全等宽</span><span>插槽标签</span><span>状态带</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="mock c">
+        <div class="c-inner">
+          <div class="c-top">
+            <div class="c-brand"><i></i>NRS/EDIT</div>
+            <div class="c-tabs">
+              <div class="c-tab on"><span class="slot">SLOT 01</span>九月复盘<span class="slot">✕</span></div>
+              <div class="c-tab"><span class="slot">SLOT 02</span>周报·W39<span class="slot">✕</span></div>
+            </div>
+            <div class="c-stat">
+              <span>SYNC OK</span>
+              <div class="bars"><i style="height:5px"></i><i style="height:9px"></i><i style="height:13px"></i><i style="height:7px"></i></div>
+            </div>
+          </div>
+
+          <div class="c-body">
+            <div class="c-rail">
+              <div class="vert">NAV</div>
+              <div class="ico on"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-tags"/></svg></div>
+              <div class="ico"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-graph"/></svg></div>
+              <div class="ico"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-canvas"/></svg></div>
+              <div class="gap"></div>
+              <div class="ico"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-gear"/></svg></div>
+            </div>
+
+            <div class="c-side">
+              <h4><span>FILES</span><span>05</span></h4>
+              <div class="c-row"><span class="ix">01</span>收件箱<span class="dots"></span><span class="n">04</span></div>
+              <div class="c-row on"><span class="ix">02</span>九月复盘<span class="dots"></span><span class="n">●</span></div>
+              <div class="c-row"><span class="ix">03</span>周报·W39<span class="dots"></span><span class="n">—</span></div>
+              <div class="c-row"><span class="ix">04</span>白板<span class="dots"></span><span class="n">02</span></div>
+              <div class="c-row"><span class="ix">05</span>归档<span class="dots"></span><span class="n">18</span></div>
+            </div>
+
+            <div class="c-doc">
+              <div class="br"></div>
+              <h3>九月复盘</h3>
+              <div class="c-meta">2026-09-30 // 1284W // SYNCED</div>
+              <p class="c-p">这一周的重点是把壳子收干净：四块区域合成一片，<b>正文仍然落在最亮的那张纸上</b>。<em>chrome</em> 只负责「不是纸的地方」，其余交给语义。</p>
+              <table class="c-tbl">
+                <tr><th>REGION</th><th>RATE</th><th>NOTE</th></tr>
+                <tr class="on"><td>华东</td><td>92%</td><td>领先</td></tr>
+                <tr><td>华南</td><td>87%</td><td class="warn">待复核</td></tr>
+                <tr><td>西南</td><td>83%</td><td>—</td></tr>
+              </table>
+              <div class="c-chk"><b>✓</b>顶栏 / 功能栏 / 侧栏 同色</div>
+            </div>
+
+            <div class="c-panel">
+              <h4>OUTLINE</h4>
+              <div class="c-orow on"><span class="b">▸</span>九月复盘</div>
+              <div class="c-orow h"><span class="b">·</span>本周结论</div>
+              <div class="c-orow h"><span class="b">·</span>下周计划</div>
+              <div class="c-orow"><span class="b">·</span>表格</div>
+              <div class="c-orow h"><span class="b">·</span>高亮</div>
+            </div>
+          </div>
+
+          <div class="c-status">
+            <span>UTF-8</span><span>LN 42 · COL 08</span>
+            <div class="cur"></div>
+            <div class="right"><span>1,284 W</span><span>FPS 60</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dir-foot">
+      <div><b>布局</b>贴边 + 26px 状态带；功能栏竖排字，标签带槽位号。</div>
+      <div><b>装饰</b>网格、扫描线、四角括号、辉光、点线引号、品红告警。</div>
+      <div><b>落地</b>网格与扫描线是两层 repeating-gradient，最便宜；代价是等宽字要换一套字体。</div>
+    </div>
+  </section>
+
+  <!-- ============================================================ D -->
+  <section class="dir" id="d">
+    <div class="dir-head">
+      <div class="num">D</div>
+      <div>
+        <h2>夜的手帐 <small>Night Journal</small></h2>
+        <p>暖褐的纸、横格线、左侧一道红色页边线。标签像贴了胶带的纸条，侧栏是索引卡（左边留页边距），
+           右栏是一张钉着的便签，左下角盖一枚印章。标题与分区名用楷体，正文用宋体，数字走等宽。</p>
+      </div>
+      <div class="keys"><span>纸纹</span><span>胶带</span><span>便签</span><span>印章</span><span>楷体</span></div>
+    </div>
+
+    <div class="stage">
+      <div class="mock d">
+        <div class="d-inner">
+          <div class="d-top">
+            <div class="d-brand">NRS 手帐</div>
+            <div class="d-tabs">
+              <div class="d-tab on">九月复盘 ✕</div>
+              <div class="d-tab">周报 W39 ✕</div>
+            </div>
+            <div class="d-win"><span>—</span><span>▢</span><span>✕</span></div>
+          </div>
+
+          <div class="d-body">
+            <div class="d-rail">
+              <div class="ico on"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-tags"/></svg></div>
+              <div class="ico"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-tmpl"/></svg></div>
+              <div class="ico"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-graph"/></svg></div>
+              <div class="ico"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-canvas"/></svg></div>
+              <div class="gap"></div>
+              <div class="ico"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-trash"/></svg></div>
+              <div class="ico"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-gear"/></svg></div>
+            </div>
+
+            <div class="d-side">
+              <h4><span>文件</span><span>5 篇</span></h4>
+              <div class="d-row"><span class="dt">09/28</span>收件箱<span class="dots"></span><span class="n">4</span></div>
+              <div class="d-row on"><span class="dt">09/30</span>九月复盘<span class="dots"></span><span class="n">1.3k</span></div>
+              <div class="d-row"><span class="dt">09/29</span>周报 · W39<span class="dots"></span><span class="n">860</span></div>
+              <div class="d-row"><span class="dt">09/26</span>白板<span class="dots"></span><span class="n">2</span></div>
+              <div class="d-row"><span class="dt">08/31</span>归档<span class="dots"></span><span class="n">18</span></div>
+              <div class="d-stamp">NRS<br>2026</div>
+            </div>
+
+            <div class="d-doc">
+              <h3>九月复盘</h3>
+              <div class="d-meta">2026-09-30 · 1,284 字 · 已同步</div>
+              <p class="d-p">这一周的重点是把壳子收干净：四块区域合成一片，<em>正文仍然落在最亮的那张纸上</em>。剩下的颜色交给语义，chrome 只负责「不是纸的地方」。</p>
+              <table class="d-tbl">
+                <tr><th>区域</th><th>达成</th><th>备注</th></tr>
+                <tr><td>华东</td><td>92%</td><td class="hi">领先</td></tr>
+                <tr><td>华南</td><td>87%</td><td>待复核</td></tr>
+                <tr><td>西南</td><td>83%</td><td>—</td></tr>
+              </table>
+              <p class="d-p">下面这条勾掉的事，是这一轮唯一改动的结构。</p>
+              <div class="d-chk"><b>✓</b>顶栏 / 功能栏 / 侧栏 同色</div>
+            </div>
+
+            <div class="d-panel">
+              <div class="d-note">
+                <h5>今天记三件</h5>
+                <ul>
+                  <li>把右栏的便签换成可以拖动的那种</li>
+                  <li>表格列宽拖到 120 就停</li>
+                  <li>问问「归档」要不要按季度分</li>
+                </ul>
+              </div>
+              <div class="d-toc">
+                <h4>目录</h4>
+                <div class="d-orow on">九月复盘<span class="dots"></span><span class="n">1</span></div>
+                <div class="d-orow">本周结论<span class="dots"></span><span class="n">2</span></div>
+                <div class="d-orow">下周计划<span class="dots"></span><span class="n">3</span></div>
+                <div class="d-orow">表格<span class="dots"></span><span class="n">4</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dir-foot">
+      <div><b>布局</b>贴边，但正文有横格与页边线；右栏改成「便签 + 目录」上下叠。</div>
+      <div><b>装饰</b>胶带、便签、印章、纸纹、页边红线；标题走楷体。</div>
+      <div><b>落地</b>纸纹是一张 256px 的平铺位图（或两层圆点渐变），其余全是 CSS 级装饰。</div>
+    </div>
+  </section>
+
+  <section class="outro">
+    <div>
+      <h3>四个方向的差别到底在哪</h3>
+      <ul>
+        <li><b>结构</b>A 把面板从窗口边缘拿下来（有缝）；B/C/D 贴边，靠线、光、纸分出层次。</li>
+        <li><b>标签</b>A 药丸、B 缺角铭牌、C 带槽位的插槽、D 贴胶带的纸条。</li>
+        <li><b>分隔</b>A 靠阴影与高光、B 靠双线、C 靠 1px 辉光线、D 靠纸纹与页边线。</li>
+        <li><b>字</b>A 无衬线、B 宋体 + 首字下沉、C 全等宽、D 楷体标题 + 宋体正文。</li>
+        <li><b>重心</b>A 最「现代产品」，B 最「贵」，C 最「硬核」，D 最「私人」。</li>
+        <li><b>风险</b>A 的模糊吃 GPU；C 的等宽字读长文偏累；D 的楷体在小字号下会糊。</li>
+      </ul>
+    </div>
+    <div class="outro-side">
+      <span class="pick">回我 A / B / C / D</span>
+      <p>也可以说「B 的框 + C 的字」「D 的纸 + A 的标签」——混的时候我会只取装饰语言，不动结构。</p>
+      <p>选定后我出可交互的整窗版（悬停、选中、切标签都能点），再谈落到 Flutter 的顺序。</p>
+    </div>
+  </section>
+
+  <div class="pagefoot">四张图内容一致，只有视觉语言不同 · 面板尺寸按 1240×640 绘制，随窗口等比缩放</div>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const MOCK_W = 1240;
+  const MOCK_H = 640;
+
+  // ?only=b 只留某一个方向（截图 / 单独发给别人看的时候用）
+  const only = new URLSearchParams(location.search).get("only");
+  if (only) {
+    document.querySelectorAll(".dir").forEach((sec) => {
+      if (sec.id !== only.toLowerCase()) sec.remove();
+    });
+    document.querySelectorAll(".index a").forEach((a) => {
+      if (a.getAttribute("href") !== "#" + only.toLowerCase()) a.remove();
+    });
+  }
+
+  function fit() {
+    document.querySelectorAll(".stage").forEach((stage) => {
+      const mock = stage.querySelector(".mock");
+      if (!mock) return;
+      // 铺满 stage（1240 设计稿等比缩放），大屏上略微放大到 1.25 封顶
+      const s = Math.min(1.25, stage.clientWidth / MOCK_W);
+      mock.style.transform = "scale(" + s + ")";
+      stage.style.height = Math.round(MOCK_H * s) + "px";
+    });
+  }
+
+  window.addEventListener("resize", fit);
+  fit();
+})();
+</script>
+</body>
+</html>

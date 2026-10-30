@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>界面的四个区域</title>
+<style>
+  :root{
+    --page:#F4F4F2;
+    --ink:#1B1D22;
+    --ink-2:#5A6068;
+    --ink-3:#9096A0;
+    --line:#E2E3DF;
+    --paper:#fff;
+
+    --c1:#4C8DF6;  /* 顶部栏 */
+    --c2:#E08B2E;  /* 功能栏 */
+    --c3:#2FA173;  /* 侧边栏 */
+    --c4:#8B7BF0;  /* 编辑栏 */
+
+    /* 窗口本身的深色 */
+    --w-canvas:#0E0F13;
+    --w-sidebar:#131419;
+    --w-surface:#17181E;
+    --w-line:#1E2028;
+    --w-t1:#E6E8EF;
+    --w-t2:#9AA0B0;
+    --w-t3:#6A7080;
+    --w-accent:#8B94F2;
+    --w-soft:#23263A;
+    --w-green:#5FC79A;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--page);color:var(--ink);
+    font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    font-size:14px;line-height:1.7;-webkit-font-smoothing:antialiased;
+  }
+  .page{max-width:1144px;margin:0 auto;padding:56px 32px 100px}
+
+  h1{font-size:26px;font-weight:650;letter-spacing:-.01em;margin:0 0 8px}
+  .sub{color:var(--ink-2);margin:0 0 32px;max-width:720px}
+
+  /* ------------------------------------------------------------ 窗口 */
+  .stage{position:relative;width:1080px}
+  .win{
+    position:relative;
+    width:1080px;height:560px;border-radius:10px;overflow:hidden;
+    background:var(--w-canvas);color:var(--w-t2);
+    box-shadow:0 1px 0 rgba(0,0,0,.18),0 24px 48px -28px rgba(16,18,24,.6);
+    font-size:10px;user-select:none;
+  }
+  .reg{position:relative;transition:opacity .18s ease}
+  .reg::after{
+    content:"";position:absolute;inset:0;pointer-events:none;
+    border:2px solid var(--c);
+    background:var(--wash,rgba(255,255,255,.06));
+    border-radius:2px;
+  }
+  .t1::after{border-radius:10px 10px 2px 2px}
+  /* 悬停某一区，其余变淡 */
+  .win:has(.t1:hover) .reg:not(.t1),
+  .win:has(.t2:hover) .reg:not(.t2),
+  .win:has(.t3:hover) .reg:not(.t3),
+  .win:has(.t4:hover) .reg:not(.t4){opacity:.38}
+
+  .t1{--c:var(--c1);--wash:rgba(76,141,246,.11)}
+  .t2{--c:var(--c2);--wash:rgba(224,139,46,.26)}
+  .t3{--c:var(--c3);--wash:rgba(47,161,115,.13)}
+  .t4{--c:var(--c4);--wash:rgba(139,123,240,.11)}
+
+  /* 顶部栏：四段都是绝对定位——标签条的左右边缘要和下面编辑栏的两条边
+     严格对齐，普通 flex 排不出来 */
+  .topbar{height:40px;background:var(--w-canvas);border-bottom:1px solid var(--w-line);position:relative}
+  .leading{position:absolute;left:0;top:0;height:40px;width:125px;display:flex;align-items:center;padding-left:6px}
+  .leading .vsep{margin:0 2.5px}
+  .leading .gap{margin-left:4px}
+  .tabs{position:absolute;left:337px;top:0;height:40px;width:491px;display:flex;align-items:flex-end;overflow:hidden}
+  .toggles{position:absolute;left:828px;top:0;height:40px;width:94px;display:flex;align-items:center;gap:2px}
+  .capgroup{position:absolute;right:0;top:0;height:40px;width:132px;display:flex}
+
+  /* 对齐辅助线：悬停顶部栏时，从窗口顶一路垂到底 */
+  .guide{
+    position:absolute;top:0;bottom:0;width:1px;z-index:5;pointer-events:none;
+    background:repeating-linear-gradient(to bottom,rgba(76,141,246,.85) 0 5px,transparent 5px 10px);
+    opacity:0;transition:opacity .22s ease;
+  }
+  .g1{left:44px}
+  .g2{left:337px}
+  .g3{left:823px}
+  .win:has(.topbar:hover) .guide{opacity:1}
+
+  .sq{width:32px;height:32px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--w-t3);font-size:11px;flex:none}
+  .sq.on{background:var(--w-soft);color:var(--w-accent)}
+  .sq.sm{width:28px;height:28px;border-radius:5px}
+  .vsep{width:1px;height:16px;background:#2A2C36;flex:none}
+  .tab{height:32px;padding:0 11px;display:flex;align-items:center;border-radius:6px 6px 0 0;color:var(--w-t3);font-size:10px;white-space:nowrap;font-style:normal;position:relative;flex:none}
+  .tab.on{background:var(--w-surface);color:var(--w-t1);font-weight:600}
+  .tab.on::after{content:"";position:absolute;left:8px;right:8px;bottom:0;height:2px;background:var(--w-accent);border-radius:2px 2px 0 0}
+  .plus{width:26px;height:26px;display:flex;align-items:center;justify-content:center;color:var(--w-t3);font-size:13px;margin-bottom:2px;flex:none}
+  .sp{flex:1}
+  .cap{width:44px;height:40px;display:flex;align-items:center;justify-content:center;color:var(--w-t2);font-size:10px;flex:none}
+  .cap.x{color:#E4797F}
+
+  /* 主体 */
+  .bodyrow{display:flex;height:520px}
+  .rail{width:44px;background:var(--w-canvas);border-right:1px solid var(--w-line);padding:4px 6px;display:flex;flex-direction:column;gap:4px;align-items:center;flex:none}
+  .grow{flex:1}
+  .side{width:288px;background:var(--w-sidebar);display:flex;flex-direction:column;flex:none}
+  .handle{width:5px;background:var(--w-sidebar);flex:none}
+  .main{flex:1;background:var(--w-surface);display:flex;flex-direction:column;min-width:0}
+  .right{width:252px;background:var(--w-sidebar);display:flex;flex-direction:column;flex:none;opacity:.85}
+
+  .phead{height:32px;display:flex;align-items:center;gap:6px;padding:0 8px;color:var(--w-t2);font-size:10px;border-bottom:1px solid var(--w-line);flex:none}
+  .phead .n{color:var(--w-t3);font-size:9px}
+  .pfoot{height:28px;display:flex;align-items:center;padding:0 10px;color:var(--w-t3);font-size:9px;border-top:1px solid var(--w-line);flex:none;margin-top:auto}
+  .tree{flex:1;padding:4px 6px;overflow:hidden}
+  .row{height:28px;display:flex;align-items:center;gap:7px;padding:0 6px;border-radius:5px;color:var(--w-t2);font-size:10px}
+  .row.sel{background:var(--w-soft);color:var(--w-t1)}
+  .row .ic{width:11px;height:11px;border-radius:2px;border:1.2px solid currentColor;opacity:.5;flex:none}
+  .row .ic.f{background:currentColor;opacity:.22;border:none}
+  .row .b{margin-left:auto;font-size:9px;color:var(--w-t3)}
+
+  .ehead{height:40px;display:flex;align-items:center;gap:2px;padding:0 8px 0 10px;border-bottom:1px solid var(--w-line);color:var(--w-t3);font-size:9.5px;flex:none}
+  .ehead .tb{width:26px;height:26px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:var(--w-t3);font-size:10px;flex:none}
+  .ehead .sq.sm{width:26px;height:26px;border-radius:5px;font-size:10px}
+  .ehead .vsep{margin:0 6px}
+  .doc{flex:1;padding:24px 30px 0;overflow:hidden}
+  .doc h2{font-size:17px;color:var(--w-t1);margin:0 0 12px;font-weight:600;letter-spacing:0}
+  .doc p{margin:0 0 9px;font-size:10.5px;line-height:1.85;color:var(--w-t2)}
+  .ph{height:8px;border-radius:3px;background:var(--w-line);margin-bottom:8px}
+  .sbar{height:28px;display:flex;align-items:center;gap:10px;padding:0 10px;border-top:1px solid var(--w-line);color:var(--w-t3);font-size:9px;flex:none}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--w-green)}
+
+  /* ------------------------------------------------------------ 图例 */
+  .legend{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:22px}
+  .lg{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:14px 16px 15px;border-top:3px solid var(--c)}
+  .lg:nth-child(1){--c:var(--c1)}
+  .lg:nth-child(2){--c:var(--c2)}
+  .lg:nth-child(3){--c:var(--c3)}
+  .lg:nth-child(4){--c:var(--c4)}
+  .lg .k{font-size:11px;color:var(--ink-3);letter-spacing:.08em;margin-bottom:2px;font-variant-numeric:tabular-nums}
+  .lg .name{font-size:16px;font-weight:650;margin-bottom:8px;letter-spacing:-.01em}
+  .lg .where{font-size:12px;color:var(--ink-2);line-height:1.6;margin:0 0 8px;min-height:38px}
+  .lg code{display:block;font-family:"Cascadia Code",Consolas,monospace;font-size:10.5px;color:#7A8089;word-break:break-all;line-height:1.55}
+  .lg .size{font-size:11px;color:var(--ink-3);margin-top:6px;font-variant-numeric:tabular-nums}
+
+  .note{margin-top:26px;padding:14px 18px;background:var(--paper);border:1px solid var(--line);border-radius:10px;font-size:12.5px;color:var(--ink-2);line-height:1.75}
+  .note b{color:var(--ink)}
+  .note code{font-family:"Cascadia Code",Consolas,monospace;font-size:11.5px;background:#F1F1EE;border:1px solid var(--line);padding:1px 5px;border-radius:4px;color:#3C4149}
+
+  @media (max-width:1100px){
+    .stage,.win{width:100%;min-width:0}
+    .win{height:auto}
+    .bodyrow{height:480px}
+    .legend{grid-template-columns:repeat(2,1fr)}
+    .page{padding:32px 16px 64px}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>界面的四个区域</h1>
+  <p class="sub">鼠标移到任意一块，其余三块会变淡。一横压在上面，三竖排在下面。</p>
+
+  <div class="stage">
+    <div class="win">
+
+      <div class="guide g1"></div>
+      <div class="guide g2"></div>
+      <div class="guide g3"></div>
+
+      <!-- ① 顶部栏 -->
+      <div class="reg t1 topbar">
+        <div class="leading">
+          <div class="sq">‹‹</div>
+          <div class="vsep"></div>
+          <div class="sq on">▤</div>
+          <div class="sq gap">⌕</div>
+        </div>
+        <div class="tabs">
+          <i class="tab on">周记 · 2026 W44</i>
+          <i class="tab">人月神话</i>
+          <i class="tab">关系图谱</i>
+          <i class="tab">未命名白板</i>
+          <div class="plus">+</div>
+        </div>
+        <div class="toggles">
+          <div class="sq sm on">☰</div>
+          <div class="sq sm">▦</div>
+          <div class="sq sm">▧</div>
+        </div>
+        <div class="capgroup">
+          <div class="cap">─</div>
+          <div class="cap">□</div>
+          <div class="cap x">×</div>
+        </div>
+      </div>
+
+      <div class="bodyrow">
+
+        <!-- ② 功能栏 -->
+        <div class="reg t2 rail">
+          <div class="sq on">▣</div>
+          <div class="sq">◫</div>
+          <div class="sq">⌗</div>
+          <div class="sq">▢</div>
+          <div class="grow"></div>
+          <div class="sq">🗑</div>
+          <div class="sq">⚙</div>
+        </div>
+
+        <!-- ③ 侧边栏 -->
+        <div class="reg t3 side">
+          <div class="phead">文件 <span class="n">· 24</span><span class="sp"></span><span class="n">⇅ ⤢ ＋</span></div>
+          <div class="tree">
+            <div class="row"><span class="ic f"></span>日记</div>
+            <div class="row" style="padding-left:20px"><span class="ic"></span>周记 · 2026 W44<span class="b">3/5</span></div>
+            <div class="row" style="padding-left:20px"><span class="ic"></span>周记 · 2026 W43</div>
+            <div class="row"><span class="ic f"></span>阅读</div>
+            <div class="row" style="padding-left:20px"><span class="ic"></span>人月神话</div>
+            <div class="row"><span class="ic f"></span>白板</div>
+            <div class="row" style="padding-left:20px"><span class="ic"></span>未命名白板.nrs</div>
+            <div class="row"><span class="ic"></span>随手记</div>
+            <div class="row"><span class="ic"></span>assets / 截图.png</div>
+          </div>
+          <div class="pfoot">24 篇笔记 · 6 个文件夹</div>
+        </div>
+
+        <div class="handle"></div>
+
+        <!-- ④ 编辑栏 -->
+        <div class="reg t4 main">
+          <div class="ehead">
+            日记 / 2026
+            <span class="sp"></span>
+            <span class="tb">⤢</span><span class="tb">Aa</span><span class="tb">⋯</span>
+          </div>
+          <div class="doc">
+            <h2>周记 · 2026 W44</h2>
+            <p>这周把白板的坐标网格重做了一遍，标尺终于和主格对齐了。</p>
+            <p>剩下的问题是缩放没有上下限之后，「适应窗口」在小屏上会退到 0.03 倍，卡片变成一条线。</p>
+            <div class="ph" style="width:84%"></div>
+            <div class="ph" style="width:66%"></div>
+            <div class="ph" style="width:76%"></div>
+            <div class="ph" style="width:48%"></div>
+          </div>
+          <div class="sbar">
+            <span class="dot"></span><span>已保存</span><span>行 12,列 4</span>
+            <span>待办 3/5</span><span style="margin-left:auto">812 字</span><span>1043 字符</span>
+          </div>
+        </div>
+
+        <div class="handle"></div>
+
+        <!-- 右栏（独立的一列，不参与上色） -->
+        <div class="right">
+          <div class="phead">大纲</div>
+          <div class="tree">
+            <div class="row sel">本周进展</div>
+            <div class="row" style="padding-left:20px">白板网格</div>
+            <div class="row" style="padding-left:20px">图谱拖拽</div>
+            <div class="row">下周计划</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <div class="lg">
+      <div class="k">①</div>
+      <div class="name">顶部栏</div>
+      <p class="where">窗口最上面那条横的。放标签页、面板开关、窗口按钮。</p>
+      <code>ui/shell/title_bar_io.dart</code>
+      <div class="size">高 40</div>
+    </div>
+    <div class="lg">
+      <div class="k">②</div>
+      <div class="name">功能栏</div>
+      <p class="where">最左边那条竖的图标条。标签 / 模板 / 图谱 / 白板 / 回收站 / 设置。</p>
+      <code>ui/shell/function_rail.dart</code>
+      <div class="size">宽 44</div>
+    </div>
+    <div class="lg">
+      <div class="k">③</div>
+      <div class="name">侧边栏</div>
+      <p class="where">功能栏右边那一列。文件树 / 搜索 / 标签，三张脸切换。</p>
+      <code>ui/shell/note_list_panel.dart</code>
+      <div class="size">宽 288（236–420）</div>
+    </div>
+    <div class="lg">
+      <div class="k">④</div>
+      <div class="name">编辑栏</div>
+      <p class="where">中间最大那块。写字的纸，上下各有 40 / 28 的横条。</p>
+      <code>ui/editor/editor_pane.dart</code>
+      <div class="size">宽自适应</div>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>把鼠标放到顶部栏上</b>，三条蓝色虚线会从窗口顶一直垂到底，它们是这套布局的三条对齐轴：<br>
+    <span style="display:inline-block;margin-top:6px">
+      <code>44</code> 功能栏右边缘 = 侧边栏左边缘 = 顶部栏「文件」按钮的左边缘<br>
+      <code>337</code> 侧边栏右边缘（含拖拽条 5）= 编辑栏左边缘 = 标签条左边缘<br>
+      <code>823</code> 编辑栏右边缘；标签条右边缘在 <code>828</code>，多出的 5px 正好盖在拖拽条上
+    </span><br><br>
+    <b>装配顺序</b>（<code>ui/shell/app_shell.dart</code>）：
+    <code>Column[ 顶部栏, Row[ 功能栏, 侧边栏, 拖拽条, 编辑栏, 拖拽条, 右栏 ] ]</code>。
+    编辑栏右边那条灰色的<b>右栏</b>（大纲 / 表格 / 图片三选一，宽 252）上图没给它上色。
+  </div>
+
+</div>
+</body>
+</html>

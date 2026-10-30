@@ -1,0 +1,1439 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>深色主题 · 五套配色 · 四块 chrome 同色</title>
+<style>
+  :root {
+    --sans: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    --radius: 12px;
+
+    /* 页面自身的灰，和被预览的色板无关 */
+    --page: #0C0D0F;
+    --page-panel: #15161A;
+    --page-raised: #1B1D21;
+    --page-line: #26282E;
+    --page-line-soft: #1E2024;
+    --page-t1: #E7E8EB;
+    --page-t2: #9BA0A9;
+    --page-t3: #6E737C;
+    --gold: #D6B14A;
+    --gold-ink: #211A05;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  html { background: var(--page); }
+  body {
+    background: var(--page);
+    color: var(--page-t1);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "tnum";
+  }
+
+  /* ============================================================ 色板定义 */
+  /* 四块 chrome（顶栏 / 功能栏 / 左栏 / 右栏）共用 --chrome 一个值。      */
+
+  [data-pal="graphite"] {
+    --chrome: #141519;
+    --surface: #202127;
+    --raised: #292A31;
+    --sunken: #0D0E11;
+    --outline: #33353C;
+    --outline-soft: #23252B;
+    --rule: #3B3E46;
+    --t1: #E8E9EC;
+    --t2: #A1A4AB;
+    --t3: #70747C;
+    --accent: #E4E7EC;
+    --accent-hover: #F4F6F9;
+    --accent-soft: #2C2E35;
+    --on-accent: #14151A;
+    --edge: #5B68ED;
+    --success: #6BC79B;
+    --warning: #E2A551;
+    --danger: #E47D82;
+  }
+
+  [data-pal="midnight"] {
+    --chrome: #131419;
+    --surface: #1D1E26;
+    --raised: #262832;
+    --sunken: #0C0D10;
+    --outline: #303240;
+    --outline-soft: #202128;
+    --rule: #3A3C4A;
+    --t1: #E6E8EF;
+    --t2: #9BA1B2;
+    --t3: #6E7486;
+    --accent: #8B94F2;
+    --accent-hover: #A2AAF7;
+    --accent-soft: #23263A;
+    --on-accent: #0F1128;
+    --edge: #5B68ED;
+    --success: #5FC79A;
+    --warning: #E0A24A;
+    --danger: #E4797F;
+  }
+
+  [data-pal="ink"] {
+    --chrome: #0F1514;
+    --surface: #1B2422;
+    --raised: #24302C;
+    --sunken: #090E0D;
+    --outline: #2C3934;
+    --outline-soft: #1E2926;
+    --rule: #36453F;
+    --t1: #E4ECE8;
+    --t2: #98AAA2;
+    --t3: #687A72;
+    --accent: #4FD1C0;
+    --accent-hover: #6BE0D0;
+    --accent-soft: #16332F;
+    --on-accent: #04211D;
+    --edge: #2AA396;
+    --success: #A8CF5E;
+    --warning: #E3B155;
+    --danger: #E8837C;
+  }
+
+  [data-pal="dusk"] {
+    --chrome: #141019;
+    --surface: #201B28;
+    --raised: #2A2434;
+    --sunken: #0E0B12;
+    --outline: #352E42;
+    --outline-soft: #262031;
+    --rule: #3F374D;
+    --t1: #EAE5F2;
+    --t2: #A9A1B8;
+    --t3: #786F88;
+    --accent: #C0A2F0;
+    --accent-hover: #D3BBF7;
+    --accent-soft: #2C2440;
+    --on-accent: #1A0F2B;
+    --edge: #8F6FD0;
+    --success: #6BC79B;
+    --warning: #E2A551;
+    --danger: #E47D88;
+  }
+
+  [data-pal="ember"] {
+    --chrome: #171310;
+    --surface: #231E19;
+    --raised: #2D2721;
+    --sunken: #110E0C;
+    --outline: #38322B;
+    --outline-soft: #2A241E;
+    --rule: #423B33;
+    --t1: #EEE7DD;
+    --t2: #AEA192;
+    --t3: #7E7266;
+    --accent: #F0E3CE;
+    --accent-hover: #FFF3E2;
+    --accent-soft: #342C21;
+    --on-accent: #1C1712;
+    --edge: #C9B79C;
+    --success: #7BC48F;
+    --warning: #E3A757;
+    --danger: #E4817A;
+  }
+
+  /* 定稿：底子与壳上的强调都取石墨；靛紫只进编辑区（见下面的 --accent-doc）。 */
+  [data-pal="chosen"] {
+    --chrome: #141519;
+    --surface: #202127;
+    --raised: #292A31;
+    --sunken: #0D0E11;
+    --outline: #33353C;
+    --outline-soft: #23252B;
+    --rule: #3B3E46;
+    --t1: #E8E9EC;
+    --t2: #A1A4AB;
+    --t3: #70747C;
+    --accent: #E4E7EC;
+    --accent-hover: #F4F6F9;
+    --accent-soft: #2C2E35;
+    --on-accent: #14151A;
+    --edge: #A9AEB6;
+    --success: #6BC79B;
+    --warning: #E2A551;
+    --danger: #E47D82;
+  }
+
+  /* ---------------------------------------------------- 纸面强调（编辑区）
+     壳子上的强调和纸面上的强调是两层：
+       壳子 = 石墨的近白，只做「你在哪」的标记（rail 上的 2px 条、tab 下划线）；
+       纸面 = 午夜靛的靛紫，管选中文字、表格选中格、链接、勾选框。
+     默认两者相同，只有定稿把它们拆开。 */
+  .shell {
+    --accent-doc: var(--accent);
+    --accent-doc-soft: var(--accent-soft);
+    --on-accent-doc: var(--on-accent);
+    --edge-doc: var(--edge);
+  }
+  [data-pal="chosen"] .shell,
+  .shell[data-pal="chosen"] {
+    --accent-doc: #8B94F2;
+    --accent-doc-soft: #23263A;
+    --on-accent-doc: #0F1128;
+  }
+
+  /* ============================================================== 页面壳 */
+
+  .wrap { width: min(1460px, calc(100% - 48px)); margin: 0 auto; }
+
+  .masthead {
+    border-bottom: 1px solid var(--page-line-soft);
+    padding: 34px 0 22px;
+  }
+  .kicker {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; letter-spacing: .12em; font-weight: 600;
+    color: var(--page-t3); text-transform: uppercase;
+  }
+  .kicker i {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--gold); display: inline-block;
+  }
+  .title-row {
+    display: flex; align-items: baseline; gap: 12px;
+    margin-top: 9px; flex-wrap: wrap;
+  }
+  .title-row h1 {
+    margin: 0; font-size: 29px; line-height: 1.25;
+    font-weight: 700; letter-spacing: -.4px;
+  }
+  .count {
+    font-size: 11px; font-weight: 500; color: var(--page-t2);
+    border: 1px solid var(--page-line); border-radius: 999px;
+    padding: 2px 9px; transform: translateY(-3px);
+  }
+  .lede {
+    max-width: 900px; margin: 11px 0 0;
+    font-size: 13.5px; line-height: 1.9; color: var(--page-t2);
+  }
+  .lede b { color: var(--page-t1); font-weight: 600; }
+  .lede code {
+    font-family: var(--mono); font-size: .86em;
+    background: var(--page-raised); border-radius: 4px;
+    padding: 1px 5px; color: var(--page-t1);
+  }
+
+  .toolbar {
+    display: flex; align-items: center; gap: 16px;
+    margin-top: 18px; flex-wrap: wrap;
+  }
+  .field { display: flex; align-items: center; gap: 10px; }
+  .field-label { font-size: 11.5px; color: var(--page-t3); }
+  .seg {
+    display: inline-flex; gap: 2px; padding: 3px;
+    background: var(--page-panel);
+    border: 1px solid var(--page-line-soft);
+    border-radius: 8px;
+  }
+  .seg button {
+    appearance: none; border: 0; background: transparent;
+    color: var(--page-t2); font: inherit; font-size: 12px;
+    height: 26px; padding: 0 12px; border-radius: 5px;
+    cursor: pointer; transition: background .12s ease, color .12s ease;
+  }
+  .seg button:hover { background: rgba(255,255,255,.055); color: var(--page-t1); }
+  .seg button.on {
+    background: var(--gold); color: var(--gold-ink); font-weight: 600;
+  }
+  .seg button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+  .toolbar-hint { font-size: 11.5px; color: var(--page-t3); }
+
+  .decided {
+    display: flex; align-items: center; gap: 12px;
+    margin-top: 15px; padding: 10px 13px;
+    background: var(--page-panel);
+    border: 1px solid var(--page-line);
+    border-radius: 9px;
+    flex-wrap: wrap;
+  }
+  .decided .label {
+    font-size: 10.5px; font-weight: 600; letter-spacing: .1em;
+    color: var(--page-t3);
+  }
+  .decided mark {
+    background: var(--gold); color: var(--gold-ink);
+    padding: 2px 8px; border-radius: 3px;
+    font-size: 12.5px; font-weight: 600;
+  }
+  .decided code {
+    font-family: var(--mono); font-size: 9.5px; color: var(--page-t3);
+  }
+  .decided .note { margin-left: auto; font-size: 10.5px; color: var(--page-t3); }
+
+  /* ============================================================== 预览壳 */
+
+  .shell {
+    --top: 40px; --rail: 44px; --side: 288px; --right: 252px;
+    --fs: 12.5px; --r: 10px;
+    display: grid;
+    grid-template-columns: var(--rail) var(--side) minmax(0, 1fr) var(--right);
+    grid-template-rows: var(--top) minmax(0, 1fr);
+    background: var(--chrome);
+    border: 1px solid var(--outline-soft);
+    border-radius: var(--r);
+    overflow: hidden;
+    font-size: var(--fs);
+    color: var(--t1);
+    user-select: none;
+  }
+
+  .ic { width: 1em; height: 1em; display: block; fill: none; stroke: currentColor;
+        stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .ic-xs { width: .72em; height: .72em; }
+
+  /* ---- 顶栏 ---- */
+  .tb {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: var(--rail) var(--side) minmax(0, 1fr) var(--right);
+    align-items: center;
+    background: var(--chrome);
+    border-bottom: 1px solid var(--outline-soft);
+  }
+  .tb-left {
+    grid-column: 1 / 3;
+    display: flex; align-items: center; gap: 2px;
+    padding-left: 6px;
+  }
+  .tb-div {
+    width: 1px; height: 16px; background: var(--outline-soft);
+    margin: 0 6px;
+  }
+  .tb-btn {
+    width: 1.9em; height: 1.9em; flex: none;
+    display: grid; place-items: center;
+    border-radius: 5px; color: var(--t3);
+  }
+  .tb-btn:hover { color: var(--t1); }
+  .tabs {
+    grid-column: 3;
+    display: flex; align-items: stretch; gap: 1px;
+    height: 100%;
+  }
+  .tab {
+    display: flex; align-items: center; gap: .5em;
+    padding: 0 .8em; color: var(--t3);
+    border-radius: 6px 6px 0 0;
+    white-space: nowrap;
+  }
+  /* 活动标签就是「纸的边」：颜色等于编辑区，和下面的正文连成一片。
+     底下那 2px 同色投影是为了盖掉顶栏的 1px 分隔线，否则纸边会被切一刀。 */
+  .tab.on {
+    background: var(--surface);
+    color: var(--t1);
+    box-shadow: inset 0 1px 0 var(--outline),
+                0 1px 0 var(--surface),
+                0 2px 0 var(--surface);
+  }
+  .tb-right {
+    grid-column: 4;
+    display: flex; align-items: center; gap: 2px;
+    padding-right: 4px;
+  }
+  .tb-right .cap {
+    display: flex; gap: 2px; margin-left: auto; padding-left: 8px;
+  }
+  .cap span {
+    width: 2.2em; height: 1.9em; display: grid; place-items: center;
+    color: var(--t3);
+  }
+
+  /* ---- 功能栏 ---- */
+  .rail {
+    grid-column: 1; grid-row: 2;
+    display: flex; flex-direction: column; align-items: center;
+    gap: .25em; padding: .55em 0;
+    background: var(--chrome);
+  }
+  .rail-btn {
+    width: 1.9em; height: 1.9em; flex: none;
+    display: grid; place-items: center;
+    border-radius: 5px; color: var(--t3);
+    position: relative;
+  }
+  .rail-btn.on { color: var(--t1); background: var(--accent-soft); }
+  .rail-btn.on::before {
+    content: ""; position: absolute; left: -0.42em; top: 20%;
+    width: 2px; height: 60%; border-radius: 2px; background: var(--accent);
+  }
+  .rail-gap { flex: 1; }
+
+  /* ---- 左栏 ---- */
+  .side {
+    grid-column: 2; grid-row: 2;
+    background: var(--chrome);
+    padding: .5em .55em;
+    overflow: hidden;
+  }
+  .side-head {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: .82em; letter-spacing: .06em;
+    color: var(--t3); padding: .25em .35em .55em;
+  }
+  .row {
+    display: flex; align-items: center; gap: .5em;
+    height: 2em; padding: 0 .5em; border-radius: 5px;
+    color: var(--t2); font-size: .94em;
+    white-space: nowrap;
+  }
+  .row i {
+    margin-left: auto; font-style: normal;
+    font-size: .82em; color: var(--t3);
+  }
+  .row.on {
+    background: var(--accent-soft); color: var(--t1);
+  }
+  .row.sub { padding-left: 1.6em; color: var(--t3); }
+
+  /* ---- 编辑区（唯一的「纸」） ---- */
+  .doc {
+    grid-column: 3; grid-row: 2;
+    background: var(--surface);
+    padding: 1.6em 2.2em;
+    overflow: hidden;
+  }
+  .doc-title {
+    font-size: 1.7em; font-weight: 700; letter-spacing: -.2px;
+    margin: 0 0 .2em;
+  }
+  .doc-meta { font-size: .78em; color: var(--t3); margin-bottom: 1em; }
+  .doc p {
+    margin: 0 0 .7em; font-size: 1em; line-height: 1.85; color: var(--t1);
+  }
+  .doc code {
+    font-family: var(--mono); font-size: .84em;
+    background: var(--sunken); border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .doc a { color: var(--accent-doc); text-decoration: none; border-bottom: 1px solid var(--edge-doc); }
+  .doc .muted { color: var(--t2); }
+
+  .tbl { width: 100%; border-collapse: collapse; table-layout: fixed; margin: .2em 0 .9em; font-size: .88em; }
+  .tbl th, .tbl td {
+    border: 1px solid var(--rule); padding: .4em .55em;
+    text-align: left; font-weight: 400; color: var(--t1);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .tbl th { color: var(--t2); font-weight: 600; }
+  .tbl .cell-on { background: var(--accent-doc-soft); }
+  .tbl .cell-ink { color: var(--accent-doc); }
+
+  .chk { display: flex; align-items: center; gap: .55em; font-size: .95em; color: var(--t2); padding: .18em 0; }
+  .chk b {
+    width: .95em; height: .95em; flex: none; border-radius: 3px;
+    border: 1px solid var(--outline); display: grid; place-items: center;
+    color: var(--on-accent); font-size: .7em;
+  }
+  .chk.done b { background: var(--accent-doc); border-color: var(--accent-doc); color: var(--on-accent-doc); }
+  .chk.done span { color: var(--t3); text-decoration: line-through; }
+
+  /* ---- 右栏 ---- */
+  .panel {
+    grid-column: 4; grid-row: 2;
+    background: var(--chrome);
+    padding: .5em .55em;
+    overflow: hidden;
+  }
+  .panel-head {
+    font-size: .82em; letter-spacing: .06em; color: var(--t3);
+    padding: .25em .35em .55em;
+  }
+  .orow {
+    height: 2em; display: flex; align-items: center;
+    padding: 0 .5em; border-radius: 5px;
+    color: var(--t2); font-size: .94em; white-space: nowrap;
+  }
+  .orow.h2 { padding-left: 1.3em; color: var(--t3); font-size: .9em; }
+  .orow.on { color: var(--t1); background: var(--accent-soft); }
+
+  /* ---- chrome 与编辑区之间只有一道线 ---- */
+  .shell .doc { box-shadow: inset 1px 0 0 var(--outline-soft), inset -1px 0 0 var(--outline-soft); }
+
+  /* ============================================================== hero */
+
+  .hero-block {
+    margin-top: 20px;
+    background: var(--page-panel);
+    border: 1px solid var(--page-line);
+    border-radius: var(--radius);
+    padding: 16px 16px 14px;
+  }
+  .hero-top {
+    display: flex; align-items: center; gap: 14px;
+    flex-wrap: wrap; margin-bottom: 13px;
+  }
+  .hero-top h2 { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: .01em; }
+  .hero-top .hint { font-size: 11px; color: var(--page-t3); }
+  .legend {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-top: 12px; padding-top: 12px;
+    border-top: 1px solid var(--page-line-soft);
+  }
+  .legend .lbl { font-size: 10.5px; letter-spacing: .06em; color: var(--page-t3); }
+  .lchip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--page-t2);
+    border: 1px solid var(--page-line); border-radius: 999px;
+    padding: 2px 9px 2px 4px;
+  }
+  .lchip i {
+    width: 14px; height: 14px; border-radius: 4px; display: inline-block;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.22);
+  }
+  .lchip code {
+    font-family: var(--mono); font-size: 9.5px; color: var(--page-t3);
+  }
+  .legend .same { font-size: 11px; color: var(--page-t3); margin-left: auto; }
+
+  .hero-shell { height: 442px; }
+
+  /* ============================================================== cards */
+
+  .main { padding: 22px 0 52px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
+    align-items: start;
+    margin-top: 20px;
+  }
+
+  .card {
+    background: var(--page-panel);
+    border: 1px solid var(--page-line);
+    border-radius: var(--radius);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .card-head { display: flex; gap: 13px; padding: 16px 18px 12px; }
+  .sigil {
+    width: 40px; height: 40px; flex: none;
+    display: grid; place-items: center; border-radius: 9px;
+    font-family: var(--mono); font-size: 12px; font-weight: 700;
+    background: var(--page-raised); color: var(--page-t2);
+    box-shadow: inset 0 0 0 1px var(--page-line);
+  }
+  .name-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .name-row h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.2px; }
+  .badge {
+    font-size: 10px; font-weight: 600;
+    color: var(--page-t2); border: 1px solid var(--page-line);
+    border-radius: 999px; padding: 1px 7px;
+  }
+  .badge.rec { color: var(--gold); border-color: rgba(214,177,74,.55); }
+  .desc { margin: 5px 0 0; font-size: 12.5px; line-height: 1.7; color: var(--page-t2); }
+
+  .shell-host { padding: 0 18px; }
+  /* 卡片里按真实比例缩：侧栏 21%、右栏 17%，和 1280px 窗口下的 288 / 252 对齐。
+     图标不跟着字号缩，缩到 9px 就成了一团墨，固定 11px。 */
+  .shell-host .shell {
+    --top: 30px; --rail: 30px; --side: 21%; --right: 17%;
+    --fs: 9.2px; --r: 8px; height: 186px;
+  }
+  .shell-host .ic { width: 11px; height: 11px; }
+  .shell-host .ic-xs { width: 8px; height: 8px; }
+  .shell-host .tb-btn, .shell-host .rail-btn { width: 18px; height: 18px; }
+  .shell-host .row { height: 1.9em; }
+
+  .tokens { padding: 13px 18px 4px; }
+  .tk-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 10px; letter-spacing: .04em; color: var(--page-t3);
+    margin-bottom: 8px;
+  }
+  .tk-row { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 7px; }
+  .tk { min-width: 0; }
+  .tk .sw {
+    height: 30px; border-radius: 5px;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.20);
+  }
+  .tk .nm { font-size: 9.5px; color: var(--page-t2); margin-top: 4px; white-space: nowrap; }
+  .tk .hx {
+    font-family: var(--mono); font-size: 8.6px; color: var(--page-t3);
+    letter-spacing: -.02em; white-space: nowrap;
+  }
+
+  .metrics {
+    margin: 10px 18px 0; padding: 9px 11px;
+    background: var(--page-raised);
+    border: 1px solid var(--page-line-soft);
+    border-radius: 8px;
+    font-size: 10.5px; line-height: 1.85; color: var(--page-t3);
+    font-variant-numeric: tabular-nums;
+  }
+  .metrics b { color: var(--page-t2); font-weight: 600; }
+  .metrics .ok { color: #7FBF9A; }
+
+  .mix-rule ul {
+    margin: 0; padding: 0; list-style: none;
+    display: grid; gap: 7px;
+  }
+  .mix-rule li {
+    position: relative; padding-left: 13px;
+    font-size: 11px; line-height: 1.75; color: var(--page-t3);
+  }
+  .mix-rule li::before {
+    content: ""; position: absolute; left: 0; top: 7px;
+    width: 4px; height: 4px; border-radius: 50%; background: var(--gold);
+  }
+  .mix-rule li b { color: var(--page-t2); font-weight: 600; margin-right: 5px; }
+
+  .card-foot {
+    margin-top: 12px; padding: 10px 18px 14px;
+    border-top: 1px solid var(--page-line-soft);
+    font-size: 11.5px; line-height: 1.8; color: var(--page-t3);
+  }
+  .card-foot p { margin: 0; }
+  .card-foot p + p { margin-top: 3px; }
+  .card-foot b { color: var(--page-t2); font-weight: 600; margin-right: 6px; }
+
+  /* ============================================================== 表格 */
+
+  .cmp {
+    margin-top: 22px;
+    background: var(--page-panel);
+    border: 1px solid var(--page-line);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .cmp-head { padding: 16px 20px 10px; }
+  .cmp-head h3 { margin: 0; font-size: 13px; font-weight: 650; }
+  .cmp-head p { margin: 5px 0 0; font-size: 11.5px; color: var(--page-t3); line-height: 1.75; }
+  .cmp table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  .cmp th, .cmp td {
+    text-align: left; padding: 9px 20px;
+    border-top: 1px solid var(--page-line-soft);
+    color: var(--page-t2); vertical-align: middle;
+  }
+  .cmp th {
+    font-size: 10px; letter-spacing: .06em; font-weight: 600;
+    color: var(--page-t3); text-transform: uppercase;
+    border-top: 1px solid var(--page-line);
+  }
+  .cmp td.n { color: var(--page-t1); font-weight: 600; }
+  .cmp .dot {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    margin-right: 7px; vertical-align: -1px;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.16);
+  }
+  .cmp code { font-family: var(--mono); font-size: 10px; color: var(--page-t3); }
+
+  .spec {
+    margin-top: 20px;
+    background: var(--page-panel);
+    border: 1px solid var(--page-line);
+    border-radius: var(--radius);
+    padding-bottom: 14px;
+  }
+  .spec .cmp-head p code {
+    font-family: var(--mono); font-size: 9.5px;
+    background: var(--page-raised); border-radius: 3px; padding: 1px 4px;
+  }
+  .spec-list {
+    columns: 2; column-gap: 34px;
+    padding: 4px 20px 0;
+  }
+  .spec-item {
+    display: grid;
+    grid-template-columns: 10px 104px 76px minmax(0, 1fr);
+    gap: 8px; align-items: center;
+    padding: 5px 0;
+    border-top: 1px solid var(--page-line-soft);
+    break-inside: avoid;
+  }
+  .spec-item i {
+    width: 10px; height: 10px; border-radius: 3px;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.20);
+  }
+  .spec-item b {
+    font-family: var(--mono); font-size: 10px; font-weight: 500;
+    color: var(--page-t2); white-space: nowrap;
+  }
+  .spec-item code {
+    font-family: var(--mono); font-size: 9.5px; color: var(--page-t1);
+    white-space: nowrap;
+  }
+  .spec-item span {
+    font-size: 10px; color: var(--page-t3);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  .outro {
+    display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+    gap: 26px; margin-top: 20px; padding: 20px 22px;
+    background: var(--page-panel);
+    border: 1px solid var(--page-line);
+    border-radius: var(--radius);
+  }
+  .outro h3 { margin: 0 0 8px; font-size: 13px; font-weight: 650; color: var(--page-t1); }
+  .outro ul {
+    margin: 0; padding: 0; list-style: none;
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 24px;
+  }
+  .outro li {
+    position: relative; padding-left: 14px;
+    font-size: 11.5px; line-height: 1.8; color: var(--page-t3);
+  }
+  .outro li::before {
+    content: ""; position: absolute; left: 0; top: 8px;
+    width: 5px; height: 5px; border-radius: 50%; background: var(--gold);
+  }
+  .outro li b { color: var(--page-t2); font-weight: 600; }
+  .outro-side { border-left: 1px solid var(--page-line-soft); padding-left: 24px; align-self: center; }
+  .pick {
+    display: inline-block; font-size: 13px; font-weight: 650; color: var(--page-t1);
+    padding: 2px 0 3px; border-bottom: 2px solid var(--gold);
+  }
+  .outro-side p { margin: 9px 0 0; font-size: 11.5px; line-height: 1.8; color: var(--page-t3); }
+
+  .pagefoot { padding: 20px 0 34px; font-size: 10.5px; color: var(--page-t3); text-align: center; }
+
+  @media (max-width: 1180px) {
+    .grid { grid-template-columns: minmax(0, 1fr); }
+    .hero-shell { height: 420px; }
+  }
+  @media (max-width: 900px) {
+    .wrap { width: calc(100% - 32px); }
+    .outro { grid-template-columns: 1fr; gap: 16px; }
+    .outro-side { border-left: 0; padding-left: 0; border-top: 1px solid var(--page-line-soft); padding-top: 14px; }
+    .outro ul { grid-template-columns: 1fr; }
+    .legend .same { margin-left: 0; width: 100%; }
+    .cmp th, .cmp td { padding: 8px 14px; }
+    .cmp .hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-collapse" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/></symbol>
+    <symbol id="i-files" viewBox="0 0 24 24"><path d="M4 6.5A1.5 1.5 0 0 1 5.5 5H9l2 2.5h6.5A1.5 1.5 0 0 1 19 9v8.5A1.5 1.5 0 0 1 17.5 19h-12A1.5 1.5 0 0 1 4 17.5z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="M15 15l4.5 4.5"/></symbol>
+    <symbol id="i-tags" viewBox="0 0 24 24"><path d="M4 7.5V5.5A1.5 1.5 0 0 1 5.5 4h5L20 13.5 13.5 20 4 10.5z"/><circle cx="8.5" cy="8.5" r="1.2"/></symbol>
+    <symbol id="i-graph" viewBox="0 0 24 24"><circle cx="12" cy="6" r="2.4"/><circle cx="6" cy="17" r="2.4"/><circle cx="18" cy="17" r="2.4"/><path d="M10.6 8.1 7.2 14.8M13.4 8.1l3.4 6.7M8.4 17h7.2"/></symbol>
+    <symbol id="i-canvas" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7.5 15.5l3-6 3 3 3-5"/></symbol>
+    <symbol id="i-tmpl" viewBox="0 0 24 24"><rect x="4" y="4" width="11" height="11" rx="2"/><path d="M9 20h9a2 2 0 0 0 2-2V9"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M9.5 7V5h5v2M7 7l.8 12h8.4L17 7"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.6M12 18.4V21M3 12h2.6M18.4 12H21M5.6 5.6l1.9 1.9M16.5 16.5l1.9 1.9M18.4 5.6l-1.9 1.9M7.5 16.5l-1.9 1.9"/></symbol>
+    <symbol id="i-outline" viewBox="0 0 24 24"><path d="M4 6h16M4 11h10M7 16h13"/></symbol>
+    <symbol id="i-table" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M10 10v9"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.4"/><path d="M5 17l4.5-4.5 3 3L16 12l3.5 3.5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-min" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-max" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  </defs>
+</svg>
+
+<header class="masthead">
+  <div class="wrap">
+    <div class="kicker"><i></i>NRS · 深色主题 · 配色方案</div>
+    <div class="title-row">
+      <h1>五套深色：四块 chrome 只用一个色</h1>
+      <span class="count">定稿 · 石墨 + 靛紫</span>
+    </div>
+    <p class="lede">
+      现在顶栏、功能栏走 <code>canvas</code>，左右侧栏走 <code>sidebar</code>，四块壳子是<b>两个颜色</b>，
+      中间的 1px 线还要再画三道。这一轮把它们合成一个令牌 <code>chrome</code>：
+      <b>顶栏 = 功能栏 = 左栏 = 右栏 = 同一个色</b>，四块之间<b>一条线都不画</b>，只在 chrome 与编辑区之间留一道发丝。
+      编辑区仍是全场最亮的那张纸，chrome 压到它下面 0.8 个百分点，靠这个台阶分开，不靠描边。
+    </p>
+    <p class="lede">
+      定稿另外把<b>强调拆成两层</b>：壳子（顶栏 / 功能栏 / 左右栏）用石墨的近白，只做「你现在在哪」的标记；
+      <b>编辑区</b>里的强调换成午夜靛的靛紫，管选中文字、表格选中格、链接和勾选框。同一个屏幕上，两种强调各管一件事。
+    </p>
+
+    <div class="toolbar">
+      <div class="field">
+        <span class="field-label">预览</span>
+        <div class="seg" id="palSeg" role="group" aria-label="配色方案">
+          <button type="button" data-pal="chosen" class="on" aria-pressed="true">定稿</button>
+          <button type="button" data-pal="graphite" aria-pressed="false">P1 石墨</button>
+          <button type="button" data-pal="midnight" aria-pressed="false">P2 午夜靛</button>
+          <button type="button" data-pal="ink" aria-pressed="false">P3 墨青</button>
+          <button type="button" data-pal="dusk" aria-pressed="false">P4 暮紫</button>
+          <button type="button" data-pal="ember" aria-pressed="false">P5 暖炭</button>
+        </div>
+      </div>
+      <span class="toolbar-hint">切换上方预览；下方卡片是静态对照</span>
+    </div>
+
+    <div class="decided">
+      <span class="label">已定稿</span>
+      <mark>石墨底 · 壳近白 · 纸靛紫</mark>
+      <code>chrome #141519 · accent #E4E7EC · editorAccent #8B94F2</code>
+      <span class="note">靛紫只出现在编辑区里</span>
+    </div>
+  </div>
+</header>
+
+<main class="main">
+  <div class="wrap">
+
+    <!-- ======================================================== 大预览 -->
+    <section class="hero-block">
+      <div class="hero-top">
+        <h2>整窗预览</h2>
+        <span class="hint">40px 顶栏 · 44px 功能栏 · 288px 左栏 · 252px 右栏 · 编辑区占其余</span>
+      </div>
+
+      <div class="shell hero-shell" id="hero" data-pal="chosen">
+        <div class="tb">
+          <div class="tb-left">
+            <span class="tb-btn"><svg class="ic"><use href="#i-collapse"/></svg></span>
+            <span class="tb-div"></span>
+            <span class="tb-btn"><svg class="ic"><use href="#i-files"/></svg></span>
+            <span class="tb-btn"><svg class="ic"><use href="#i-search"/></svg></span>
+          </div>
+          <div class="tabs">
+            <div class="tab on"><span>九月复盘</span><svg class="ic ic-xs"><use href="#i-x"/></svg></div>
+            <div class="tab"><span>周报 · W39</span><svg class="ic ic-xs"><use href="#i-x"/></svg></div>
+            <div class="tab"><span>读书笔记</span><svg class="ic ic-xs"><use href="#i-x"/></svg></div>
+          </div>
+          <div class="tb-right">
+            <span class="tb-btn"><svg class="ic"><use href="#i-outline"/></svg></span>
+            <span class="tb-btn"><svg class="ic"><use href="#i-table"/></svg></span>
+            <span class="tb-btn"><svg class="ic"><use href="#i-image"/></svg></span>
+            <div class="cap">
+              <span><svg class="ic"><use href="#i-min"/></svg></span>
+              <span><svg class="ic"><use href="#i-max"/></svg></span>
+              <span><svg class="ic"><use href="#i-x"/></svg></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="rail">
+          <span class="rail-btn on"><svg class="ic"><use href="#i-tags"/></svg></span>
+          <span class="rail-btn"><svg class="ic"><use href="#i-tmpl"/></svg></span>
+          <span class="rail-btn"><svg class="ic"><use href="#i-graph"/></svg></span>
+          <span class="rail-btn"><svg class="ic"><use href="#i-canvas"/></svg></span>
+          <div class="rail-gap"></div>
+          <span class="rail-btn"><svg class="ic"><use href="#i-trash"/></svg></span>
+          <span class="rail-btn"><svg class="ic"><use href="#i-gear"/></svg></span>
+        </div>
+
+        <div class="side">
+          <div class="side-head"><span>文件</span><svg class="ic ic-xs"><use href="#i-plus"/></svg></div>
+          <div class="row">收件箱<i>4</i></div>
+          <div class="row on">九月复盘</div>
+          <div class="row">周报 · W39</div>
+          <div class="row">读书笔记</div>
+          <div class="row">白板<i>2</i></div>
+          <div class="row sub">九月复盘</div>
+          <div class="row sub">流程图</div>
+          <div class="row">归档<i>18</i></div>
+        </div>
+
+        <div class="doc">
+          <div class="doc-title">九月复盘</div>
+          <div class="doc-meta">2026-09-30 · 1,284 字 · 已同步</div>
+          <p>这一周的重点是把壳子收干净：四块 chrome 合成一个色，<code>chrome</code> 只负责「不是纸的地方」，正文和表格仍然落在编辑区那张纸上。</p>
+          <p class="muted">剩下的颜色都交给语义：<a href="#">选中一行</a> 用强调色的浅洗，表格高亮沿用原来那六档，不去改它。</p>
+          <table class="tbl">
+            <colgroup><col style="width:24%"><col style="width:22%"><col style="width:54%"></colgroup>
+            <thead><tr><th>区域</th><th>达成</th><th>备注</th></tr></thead>
+            <tbody>
+              <tr><td class="cell-on">华东</td><td>92%</td><td>续费稳定，十月加一轮</td></tr>
+              <tr><td>华南</td><td>87%</td><td class="cell-ink">待复核</td></tr>
+            </tbody>
+          </table>
+          <div class="chk done"><b>✓</b><span>顶栏 / 功能栏 / 侧栏 同色</span></div>
+          <div class="chk"><b></b><span>下一轮：把右栏的面板也并进来</span></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">大纲</div>
+          <div class="orow on">九月复盘</div>
+          <div class="orow h2">本周结论</div>
+          <div class="orow h2">下周计划</div>
+          <div class="orow">表格</div>
+          <div class="orow h2">高亮</div>
+        </div>
+      </div>
+
+      <div class="legend" id="heroLegend">
+        <span class="lbl">同色区域</span>
+        <span class="lchip"><i data-chip="chrome"></i>顶部栏 <code data-hex>—</code></span>
+        <span class="lchip"><i data-chip="chrome"></i>功能栏 <code data-hex>—</code></span>
+        <span class="lchip"><i data-chip="chrome"></i>左栏 <code data-hex>—</code></span>
+        <span class="lchip"><i data-chip="chrome"></i>右栏 <code data-hex>—</code></span>
+        <span class="lchip"><i data-chip="surface"></i>编辑区 <code data-hex>—</code></span>
+        <span class="same">四个 chrome 区域取同一个值，只有编辑区另算</span>
+      </div>
+    </section>
+
+    <!-- ================================================== 定稿 + 五张候选 -->
+    <div class="grid">
+
+      <!-- 定稿 -->
+      <section class="card" data-pal="chosen">
+        <div class="card-head">
+          <div class="sigil" style="color:var(--gold)">&#10003;</div>
+          <div>
+            <div class="name-row"><h2>定稿 · 石墨 + 靛紫（仅编辑区）</h2><span class="badge rec">已选</span></div>
+            <p class="desc">底子和壳子上的强调都是石墨；只有编辑区里那几处强调换成午夜靛的靛紫。</p>
+          </div>
+        </div>
+        <div class="shell-host">
+          <div class="shell">
+            <div class="tb">
+              <div class="tb-left"><span class="tb-btn"><svg class="ic"><use href="#i-collapse"/></svg></span><span class="tb-btn"><svg class="ic"><use href="#i-files"/></svg></span></div>
+              <div class="tabs"><div class="tab on"><span>九月复盘</span></div><div class="tab"><span>周报</span></div></div>
+              <div class="tb-right"><span class="tb-btn"><svg class="ic"><use href="#i-outline"/></svg></span><div class="cap"><span><svg class="ic"><use href="#i-x"/></svg></span></div></div>
+            </div>
+            <div class="rail">
+              <span class="rail-btn on"><svg class="ic"><use href="#i-tags"/></svg></span>
+              <span class="rail-btn"><svg class="ic"><use href="#i-graph"/></svg></span>
+              <span class="rail-btn"><svg class="ic"><use href="#i-canvas"/></svg></span>
+            </div>
+            <div class="side">
+              <div class="side-head">文件</div>
+              <div class="row">收件箱</div>
+              <div class="row on">九月复盘</div>
+              <div class="row">周报</div>
+            </div>
+            <div class="doc">
+              <div class="doc-title">九月复盘</div>
+              <div class="doc-meta">2026-09-30 · 1,284 字</div>
+              <p>灰底配一支靛紫，选中一眼就认得出来。</p>
+              <table class="tbl">
+                <colgroup><col style="width:38%"><col style="width:26%"><col style="width:36%"></colgroup>
+                <tbody>
+                  <tr><td class="cell-on">华东</td><td>92%</td><td class="cell-ink">领先</td></tr>
+                  <tr><td>华南</td><td>87%</td><td>待复核</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="panel">
+              <div class="panel-head">大纲</div>
+              <div class="orow on">九月复盘</div>
+              <div class="orow h2">本周结论</div>
+            </div>
+          </div>
+        </div>
+        <div class="tokens" data-tokens></div>
+        <div class="tokens mix-rule" style="padding-top:2px">
+          <div class="tk-head"><span>落代码要做三件事</span><span>其余原样</span></div>
+          <ul>
+            <li><b>并 chrome</b>canvas 与 sidebar 合成一个 chrome，顶栏 / 功能栏 / 左右栏全取它，四块之间不画线。</li>
+            <li><b>壳强调不动</b>accent / accentHover / accentSoft / onAccent / selectionEdge 保持石墨的近白，只做位置标记。</li>
+            <li><b>新增纸强调</b>editorAccent / editorAccentSoft / onEditorAccent 三个字段取午夜靛；selection 与表格选中框也改用它。</li>
+          </ul>
+        </div>
+        <div class="card-foot">
+          <p><b>为什么分两层</b>壳上的近白只回答「你在哪一栏」，纸上的靛紫只回答「选中了哪一段」。两者同色时，眼睛会把「当前行」和「选中的字」看成一回事。</p>
+          <p><b>唯一可能要微调</b>editorAccentSoft <code>#23263A</code> 是按午夜靛的纸调的，放到 <code>#202127</code> 上略淡；嫌浅就提到 <code>#262B42</code>。</p>
+        </div>
+      </section>
+
+      <!-- P1 石墨 -->
+      <section class="card" data-pal="graphite">
+        <div class="card-head">
+          <div class="sigil">P1</div>
+          <div>
+            <div class="name-row"><h2>石墨</h2><span class="badge rec">推荐</span><span class="badge">中性 · 冷白强调</span></div>
+            <p class="desc">一点色相都不带的中性灰。表格那六档色、图谱的分组色放上去最不打架，纸面像印刷品而不是屏幕。</p>
+          </div>
+        </div>
+        <div class="shell-host">
+          <div class="shell">
+            <div class="tb">
+              <div class="tb-left"><span class="tb-btn"><svg class="ic"><use href="#i-collapse"/></svg></span><span class="tb-btn"><svg class="ic"><use href="#i-files"/></svg></span></div>
+              <div class="tabs"><div class="tab on"><span>九月复盘</span></div><div class="tab"><span>周报</span></div></div>
+              <div class="tb-right"><span class="tb-btn"><svg class="ic"><use href="#i-outline"/></svg></span><div class="cap"><span><svg class="ic"><use href="#i-x"/></svg></span></div></div>
+            </div>
+            <div class="rail">
+              <span class="rail-btn on"><svg class="ic"><use href="#i-tags"/></svg></span>
+              <span class="rail-btn"><svg class="ic"><use href="#i-graph"/></svg></span>
+              <span class="rail-btn"><svg class="ic"><use href="#i-canvas"/></svg></span>
+            </div>
+            <div class="side">
+              <div class="side-head">文件</div>
+              <div class="row">收件箱</div>
+              <div class="row on">九月复盘</div>
+              <div class="row">周报</div>
+            </div>
+            <div class="doc">
+              <div class="doc-title">九月复盘</div>
+              <div class="doc-meta">2026-09-30 · 1,284 字</div>
+              <p>四块 chrome 同色，只在纸边留一道发丝。</p>
+              <table class="tbl">
+                <colgroup><col style="width:38%"><col style="width:26%"><col style="width:36%"></colgroup>
+                <tbody>
+                  <tr><td class="cell-on">华东</td><td>92%</td><td class="cell-ink">领先</td></tr>
+                  <tr><td>华南</td><td>87%</td><td>待复核</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="panel">
+              <div class="panel-head">大纲</div>
+              <div class="orow on">九月复盘</div>
+              <div class="orow h2">本周结论</div>
+            </div>
+          </div>
+        </div>
+        <div class="tokens" data-tokens></div>
+        <div class="card-foot">
+          <p><b>取舍</b>最安静，也最没有性格；强调色是冷白，选中一行靠浅洗而不是亮色。</p>
+          <p><b>适合</b>长文、表格、图谱三样都要长期盯着看的人。</p>
+        </div>
+      </section>
+
+      <!-- P2 午夜靛 -->
+      <section class="card" data-pal="midnight">
+        <div class="card-head">
+          <div class="sigil">P2</div>
+          <div>
+            <div class="name-row"><h2>午夜靛</h2><span class="badge">改动最小</span><span class="badge">靛紫强调</span></div>
+            <p class="desc">就是现在这套，只做两件事：把 canvas 与 sidebar 并成 chrome，编辑区提亮一档补回台阶。强调色原样保留。</p>
+          </div>
+        </div>
+        <div class="shell-host">
+          <div class="shell">
+            <div class="tb">
+              <div class="tb-left"><span class="tb-btn"><svg class="ic"><use href="#i-collapse"/></svg></span><span class="tb-btn"><svg class="ic"><use href="#i-files"/></svg></span></div>
+              <div class="tabs"><div class="tab on"><span>九月复盘</span></div><div class="tab"><span>周报</span></div></div>
+              <div class="tb-right"><span class="tb-btn"><svg class="ic"><use href="#i-outline"/></svg></span><div class="cap"><span><svg class="ic"><use href="#i-x"/></svg></span></div></div>
+            </div>
+            <div class="rail">
+              <span class="rail-btn on"><svg class="ic"><use href="#i-tags"/></svg></span>
+              <span class="rail-btn"><svg class="ic"><use href="#i-graph"/></svg></span>
+              <span class="rail-btn"><svg class="ic"><use href="#i-canvas"/></svg></span>
+            </div>
+            <div class="side">
+              <div class="side-head">文件</div>
+              <div class="row">收件箱</div>
+              <div class="row on">九月复盘</div>
+              <div class="row">周报</div>
+            </div>
+            <div class="doc">
+              <div class="doc-title">九月复盘</div>
+              <div class="doc-meta">2026-09-30 · 1,284 字</div>
+              <p>四块 chrome 同色，只在纸边留一道发丝。</p>
+              <table class="tbl">
+                <colgroup><col style="width:38%"><col style="width:26%"><col style="width:36%"></colgroup>
+                <tbody>
+                  <tr><td class="cell-on">华东</td><td>92%</td><td class="cell-ink">领先</td></tr>
+                  <tr><td>华南</td><td>87%</td><td>待复核</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="panel">
+              <div class="panel-head">大纲</div>
+              <div class="orow on">九月复盘</div>
+              <div class="orow h2">本周结论</div>
+            </div>
+          </div>
+        </div>
+        <div class="tokens" data-tokens></div>
+        <div class="card-foot">
+          <p><b>取舍</b>品牌感最强；靛紫和表格的紫、图谱的紫离得近，同屏时容易糊成一片。</p>
+          <p><b>适合</b>想保住现在这套识别度、不想大改的人。</p>
+        </div>
+      </section>
+
+      <!-- P3 墨青 -->
+      <section class="card" data-pal="ink">
+        <div class="card-head">
+          <div class="sigil">P3</div>
+          <div>
+            <div class="name-row"><h2>墨青</h2><span class="badge">冷 · 青绿强调</span></div>
+            <p class="desc">底子往青里偏，能看出一点绿。强调色是青绿，和它离得太近的「成功」让到黄绿，两档才分得开。</p>
+          </div>
+        </div>
+        <div class="shell-host">
+          <div class="shell">
+            <div class="tb">
+              <div class="tb-left"><span class="tb-btn"><svg class="ic"><use href="#i-collapse"/></svg></span><span class="tb-btn"><svg class="ic"><use href="#i-files"/></svg></span></div>
+              <div class="tabs"><div class="tab on"><span>九月复盘</span></div><div class="tab"><span>周报</span></div></div>
+              <div class="tb-right"><span class="tb-btn"><svg class="ic"><use href="#i-outline"/></svg></span><div class="cap"><span><svg class="ic"><use href="#i-x"/></svg></span></div></div>
+            </div>
+            <div class="rail">
+              <span class="rail-btn on"><svg class="ic"><use href="#i-tags"/></svg></span>
+              <span class="rail-btn"><svg class="ic"><use href="#i-graph"/></svg></span>
+              <span class="rail-btn"><svg class="ic"><use href="#i-canvas"/></svg></span>
+            </div>
+            <div class="side">
+              <div class="side-head">文件</div>
+              <div class="row">收件箱</div>
+              <div class="row on">九月复盘</div>
+              <div class="row">周报</div>
+            </div>
+            <div class="doc">
+              <div class="doc-title">九月复盘</div>
+              <div class="doc-meta">2026-09-30 · 1,284 字</div>
+              <p>四块 chrome 同色，只在纸边留一道发丝。</p>
+              <table class="tbl">
+                <colgroup><col style="width:38%"><col style="width:26%"><col style="width:36%"></colgroup>
+                <tbody>
+                  <tr><td class="cell-on">华东</td><td>92%</td><td class="cell-ink">领先</td></tr>
+                  <tr><td>华南</td><td>87%</td><td>待复核</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="panel">
+              <div class="panel-head">大纲</div>
+              <div class="orow on">九月复盘</div>
+              <div class="orow h2">本周结论</div>
+            </div>
+          </div>
+        </div>
+        <div class="tokens" data-tokens></div>
+        <div class="card-foot">
+          <p><b>取舍</b>青绿在近黑上很跳，选中的行会「亮」起来；代价是语义色要重排一档（成功转黄绿）。</p>
+          <p><b>适合</b>希望一眼看出「现在在哪」的人。</p>
+        </div>
+      </section>
+
+      <!-- P4 暮紫 -->
+      <section class="card" data-pal="dusk">
+        <div class="card-head">
+          <div class="sigil">P4</div>
+          <div>
+            <div class="name-row"><h2>暮紫</h2><span class="badge">冷 · 淡紫强调</span></div>
+            <p class="desc">底子带一点紫罗兰，像傍晚的房间。强调色是淡紫，比靛紫软，和危险色的粉红隔得开。</p>
+          </div>
+        </div>
+        <div class="shell-host">
+          <div class="shell">
+            <div class="tb">
+              <div class="tb-left"><span class="tb-btn"><svg class="ic"><use href="#i-collapse"/></svg></span><span class="tb-btn"><svg class="ic"><use href="#i-files"/></svg></span></div>
+              <div class="tabs"><div class="tab on"><span>九月复盘</span></div><div class="tab"><span>周报</span></div></div>
+              <div class="tb-right"><span class="tb-btn"><svg class="ic"><use href="#i-outline"/></svg></span><div class="cap"><span><svg class="ic"><use href="#i-x"/></svg></span></div></div>
+            </div>
+            <div class="rail">
+              <span class="rail-btn on"><svg class="ic"><use href="#i-tags"/></svg></span>
+              <span class="rail-btn"><svg class="ic"><use href="#i-graph"/></svg></span>
+              <span class="rail-btn"><svg class="ic"><use href="#i-canvas"/></svg></span>
+            </div>
+            <div class="side">
+              <div class="side-head">文件</div>
+              <div class="row">收件箱</div>
+              <div class="row on">九月复盘</div>
+              <div class="row">周报</div>
+            </div>
+            <div class="doc">
+              <div class="doc-title">九月复盘</div>
+              <div class="doc-meta">2026-09-30 · 1,284 字</div>
+              <p>四块 chrome 同色，只在纸边留一道发丝。</p>
+              <table class="tbl">
+                <colgroup><col style="width:38%"><col style="width:26%"><col style="width:36%"></colgroup>
+                <tbody>
+                  <tr><td class="cell-on">华东</td><td>92%</td><td class="cell-ink">领先</td></tr>
+                  <tr><td>华南</td><td>87%</td><td>待复核</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="panel">
+              <div class="panel-head">大纲</div>
+              <div class="orow on">九月复盘</div>
+              <div class="orow h2">本周结论</div>
+            </div>
+          </div>
+        </div>
+        <div class="tokens" data-tokens></div>
+        <div class="card-foot">
+          <p><b>取舍</b>比午夜靛软，但紫底会让表格里的暖色（琥珀、红）显得更烫。</p>
+          <p><b>适合</b>喜欢深色里带一点色温、又不想太蓝的人。</p>
+        </div>
+      </section>
+
+      <!-- P5 暖炭 -->
+      <section class="card" data-pal="ember">
+        <div class="card-head">
+          <div class="sigil">P5</div>
+          <div>
+            <div class="name-row"><h2>暖炭</h2><span class="badge">暖 · 暖白强调</span></div>
+            <p class="desc">褐灰底、奶油白的字，像台灯下的纸。强调色是暖白，把琥珀和红完整让给警告与危险。</p>
+          </div>
+        </div>
+        <div class="shell-host">
+          <div class="shell">
+            <div class="tb">
+              <div class="tb-left"><span class="tb-btn"><svg class="ic"><use href="#i-collapse"/></svg></span><span class="tb-btn"><svg class="ic"><use href="#i-files"/></svg></span></div>
+              <div class="tabs"><div class="tab on"><span>九月复盘</span></div><div class="tab"><span>周报</span></div></div>
+              <div class="tb-right"><span class="tb-btn"><svg class="ic"><use href="#i-outline"/></svg></span><div class="cap"><span><svg class="ic"><use href="#i-x"/></svg></span></div></div>
+            </div>
+            <div class="rail">
+              <span class="rail-btn on"><svg class="ic"><use href="#i-tags"/></svg></span>
+              <span class="rail-btn"><svg class="ic"><use href="#i-graph"/></svg></span>
+              <span class="rail-btn"><svg class="ic"><use href="#i-canvas"/></svg></span>
+            </div>
+            <div class="side">
+              <div class="side-head">文件</div>
+              <div class="row">收件箱</div>
+              <div class="row on">九月复盘</div>
+              <div class="row">周报</div>
+            </div>
+            <div class="doc">
+              <div class="doc-title">九月复盘</div>
+              <div class="doc-meta">2026-09-30 · 1,284 字</div>
+              <p>四块 chrome 同色，只在纸边留一道发丝。</p>
+              <table class="tbl">
+                <colgroup><col style="width:38%"><col style="width:26%"><col style="width:36%"></colgroup>
+                <tbody>
+                  <tr><td class="cell-on">华东</td><td>92%</td><td class="cell-ink">领先</td></tr>
+                  <tr><td>华南</td><td>87%</td><td>待复核</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="panel">
+              <div class="panel-head">大纲</div>
+              <div class="orow on">九月复盘</div>
+              <div class="orow h2">本周结论</div>
+            </div>
+          </div>
+        </div>
+        <div class="tokens" data-tokens></div>
+        <div class="card-foot">
+          <p><b>取舍</b>长时间看最不刺眼；代价是截图、配色参考都偏黄，和别人对色号时容易说不清。</p>
+          <p><b>适合</b>夜里写长文、讨厌蓝光的人。</p>
+        </div>
+      </section>
+
+
+
+    </div>
+
+    <!-- ========================================================== 对照表 -->
+    <section class="cmp">
+      <div class="cmp-head">
+        <h3>定稿与五套候选并排</h3>
+        <p>亮度台阶按「chrome → 编辑区」的百分点差算；对比度按编辑区上的正文、顶栏上的三级文字与强调色算。</p>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:16%">方案</th>
+            <th style="width:13%">chrome</th>
+            <th style="width:13%">编辑区</th>
+            <th class="hide-sm" style="width:13%">强调色</th>
+            <th class="hide-sm" style="width:12%">台阶</th>
+            <th style="width:33%">气质</th>
+          </tr>
+        </thead>
+        <tbody id="cmpBody"></tbody>
+      </table>
+    </section>
+
+    <!-- ========================================================== 定稿令牌 -->
+    <section class="spec">
+      <div class="cmp-head">
+        <h3>落代码：定稿的 27 个令牌</h3>
+        <p>底子 19 个值全取石墨，<b>壳上的强调也取石墨</b>；只有 <b>editorAccent 三件套</b>和纸上的 selection 取午夜靛。
+           <code>canvas</code> 与 <code>sidebar</code> 合成 <code>chrome</code>，另外新增 <code>editorAccent</code> 一族。</p>
+      </div>
+      <div class="spec-list">
+        <div class="spec-item"><i style="background:#141519"></i><b>chrome</b><code>#141519</code><span>顶栏 · 功能栏 · 左栏 · 右栏（原 canvas + sidebar）</span></div>
+        <div class="spec-item"><i style="background:#202127"></i><b>surface</b><code>#202127</code><span>编辑区、对话纸面</span></div>
+        <div class="spec-item"><i style="background:#292A31"></i><b>surfaceRaised</b><code>#292A31</code><span>浮层、卡片、输入框</span></div>
+        <div class="spec-item"><i style="background:#0D0E11"></i><b>surfaceSunken</b><code>#0D0E11</code><span>行内代码、滚动条槽</span></div>
+        <div class="spec-item"><i style="background:#33353C"></i><b>outline</b><code>#33353C</code><span>控件边、区域发丝</span></div>
+        <div class="spec-item"><i style="background:#23252B"></i><b>outlineSoft</b><code>#23252B</code><span>区域内部的弱分隔</span></div>
+        <div class="spec-item"><i style="background:#3B3E46"></i><b>rule</b><code>#3B3E46</code><span>正文里的表格线、分隔线</span></div>
+        <div class="spec-item"><i style="background:#E8E9EC"></i><b>textPrimary</b><code>#E8E9EC</code><span>正文</span></div>
+        <div class="spec-item"><i style="background:#A1A4AB"></i><b>textSecondary</b><code>#A1A4AB</code><span>次级说明</span></div>
+        <div class="spec-item"><i style="background:#70747C"></i><b>textTertiary</b><code>#70747C</code><span>三级、占位</span></div>
+        <div class="spec-item"><i style="background:#E4E7EC"></i><b>accent</b><code>#E4E7EC</code><span>壳上的强调：当前行、tab 下划线、rail 标记</span></div>
+        <div class="spec-item"><i style="background:#F4F6F9"></i><b>accentHover</b><code>#F4F6F9</code><span>壳上的悬停</span></div>
+        <div class="spec-item"><i style="background:#2C2E35"></i><b>accentSoft</b><code>#2C2E35</code><span>壳上当前行的浅洗</span></div>
+        <div class="spec-item"><i style="background:#14151A"></i><b>onAccent</b><code>#14151A</code><span>压在壳强调上的字</span></div>
+        <div class="spec-item"><i style="background:#8B94F2"></i><b>editorAccent</b><code>#8B94F2</code><span>纸上的强调：链接、选中格、勾选框</span></div>
+        <div class="spec-item"><i style="background:#23263A"></i><b>editorAccentSoft</b><code>#23263A</code><span>表格选中格的浅洗</span></div>
+        <div class="spec-item"><i style="background:#0F1128"></i><b>onEditorAccent</b><code>#0F1128</code><span>压在纸强调上的字</span></div>
+        <div class="spec-item"><i style="background:#8B94F2"></i><b>selection</b><code>#4D8B94F2</code><span>编辑器里选中的文字（30% alpha）</span></div>
+        <div class="spec-item"><i style="background:#5B68ED"></i><b>selectionEdge</b><code>#5B68ED</code><span>表格整块的 1px 选中框</span></div>
+        <div class="spec-item"><i style="background:#6BC79B"></i><b>success</b><code>#6BC79B</code><span>成功</span></div>
+        <div class="spec-item"><i style="background:#13251D"></i><b>successSoft</b><code>#13251D</code><span>沿用午夜靛</span></div>
+        <div class="spec-item"><i style="background:#E2A551"></i><b>warning</b><code>#E2A551</code><span>注意，不是装饰</span></div>
+        <div class="spec-item"><i style="background:#2E2413"></i><b>warningSoft</b><code>#2E2413</code><span>沿用午夜靛</span></div>
+        <div class="spec-item"><i style="background:#E47D82"></i><b>danger</b><code>#E47D82</code><span>危险</span></div>
+        <div class="spec-item"><i style="background:#2C1A1F"></i><b>dangerSoft</b><code>#2C1A1F</code><span>沿用午夜靛</span></div>
+        <div class="spec-item"><i style="background:#000000"></i><b>shadow</b><code>#66000000</code><span>只给浮层</span></div>
+        <div class="spec-item"><i style="background:#000000"></i><b>overlay</b><code>#99000000</code><span>弹窗后面的遮罩</span></div>
+        <div class="spec-item"><i style="background:#141519"></i><b>brightness</b><code>dark</code><span>只有深色</span></div>
+      </div>
+    </section>
+
+    <section class="outro">
+      <div>
+        <h3>这五套的共同规矩</h3>
+        <ul>
+          <li><b>四块同色</b>顶栏 / 功能栏 / 左栏 / 右栏 都取 <code>chrome</code>，四块之间不画线。</li>
+          <li><b>一道发丝</b>chrome 与编辑区之间只留 <code>outlineSoft</code>，不用边框加阴影互相打架。</li>
+          <li><b>编辑区最亮</b>chrome 比编辑区暗 0.7–0.9 个百分点，眼睛落在纸上。</li>
+          <li><b>正文达标</b>正文 / 编辑区 ≥ 12.5:1，次级 ≥ 6.4:1，三级 / 顶栏 ≥ 3.6:1。</li>
+          <li><b>强调分两层</b>壳子标记位置、纸面标记内容；定稿把这两层拆成两组值，其余四套仍是同一个。</li>
+          <li><b>强调色不与语义撞</b>墨青把「成功」让到黄绿，暖炭把强调让成暖白。</li>
+          <li><b>表格六色不动</b>那套色是全局颜色语言，五套都原样保留。</li>
+          <li><b>白板与图片同底</b>两块主区的底也从 <code>chrome</code> 取，主区之外不会冒出第三种灰。</li>
+        </ul>
+      </div>
+      <div class="outro-side">
+        <span class="pick">已定：石墨底 · 壳近白 · 纸靛紫</span>
+        <p>底子与壳上的强调全取石墨；靛紫只出现在编辑区：链接、表格选中格、勾选框、选中文字。</p>
+        <p>下一步三件事：把 <code>canvas</code> 与 <code>sidebar</code> 并成 <code>chrome</code>、新增 <code>editorAccent</code> 一族、把这 27 个值写进 <code>AppPalette</code>。</p>
+      </div>
+    </section>
+  </div>
+
+  <div class="pagefoot">对比度与亮度差由页面实时计算；chrome 与编辑区的台阶用亮度百分点，比对比度更能反映近黑处的差别</div>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const NAME = {
+    chosen: "定稿（石墨+靛紫）",
+    graphite: "石墨",
+    midnight: "午夜靛",
+    ink: "墨青",
+    dusk: "暮紫",
+    ember: "暖炭",
+  };
+
+  const TONE = {
+    chosen: "已选定：壳近白、纸靛紫",
+    graphite: "中性、安静，像印刷品",
+    midnight: "品牌靛蓝，冷而稳",
+    ink: "冷青、清透，选中很跳",
+    dusk: "紫罗兰、傍晚的房间",
+    ember: "暖褐、台灯下的纸",
+  };
+
+  const ch = (v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4); };
+
+  const parse = (css) => {
+    const v = String(css).trim();
+    let h = v.replace("#", "");
+    if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+    if (h.length === 8) h = h.slice(2);
+    return {
+      r: parseInt(h.slice(0, 2), 16),
+      g: parseInt(h.slice(2, 4), 16),
+      b: parseInt(h.slice(4, 6), 16),
+    };
+  };
+
+  const hex = (c) => "#" + [c.r, c.g, c.b].map((v) => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, "0")).join("").toUpperCase();
+
+  const lum = (c) => 0.2126 * ch(c.r) + 0.7152 * ch(c.g) + 0.0722 * ch(c.b);
+
+  const ratio = (a, b) => {
+    const la = lum(a), lb = lum(b);
+    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+  };
+
+  const read = (host, name) => getComputedStyle(host).getPropertyValue(name).trim();
+
+  const TOKENS = [
+    ["chrome", "chrome"],
+    ["surface", "编辑区"],
+    ["raised", "浮层"],
+    ["sunken", "下沉"],
+    ["accent", "强调·壳"],
+    ["accentDoc", "强调·纸"],
+  ];
+
+  function paint(host) {
+    const box = host.querySelector("[data-tokens]");
+    if (!box) return;
+    const c = parse(read(host, "--chrome"));
+    const s = parse(read(host, "--surface"));
+    const r = parse(read(host, "--raised"));
+    const k = parse(read(host, "--sunken"));
+    const a = parse(read(host, "--accent"));
+    // 纸面强调挂在 .shell 上（它要跟壳强调分开），所以从壳里读。
+    const shell = host.querySelector(".shell") || host;
+    const ad = parse(read(shell, "--accent-doc") || read(host, "--accent"));
+    const t1 = parse(read(host, "--t1"));
+    const t2 = parse(read(host, "--t2"));
+    const t3 = parse(read(host, "--t3"));
+
+    const values = { chrome: c, surface: s, raised: r, sunken: k, accent: a, accentDoc: ad };
+
+    box.innerHTML =
+      '<div class="tk-head"><span>核心令牌</span><span>chrome = 顶栏 · 功能栏 · 左栏 · 右栏</span></div>' +
+      '<div class="tk-row">' +
+      TOKENS.map(([key, label]) =>
+        `<div class="tk"><div class="sw" style="background:${hex(values[key])}"></div>` +
+        `<div class="nm">${label}</div><div class="hx">${hex(values[key])}</div></div>`
+      ).join("") +
+      "</div>" +
+      '<div class="metrics">' +
+      `<b>正文 / 编辑区</b> ${ratio(t1, s).toFixed(1)}:1 &nbsp;·&nbsp; ` +
+      `<b>次级</b> ${ratio(t2, s).toFixed(1)}:1 &nbsp;·&nbsp; ` +
+      `<b>三级 / 顶栏</b> ${ratio(t3, c).toFixed(1)}:1<br>` +
+      `<b>强调·壳 / chrome</b> ${ratio(a, c).toFixed(1)}:1 &nbsp;·&nbsp; ` +
+      `<b>强调·纸 / 编辑区</b> ${ratio(ad, s).toFixed(1)}:1 &nbsp;·&nbsp; ` +
+      `<b>chrome → 编辑区</b> +${((lum(s) - lum(c)) * 100).toFixed(2)} pp` +
+      "</div>";
+  }
+
+  function paintHero() {
+    const hero = document.getElementById("hero");
+    const c = parse(read(hero, "--chrome"));
+    const s = parse(read(hero, "--surface"));
+    document.querySelectorAll(".legend .lchip").forEach((chip) => {
+      const dot = chip.querySelector("[data-chip]");
+      const code = chip.querySelector("[data-hex]");
+      const value = dot.dataset.chip === "chrome" ? hex(c) : hex(s);
+      dot.style.background = value;
+      code.textContent = value;
+    });
+  }
+
+  function buildCmp() {
+    const rows = Object.keys(NAME).map((key) => {
+      const host = document.querySelector(`.card[data-pal="${key}"]`);
+      const c = parse(read(host, "--chrome"));
+      const s = parse(read(host, "--surface"));
+      const a = parse(read(host, "--accent"));
+      return `<tr>
+        <td class="n"><span class="dot" style="background:${hex(a)}"></span>${NAME[key]}</td>
+        <td><code>${hex(c)}</code></td>
+        <td><code>${hex(s)}</code></td>
+        <td class="hide-sm"><code>${hex(a)}</code></td>
+        <td class="hide-sm">+${((lum(s) - lum(c)) * 100).toFixed(2)} pp</td>
+        <td>${TONE[key]}</td>
+      </tr>`;
+    });
+    document.getElementById("cmpBody").innerHTML = rows.join("");
+  }
+
+  function selectPal(key) {
+    const hero = document.getElementById("hero");
+    if (hero.dataset.pal === key) return;
+    hero.dataset.pal = key;
+    document.querySelectorAll("#palSeg button").forEach((b) => {
+      const on = b.dataset.pal === key;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", String(on));
+    });
+    paintHero();
+  }
+
+  document.querySelectorAll("#palSeg button").forEach((b) => {
+    b.addEventListener("click", () => selectPal(b.dataset.pal));
+  });
+
+  document.querySelectorAll(".card").forEach(paint);
+  buildCmp();
+  paintHero();
+})();
+</script>
+</body>
+</html>

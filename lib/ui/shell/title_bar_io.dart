@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
-import '../../core/app_enums.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import 'main_view.dart';
@@ -12,59 +11,44 @@ import 'title_bar_content.dart';
 /// `window_setup_io.dart` removes the OS caption (`TitleBarStyle.hidden`), so
 /// everything the caption used to do is re-implemented here: drag the strip to
 /// move the window, double-click it to maximize / restore, and three buttons on
-/// the right. The three regions between those buttons come from
-/// [TitleBarLayout] — views on the left, open tabs in the middle, the outline
-/// toggle on the right.
+/// the right.
 ///
-/// ⛔ The buttons and the tabs must stay *outside* [DragToMoveArea]: a gesture
-/// detector that starts a window drag swallows every tap underneath it.
+/// ⛔ **这不是一条横带**：标签条就顶在窗口最上面，这一层只是浮在它上面的
+/// 几颗按钮（见 [TitleBarLayout]）。所以它没有底色，中间也留空——鼠标穿过去
+/// 就是下面的标签条。拖窗口的手势在 [titleBarGrip] 里，由标签条的空段承接。
+///
+/// ⛔ The buttons must stay *outside* the drag area: a gesture detector that
+/// starts a window drag swallows every tap underneath it.
 class AppTitleBar extends StatefulWidget {
   const AppTitleBar({
     super.key,
-    required this.view,
-    required this.onSelectView,
     required this.onToggleSidebar,
-    required this.onCreateNote,
     required this.mainView,
-    required this.onSelectMainView,
-    required this.graphOpen,
-    required this.onCloseGraph,
-    required this.imageTitle,
-    required this.onCloseImage,
-    required this.canvasTitle,
-    required this.onCloseCanvas,
-    required this.leftInset,
     required this.rightInset,
+    this.showSidebarToggle = true,
   });
 
-  final SidebarView view;
-  final ValueChanged<SidebarView> onSelectView;
   final VoidCallback onToggleSidebar;
-  final VoidCallback onCreateNote;
 
-  /// Whether the pane under the tabs shows a note or the graph.
+  /// 聚焦那一格显示的是笔记还是图谱——决定右侧三颗开关要不要出现。
   final MainView mainView;
-  final ValueChanged<MainView> onSelectMainView;
-  final bool graphOpen;
-  final VoidCallback onCloseGraph;
-
-  /// 图片页那一页 tab 的标题（当前那张图的文件名），`null` = 没开。
-  ///
-  /// 所有图片共用这一页：换图时这个字符串换掉，tab 还是同一个。
-  final String? imageTitle;
-  final VoidCallback onCloseImage;
-  final String? canvasTitle;
-  final VoidCallback onCloseCanvas;
-
-  /// Distance from the window's left edge to the editor's left edge.
-  final double leftInset;
 
   /// Distance from the window's right edge to the outline's left edge.
   final double rightInset;
 
+  /// 功能栏藏起来时（专注模式）那颗侧栏开关也不画。
+  final bool showSidebarToggle;
+
   @override
   State<AppTitleBar> createState() => _AppTitleBarState();
 }
+
+/// 标签条上没被标签占住的那一段：拖它等于拖窗口，双击最大化 / 还原。
+///
+/// 由标签条自己接（`PaneTabStrip.filler`），压在标签**底下**：点在标签上算
+/// 标签，点空白处才算拖窗口。放在这一层文件里是因为只有桌面端能碰
+/// `window_manager`。
+Widget titleBarGrip() => const DragToMoveArea(child: SizedBox.expand());
 
 class _AppTitleBarState extends State<AppTitleBar> with WindowListener {
   bool _maximized = false;
@@ -99,32 +83,14 @@ class _AppTitleBarState extends State<AppTitleBar> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-    final AppPalette p = context.palette;
-    return Container(
+    return SizedBox(
       height: AppLayout.titleBarHeight,
-      decoration: BoxDecoration(
-        // The rail's colour, so the strip and the rail read as one continuous
-        // window edge rather than two stacked bands.
-        color: p.canvas,
-        border: Border(bottom: BorderSide(color: p.outlineSoft)),
-      ),
       child: TitleBarLayout(
-        view: widget.view,
-        onSelectView: widget.onSelectView,
         onToggleSidebar: widget.onToggleSidebar,
-        onCreateNote: widget.onCreateNote,
+        showSidebarToggle: widget.showSidebarToggle,
         mainView: widget.mainView,
-        onSelectMainView: widget.onSelectMainView,
-        graphOpen: widget.graphOpen,
-        onCloseGraph: widget.onCloseGraph,
-        imageTitle: widget.imageTitle,
-        onCloseImage: widget.onCloseImage,
-        canvasTitle: widget.canvasTitle,
-        onCloseCanvas: widget.onCloseCanvas,
-        leftInset: widget.leftInset,
         rightInset: widget.rightInset,
-        grip: const DragToMoveArea(child: SizedBox.expand()),
-        captionWidth: 44 * 3,
+        captionWidth: kCaptionWidth,
         caption: <Widget>[
           _CaptionButton(
             glyph: _Glyph.minimize,

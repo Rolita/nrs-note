@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>编辑区分块 · 原型</title>
+<style>
+  :root{
+    --page:#F4F4F2;
+    --ink:#1B1D22;
+    --ink-2:#5A6068;
+    --ink-3:#9096A0;
+    --line:#E2E3DF;
+    --paper:#fff;
+
+    --w-canvas:#0E0F13;
+    --w-sidebar:#131419;
+    --w-surface:#17181E;
+    --w-raised:#1F2027;
+    --w-line:#1E2028;
+    --w-strong:#2A2C36;
+    --w-t1:#E6E8EF;
+    --w-t2:#9AA0B0;
+    --w-t3:#6A7080;
+    --w-accent:#8B94F2;
+    --w-soft:#23263A;
+    --w-green:#5FC79A;
+    --w-blue:#4C8DF6;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--page);color:var(--ink);
+    font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    font-size:14px;line-height:1.7;-webkit-font-smoothing:antialiased;
+  }
+  .page{max-width:1300px;margin:0 auto;padding:52px 24px 100px}
+  h1{font-size:26px;font-weight:650;letter-spacing:-.01em;margin:0 0 8px}
+  .sub{color:var(--ink-2);margin:0 0 10px;max-width:760px}
+  .kbd{font-family:"Cascadia Code",Consolas,monospace;font-size:11.5px;background:#EDEDEA;border:1px solid #DCDCD7;border-bottom-width:2px;padding:1px 6px;border-radius:4px;color:#3C4149}
+
+  /* ------------------------------------------------------------ 窗口 */
+  .stage{position:relative;width:100%;margin-top:22px}
+  .win{
+    width:1240px;height:680px;border-radius:10px;overflow:hidden;
+    background:var(--w-canvas);color:var(--w-t2);
+    box-shadow:0 1px 0 rgba(0,0,0,.18),0 26px 52px -30px rgba(16,18,24,.62);
+    font-size:11px;user-select:none;transform-origin:top left;
+    display:flex;flex-direction:column;
+  }
+
+  /* 顶部栏 */
+  .topbar{height:40px;flex:none;display:flex;align-items:center;padding-left:6px;background:var(--w-canvas);border-bottom:1px solid var(--w-line);position:relative}
+  .sq{width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--w-t3);font-size:11px;flex:none}
+  .sq.on{background:var(--w-soft);color:var(--w-accent)}
+  .vsep{width:1px;height:15px;background:var(--w-strong);margin:0 6px;flex:none}
+  .tabs{display:flex;align-items:flex-end;height:40px;margin-left:8px;gap:2px;overflow:hidden}
+  .tab{
+    height:31px;padding:0 10px 0 11px;display:flex;align-items:center;gap:6px;
+    border-radius:6px 6px 0 0;color:var(--w-t3);font-size:10.5px;white-space:nowrap;
+    cursor:grab;position:relative;flex:none;
+  }
+  .tab:hover{background:var(--w-raised);color:var(--w-t2)}
+  .tab.on{background:var(--w-surface);color:var(--w-t1);font-weight:600}
+  .tab.on::after{content:"";position:absolute;left:8px;right:8px;bottom:0;height:2px;background:var(--w-accent);border-radius:2px 2px 0 0}
+  .tab .x{width:13px;height:13px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--w-t3)}
+  .tab .x:hover{background:var(--w-strong);color:var(--w-t1)}
+  .tab.dragging{opacity:.4}
+  .topbar .sp{flex:1}
+  .cap{width:42px;height:40px;display:flex;align-items:center;justify-content:center;color:var(--w-t2);font-size:10px}
+  .cap.x{color:#E4797F}
+
+  /* 主体 */
+  .body{flex:1;display:flex;min-height:0}
+  .rail{width:44px;background:var(--w-canvas);border-right:1px solid var(--w-line);padding:4px 7px;display:flex;flex-direction:column;gap:4px;align-items:center;flex:none}
+  .grow{flex:1}
+  .side{width:250px;background:var(--w-sidebar);display:flex;flex-direction:column;flex:none;overflow:hidden}
+  #sidebar{flex:1;display:flex;min-height:0;background:var(--w-sidebar)}
+  .sfoot{height:28px;flex:none;display:flex;align-items:center;gap:6px;padding:0 8px;border-top:1px solid var(--w-line);color:var(--w-t3);font-size:10px}
+  .sfoot .sf-name{color:var(--w-t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sfoot .sf-i{width:20px;height:20px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:10px;flex:none}
+
+  /* 侧边栏的一格：header 32 + 列表 */
+  .spane{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--w-sidebar);position:relative}
+  .spane.focused{outline:1px solid #2E3242;outline-offset:-1px}
+  .shead{height:32px;flex:none;display:flex;align-items:center;gap:1px;padding:0 6px 0 8px;border-bottom:1px solid var(--w-line)}
+  .shead .sv{width:22px;height:22px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--w-t2);flex:none;cursor:pointer}
+  .shead .sv:hover{background:var(--w-raised);color:var(--w-t1)}
+  .shead .sp{flex:1}
+  .shead .st{width:22px;height:22px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--w-t3);flex:none;cursor:pointer}
+  .shead .st:hover{background:var(--w-raised);color:var(--w-t1)}
+  .sbody{flex:1;min-height:0;overflow:hidden;padding:4px 6px}
+  .sempty{height:100%;display:flex;align-items:center;justify-content:center;color:var(--w-t3);font-size:10px;opacity:.75}
+  .phead{height:32px;display:flex;align-items:center;padding:0 10px;color:var(--w-t2);font-size:10px;border-bottom:1px solid var(--w-line);flex:none;gap:6px}
+  .phead .n{color:var(--w-t3);font-size:9px}
+  .tree{flex:1;padding:4px 6px;overflow:hidden}
+  .row{height:27px;display:flex;align-items:center;gap:7px;padding:0 6px;border-radius:5px;color:var(--w-t2);font-size:10px}
+  .row.sel{background:var(--w-soft);color:var(--w-t1)}
+  .row .ic{width:10px;height:10px;border-radius:2px;border:1.2px solid currentColor;opacity:.5;flex:none}
+  .row .ic.f{background:currentColor;opacity:.2;border:none}
+  .handle{width:5px;background:var(--w-sidebar);flex:none}
+  .right{width:250px;background:var(--w-sidebar);display:flex;flex-direction:column;flex:none;opacity:.9}
+
+  /* ------------------------------------------------------- 分割容器 */
+  #editor{flex:1;display:flex;min-width:0;position:relative;background:var(--w-surface)}
+
+  .split{display:flex;flex:1;min-width:0;min-height:0}
+  .split-h{flex-direction:row}
+  .split-v{flex-direction:column}
+  .split > .cell{display:flex;min-width:0;min-height:0}
+
+  .bar{
+    flex:none;background:var(--w-canvas);position:relative;z-index:3;
+    transition:background .12s;
+  }
+  .split-h > .bar{width:5px;cursor:col-resize}
+  .split-v > .bar{height:5px;cursor:row-resize}
+  .bar::after{
+    content:"";position:absolute;background:var(--w-accent);opacity:0;transition:opacity .12s;
+  }
+  .split-h > .bar::after{left:2px;top:0;bottom:0;width:1px}
+  .split-v > .bar::after{top:2px;left:0;right:0;height:1px}
+  .bar:hover::after,.bar.active::after{opacity:1}
+  .bar:hover{background:#1A1C23}
+
+  /* pane */
+  .pane{
+    flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;
+    background:var(--w-surface);position:relative;
+  }
+  .pane.focused{outline:1px solid #2E3242;outline-offset:-1px}
+  .phead2{
+    height:28px;flex:none;display:flex;align-items:center;gap:6px;padding:0 6px 0 10px;
+    border-bottom:1px solid var(--w-line);color:var(--w-t3);font-size:10px;
+    background:var(--w-surface);
+  }
+  .phead2 .dot2{width:5px;height:5px;border-radius:50%;background:var(--w-t3);opacity:.6;flex:none}
+  .phead2 .name{color:var(--w-t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pane.focused .phead2 .name{color:var(--w-t1)}
+  .phead2 .sp{flex:1}
+  .phead2 .pb{
+    width:20px;height:20px;border-radius:4px;display:flex;align-items:center;justify-content:center;
+    font-size:9px;color:var(--w-t3);flex:none;
+  }
+  .phead2 .pb:hover{background:var(--w-raised);color:var(--w-t1)}
+  .pbody{flex:1;min-height:0;overflow:hidden;position:relative}
+
+  /* 内容：笔记 */
+  .note-pad{padding:18px 22px;overflow:hidden;height:100%}
+  .note-pad h3{font-size:15px;color:var(--w-t1);margin:0 0 10px;font-weight:600}
+  .note-pad p{margin:0 0 8px;font-size:10.5px;line-height:1.9;color:var(--w-t2)}
+  .ph{height:7px;border-radius:3px;background:var(--w-line);margin-bottom:7px}
+
+  /* 内容：图谱 */
+  .graph-pad{height:100%;position:relative;background:radial-gradient(circle at 50% 45%,#1B1E28 0%,#14161C 70%)}
+  .graph-pad .n{position:absolute;width:5px;height:5px;border-radius:50%;background:#8B94F2;opacity:.75}
+  .graph-pad .lbl{position:absolute;font-size:8px;color:var(--w-t3);white-space:nowrap}
+  .graph-pad svg{position:absolute;inset:0;width:100%;height:100%}
+
+  /* 内容：白板 */
+  .board{height:100%;background:
+    linear-gradient(var(--w-line) 1px,transparent 1px) 0 0/24px 24px,
+    linear-gradient(90deg,var(--w-line) 1px,transparent 1px) 0 0/24px 24px,
+    #12141A;
+    position:relative}
+  .board .card{position:absolute;background:rgba(31,32,39,.9);border:1px solid #3A3D4A;border-radius:4px;font-size:8px;color:var(--w-t2);padding:5px 7px}
+
+  /* 内容：图片 */
+  .img-pad{height:100%;display:flex;align-items:center;justify-content:center;background:#101218}
+  .img-pad .frame{width:70%;aspect-ratio:16/10;border-radius:3px;background:linear-gradient(140deg,#243044,#1A2233);display:flex;align-items:center;justify-content:center;color:#4A5468;font-size:9px;border:1px solid #2A3448}
+
+  /* 落点预览 */
+  .dropmask{position:absolute;inset:0;z-index:6;pointer-events:none;display:none}
+  .dropmask.on{display:block}
+  .dropmask .zone{
+    position:absolute;background:rgba(76,141,246,.18);
+    border:1px solid rgba(76,141,246,.75);border-radius:3px;
+    transition:all .1s ease;
+  }
+  .dropmask .hint{
+    position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    background:rgba(23,24,30,.92);border:1px solid #3A3F52;color:#B9C0D4;
+    font-size:9px;padding:3px 8px;border-radius:4px;white-space:nowrap;
+  }
+
+  /* 空状态 */
+  .empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--w-t3);font-size:10px}
+  .empty .big{font-size:20px;opacity:.35}
+
+  /* ------------------------------------------------------------ 说明 */
+  .hintbar{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px 18px;color:var(--ink-2);font-size:12.5px}
+  .hintbar span{display:flex;align-items:center;gap:6px}
+  .hintbar b{color:var(--ink);font-weight:600}
+
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:30px}
+  .card{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+  .card h3{margin:0 0 8px;font-size:14px}
+  .card ul{margin:0;padding-left:17px}
+  .card li{font-size:12.5px;color:var(--ink-2);margin-bottom:5px;line-height:1.65}
+  .card code{font-family:"Cascadia Code",Consolas,monospace;font-size:11px;background:#F1F1EE;border:1px solid var(--line);padding:1px 5px;border-radius:4px;color:#3C4149}
+
+  .treefig{margin-top:30px;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+  .treefig h3{margin:0 0 4px;font-size:14px}
+  .treefig p{margin:0 0 14px;font-size:12.5px;color:var(--ink-2)}
+  .treefig svg{display:block;max-width:100%}
+
+  @media (max-width:900px){.cards{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>编辑区和侧边栏都能分块</h1>
+  <p class="sub">
+    两者用的是<b>同一个分割组件</b>——一棵二叉分割树。区别只在叶子里装什么：
+    编辑区的叶子装文档（笔记 / 图谱 / 白板 / 图片），侧边栏的叶子装视图（文件 / 书签 / 搜索 / 标签）。
+    <b>这个原型可以直接拖</b>：把顶部标签拖到任意格子的边缘试试。
+  </p>
+  <p class="sub" style="color:var(--ink-3);font-size:13px">
+    拖标签到<b>格子中间</b>＝在这个格子里打开；拖到<b>四条边</b>＝把格子切成两半。拖格子之间的<b>细线</b>改比例（侧边栏那条也能拖），双击细线均分。
+  </p>
+
+  <div class="stage" id="stage">
+    <div class="win" id="win">
+
+      <!-- 顶部栏 -->
+      <div class="topbar">
+        <div class="sq">‹‹</div>
+        <div class="vsep"></div>
+        <div class="sq on">▤</div>
+        <div class="sq">⌕</div>
+        <div class="tabs" id="tabs">
+          <div class="tab on" draggable="true" data-doc="n1">周记 · 2026 W44<span class="x">×</span></div>
+          <div class="tab" draggable="true" data-doc="n2">人月神话<span class="x">×</span></div>
+          <div class="tab" draggable="true" data-doc="g">关系图谱<span class="x">×</span></div>
+          <div class="tab" draggable="true" data-doc="c">未命名白板<span class="x">×</span></div>
+          <div class="tab" draggable="true" data-doc="i">截图.png<span class="x">×</span></div>
+        </div>
+        <div class="sp"></div>
+        <div class="cap">─</div>
+        <div class="cap">□</div>
+        <div class="cap x">×</div>
+      </div>
+
+      <div class="body">
+        <div class="rail">
+          <div class="sq on">▣</div>
+          <div class="sq">◫</div>
+          <div class="sq">⌗</div>
+          <div class="sq">▢</div>
+          <div class="grow"></div>
+          <div class="sq">⚙</div>
+        </div>
+
+        <div class="side">
+          <div id="sidebar"></div>
+          <div class="sfoot">
+            <span class="sf-i">⇕</span>
+            <span class="sf-name">股市项目</span>
+            <span class="sp"></span>
+            <span class="sf-i">?</span>
+            <span class="sf-i">⚙</span>
+          </div>
+        </div>
+
+        <div class="handle"></div>
+
+        <!-- 分割容器 -->
+        <div id="editor"></div>
+
+        <div class="handle"></div>
+
+        <div class="right">
+          <div class="phead">大纲</div>
+          <div class="tree">
+            <div class="row sel">本周进展</div>
+            <div class="row" style="padding-left:20px">白板网格</div>
+            <div class="row" style="padding-left:20px">图谱拖拽</div>
+            <div class="row">下周计划</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="hintbar">
+    <span><b>拖标签</b>到边缘 → 分屏</span>
+    <span><b>拖细线</b> → 改比例（两边都能拖）</span>
+    <span><b>双击细线</b> → 均分</span>
+    <span><b>格子右上 ×</b> → 关掉这一格</span>
+    <span><b>侧边栏左上图标</b> → 换视图</span>
+    <span><b>Ctrl+\</b> → 左右分</span>
+  </div>
+
+  <!-- 数据结构 -->
+  <div class="treefig">
+    <h3>一棵二叉分割树，两处共用</h3>
+    <p>
+      每次分割只把一个格子换成「两个格子 + 一条细线」，所以任意格子的任意边都能继续切——这就是「随意」的来源，网格做不到。
+      编辑区和侧边栏各持有一棵这样的树，渲染代码是同一份（<code style="font-family:Consolas,monospace;font-size:11px;background:#F1F1EE;padding:1px 4px;border-radius:3px">paint(容器, 树, 画叶子的函数)</code>）。
+    </p>
+    <svg viewBox="0 0 720 210" height="210" aria-hidden="true">
+      <g font-family="Cascadia Code,Consolas,monospace" font-size="11">
+        <!-- 根 -->
+        <rect x="10" y="80" width="96" height="34" rx="6" fill="#EFF1FB" stroke="#C9CEF2"/>
+        <text x="58" y="101" text-anchor="middle" fill="#4A4F8A">row 0.5</text>
+
+        <!-- 左 -->
+        <line x1="106" y1="97" x2="150" y2="40" stroke="#C9CEF2" stroke-width="1.4"/>
+        <line x1="106" y1="97" x2="150" y2="152" stroke="#C9CEF2" stroke-width="1.4"/>
+        <rect x="150" y="22" width="92" height="34" rx="6" fill="#F3F3F1" stroke="#DCDCD7"/>
+        <text x="196" y="43" text-anchor="middle" fill="#5A6068">笔记</text>
+        <rect x="150" y="134" width="92" height="34" rx="6" fill="#EFF1FB" stroke="#C9CEF2"/>
+        <text x="196" y="155" text-anchor="middle" fill="#4A4F8A">col 0.5</text>
+
+        <!-- 右下 -->
+        <line x1="242" y1="151" x2="286" y2="108" stroke="#C9CEF2" stroke-width="1.4"/>
+        <line x1="242" y1="151" x2="286" y2="192" stroke="#C9CEF2" stroke-width="1.4"/>
+        <rect x="286" y="90" width="92" height="34" rx="6" fill="#F3F3F1" stroke="#DCDCD7"/>
+        <text x="332" y="111" text-anchor="middle" fill="#5A6068">图谱</text>
+        <rect x="286" y="174" width="92" height="34" rx="6" fill="#EFF1FB" stroke="#C9CEF2"/>
+        <text x="332" y="195" text-anchor="middle" fill="#4A4F8A">row 0.42</text>
+
+        <!-- 最右下 -->
+        <line x1="378" y1="191" x2="422" y2="191" stroke="#C9CEF2" stroke-width="1.4"/>
+        <rect x="422" y="174" width="80" height="34" rx="6" fill="#F3F3F1" stroke="#DCDCD7"/>
+        <text x="462" y="195" text-anchor="middle" fill="#5A6068">白板</text>
+        <rect x="516" y="174" width="80" height="34" rx="6" fill="#F3F3F1" stroke="#DCDCD7"/>
+        <text x="556" y="195" text-anchor="middle" fill="#5A6068">图片</text>
+
+        <!-- 说明 -->
+        <text x="600" y="40" fill="#8A9099" font-size="10">叶子 = 一格</text>
+        <text x="600" y="58" fill="#8A9099" font-size="10">内部 = split</text>
+        <text x="600" y="96" fill="#4A4F8A" font-size="10">侧边栏那棵：</text>
+        <text x="600" y="116" fill="#5A6068" font-size="10">col 0.64</text>
+        <text x="600" y="134" fill="#5A6068" font-size="10">├ 文件</text>
+        <text x="600" y="152" fill="#5A6068" font-size="10">└ 书签</text>
+      </g>
+    </svg>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <h3>每格记什么</h3>
+      <ul>
+        <li><b>编辑区叶子</b>：装哪个文档（note id / 白板路径 / 图片路径 / 图谱）、滚动位置</li>
+        <li><b>侧边栏叶子</b>：装哪个视图（文件 / 书签 / 搜索 / 标签）、展开状态、滚动位置</li>
+        <li><b>内部 split</b>：方向（左右 / 上下）、比例（0–1）、两个子节点</li>
+        <li>两棵树各自序列化成 JSON 存进会话，重启原样恢复</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>和现在代码的差别</h3>
+      <ul>
+        <li><code>EditorPane</code> 和 <code>NoteListPanel</code> 都是单例，要各拆成一个 <code>SplitHost</code></li>
+        <li><code>MainView</code> 和 <code>SidebarView</code> 两个全局枚举，都变成 per-pane 字段</li>
+        <li>顶部标签条从「切换全局视图」变成「拖进某个 pane」，点了就落在当前聚焦的那格</li>
+        <li><code>notes.selectedId</code> 不能再全局唯一——每格要能显示不同笔记</li>
+        <li>侧边栏底部那条（vault 名 / 帮助 / 设置）留在分割外面，不属于任何一格</li>
+      </ul>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  const DOCS = {
+    n1:{title:'周记 · 2026 W44', kind:'note'},
+    n2:{title:'人月神话',       kind:'note'},
+    g :{title:'关系图谱',       kind:'graph'},
+    c :{title:'未命名白板',     kind:'canvas'},
+    i :{title:'截图.png',       kind:'image'},
+  };
+
+  let uid = 0;
+  const leaf = doc => ({type:'leaf', id:'p'+(++uid), doc:doc||null});
+
+  let root = {
+    type:'split', dir:'row', ratio:.5,
+    a: leaf('n1'),
+    b: leaf('g'),
+  };
+  let focused = root.a.id;
+
+  // 侧边栏：同一套分割树，叶子装的是「侧栏视图」而不是文档
+  const sleaf = view => ({type:'leaf', id:'s'+(++uid), view:view});
+  let sideTree = {
+    type:'split', dir:'col', ratio:.64,
+    a: sleaf('files'),
+    b: sleaf('bookmarks'),
+  };
+  let sideFocused = sideTree.b.id;
+
+  const editor = document.getElementById('editor');
+  const sidebar = document.getElementById('sidebar');
+
+  // ---------------------------------------------------------------- 渲染
+  function render(){
+    paint(editor, root, buildEditorPane);
+    paint(sidebar, sideTree, buildSidePane);
+  }
+
+  /// 一棵树画进任意容器。leafFn 决定叶子长什么样——编辑区和侧边栏
+  /// 唯一的区别就在这里，分割逻辑完全共用。
+  function paint(host, tree, leafFn){
+    host.innerHTML = '';
+    host.appendChild(build(tree, leafFn));
+  }
+
+  function build(node, leafFn){
+    if(node.type === 'leaf') return leafFn(node);
+    const el = document.createElement('div');
+    el.className = 'split ' + (node.dir === 'row' ? 'split-h' : 'split-v');
+    el.dataset.node = node.id = node.id || 's'+(++uid);
+
+    const a = document.createElement('div');
+    a.className = 'cell';
+    a.style.flex = node.ratio + ' 1 0';
+    a.appendChild(build(node.a, leafFn));
+
+    const bar = document.createElement('div');
+    bar.className = 'bar';
+    bindDivider(bar, node, el);
+
+    const b = document.createElement('div');
+    b.className = 'cell';
+    b.style.flex = (1 - node.ratio) + ' 1 0';
+    b.appendChild(build(node.b, leafFn));
+
+    el.append(a, bar, b);
+    return el;
+  }
+
+  function buildEditorPane(node){
+    const pane = document.createElement('div');
+    pane.className = 'pane' + (node.id === focused ? ' focused' : '');
+    pane.dataset.pane = node.id;
+
+    const doc = node.doc ? DOCS[node.doc] : null;
+
+    const head = document.createElement('div');
+    head.className = 'phead2';
+    head.innerHTML =
+      '<span class="dot2"></span>' +
+      '<span class="name">' + (doc ? doc.title : '空面板') + '</span>' +
+      '<span class="sp"></span>' +
+      '<span class="pb" data-act="split" title="左右分割">◫</span>' +
+      '<span class="pb" data-act="close" title="关掉这一格">×</span>';
+    pane.appendChild(head);
+
+    const body = document.createElement('div');
+    body.className = 'pbody';
+    body.appendChild(content(node, doc));
+    pane.appendChild(body);
+
+    // 落点遮罩
+    const mask = document.createElement('div');
+    mask.className = 'dropmask';
+    mask.innerHTML = '<div class="zone"></div><div class="hint"></div>';
+    pane.appendChild(mask);
+
+    pane.addEventListener('pointerdown', () => { focused = node.id; refreshFocus(); });
+    head.addEventListener('click', e => {
+      const act = e.target.closest('[data-act]');
+      if(!act) return;
+      if(act.dataset.act === 'close') closeLeaf(node);
+      else splitLeaf(node, 'row', null);
+    });
+
+    bindDrop(pane, node);
+    return pane;
+  }
+
+  // ------------------------------------------------------------ 侧边栏一格
+  const SIDE = {
+    files:     {icon:'▤', tools:['✎','▢','⇕','▦','⇵']},
+    bookmarks: {icon:'◫', tools:['▤','▢','×','⌕']},
+    search:    {icon:'⌕', tools:['▢']},
+    tags:      {icon:'#', tools:['▢']},
+  };
+
+  function buildSidePane(node){
+    const pane = document.createElement('div');
+    pane.className = 'spane' + (node.id === sideFocused ? ' focused' : '');
+    pane.dataset.spane = node.id;
+
+    const v = SIDE[node.view] || SIDE.files;
+
+    const head = document.createElement('div');
+    head.className = 'shead';
+    head.innerHTML =
+      '<span class="sv" data-act="switch" title="换一个视图">' + v.icon + '</span>' +
+      '<span class="sp"></span>' +
+      v.tools.map(t => '<span class="st">' + t + '</span>').join('');
+    pane.appendChild(head);
+
+    const body = document.createElement('div');
+    body.className = 'sbody';
+    body.innerHTML = sideContent(node.view);
+    pane.appendChild(body);
+
+    pane.addEventListener('pointerdown', () => { sideFocused = node.id; refreshSideFocus(); });
+    head.addEventListener('click', e => {
+      if(!e.target.closest('[data-act=switch]')) return;
+      const order = ['files','bookmarks','search','tags'];
+      node.view = order[(order.indexOf(node.view) + 1) % order.length];
+      paint(sidebar, sideTree, buildSidePane);
+    });
+    return pane;
+  }
+
+  function sideContent(view){
+    if(view === 'files'){
+      const rows = [
+        ['f','之前',0],['f','png',0],
+        ['n','理论。',1],['n','2026-04-28 房地产',1],['n','2026-04-29 房地产 后续',1],
+        ['n','2026-05-13 纪。',1],['n','2026-05-23',1],['n','2026-05-26',1],
+        ['n','股市思考',1],['n','模拟交易',1],
+        ['n','未命名',1],['n','未命名 1',1],['n','未命名 2',1],['n','未命名 3',1],
+        ['n','b30deb45e5ebfb225e5ba55310...',1],['n','Pasted image 20260519211237',1],
+        ['n','Pasted image 20260519211658',1],['n','Pasted image 20261025000930',1],
+      ];
+      return rows.map(([k,t,ind]) =>
+        '<div class="row" style="padding-left:' + (6 + ind*14) + 'px">' +
+        '<span class="ic' + (k==='f'?' f':'') + '"></span>' + t + '</div>'
+      ).join('');
+    }
+    if(view === 'bookmarks') return '<div class="sempty">找不到书签</div>';
+    if(view === 'search') return '<div class="sempty">输入关键字</div>';
+    return '<div class="sempty">还没有标签</div>';
+  }
+
+  function refreshSideFocus(){
+    sidebar.querySelectorAll('.spane').forEach(p =>
+      p.classList.toggle('focused', p.dataset.spane === sideFocused));
+  }
+
+  function content(node, doc){
+    const d = document.createElement('div');
+    d.style.height = '100%';
+    if(!doc){
+      d.className = 'empty';
+      d.innerHTML = '<div class="big">◫</div><div>把标签拖进来</div>';
+      return d;
+    }
+    if(doc.kind === 'note'){
+      d.className = 'note-pad';
+      d.innerHTML = '<h3>'+doc.title+'</h3>' +
+        '<p>这周把白板的坐标网格重做了一遍，标尺终于和主格对齐了。</p>' +
+        '<p>剩下的问题是缩放没有上下限之后，「适应窗口」在小屏上会退到 0.03 倍。</p>' +
+        '<div class="ph" style="width:86%"></div><div class="ph" style="width:64%"></div>' +
+        '<div class="ph" style="width:74%"></div><div class="ph" style="width:42%"></div>';
+    } else if(doc.kind === 'graph'){
+      d.className = 'graph-pad';
+      const pts = [[50,45],[34,32],[64,30],[30,58],[66,56],[42,72],[58,72],[50,20]];
+      let svg = '<svg>';
+      for(let i=1;i<pts.length;i++){
+        svg += '<line x1="'+pts[0][0]+'%" y1="'+pts[0][1]+'%" x2="'+pts[i][0]+'%" y2="'+pts[i][1]+'%" stroke="#8B94F2" stroke-opacity=".18" stroke-width="1"/>';
+      }
+      svg += '</svg>';
+      d.innerHTML = svg + pts.map(p =>
+        '<div class="n" style="left:calc('+p[0]+'% - 2px);top:calc('+p[1]+'% - 2px)"></div>'
+      ).join('');
+    } else if(doc.kind === 'canvas'){
+      d.className = 'board';
+      d.innerHTML =
+        '<div class="card" style="left:16%;top:22%;width:90px">坐标网格</div>' +
+        '<div class="card" style="left:46%;top:44%;width:76px">缩放</div>' +
+        '<div class="card" style="left:24%;top:60%;width:64px">标尺</div>';
+    } else {
+      d.className = 'img-pad';
+      d.innerHTML = '<div class="frame">'+doc.title+'</div>';
+    }
+    return d;
+  }
+
+  function refreshFocus(){
+    document.querySelectorAll('.pane').forEach(p =>
+      p.classList.toggle('focused', p.dataset.pane === focused));
+  }
+
+  // ---------------------------------------------------------------- 分割线
+  function bindDivider(bar, node, el){
+    let start = 0, startRatio = 0, total = 0;
+
+    bar.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      bar.classList.add('active');
+      bar.setPointerCapture(e.pointerId);
+      const r = el.getBoundingClientRect();
+      total = node.dir === 'row' ? r.width : r.height;
+      start = node.dir === 'row' ? e.clientX : e.clientY;
+      startRatio = node.ratio;
+    });
+    bar.addEventListener('pointermove', e => {
+      if(!bar.hasPointerCapture(e.pointerId)) return;
+      const now = node.dir === 'row' ? e.clientX : e.clientY;
+      const r = Math.max(.12, Math.min(.88, startRatio + (now - start) / total));
+      node.ratio = r;
+      el.children[0].style.flex = r + ' 1 0';
+      el.children[2].style.flex = (1 - r) + ' 1 0';
+    });
+    const end = e => {
+      bar.classList.remove('active');
+      try{ bar.releasePointerCapture(e.pointerId); }catch(_){}
+    };
+    bar.addEventListener('pointerup', end);
+    bar.addEventListener('pointercancel', end);
+
+    bar.addEventListener('dblclick', () => {
+      node.ratio = .5;
+      el.children[0].style.flex = '.5 1 0';
+      el.children[2].style.flex = '.5 1 0';
+    });
+  }
+
+  // ---------------------------------------------------------------- 拖放
+  function bindDrop(pane, node){
+    const mask = pane.querySelector('.dropmask');
+    const zone = mask.querySelector('.zone');
+    const hint = mask.querySelector('.hint');
+    let side = 'center';
+
+    function place(e){
+      const r = pane.getBoundingClientRect();
+      const x = (e.clientX - r.left) / r.width;
+      const y = (e.clientY - r.top) / r.height;
+      const m = .28;
+      side = (x < m) ? 'left' : (x > 1-m) ? 'right' : (y < m) ? 'top' : (y > 1-m) ? 'bottom' : 'center';
+
+      mask.classList.add('on');
+      if(side === 'center'){
+        zone.style.cssText = 'inset:3px';
+        hint.textContent = '在这里打开';
+      } else if(side === 'left'){
+        zone.style.cssText = 'left:3px;top:3px;bottom:3px;width:50%';
+        hint.textContent = '分到左边';
+      } else if(side === 'right'){
+        zone.style.cssText = 'right:3px;top:3px;bottom:3px;width:50%';
+        hint.textContent = '分到右边';
+      } else if(side === 'top'){
+        zone.style.cssText = 'left:3px;right:3px;top:3px;height:50%';
+        hint.textContent = '分到上边';
+      } else {
+        zone.style.cssText = 'left:3px;right:3px;bottom:3px;height:50%';
+        hint.textContent = '分到下边';
+      }
+      hint.style.left = (side==='left'||side==='right') ? (side==='left'?'25%':'75%') : '50%';
+      hint.style.top  = (side==='top'||side==='bottom') ? (side==='top'?'25%':'75%') : '50%';
+    }
+
+    pane.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      place(e);
+    });
+    pane.addEventListener('dragleave', e => {
+      if(!pane.contains(e.relatedTarget)) mask.classList.remove('on');
+    });
+    pane.addEventListener('drop', e => {
+      e.preventDefault();
+      mask.classList.remove('on');
+      const doc = e.dataTransfer.getData('text/plain');
+      if(!doc) return;
+      if(side === 'center'){
+        node.doc = doc;
+        focused = node.id;
+        render();
+      } else {
+        const dir = (side === 'left' || side === 'right') ? 'row' : 'col';
+        const before = (side === 'left' || side === 'top');
+        splitLeaf(node, dir, doc, before);
+      }
+    });
+  }
+
+  function splitLeaf(node, dir, doc, before){
+    // 把叶子换成 split
+    const oldLeaf = {type:'leaf', id:'p'+(++uid), doc:node.doc};
+    const newLeaf = {type:'leaf', id:'p'+(++uid), doc:doc || nextDoc()};
+
+    node.type = 'split';
+    node.dir = dir;
+    node.ratio = .5;
+    node.a = before === false ? oldLeaf : newLeaf;
+    node.b = before === false ? newLeaf : oldLeaf;
+    if(before === undefined){ node.a = oldLeaf; node.b = newLeaf; }
+    delete node.doc;
+
+    focused = newLeaf.id;
+    render();
+  }
+
+  function nextDoc(){
+    const open = new Set();
+    (function walk(n){ n.type==='leaf' ? n.doc && open.add(n.doc) : (walk(n.a), walk(n.b)); })(root);
+    return Object.keys(DOCS).find(k => !open.has(k)) || 'n1';
+  }
+
+  function closeLeaf(node){
+    // 找到父节点
+    const parent = findParent(root, node);
+    if(!parent){ node.doc = null; render(); return; }
+    const sibling = parent.a === node ? parent.b : parent.a;
+    parent.type = sibling.type;
+    parent.dir = sibling.dir;
+    parent.ratio = sibling.ratio;
+    parent.a = sibling.a;
+    parent.b = sibling.b;
+    parent.doc = sibling.doc;
+    delete parent.id;
+    render();
+  }
+
+  function findParent(cur, target){
+    if(cur.type !== 'split') return null;
+    if(cur.a === target || cur.b === target) return cur;
+    return findParent(cur.a, target) || findParent(cur.b, target);
+  }
+
+  // ---------------------------------------------------------------- 标签拖拽
+  document.querySelectorAll('#tabs .tab').forEach(tab => {
+    tab.addEventListener('dragstart', e => {
+      tab.classList.add('dragging');
+      e.dataTransfer.setData('text/plain', tab.dataset.doc);
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    tab.addEventListener('dragend', () => tab.classList.remove('dragging'));
+    tab.addEventListener('click', () => {
+      const n = findLeaf(root, focused);
+      if(n){ n.doc = tab.dataset.doc; render(); }
+    });
+  });
+
+  function findLeaf(cur, id){
+    if(cur.type === 'leaf') return cur.id === id ? cur : null;
+    return findLeaf(cur.a, id) || findLeaf(cur.b, id);
+  }
+
+  // ---------------------------------------------------------------- 快捷键
+  window.addEventListener('keydown', e => {
+    if(!e.ctrlKey) return;
+    if(e.key === '\\'){
+      const n = findLeaf(root, focused);
+      if(n) splitLeaf(n, e.shiftKey ? 'col' : 'row', null);
+      e.preventDefault();
+    }
+  });
+
+  // ---------------------------------------------------------------- 缩放
+  function fit(){
+    const stage = document.getElementById('stage');
+    const win = document.getElementById('win');
+    const s = Math.min(1.25, stage.clientWidth / 1240);
+    win.style.transform = 'scale(' + s + ')';
+    stage.style.height = (680 * s) + 'px';
+  }
+  window.addEventListener('resize', fit);
+
+  render();
+  fit();
+})();
+</script>
+</body>
+</html>
