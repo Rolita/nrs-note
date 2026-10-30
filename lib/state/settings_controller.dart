@@ -21,6 +21,9 @@ class SettingsController extends ChangeNotifier {
   static const String _kOutline = 'nrs.outlineVisible';
   static const String _kTablePanel = 'nrs.tablePanelVisible';
   static const String _kImagePanel = 'nrs.imagePanelVisible';
+  static const String _kRightVisible = 'nrs.rightSidebarVisible';
+  static const String _kSideLayout = 'nrs.sideLayout';
+  static const String _kRightLayout = 'nrs.rightLayout';
   static const String _kListWidth = 'nrs.listWidth';
   static const String _kRightPanelWidth = 'nrs.rightPanelWidth';
 
@@ -112,16 +115,43 @@ class SettingsController extends ChangeNotifier {
 
   bool get outlineVisible => _prefs.getBool(_kOutline) ?? true;
 
+  /// 整条右栏开不开。
+  ///
+  /// 以前「开着哪块面板」就是「整列开不开」，三颗开关互斥地兼着两个意思。
+  /// 两侧边栏互通之后，右栏上格也可能停在文件 / 搜索 / 标签上——那时三颗
+  /// 开关都说不清这一列算不算开。所以拆出一颗独立的开关：它只管整列，
+  /// [_kOutline] / [_kTablePanel] / [_kImagePanel] 只管上格停在哪一页。
+  ///
+  /// 没存过时按老偏好的意思推：有任一面板开着 = 整列开着。
+  bool get rightSidebarVisible =>
+      _prefs.getBool(_kRightVisible) ??
+      (outlineVisible || tablePanelVisible || imagePanelVisible);
+
+  set rightSidebarVisible(bool value) {
+    // 比的是**键里那颗值**，不是推导出来的结果。没存过的时候，整列的
+    // 开合是看三颗面板开关推出来的；那一刻把它写成显式的 `true` 很重要：
+    // 右栏上格一换成文件 / 搜索 / 标签，三颗开关就会落下，推导值会翻成
+    // `false`，整列跟着消失。把「用户正看着右栏」这件事先钉住。
+    if (_prefs.getBool(_kRightVisible) == value) return;
+    final bool changed = rightSidebarVisible != value;
+    _prefs.setBool(_kRightVisible, value);
+    if (changed) notifyListeners();
+  }
+
   /// The outline, the table tools and the image list share the far-right
   /// column, so at most one of them is open. Turning one on closes the others
   /// in the same write — the shell can then read the three flags without
   /// cross-checking them.
   set outlineVisible(bool value) {
-    if (outlineVisible == value) return;
+    if (outlineVisible == value) {
+      if (value) rightSidebarVisible = true;
+      return;
+    }
     _prefs.setBool(_kOutline, value);
     if (value) {
       _prefs.setBool(_kTablePanel, false);
       _prefs.setBool(_kImagePanel, false);
+      _prefs.setBool(_kRightVisible, true);
     }
     notifyListeners();
   }
@@ -129,11 +159,15 @@ class SettingsController extends ChangeNotifier {
   bool get tablePanelVisible => _prefs.getBool(_kTablePanel) ?? false;
 
   set tablePanelVisible(bool value) {
-    if (tablePanelVisible == value) return;
+    if (tablePanelVisible == value) {
+      if (value) rightSidebarVisible = true;
+      return;
+    }
     _prefs.setBool(_kTablePanel, value);
     if (value) {
       _prefs.setBool(_kOutline, false);
       _prefs.setBool(_kImagePanel, false);
+      _prefs.setBool(_kRightVisible, true);
     }
     notifyListeners();
   }
@@ -141,12 +175,60 @@ class SettingsController extends ChangeNotifier {
   bool get imagePanelVisible => _prefs.getBool(_kImagePanel) ?? false;
 
   set imagePanelVisible(bool value) {
-    if (imagePanelVisible == value) return;
+    if (imagePanelVisible == value) {
+      if (value) rightSidebarVisible = true;
+      return;
+    }
     _prefs.setBool(_kImagePanel, value);
     if (value) {
       _prefs.setBool(_kOutline, false);
       _prefs.setBool(_kTablePanel, false);
+      _prefs.setBool(_kRightVisible, true);
     }
+    notifyListeners();
+  }
+
+  /// 只记「右栏上格停在哪一页」，不碰整列的开合。
+  ///
+  /// 上格被拖成文件 / 搜索 / 标签时，三颗开关都得落下；但它只是换页，不该
+  /// 顺手把整列关上。
+  void rememberRightView(RightView view) {
+    final bool outline = view == RightView.outline;
+    final bool table = view == RightView.table;
+    final bool images = view == RightView.images;
+    if (outlineVisible == outline &&
+        tablePanelVisible == table &&
+        imagePanelVisible == images) {
+      return;
+    }
+    _prefs.setBool(_kOutline, outline);
+    _prefs.setBool(_kTablePanel, table);
+    _prefs.setBool(_kImagePanel, images);
+    notifyListeners();
+  }
+
+  /// 三颗都落下（右栏上格停在左栏的某页时，它们都不再代表上格）。
+  void clearRightViewFlags() {
+    if (!outlineVisible && !tablePanelVisible && !imagePanelVisible) return;
+    _prefs.setBool(_kOutline, false);
+    _prefs.setBool(_kTablePanel, false);
+    _prefs.setBool(_kImagePanel, false);
+    notifyListeners();
+  }
+
+  /// 收起整个右栏：整列关上，三颗开关一起落下去。
+  ///
+  /// 「收起」不等于「换一块面板继续占着」——点当前那格顶上的图标、或者整列
+  /// 的开关，要的是它走开、把正文还给窗口。树本身不丢：下次从任意一颗开关
+  /// 打开时，分格和页都还在（布局另有 [saveSidebarLayout] 落盘）。
+  void closeRightPanels() {
+    final bool hadView =
+        outlineVisible || tablePanelVisible || imagePanelVisible;
+    if (!hadView && !rightSidebarVisible) return;
+    _prefs.setBool(_kOutline, false);
+    _prefs.setBool(_kTablePanel, false);
+    _prefs.setBool(_kImagePanel, false);
+    _prefs.setBool(_kRightVisible, false);
     notifyListeners();
   }
 
@@ -188,6 +270,31 @@ class SettingsController extends ChangeNotifier {
     if ((rightPanelWidth - clamped).abs() < 0.5) return;
     _prefs.setDouble(_kRightPanelWidth, clamped);
     notifyListeners();
+  }
+
+  // ------------------------------------------------------------ 侧边栏布局
+  //
+  // 左栏和右栏各是一棵分割树。分几格、每格排着哪些页、上下比例多少，都是
+  // 用户摆出来的视图状态——关掉再打开、退出再启动都得是原样。树本身住在
+  // 外壳里（不可变结构），这里只存编码好的那一小段 JSON。
+
+  /// 左栏布局；`null` = 还没存过（用默认的一格三页）。
+  String? get sideLayout => _prefs.getString(_kSideLayout);
+
+  /// 右栏布局；`null` = 还没存过。
+  String? get rightLayout => _prefs.getString(_kRightLayout);
+
+  /// 两侧布局一起写。值没变就不碰磁盘——分屏拖动会连着来很多次。
+  ///
+  /// 这里**不**通知监听者：布局不是主题 / 宽度那种谁都要看的东西，外壳自己
+  /// 改完自己画，别的面板不需要因此重建。
+  void saveSidebarLayout({required String left, required String right}) {
+    if (_prefs.getString(_kSideLayout) != left) {
+      _prefs.setString(_kSideLayout, left);
+    }
+    if (_prefs.getString(_kRightLayout) != right) {
+      _prefs.setString(_kRightLayout, right);
+    }
   }
 
   // ------------------------------------------------------------ typography

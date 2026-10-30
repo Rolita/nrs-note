@@ -1,16 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
-import '../../core/app_enums.dart';
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 
 /// The narrow strip on the far left.
 ///
-/// It holds only what does not fit in the title bar's three regions: the tag
-/// view, the template action and the two full-screen views (graph, canvas) at
-/// the top, and the vault utilities — trash, settings — pinned to the bottom
-/// where they are always in the same place.
+/// It holds only what does not fit in the title bar's three regions: the
+/// template action and the two full-screen views (graph, canvas) at the top,
+/// and the vault utilities — trash, settings — pinned to the bottom where they
+/// are always in the same place.
+///
+/// 文件 / 搜索 / 标签现在都是侧边栏标签条上的页，这里不再替侧边栏切视图：
+/// 功能栏只放全局动作（用户原话：「把标签按钮也移到侧边栏按钮上」）。
 ///
 /// The graph and the canvas live here rather than in the tab strip because
 /// neither is a document: they have no ×, they cannot be closed, and pinning
@@ -22,8 +24,6 @@ import '../../core/theme/app_tokens.dart';
 class AppRail extends StatelessWidget {
   const AppRail({
     super.key,
-    required this.view,
-    required this.onSelectView,
     required this.onOpenTemplates,
     required this.onOpenGraph,
     required this.onOpenCanvas,
@@ -32,10 +32,9 @@ class AppRail extends StatelessWidget {
     this.graphActive = false,
     this.canvasActive = false,
     this.topInset = 0,
+    required this.sidebarVisible,
   });
 
-  final SidebarView view;
-  final ValueChanged<SidebarView> onSelectView;
   final VoidCallback onOpenTemplates;
   final VoidCallback onOpenGraph;
   final VoidCallback onOpenCanvas;
@@ -55,36 +54,27 @@ class AppRail extends StatelessWidget {
   /// 盖住第一颗按钮。
   final double topInset;
 
+  /// 左侧边栏此刻开着没有。
+  ///
+  /// 功能栏不自己占一档底色，它永远跟右边接着的那块地同色：边栏开着时是
+  /// 侧边栏的底色，边栏收起时整排宽度让给编辑区，它就换成编辑区的纸面，
+  /// 两者之间不出现一条突兀的暗带（用户原话：「在左侧边栏出现的时候，跟左
+  /// 侧边栏保持一致。然后在左侧边栏隐藏的时候，跟编辑栏的颜色保持一致」）。
+  final bool sidebarVisible;
+
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     return Container(
       width: AppLayout.railWidth,
       decoration: BoxDecoration(
-        // The deepest step on screen: the rail reads as the window's own edge,
-        // so the sidebar next to it can sit *above* it instead of beside it.
-        color: p.canvas,
+        // 和右边那块地同一个色阶：边栏在就跟边栏，边栏收起就跟编辑区。
+        color: sidebarVisible ? p.sidebar : p.surface,
         border: Border(right: BorderSide(color: p.outlineSoft)),
       ),
       child: Column(
         children: <Widget>[
           SizedBox(height: topInset > 0 ? topInset : AppSpace.sm),
-          // 搜索入口从顶栏搬到这里：顶栏那两个「文件 / 搜索」按钮和侧边栏自己
-          // 的标签条重复，已经并进标签条了，功能栏得留一个直达的。
-          _RailButton(
-            icon: SidebarView.search.icon,
-            tooltip: SidebarView.search.label,
-            selected: view == SidebarView.search,
-            onPressed: () => onSelectView(SidebarView.search),
-          ),
-          const SizedBox(height: AppSpace.xs),
-          _RailButton(
-            icon: SidebarView.tags.icon,
-            tooltip: SidebarView.tags.label,
-            selected: view == SidebarView.tags,
-            onPressed: () => onSelectView(SidebarView.tags),
-          ),
-          const SizedBox(height: AppSpace.xs),
           _RailButton(
             icon: LucideIcons.blocks,
             tooltip: '插入模板',

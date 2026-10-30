@@ -31,15 +31,8 @@ class EditorPane extends StatefulWidget {
     this.bodyValue,
     this.noteId,
     this.readOnly = false,
-    this.onSplit,
     this.onClosePane,
   });
-
-  /// 把这一格切成两半：`Axis.horizontal` 是左右，`Axis.vertical` 是上下。
-  ///
-  /// 切哪一格、切出来的新格装什么，都由外壳决定——面板只负责把按钮画在
-  /// 自己头上。`null` 时这两颗按钮不画。
-  final ValueChanged<Axis>? onSplit;
 
   /// 关掉这一格。只剩一格时外壳传 `null`——容器总得留一格。
   final VoidCallback? onClosePane;
@@ -626,24 +619,9 @@ class EditorPaneState extends State<EditorPane> {
             ),
           ),
           const SizedBox(width: AppSpace.sm),
-          // 分割 / 关掉这一格。放在专注模式左边：它们是「这一格怎么摆」，
-          // 专注模式是「整个窗口怎么摆」，越靠右的越关乎全局。
-          if (widget.onSplit != null) ...<Widget>[
-            AppIconButton(
-              icon: LucideIcons.columns2,
-              tooltip: '左右分屏',
-              size: AppLayout.buttonHeight,
-              iconSize: AppIconSize.sm - 2,
-              onPressed: () => widget.onSplit!(Axis.horizontal),
-            ),
-            AppIconButton(
-              icon: LucideIcons.rows2,
-              tooltip: '上下分屏',
-              size: AppLayout.buttonHeight,
-              iconSize: AppIconSize.sm - 2,
-              onPressed: () => widget.onSplit!(Axis.vertical),
-            ),
-          ],
+          // 分割只走拖拽（把标签拖到格子边上），这里不再画「左右 / 上下
+          // 分屏」按钮；只剩「关掉这一格」。放在专注模式左边：它是「这一格
+          // 怎么摆」，专注模式是「整个窗口怎么摆」，越靠右的越关乎全局。
           if (widget.onClosePane != null)
             AppIconButton(
               icon: LucideIcons.x,

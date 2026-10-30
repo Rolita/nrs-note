@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -44,6 +45,7 @@ import 'pane_doc.dart';
 import 'pane_drop_zone.dart';
 import 'pane_tab_strip.dart';
 import 'split_host.dart';
+import 'side_layout.dart';
 import 'tab_drag.dart';
 import 'tab_group.dart';
 import 'split_tree.dart';
@@ -121,37 +123,63 @@ class _AppShellState extends State<AppShell> {
   /// 通知「文档来了」再切——否则启动后停在哪一页全看两边谁先跑完。
   bool _pendingCanvasActivate = false;
 
-  /// 侧边栏的分割树。
+  /// 两侧边栏共用的一种页（[SidePage]）：文件 / 搜索 / 标签 / 大纲 / 表格 / 图片。
   ///
-  /// 一格里装一个标签组（[TabGroup]，至少一页 [SidebarView]）。默认只有一格
-  /// 一页，点面板头部的「分割」才会长成两格——所以默认状态和以前完全一样。
-  SplitNode<TabGroup<SidebarView>> _sideTree =
-      const SplitLeaf<TabGroup<SidebarView>>(
-        id: 'side-0',
-        value: TabGroup<SidebarView>(<SidebarView>[SidebarView.files], 0),
-      );
+  /// 左栏和右栏各有一棵分割树，但叶子装的是同一种东西——所以一页能拖到对面
+  /// 那一栏去，跨栏拖是搬家不是复印。树从偏好里恢复（[SideLayout]）：分了几
+  /// 格、每格排着哪些页、比例多少，下次启动还是原样。
+  late SplitNode<TabGroup<SidePage>> _sideTree;
 
-  /// 侧边栏当前聚焦的那一格。功能栏顶上那颗「搜索」（还有格子头部那颗
-  /// 「上下分割」）改的是它。
+  /// 左栏当前聚焦的那一格。[_showPage] 找不到现成的页时开在它这儿；点哪格
+  /// 就改哪格。右栏没有「聚焦」这回事。
   String _sideFocusId = 'side-0';
 
   /// 新格子的 id 计数器。用递增数字而不是随机：同一会话里不会重，而且
-  /// 调试时一眼能看出先后。
+  /// 调试时一眼能看出先后。恢复布局后从存档里最大的序号接着数。
   int _sideSeq = 0;
 
   /// 侧边栏聚焦那一格的标签组。
-  TabGroup<SidebarView> get _sideGroup =>
-      SplitTree.findLeaf<TabGroup<SidebarView>>(_sideTree, _sideFocusId)?.value ??
-      SplitTree.firstLeaf<TabGroup<SidebarView>>(_sideTree).value;
+  TabGroup<SidePage> get _sideGroup =>
+      SplitTree.findLeaf<TabGroup<SidePage>>(_sideTree, _sideFocusId)?.value ??
+      SplitTree.firstLeaf<TabGroup<SidePage>>(_sideTree).value;
 
-  /// 顶栏、功能栏、搜索高亮都读这个：它们说的是「聚焦那一格」显示什么。
-  SidebarView get _view => _sideGroup.current;
+  /// 右栏的分割树。和左栏同构，两栏的页可以互相搬。
+  late SplitNode<TabGroup<SidePage>> _rightTree;
+
+  /// 右栏新格子的 id 计数器，理由同 [_sideSeq]。
+  int _rightSeq = 0;
+
+  /// 分割线拖动时合并写盘：一次拖拽会连着来几十个 delta。
+  Timer? _layoutSaveTimer;
+
+  /// 有没有哪一格正显示搜索页；正文据此画命中高亮。
+  ///
+  /// 搜索可以从左栏搬到右栏，所以不能只看左栏聚焦那格。
+  bool get _searchOnScreen {
+    bool showsSearch(SplitNode<TabGroup<SidePage>> tree) =>
+        SplitTree.leaves<TabGroup<SidePage>>(
+          tree,
+        ).any((SplitLeaf<TabGroup<SidePage>> l) => l.value.current == SidePage.search);
+    return showsSearch(_sideTree) ||
+        (_settings.rightSidebarVisible && showsSearch(_rightTree));
+  }
+
+  /// 偏好里那三颗开关现在指的是哪一页；全关 = 上格没有右栏页。
+  ///
+  /// 三个 setter 互斥，所以最多只有一个为真。顺序只影响「偏好被手改坏、
+  /// 两个同时为真」这种局面，按视觉优先取表格、图片，最后才是大纲。
+  RightView? get _rightActiveView {
+    if (_settings.tablePanelVisible) return RightView.table;
+    if (_settings.imagePanelVisible) return RightView.images;
+    if (_settings.outlineVisible) return RightView.outline;
+    return null;
+  }
 
   /// 编辑区的分割树。
   ///
   /// 一格里装一个标签组（[TabGroup]，至少一页 [PaneDoc]）：一篇笔记、图谱、
-  /// 白板或图片。默认只有一格一页，点格子里头部的「分屏」或者把标签拖到
-  /// 格子边上才会长成两格——所以默认状态和以前完全一样。
+  /// 白板或图片。默认只有一格一页；把标签拖到格子边上才会长成两格——
+  /// 分割只走拖拽，没有按钮。
   SplitNode<TabGroup<PaneDoc>> _editorTree =
       const SplitLeaf<TabGroup<PaneDoc>>(
         id: 'editor-0',
@@ -218,12 +246,55 @@ class _AppShellState extends State<AppShell> {
     _notes = context.read<NotesController>();
     _settings = context.read<SettingsController>();
     _canvas = context.read<CanvasController>();
+    // 两侧边栏的布局从偏好里回来：分几格、每格排哪些页、比例多少。
+    // 存档坏了就退回默认的一格三页（布局是视图状态，不能挡住开窗）。
+    final SideLayout left =
+        decodeSideLayout(_settings.sideLayout) ?? defaultLeftSideLayout();
+    _sideTree = left.root;
+    _sideFocusId = left.focusId;
+    _sideSeq = nextSideSeq(_sideTree);
+    final String? savedRight = _settings.rightLayout;
+    final SideLayout right =
+        decodeSideLayout(savedRight) ?? defaultRightSideLayout();
+    _rightTree = right.root;
+    _rightSeq = nextSideSeq(_rightTree);
+    final SplitLeaf<TabGroup<SidePage>> rightTop =
+        SplitTree.firstLeaf<TabGroup<SidePage>>(_rightTree);
+    if (savedRight == null) {
+      // 第一次用这套布局：旧版本只存了三颗互斥开关。把上格停在当时开着
+      // 的那一页（大纲 / 表格 / 图片），别让升级把用户的面板换掉。
+      final RightView? active = _rightActiveView;
+      if (active != null) {
+        _rightTree = SplitTree.replaceValue<TabGroup<SidePage>>(
+          _rightTree,
+          rightTop.id,
+          rightTop.value.open(SidePage.ofRight(active)),
+        );
+      }
+    } else if (_settings.rightSidebarVisible) {
+      // 有布局的：三颗开关只是上格的影子，启动时对齐一次。
+      //
+      // 只能等首帧之后：`initState` 还在 build 里，这时改设置会
+      // `notifyListeners`，Provider 会报「markNeedsBuild during build」。
+      final RightView? view = rightTop.value.current.rightView;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (view == null) {
+          _settings.clearRightViewFlags();
+        } else {
+          _settings.rememberRightView(view);
+        }
+      });
+    }
     _notes.onBlankNoteCreated = _applyFolderTemplate;
     // 上次退出时正看着白板：文档由 `main` 恢复，这里只管「来了就切过去」。
     // 路径为 null 时这个标志没有意义（没有白板可切），一并挡掉。
     _pendingCanvasActivate =
         _settings.sessionCanvasActive && _settings.sessionCanvasPath != null;
     _canvas.addListener(_onCanvasChanged);
+    // 右栏上格的那排标签和顶栏三颗开关是同一件事：偏好在别处被改（快捷键、
+    // 顶栏、测试）时，把上格切到对应的那一页。
+    _settings.addListener(_syncRightFromSettings);
     // Prefer the newest note on first paint. A restored empty tab strip is a
     // state the user chose (they closed every tab), not an empty selection to
     // heal — `tabSessionRestored` keeps this from undoing it.
@@ -242,7 +313,9 @@ class _AppShellState extends State<AppShell> {
 
   @override
   void dispose() {
+    _layoutSaveTimer?.cancel();
     _canvas.removeListener(_onCanvasChanged);
+    _settings.removeListener(_syncRightFromSettings);
     _notes.onBlankNoteCreated = null;
     _stopVaultSync?.call();
     _notices.dispose();
@@ -319,234 +392,379 @@ class _AppShellState extends State<AppShell> {
     );
   }
 
-  void _selectView(SidebarView view) {
+  // ------------------------------------------------------------ 两侧边栏
+  //
+  // 两棵树都在这里改。叶子装的是同一种 [SidePage]，所以一页能从左栏搬到
+  // 右栏，也能搬回来。跨栏和同栏跨格一样是**搬家**：先从来源格摘掉，再落进
+  // 目标格；摘空了就收掉来源格（整列只剩这一页时不动——一列总得有一页）。
+
+  SplitNode<TabGroup<SidePage>> _treeFor(SideColumn column) =>
+      column.isLeft ? _sideTree : _rightTree;
+
+  void _setTree(SideColumn column, SplitNode<TabGroup<SidePage>> tree) {
+    if (column.isLeft) {
+      _sideTree = tree;
+    } else {
+      _rightTree = tree;
+    }
+  }
+
+  /// 把两侧布局写进偏好。树很小，一次编一条；值没变 [SettingsController]
+  /// 不会碰磁盘。
+  void _saveSideLayouts() {
+    _layoutSaveTimer?.cancel();
+    _layoutSaveTimer = null;
+    _settings.saveSidebarLayout(
+      left: encodeSideLayout(
+        SideLayout(root: _sideTree, focusId: _sideFocusId),
+      ),
+      right: encodeSideLayout(
+        SideLayout(
+          root: _rightTree,
+          focusId: SplitTree.firstLeaf<TabGroup<SidePage>>(_rightTree).id,
+        ),
+      ),
+    );
+  }
+
+  /// 拖分割线时别每一帧都写盘。
+  void _scheduleSideLayoutSave() {
+    _layoutSaveTimer?.cancel();
+    _layoutSaveTimer = Timer(
+      const Duration(milliseconds: 250),
+      _saveSideLayouts,
+    );
+  }
+
+  /// 一次布局改动之后：右栏上格换了页就把三颗开关拨过去，再把布局存下来。
+  void _afterSideLayoutChange() {
+    if (_settings.rightSidebarVisible) _syncRightTopFlag();
+    _saveSideLayouts();
+  }
+
+  /// 找哪一格的标签组里有这一页；先看左栏聚焦那格，再按屏幕顺序找两侧。
+  ({SideColumn column, SplitLeaf<TabGroup<SidePage>> leaf})? _findPage(
+    SidePage page,
+  ) {
+    final SplitLeaf<TabGroup<SidePage>>? focused =
+        SplitTree.findLeaf<TabGroup<SidePage>>(_sideTree, _sideFocusId);
+    if (focused != null && focused.value.contains(page)) {
+      return (column: SideColumn.left, leaf: focused);
+    }
+    for (final SplitLeaf<TabGroup<SidePage>> leaf
+        in SplitTree.leaves<TabGroup<SidePage>>(_sideTree)) {
+      if (leaf.value.contains(page)) {
+        return (column: SideColumn.left, leaf: leaf);
+      }
+    }
+    for (final SplitLeaf<TabGroup<SidePage>> leaf
+        in SplitTree.leaves<TabGroup<SidePage>>(_rightTree)) {
+      if (leaf.value.contains(page)) {
+        return (column: SideColumn.right, leaf: leaf);
+      }
+    }
+    return null;
+  }
+
+  /// 把一页摆到眼前。
+  ///
+  /// 两栏互通之后，「切到文件」不再等于「改左栏聚焦那格」：文件可能已经被
+  /// 搬到右栏了。所以先找它在哪，找不到才开在左栏聚焦那格。返回托管它的
+  /// 格子 id——模板目录要拿它去找那棵文件树。
+  String? _showPage(SidePage page) {
     final SettingsController settings = context.read<SettingsController>();
+    final ({SideColumn column, SplitLeaf<TabGroup<SidePage>> leaf})? found =
+        _findPage(page);
+    late String paneId;
     setState(() {
-      _sideTree = SplitTree.replaceValue<TabGroup<SidebarView>>(
-        _sideTree,
-        _sideFocusId,
-        _sideGroup.open(view),
-      );
+      if (found == null) {
+        paneId = _sideFocusId;
+        _sideTree = SplitTree.replaceValue<TabGroup<SidePage>>(
+          _sideTree,
+          paneId,
+          _sideGroup.open(page),
+        );
+      } else {
+        paneId = found.leaf.id;
+        final SideColumn column = found.column;
+        _setTree(
+          column,
+          SplitTree.replaceValue<TabGroup<SidePage>>(
+            _treeFor(column),
+            paneId,
+            found.leaf.value.open(page),
+          ),
+        );
+        if (column.isLeft) _sideFocusId = paneId;
+      }
     });
-    if (settings.sidebarCollapsed) settings.sidebarCollapsed = false;
+    if (found == null || found.column.isLeft) {
+      if (settings.sidebarCollapsed) settings.sidebarCollapsed = false;
+    } else {
+      settings.rightSidebarVisible = true;
+    }
     // 专注模式把两侧面板都藏起来了，切到某个视图却看不到它等于没切。
     if (settings.focusMode) settings.focusMode = false;
+    _afterSideLayoutChange();
+    return paneId;
   }
 
-  /// 把某一格切到另一个视图。和 [_selectView] 的区别是「改哪一格」：
-  /// 这个由格子里自己的按钮调，改的永远是它自己。
-  void _setPaneView(String paneId, SidebarView view) {
-    final SplitLeaf<TabGroup<SidebarView>>? leaf =
-        SplitTree.findLeaf<TabGroup<SidebarView>>(_sideTree, paneId);
+  void _selectView(SidebarView view) {
+    _showPage(SidePage.ofLeft(view));
+  }
+
+  /// 把某一格切到另一页。和 [_selectSideTab] 的区别是「改哪一格」：
+  /// 这个由面板自己调（比如标签页里点了某个标签，要切到搜索）。
+  void _openPageInPane(SideColumn column, String paneId, SidePage page) {
+    final SplitLeaf<TabGroup<SidePage>>? leaf =
+        SplitTree.findLeaf<TabGroup<SidePage>>(_treeFor(column), paneId);
     if (leaf == null) return;
     setState(() {
-      _sideFocusId = paneId;
-      _sideTree = SplitTree.replaceValue<TabGroup<SidebarView>>(
-        _sideTree,
-        paneId,
-        leaf.value.open(view),
+      _setTree(
+        column,
+        SplitTree.replaceValue<TabGroup<SidePage>>(
+          _treeFor(column),
+          paneId,
+          leaf.value.open(page),
+        ),
       );
+      if (column.isLeft) _sideFocusId = paneId;
     });
+    _afterSideLayoutChange();
   }
 
-  /// 切到侧边栏某一格的某一页（点标签条上那一页时）。
-  void _selectSideTab(String paneId, int at) {
-    final SplitLeaf<TabGroup<SidebarView>>? leaf =
-        SplitTree.findLeaf<TabGroup<SidebarView>>(_sideTree, paneId);
-    if (leaf == null || at < 0 || at >= leaf.value.length) return;
-    setState(() {
-      _sideFocusId = paneId;
-      _sideTree = SplitTree.replaceValue<TabGroup<SidebarView>>(
-        _sideTree,
-        paneId,
-        leaf.value.select(at),
-      );
-    });
-  }
-
-  /// 关掉某一格标签条上的一页。
+  /// 点标签条上那一页。
   ///
-  /// ⛔ **关掉一格里的最后一页 = 关掉这一格**（分割自己收回去，剩下那格铺满），
-  /// 和编辑区一个口径。拿别的视图顶住的话，看起来就像「关掉一个，隔壁那个被
-  /// 搬了过来」。
-  void _closeSideTab(String paneId, int at) {
-    final SplitLeaf<TabGroup<SidebarView>>? leaf =
-        SplitTree.findLeaf<TabGroup<SidebarView>>(_sideTree, paneId);
+  /// 右栏上格再点**面板那三颗**的当前页 = 收起整列——它们以前就是顶栏的
+  /// 开关，用户对「再点一下关掉」已经形成了肌肉记忆。左栏没有这层含义（顶上
+  /// 那颗侧栏开关管开合），下格也没有，只是切页；文件 / 搜索 / 标签被搬到
+  /// 右栏后也只是普通的页，点当前页不该让整列消失。
+  void _selectSideTab(SideColumn column, String paneId, int at) {
+    final SplitLeaf<TabGroup<SidePage>>? leaf =
+        SplitTree.findLeaf<TabGroup<SidePage>>(_treeFor(column), paneId);
     if (leaf == null || at < 0 || at >= leaf.value.length) return;
-    if (leaf.value.length == 1 &&
-        SplitTree.leaves<TabGroup<SidebarView>>(_sideTree).length > 1) {
-      _closeSidePane(paneId);
+    final bool topRight =
+        !column.isLeft &&
+        SplitTree.firstLeaf<TabGroup<SidePage>>(_rightTree).id == paneId;
+    if (topRight &&
+        at == leaf.value.index &&
+        leaf.value.tabs[at].rightView != null) {
+      _settings.closeRightPanels();
       return;
     }
-    final SidebarView gone = leaf.value.tabs[at];
-    final SidebarView fallback = gone == SidebarView.files
-        ? SidebarView.search
-        : SidebarView.files;
+    if (at == leaf.value.index) return;
     setState(() {
-      _sideFocusId = paneId;
-      _sideTree = SplitTree.replaceValue<TabGroup<SidebarView>>(
-        _sideTree,
-        paneId,
-        leaf.value.closeAt(at, fallback),
+      _setTree(
+        column,
+        SplitTree.replaceValue<TabGroup<SidePage>>(
+          _treeFor(column),
+          paneId,
+          leaf.value.select(at),
+        ),
       );
+      if (column.isLeft) _sideFocusId = paneId;
     });
+    if (topRight) _syncRightTopFlag();
+    _saveSideLayouts();
   }
 
-  /// 把一个侧边栏格子上下切成两半，新的那一格放 [view]。
-  void _splitSidePane(
-    String paneId,
-    SidebarView view, {
-    bool before = false,
-  }) {
-    final int seq = ++_sideSeq;
-    final String newId = 'side-$seq';
-    setState(() {
-      _sideTree = SplitTree.split<TabGroup<SidebarView>>(
-        root: _sideTree,
-        leafId: paneId,
-        axis: Axis.vertical,
-        value: TabGroup<SidebarView>.of(view),
-        newLeafId: newId,
-        newBranchId: 'side-branch-$seq',
-        before: before,
-      );
-      _sideFocusId = newId;
-    });
-  }
-
-  /// 把一个视图拖进侧边栏某一格的某个位置。
+  /// 把一个侧边栏页拖进某一格的某个位置。
   ///
-  /// 侧边栏只能上下切：它本来就只有 288 宽，左右各 28% 会把整格吃掉，切出来
-  /// 两格也没法用。所以左右两条边先折成上下（见 [DropZone.verticalized]）。
+  /// 两栏都能收、都能发：目标栏接住两种来源（[SidePageDrag.fromColumn] 说
+  /// 它原来在哪）。落中间 = 那一格切到这一页；落边上 = 在那一侧切出新格，
+  /// 新格只装拖过来的这一页。从别的格子拖过来的一律是**搬家**——先摘再落，
+  /// 和编辑区一个口径。
   ///
-  /// 从别的格子的标签条上拖过来是**搬家**（[fromPane]）：把这一页从原来那
-  /// 一格摘掉，和编辑区一个口径。没有来源（[fromPane] 为 null）就是新开一页。
-  void _dropViewOnSide(
+  /// 侧边栏只能上下切：它本来就窄，左右各 28% 会把整格吃掉。
+  void _dropSidePage(
+    SideColumn targetColumn,
     String paneId,
     DropZone zone,
-    SidebarView view, {
-    String? fromPane,
-  }) {
-    if (!zone.isEdge) {
-      // 落在中间 = 这一格切到这个视图。落在自己那一格就是「点它一下」。
-      if (fromPane != null && fromPane != paneId) {
-        setState(() {
-          SplitNode<TabGroup<SidebarView>> tree = _sideTree;
-          final ({SplitNode<TabGroup<SidebarView>> tree, bool emptied}) cut =
-              _cutSidePage(tree, fromPane, view);
-          tree = cut.tree;
-          if (cut.emptied) {
-            tree =
-                SplitTree.remove<TabGroup<SidebarView>>(tree, fromPane) ?? tree;
-            _listKeys.remove(fromPane);
-          }
-          _sideTree = tree;
-        });
-      }
-      _setPaneView(paneId, view);
+    SidePageDrag drag,
+  ) {
+    final SplitNode<TabGroup<SidePage>> sourceTree = _treeFor(drag.fromColumn);
+    final SplitLeaf<TabGroup<SidePage>>? sourceLeaf = drag.fromPane == null
+        ? null
+        : SplitTree.findLeaf<TabGroup<SidePage>>(sourceTree, drag.fromPane!);
+    final bool fromHere =
+        sourceLeaf != null && sourceLeaf.value.contains(drag.page);
+
+    // 落回自己那一格的中间 = 本来就在这儿，什么都不用做。
+    if (fromHere &&
+        drag.fromColumn == targetColumn &&
+        drag.fromPane == paneId) {
+      if (!zone.isEdge) return;
+      // 同一格、又只有这一页：搬过去再在原地留一份一模一样的，等于没做。
+      if (sourceLeaf.value.length <= 1) return;
+    }
+
+    // 整列只剩这一页：不让搬。那一列会变空，连一页都没得画。
+    if (fromHere &&
+        drag.fromColumn != targetColumn &&
+        SplitTree.leaves<TabGroup<SidePage>>(sourceTree).length == 1 &&
+        sourceLeaf.value.length == 1) {
       return;
     }
-    // 同一格、又只有这一页：搬过去再在原地留一份一模一样的，等于没做。
-    if (fromPane == paneId) {
-      final TabGroup<SidebarView>? g =
-          SplitTree.findLeaf<TabGroup<SidebarView>>(_sideTree, paneId)?.value;
-      if (g == null || g.length <= 1) return;
-    }
-    final int seq = ++_sideSeq;
-    final String newId = 'side-$seq';
+
+    String? newPaneId;
     setState(() {
-      SplitNode<TabGroup<SidebarView>> tree = _sideTree;
-      bool sourceEmptied = false;
-      // ⛔ 同一格也要摘：分割之后原来那一格还在，不摘就变成两格各一份。
-      if (fromPane != null) {
-        final ({SplitNode<TabGroup<SidebarView>> tree, bool emptied}) cut =
-            _cutSidePage(tree, fromPane, view);
-        tree = cut.tree;
-        sourceEmptied = cut.emptied;
+      SplitNode<TabGroup<SidePage>> source = sourceTree;
+      SplitNode<TabGroup<SidePage>> target = targetColumn == drag.fromColumn
+          ? sourceTree
+          : _treeFor(targetColumn);
+      bool emptied = false;
+
+      if (fromHere) {
+        final ({SplitNode<TabGroup<SidePage>> tree, bool emptied}) cut =
+            _cutSidePage(source, drag.fromPane!, drag.page);
+        source = cut.tree;
+        emptied = cut.emptied;
+        if (targetColumn == drag.fromColumn) target = source;
       }
-      tree = SplitTree.split<TabGroup<SidebarView>>(
-        root: tree,
-        leafId: paneId,
-        axis: Axis.vertical,
-        value: TabGroup<SidebarView>.of(view),
-        newLeafId: newId,
-        newBranchId: 'side-branch-$seq',
-        before: zone.verticalized.before,
-      );
-      _sideFocusId = newId;
-      if (sourceEmptied && fromPane != null) {
-        tree = SplitTree.remove<TabGroup<SidebarView>>(tree, fromPane) ?? tree;
-        _listKeys.remove(fromPane);
+
+      if (!zone.isEdge) {
+        final SplitLeaf<TabGroup<SidePage>>? targetLeaf =
+            SplitTree.findLeaf<TabGroup<SidePage>>(target, paneId);
+        if (targetLeaf != null) {
+          target = SplitTree.replaceValue<TabGroup<SidePage>>(
+            target,
+            paneId,
+            targetLeaf.value.open(drag.page),
+          );
+        }
+      } else {
+        final int seq = targetColumn.isLeft ? ++_sideSeq : ++_rightSeq;
+        final String prefix = targetColumn.isLeft ? 'side' : 'right';
+        final String id = '$prefix-$seq';
+        newPaneId = id;
+        target = SplitTree.split<TabGroup<SidePage>>(
+          root: target,
+          leafId: paneId,
+          axis: Axis.vertical,
+          // 和编辑区一样：新格只拿拖过来的这一页。
+          value: TabGroup<SidePage>.of(drag.page),
+          newLeafId: id,
+          newBranchId: '$prefix-branch-$seq',
+          before: zone.verticalized.before,
+        );
       }
-      _sideTree = tree;
+
+      if (targetColumn == drag.fromColumn) {
+        if (emptied && SplitTree.leaves<TabGroup<SidePage>>(target).length > 1) {
+          target =
+              SplitTree.remove<TabGroup<SidePage>>(target, drag.fromPane!) ??
+              target;
+          _listKeys.remove(drag.fromPane);
+        }
+        _setTree(targetColumn, target);
+      } else {
+        if (emptied) {
+          source =
+              SplitTree.remove<TabGroup<SidePage>>(source, drag.fromPane!) ??
+              source;
+          _listKeys.remove(drag.fromPane);
+        }
+        _setTree(drag.fromColumn, source);
+        _setTree(targetColumn, target);
+      }
+
+      if (targetColumn.isLeft) {
+        _sideFocusId = newPaneId ?? paneId;
+        if (SplitTree.findLeaf<TabGroup<SidePage>>(_sideTree, _sideFocusId) ==
+            null) {
+          _sideFocusId = SplitTree.firstLeaf<TabGroup<SidePage>>(_sideTree).id;
+        }
+      } else if (drag.fromColumn.isLeft &&
+          emptied &&
+          _sideFocusId == drag.fromPane) {
+        // 左栏被搬走的是聚焦那格：聚焦挪到剩下第一格，别指着一个不存在的。
+        _sideFocusId = SplitTree.firstLeaf<TabGroup<SidePage>>(_sideTree).id;
+      }
     });
+    _afterSideLayoutChange();
   }
 
-  /// 从某一格里摘掉搬走的那一页视图。
-  ///
-  /// 和编辑区的 `_cutPage` 一个口径：拖出去是**搬家**不是复印；摘空了只报信
-  /// （[emptied]）、不动树——那一格可能正是要分割的格子。
-  ({SplitNode<TabGroup<SidebarView>> tree, bool emptied}) _cutSidePage(
-    SplitNode<TabGroup<SidebarView>> tree,
+  /// 从某一格里摘掉搬走的那一页。摘空了只报信（[emptied]）、不动树——
+  /// 那一格可能正是要分割的格子。
+  ({SplitNode<TabGroup<SidePage>> tree, bool emptied}) _cutSidePage(
+    SplitNode<TabGroup<SidePage>> tree,
     String paneId,
-    SidebarView view,
+    SidePage page,
   ) {
-    final SplitLeaf<TabGroup<SidebarView>>? leaf =
-        SplitTree.findLeaf<TabGroup<SidebarView>>(tree, paneId);
+    final SplitLeaf<TabGroup<SidePage>>? leaf =
+        SplitTree.findLeaf<TabGroup<SidePage>>(tree, paneId);
     if (leaf == null) return (tree: tree, emptied: false);
-    final int at = leaf.value.indexOf(view);
+    final int at = leaf.value.indexOf(page);
     if (at < 0) return (tree: tree, emptied: false);
     if (leaf.value.length == 1) return (tree: tree, emptied: true);
     return (
-      tree: SplitTree.replaceValue<TabGroup<SidebarView>>(
+      tree: SplitTree.replaceValue<TabGroup<SidePage>>(
         tree,
         paneId,
-        leaf.value.closeAt(
-          at,
-          view == SidebarView.files ? SidebarView.search : SidebarView.files,
-        ),
+        leaf.value.closeAt(at, leaf.value.tabs[at == 0 ? 1 : 0]),
       ),
       emptied: false,
     );
   }
 
-  /// 右键侧边栏标签条上的一页：在上 / 下方分屏。
+  // ---------------------------------------------------------------- 右栏格子
+  //
+  // 右栏的分格、拖动、合并和左栏走同一套（[_dropSidePage] / [_selectSideTab]），
+  // 这里只剩「偏好里的三颗开关和上格那一页对表」。
+
+  /// 顶栏三颗开关改了：把右栏上格切到对应的那一页。
   ///
-  /// 顶栏那两颗「文件 / 搜索」按钮并进侧边栏的标签条之后，右键分屏的手势也
-  /// 跟着搬过来——用户原话：「我右键搜索图标也没有反应」，现在右键任何一页
-  /// 都能分出第二格。
-  Future<void> _sideTabMenu(
-    BuildContext context,
-    String paneId,
-    SidebarView view,
-    Offset at,
-  ) async {
-    final DropZone? picked = await showMenu<DropZone>(
-      context: context,
-      position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
-      items: const <PopupMenuEntry<DropZone>>[
-        PopupMenuItem<DropZone>(value: DropZone.top, child: Text('在上方分屏')),
-        PopupMenuItem<DropZone>(value: DropZone.bottom, child: Text('在下方分屏')),
-      ],
-    );
-    if (picked == null) return;
-    _splitSidePane(paneId, view, before: picked == DropZone.top);
+  /// 上格的标签页和顶栏的开关是同一件事，只是画在不同层。用户在顶栏点
+  /// 「图片」、按 `Ctrl+Shift+O`、或者测试直接改偏好，都要落到上格；反过来，
+  /// 点右栏上格的标签也要写回偏好（见 [_selectSideTab]）。
+  ///
+  /// 三颗一起落下时：如果上格停的正是右栏的面板，那就是「收起整列」；
+  /// 如果上格停的是左栏页（文件 / 搜索 / 标签），三颗不代表整列开合。
+  void _syncRightFromSettings() {
+    if (!mounted) return;
+    final RightView? active = _rightActiveView;
+    if (active == null) {
+      if (_settings.rightSidebarVisible &&
+          SplitTree.firstLeaf<TabGroup<SidePage>>(_rightTree).value.current
+                  .rightView !=
+              null) {
+        _settings.rightSidebarVisible = false;
+      }
+      return;
+    }
+    if (!_settings.rightSidebarVisible) return;
+    final SidePage page = SidePage.ofRight(active);
+    final SplitLeaf<TabGroup<SidePage>> top =
+        SplitTree.firstLeaf<TabGroup<SidePage>>(_rightTree);
+    if (top.value.current == page) return;
+    setState(() {
+      _rightTree = SplitTree.replaceValue<TabGroup<SidePage>>(
+        _rightTree,
+        top.id,
+        top.value.open(page),
+      );
+    });
+    _saveSideLayouts();
   }
 
-  /// 关掉一个侧边栏格子。只剩一格时什么都不做——容器总得有一格。
-  void _closeSidePane(String paneId) {
-
-    if (SplitTree.leaves<TabGroup<SidebarView>>(_sideTree).length <= 1) return;
-    final SplitNode<TabGroup<SidebarView>>? next =
-        SplitTree.remove<TabGroup<SidebarView>>(_sideTree, paneId);
-    if (next == null) return;
-    setState(() {
-      _sideTree = next;
-      if (_sideFocusId == paneId) {
-        _sideFocusId = SplitTree.firstLeaf<TabGroup<SidebarView>>(next).id;
-      }
-    });
-    _listKeys.remove(paneId);
+  /// 上格现在显示哪一页，就把它写回那三颗开关。
+  ///
+  /// 分屏、合并、搬家都可能换掉上格的当前页；偏好必须跟着走，否则顶栏
+  /// （右栏收起时）和右栏（收起再打开时）会各说各的。上格停的是左栏页时
+  /// 三颗都落下——它们只代表右栏的面板。
+  void _syncRightTopFlag() {
+    // 先钉住「整列开着」再看页：上格要是停在文件 / 搜索 / 标签，下面会把
+    // 三颗面板开关全部落下，推导出来的开合会跟着翻成「关」。
+    _settings.rightSidebarVisible = true;
+    final SidePage page = SplitTree.firstLeaf<TabGroup<SidePage>>(
+      _rightTree,
+    ).value.current;
+    final RightView? view = page.rightView;
+    if (view == null) {
+      _settings.clearRightViewFlags();
+    } else {
+      _settings.rememberRightView(view);
+    }
   }
 
   // ---------------------------------------------------------------- 编辑区格子
@@ -607,41 +825,6 @@ class _AppShellState extends State<AppShell> {
     return tree;
   }
 
-  /// 把一份文档装进某一格，**换掉**它当前那一页。
-  ///
-  /// 单例文档（图谱 / 白板 / 图片）全局只能有一份，所以先把别处开着它的
-  /// **那一页**摘掉——否则同一个 `GlobalKey` 会同时挂在两棵子树上，直接抛错。
-  SplitNode<TabGroup<PaneDoc>> _withDoc(
-    SplitNode<TabGroup<PaneDoc>> tree,
-    String leafId,
-    PaneDoc doc,
-  ) {
-    SplitNode<TabGroup<PaneDoc>> next = tree;
-    final String noteId = _liveNoteId ?? '';
-    final PaneDoc fallback = leafId == _editorFocusId
-        ? const NoteDoc(null)
-        : NoteDoc(noteId);
-    if (doc.isSingleton) {
-      for (final SplitLeaf<TabGroup<PaneDoc>> leaf
-          in SplitTree.leaves<TabGroup<PaneDoc>>(next)) {
-        if (leaf.id == leafId) continue;
-        final TabGroup<PaneDoc> g = leaf.value.without(doc, fallback);
-        if (!identical(g, leaf.value)) {
-          next = SplitTree.replaceValue<TabGroup<PaneDoc>>(next, leaf.id, g);
-        }
-      }
-    }
-    final SplitLeaf<TabGroup<PaneDoc>>? target =
-        SplitTree.findLeaf<TabGroup<PaneDoc>>(next, leafId);
-    if (target == null) return next;
-    next = SplitTree.replaceValue<TabGroup<PaneDoc>>(
-      next,
-      leafId,
-      target.value.replaceCurrent(doc),
-    );
-    return _handOver(next, leafId, noteId);
-  }
-
   /// 把树里所有满足 [test] 的**页**关掉（关掉某一页时用）。
   SplitNode<TabGroup<PaneDoc>> _dropDoc(
     SplitNode<TabGroup<PaneDoc>> tree,
@@ -662,36 +845,6 @@ class _AppShellState extends State<AppShell> {
       }
     }
     return tree;
-  }
-
-  /// 把一格切成两半，新格装 [doc] 并聚焦。
-  ///
-  /// 默认装「活的那一份」笔记：切完左右两格显示同一篇，和 Obsidian 的
-  /// 「向右分屏」一样——先复制当前这一屏，再从文件树点另一篇换掉其中一格。
-  void _splitEditorPane(
-    String paneId,
-    Axis axis,
-    PaneDoc doc, {
-    bool before = false,
-  }) {
-    final int seq = ++_editorSeq;
-    final String newId = 'editor-$seq';
-    setState(() {
-      final SplitNode<TabGroup<PaneDoc>> next =
-          SplitTree.split<TabGroup<PaneDoc>>(
-            root: _editorTree,
-            leafId: paneId,
-            axis: axis,
-            value: TabGroup<PaneDoc>.of(doc),
-            newLeafId: newId,
-            newBranchId: 'editor-branch-$seq',
-            before: before,
-          );
-      _editorFocusId = newId;
-      if (doc is GraphDoc) _graphAlive = true;
-      _editorTree = _withDoc(next, newId, doc);
-    });
-    _shellFocus.requestFocus();
   }
 
   /// 关掉一格。只剩一格时什么都不做——容器总得有一格。
@@ -1131,13 +1284,22 @@ class _AppShellState extends State<AppShell> {
             focused: live,
             onSelect: (int i) => _selectTab(leaf.id, i),
             onClose: (int i) => _closeTab(leaf.id, i),
-            onNewTab: _createNote,
             // 标签条就是窗口最上面那条带子：没被标签占住的那一段拖窗口。
             filler: titleBarGrip(),
             trailingInset: trailingInset,
+            // 丢到这一格的标签条上 = 并进这一格（和丢在格子中间一样，
+            // 只是多了块更好瞄的地方）。自己这一格拎起来的不收。
+            acceptsTab: (TabDrag t) =>
+                t is DocDrag && t.fromPane != leaf.id,
+            onDropTab: (TabDrag t) {
+              if (t is! DocDrag) return;
+              _dropTab(leaf.id, DropZone.center, t);
+            },
           ),
           Expanded(
             child: PaneDropZone(
+              // 编辑区只收文档；侧边栏 / 右栏的图标拖过来不该亮起预览。
+              accepts: (TabDrag t) => t is DocDrag,
               onDrop: (DropZone zone, TabDrag tab) =>
                   _dropTab(leaf.id, zone, tab),
               child: switch (doc) {
@@ -1147,7 +1309,7 @@ class _AppShellState extends State<AppShell> {
                   bodyValue: live ? _bodyValue : null,
                   noteId: noteId,
                   readOnly: !live,
-                  showSearchHighlights: _view == SidebarView.search,
+                  showSearchHighlights: _searchOnScreen,
                   onDelete: _confirmDelete,
                   onOpenSearch: () => _selectView(SidebarView.search),
                   // 大纲跟着聚焦那一格走：只读格的光标不归它管。
@@ -1157,8 +1319,6 @@ class _AppShellState extends State<AppShell> {
                           setState(() => _cursorLine = line);
                         }
                       : null,
-                  onSplit: (Axis axis) =>
-                      _splitEditorPane(leaf.id, axis, const NoteDoc(null)),
                   onClosePane:
                       SplitTree.leaves<TabGroup<PaneDoc>>(_editorTree).length > 1
                       ? () => _closeEditorPane(leaf.id)
@@ -1173,6 +1333,142 @@ class _AppShellState extends State<AppShell> {
         ],
       ),
     );
+  }
+
+  /// 画一侧边栏的一格：顶上一条图标标签条，底下是当前那一页。
+  ///
+  /// 两栏共用一个画法，只有壳子的量法不同：左栏是 32 的方块、从 6 起；
+  /// 右栏是 28 的紧凑版、从 0 起（窗顶那三颗的位置不能变）。页本身是同一套
+  /// [SidePage]，所以文件可以被搬到右栏、大纲可以被搬到左栏。
+  Widget _sidePane(SideColumn column, SplitLeaf<TabGroup<SidePage>> leaf) {
+    final TabGroup<SidePage> group = leaf.value;
+    final bool left = column.isLeft;
+    final bool top =
+        !left &&
+        SplitTree.firstLeaf<TabGroup<SidePage>>(_rightTree).id == leaf.id;
+    final double width = left
+        ? _settings.listWidth
+        : _settings.rightPanelWidth;
+    return Listener(
+      // 点哪一格，[_showPage] / 模板目录就改哪一格（只有左栏有聚焦这回事）。
+      onPointerDown: left
+          ? (_) {
+              if (_sideFocusId == leaf.id) return;
+              setState(() => _sideFocusId = leaf.id);
+            }
+          : null,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          PaneTabStrip(
+            tabs: <PaneTabData>[
+              for (final SidePage page in group.tabs)
+                PaneTabData(
+                  key: ValueKey<String>(
+                    'side-tab-${column.name}-${leaf.id}-${page.name}',
+                  ),
+                  label: page.label,
+                  // 大纲那颗以前是顶栏开关，快捷键跟着它一起搬过来。
+                  tooltip: page == SidePage.outline
+                      ? '大纲  ·  Ctrl+Shift+O'
+                      : page.label,
+                  icon: page.icon,
+                  drag: SidePageDrag(
+                    page,
+                    label: page.label,
+                    fromColumn: column,
+                    fromPane: leaf.id,
+                  ),
+                ),
+            ],
+            index: group.index,
+            // 右栏没有「聚焦哪一格」这回事：每一格都把当前页亮出来。
+            focused: left ? leaf.id == _sideFocusId : true,
+            compactIcons: !left,
+            trailingInset: top ? (kIsWeb ? 0 : kCaptionWidth) : 0,
+            // 只有贴着窗口顶的那一条是拖窗口的那段；下格顶上再拖窗口就怪了。
+            filler: left || top ? titleBarGrip() : null,
+            onSelect: (int i) => _selectSideTab(column, leaf.id, i),
+            // 侧边栏的页不能关：它们是一排常驻的视图，分割只能靠拖。
+            onClose: (_) {},
+            acceptsTab: (TabDrag t) =>
+                t is SidePageDrag &&
+                !(t.fromColumn == column && t.fromPane == leaf.id),
+            onDropTab: (TabDrag t) {
+              if (t is! SidePageDrag) return;
+              _dropSidePage(column, leaf.id, DropZone.center, t);
+            },
+          ),
+          Expanded(
+            child: PaneDropZone(
+              // 侧边栏的格子只收视图页，而且只上下切——它本来就很窄。
+              verticalOnly: true,
+              accepts: (TabDrag t) => t is SidePageDrag,
+              onDrop: (DropZone zone, TabDrag t) {
+                if (t is! SidePageDrag) return;
+                _dropSidePage(column, leaf.id, zone, t);
+              },
+              child: _sidePageBody(
+                column: column,
+                paneId: leaf.id,
+                page: group.current,
+                width: width,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 一侧边栏的一格里装什么。
+  ///
+  /// 文件 / 搜索 / 标签共用一块 [NoteListPanel]，只是 `view` 不同；大纲 /
+  /// 表格 / 图片是三块各自的面板。页可以住在任意一栏，所以这些分支不按
+  /// 「哪一栏」分，只按页分。
+  Widget _sidePageBody({
+    required SideColumn column,
+    required String paneId,
+    required SidePage page,
+    required double width,
+  }) {
+    return switch (page) {
+      SidePage.files || SidePage.search || SidePage.tags => NoteListPanel(
+        key: _listKeyFor(paneId),
+        view: page.leftView!,
+        onCreateNote: _createNote,
+        onDeleteNotes: _confirmDeleteMany,
+        onDeleteFolder: _confirmDeleteFolder,
+        onSwitchView: (SidebarView v) =>
+            _openPageInPane(column, paneId, SidePage.ofLeft(v)),
+        onOpenNote: _openNote,
+        onOpenCanvas: _openCanvasFile,
+        onDeleteCanvas: _confirmDeleteCanvas,
+        onOpenFile: _openVaultFile,
+        // 搜索结果先开笔记，正文要等这一帧绑定完才可用，所以跳转挂到帧末。
+        onRevealOffset: (int offset) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            _editorKey.currentState?.goToOffset(offset);
+          });
+        },
+      ),
+      SidePage.outline => _OutlineRegion(
+        currentLine: _cursorLine,
+        width: width,
+        onSelect: (int line) => _editorKey.currentState?.goToHeading(line),
+      ),
+      SidePage.table => TablePanel(
+        width: width,
+        value: _bodyValue,
+        onApply: (MarkdownEditFn fn) => _editorKey.currentState?.applyEdit(fn),
+        onJump: (int offset) => _editorKey.currentState?.goToOffset(offset),
+      ),
+      SidePage.images => _ImageRegion(
+        width: width,
+        onSelect: (int offset) => _editorKey.currentState?.goToOffset(offset),
+      ),
+    };
   }
 
   // ------------------------------------------------------------ 三份单例文档
@@ -1475,6 +1771,30 @@ class _AppShellState extends State<AppShell> {
     final SettingsController settings = context.read<SettingsController>();
     settings.sidebarCollapsed = !settings.sidebarCollapsed;
     if (settings.focusMode) settings.focusMode = false;
+  }
+
+  /// 收 / 展右侧边栏——顶上那颗按钮是**右栏的**，不是编辑栏的。
+  ///
+  /// 收起走 [SettingsController.closeRightPanels]：和点右栏当前那一页一样，
+  /// 整列关上、三颗开关一起落下。展开前先把三颗开关对齐上格当前页：
+  /// [SettingsController.rememberRightView] 只改开关、不叫醒整列，而
+  /// [_syncRightFromSettings] 看到「三颗都暗着 + 上格停着右栏页」会当成
+  /// 收起——先亮开关、再开整列，才不会被自己的同步逻辑关回去。
+  void _toggleRightSidebar() {
+    if (_settings.rightSidebarVisible) {
+      _settings.closeRightPanels();
+      return;
+    }
+    final SidePage page = SplitTree.firstLeaf<TabGroup<SidePage>>(
+      _rightTree,
+    ).value.current;
+    final RightView? view = page.rightView;
+    if (view == null) {
+      _settings.clearRightViewFlags();
+    } else {
+      _settings.rememberRightView(view);
+    }
+    _settings.rightSidebarVisible = true;
   }
 
   static String _displayTitle(Note note) =>
@@ -1901,17 +2221,19 @@ class _AppShellState extends State<AppShell> {
     final String folder = _settings.templatesFolder;
     if (!await _notes.ensureFolder(folder)) return;
     if (!mounted) return;
-    _selectView(SidebarView.files);
+    // 文件页可能被搬到右栏了；[_showPage] 会把它翻出来并告诉我们它在哪一格。
+    final String? paneId = _showPage(SidePage.files);
     await WidgetsBinding.instance.endOfFrame;
-    if (!mounted) return;
-    _listKeyFor(_sideFocusId).currentState?.revealFolder(folder);
+    if (!mounted || paneId == null) return;
+    _listKeyFor(paneId).currentState?.revealFolder(folder);
   }
 
   Future<void> _createTemplateNote() async {
     final String folder = _settings.templatesFolder;
     if (!await _notes.ensureFolder(folder)) return;
     if (!mounted) return;
-    _selectView(SidebarView.files);
+    // 文件页可能被搬到右栏了；先把它翻到眼前，新模板才看得见。
+    _showPage(SidePage.files);
     _notes.createNote(title: '新模板', folderPath: folder, runCreationHook: false);
   }
 
@@ -2031,35 +2353,35 @@ class _AppShellState extends State<AppShell> {
                 // 会把用户原来的选择弄丢。
                 final bool panelAllowed =
                     _mainView != MainView.graph && _mainView != MainView.image;
-                final bool showOutline =
+                // 右栏开不开由单独的偏好说（`rightSidebarVisible`）。以前是
+                // 「三颗面板开关里有一颗亮着 = 开着」，但右栏现在也可能停着
+                // 文件 / 搜索 / 标签——那三颗开关只代表右栏的面板页，决定不了
+                // 整列还在不在。
+                final bool showRight =
                     panelAllowed &&
                     !zen &&
-                    settings.outlineVisible &&
-                    c.maxWidth >= AppLayout.outlineMinShellWidth;
-                // 大纲与表格共用右侧那一栏：设置层已保证两者不会同时为真，
-                // 这里只负责在窗口太窄时把这一栏让给正文。
-                final bool showTable =
-                    panelAllowed &&
-                    !zen &&
-                    settings.tablePanelVisible &&
-                    c.maxWidth >= AppLayout.outlineMinShellWidth;
-                // 图片列表是这一栏的第三个住户，互斥同样由设置层保证。
-                final bool showImages =
-                    panelAllowed &&
-                    !zen &&
-                    settings.imagePanelVisible &&
-                    c.maxWidth >= AppLayout.outlineMinShellWidth;
+                    c.maxWidth >= AppLayout.outlineMinShellWidth &&
+                    settings.rightSidebarVisible;
                 // The toggle pair aligns with the *panel*, not with the drag
                 // handle in front of it, so the handle's width is not counted.
-                // 三块面板共用同一列、同一个宽度，所以这里不需要分支。
-                final double rightInset = showOutline || showTable || showImages
+                // 右栏的几格共用同一列、同一个宽度，所以这里不需要分支。
+                final double rightInset = showRight
                     ? settings.rightPanelWidth
                     : 0;
-                // 右栏收起来时，那三颗面板开关 + 三个窗口按钮全落在窗口右边缘
-                // 上，正好压住最右那一格的标签条尾巴——按它们的总宽留出来。
+                // 右栏那颗收 / 展按钮：图谱 / 图片里右栏整列不出现，窗口挤到
+                // 容不下右栏时也不出现——留着能点却没东西可开，比不画更怪。
+                final bool showRightToggle =
+                    panelAllowed &&
+                    !zen &&
+                    c.maxWidth >= AppLayout.outlineMinShellWidth;
+                // 右栏那几格的顶上还是右栏的标签条；编辑区最右那一格的标签
+                // 条要避开收 / 展按钮。右栏收起时没有那三颗面板图标了——它们
+                // 是右栏自己的页，跟着整列一起收——右端只剩这颗按钮和三个
+                // 窗口按钮，标签条按它们让位。
                 final double stripTrailingInset = rightInset > 0
-                    ? 0
-                    : kTitleBarRightWidth;
+                    ? kRightSidebarToggleSlot
+                    : kCaptionWidth +
+                          (showRightToggle ? kRightSidebarToggleSlot : 0);
                 // 只有贴着窗口右边缘的那几格要让位。左右分屏时左边那格离右边还
                 // 远着，给它也留 220px，看起来就是标签条中间空了一大块、加号被
                 // 推到格子中间。
@@ -2079,15 +2401,17 @@ class _AppShellState extends State<AppShell> {
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: <Widget>[
-                        // The rail keeps only what has no place in the caption:
-                        // the tag view and the vault utilities.
+                        // The rail keeps only the global actions. 文件 / 搜索 /
+                        // 标签 已经和右栏的大纲 / 表格 / 图片 一样，是侧边栏
+                        // 自己的标签页，不再占这一列。
                         if (!zen)
                           AppRail(
-                            view: _view,
-                            onSelectView: _selectView,
                             // 标签条顶到窗口最上面之后，那颗「收起侧边栏」
                             // 正好落在功能栏头顶上——让开这一条，别盖住它。
                             topInset: AppLayout.titleBarHeight,
+                            // 功能栏跟着右边那块地走：边栏在就是侧边栏色，
+                            // 收起就并进编辑区的纸面。
+                            sidebarVisible: !settings.sidebarCollapsed,
                             onOpenTemplates: _openTemplatePicker,
                             onOpenGraph: () =>
                                 _selectMainView(MainView.graph),
@@ -2106,169 +2430,32 @@ class _AppShellState extends State<AppShell> {
                             !settings.sidebarCollapsed) ...<Widget>[
                           SizedBox(
                             width: settings.listWidth,
-                            // 侧边栏和编辑区共用同一个分割组件，这里
-                            // 只是把叶子画成 NoteListPanel。
-                            child: SplitHost<TabGroup<SidebarView>>(
+                            // 侧边栏和编辑区共用同一个分割组件；两侧边栏又
+                            // 共用同一种页，所以叶子只按栏别画。
+                            child: SplitHost<TabGroup<SidePage>>(
                               root: _sideTree,
                               dividerThickness: 5,
                               onRatioChanged:
                                   (
-                                    SplitBranch<TabGroup<SidebarView>>
-                                    branch,
+                                    SplitBranch<TabGroup<SidePage>> branch,
                                     double ratio,
                                   ) {
                                     setState(() {
                                       _sideTree = SplitTree
-                                          .setRatio<TabGroup<SidebarView>>(
+                                          .setRatio<TabGroup<SidePage>>(
                                             _sideTree,
                                             branch.id,
                                             ratio,
                                           );
                                     });
+                                    // 拖动会连着来几十个 delta，合并写盘。
+                                    _scheduleSideLayoutSave();
                                   },
                               leafBuilder:
                                   (
                                     BuildContext context,
-                                    SplitLeaf<TabGroup<SidebarView>> leaf,
-                                  ) => Listener(
-                                    // 点哪一格，功能栏那颗「搜索」
-                                    // 就改哪一格。
-                                    onPointerDown: (_) {
-                                      if (_sideFocusId == leaf.id) {
-                                        return;
-                                      }
-                                      setState(
-                                        () => _sideFocusId = leaf.id,
-                                      );
-                                    },
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.stretch,
-                                      children: <Widget>[
-                                        // 侧边栏的标签条：和编辑区同构，
-                                        // 一格里能排好几页（文件 / 搜索 /
-                                        // 标签），拖一页到格子边上就切一格。
-                                        PaneTabStrip(
-                                          tabs: <PaneTabData>[
-                                            for (final SidebarView v
-                                                in leaf.value.tabs)
-                                              PaneTabData(
-                                                label: v.label,
-                                                drag: ViewDrag(
-                                                  v,
-                                                  label: v.label,
-                                                  fromPane: leaf.id,
-                                                ),
-                                                onSecondaryTap: (Offset at) =>
-                                                    _sideTabMenu(
-                                                      context,
-                                                      leaf.id,
-                                                      v,
-                                                      at,
-                                                    ),
-                                              ),
-                                          ],
-                                          index: leaf.value.index,
-                                          focused:
-                                              leaf.id == _sideFocusId,
-                                          onSelect: (int i) =>
-                                              _selectSideTab(leaf.id, i),
-                                          onClose: (int i) =>
-                                              _closeSideTab(leaf.id, i),
-                                          filler: titleBarGrip(),
-                                        ),
-                                        Expanded(
-                                          child: PaneDropZone(
-                                            // 侧边栏的格子只收「视图」，
-                                            // 而且只上下切——它本来就只有
-                                            // 288 宽。
-                                            verticalOnly: true,
-                                            accepts: (TabDrag t) =>
-                                                t is ViewDrag,
-                                            onDrop:
-                                                (
-                                                  DropZone zone,
-                                                  TabDrag t,
-                                                ) {
-                                                  if (t is! ViewDrag) {
-                                                    return;
-                                                  }
-                                                  _dropViewOnSide(
-                                                    leaf.id,
-                                                    zone,
-                                                    t.view,
-                                                    fromPane:
-                                                        t.fromPane,
-                                                  );
-                                                },
-                                            child: NoteListPanel(
-                                              key: _listKeyFor(leaf.id),
-                                              view: leaf.value.current,
-                                              onCreateNote: _createNote,
-                                              onDeleteNotes:
-                                                  _confirmDeleteMany,
-                                              onDeleteFolder:
-                                                  _confirmDeleteFolder,
-                                              onSwitchView:
-                                                  (SidebarView v) =>
-                                                      _setPaneView(
-                                                        leaf.id,
-                                                        v,
-                                                      ),
-                                              onSplit: () =>
-                                                  _splitSidePane(
-                                                    leaf.id,
-                                                    leaf.value.current ==
-                                                            SidebarView
-                                                                .files
-                                                        ? SidebarView.tags
-                                                        : SidebarView
-                                                              .files,
-                                                  ),
-                                              onClosePane:
-                                                  SplitTree.leaves<
-                                                        TabGroup<
-                                                          SidebarView
-                                                        >
-                                                      >(_sideTree)
-                                                      .length >
-                                                      1
-                                                  ? () =>
-                                                        _closeSidePane(
-                                                          leaf.id,
-                                                        )
-                                                  : null,
-                                              onOpenNote: _openNote,
-                                              onOpenCanvas:
-                                                  _openCanvasFile,
-                                              onDeleteCanvas:
-                                                  _confirmDeleteCanvas,
-                                              onOpenFile: _openVaultFile,
-                                              // 搜索结果先开笔记，正文要等
-                                              // 这一帧绑定完才可用，所以跳转
-                                              // 挂到帧末。
-                                              onRevealOffset:
-                                                  (int offset) {
-                                                    WidgetsBinding.instance
-                                                        .addPostFrameCallback(
-                                                          (_) {
-                                                            if (!mounted) {
-                                                              return;
-                                                            }
-                                                            _editorKey
-                                                                .currentState
-                                                                ?.goToOffset(
-                                                                  offset,
-                                                                );
-                                                          },
-                                                        );
-                                                  },
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
+                                    SplitLeaf<TabGroup<SidePage>> leaf,
+                                  ) => _sidePane(SideColumn.left, leaf),
                             ),
                           ),
                           ResizeHandle(
@@ -2331,66 +2518,44 @@ class _AppShellState extends State<AppShell> {
                             ],
                           ),
                         ),
-                        if (showOutline) ...<Widget>[
-                          // The handle sits left of the outline, so dragging it
-                          // rightwards narrows the column.
+                        if (showRight) ...<Widget>[
+                          // The handle sits left of the right column, so
+                          // dragging it rightwards narrows the column.
                           ResizeHandle(
                             background: p.surface,
                             onDelta: (double d) =>
                                 settings.rightPanelWidth =
                                     settings.rightPanelWidth - d,
                           ),
-                          Padding(
-                            padding: const EdgeInsets.only(
-                              top: AppLayout.titleBarHeight,
-                            ),
-                            child: _OutlineRegion(
-                              currentLine: _cursorLine,
-                              width: settings.rightPanelWidth,
-                              onSelect: (int line) => _editorKey
-                                  .currentState
-                                  ?.goToHeading(line),
-                            ),
-                          ),
-                        ],
-                        if (showTable) ...<Widget>[
-                          ResizeHandle(
-                            background: p.surface,
-                            onDelta: (double d) =>
-                                settings.rightPanelWidth =
-                                    settings.rightPanelWidth - d,
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.only(
-                              top: AppLayout.titleBarHeight,
-                            ),
-                            child: TablePanel(
-                              width: settings.rightPanelWidth,
-                              value: _bodyValue,
-                              onApply: (MarkdownEditFn fn) =>
-                                  _editorKey.currentState?.applyEdit(fn),
-                              onJump: (int offset) => _editorKey
-                                  .currentState
-                                  ?.goToOffset(offset),
-                            ),
-                          ),
-                        ],
-                        if (showImages) ...<Widget>[
-                          ResizeHandle(
-                            background: p.surface,
-                            onDelta: (double d) =>
-                                settings.rightPanelWidth =
-                                    settings.rightPanelWidth - d,
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.only(
-                              top: AppLayout.titleBarHeight,
-                            ),
-                            child: _ImageRegion(
-                              width: settings.rightPanelWidth,
-                              onSelect: (int offset) => _editorKey
-                                  .currentState
-                                  ?.goToOffset(offset),
+                          // 右栏自己也是一棵分割树，叶子和左栏一样装
+                          // [SidePage]——所以「文件」能拖到这边，「大纲」也
+                          // 能拖到左边。整列从窗口最上面开始：上格的标签条
+                          // 正好占着顶栏那 40px，不用再给顶栏垫一条空白。
+                          SizedBox(
+                            width: settings.rightPanelWidth,
+                            child: SplitHost<TabGroup<SidePage>>(
+                              root: _rightTree,
+                              dividerThickness: 5,
+                              onRatioChanged:
+                                  (
+                                    SplitBranch<TabGroup<SidePage>> branch,
+                                    double ratio,
+                                  ) {
+                                    setState(() {
+                                      _rightTree = SplitTree
+                                          .setRatio<TabGroup<SidePage>>(
+                                            _rightTree,
+                                            branch.id,
+                                            ratio,
+                                          );
+                                    });
+                                    _scheduleSideLayoutSave();
+                                  },
+                              leafBuilder:
+                                  (
+                                    BuildContext context,
+                                    SplitLeaf<TabGroup<SidePage>> leaf,
+                                  ) => _sidePane(SideColumn.right, leaf),
                             ),
                           ),
                         ],
@@ -2429,8 +2594,9 @@ class _AppShellState extends State<AppShell> {
                       child: AppTitleBar(
                         onToggleSidebar: _toggleSidebar,
                         showSidebarToggle: !zen,
-                        mainView: _mainView,
                         rightInset: rightInset,
+                        showRightToggle: showRightToggle,
+                        onToggleRight: _toggleRightSidebar,
                       ),
                     ),
                   ],

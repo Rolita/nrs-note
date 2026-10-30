@@ -5,8 +5,9 @@ import 'pane_doc.dart';
 
 /// 拖起来的那一页。
 ///
-/// 两种落点完全不同：文档 tab 只能落进**编辑区**的格子，视图（文件 / 搜索 /
-/// 标签）只能落进**侧边栏**的格子。所以载荷分两支，落点用类型筛。
+/// 两种落点完全不同：文档 tab 只能落进**编辑区**的格子；两侧边栏共用同一种
+/// 视图页，既能落在左栏，也能落在右栏——用户原话：「这两个侧边栏之间是互通
+/// 的」。所以载荷分两支，落点用类型筛。
 @immutable
 sealed class TabDrag {
   const TabDrag({required this.label});
@@ -29,14 +30,34 @@ final class DocDrag extends TabDrag {
   final String? fromPane;
 }
 
-/// 侧边栏的一个视图。落进侧边栏。
-final class ViewDrag extends TabDrag {
-  const ViewDrag(this.view, {required super.label, this.fromPane});
+/// 两侧边栏的一页（文件 / 搜索 / 标签 / 大纲 / 表格 / 图片）。
+///
+/// 左右两栏都能收，也都能发：一页从左栏拖到右栏、或者反过来，都是**搬家**
+/// ——先从原来那格摘掉，再落进目标格。载荷里必须带上来源那一栏
+/// （[fromColumn]），因为同一页可能正住在对面。
+final class SidePageDrag extends TabDrag {
+  const SidePageDrag(
+    this.page, {
+    required super.label,
+    required this.fromColumn,
+    this.fromPane,
+  });
 
-  final SidebarView view;
+  final SidePage page;
 
-  /// 同 [DocDrag.fromPane]。
+  /// 从哪一栏拎起来的。页面自己分不出这个：文件也可能已经搬到右栏了。
+  final SideColumn fromColumn;
+
+  /// 从哪一格的标签条上拎起来的。
   final String? fromPane;
+}
+
+/// 两侧边栏。分割树是两棵，但页是同一套。
+enum SideColumn {
+  left,
+  right;
+
+  bool get isLeft => this == SideColumn.left;
 }
 
 /// 落点是格子的哪一块。

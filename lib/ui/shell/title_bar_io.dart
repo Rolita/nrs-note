@@ -3,7 +3,6 @@ import 'package:window_manager/window_manager.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
-import 'main_view.dart';
 import 'title_bar_content.dart';
 
 /// The application draws its own window chrome.
@@ -23,21 +22,23 @@ class AppTitleBar extends StatefulWidget {
   const AppTitleBar({
     super.key,
     required this.onToggleSidebar,
-    required this.mainView,
     required this.rightInset,
     this.showSidebarToggle = true,
+    this.showRightToggle = false,
+    this.onToggleRight,
   });
 
   final VoidCallback onToggleSidebar;
 
-  /// 聚焦那一格显示的是笔记还是图谱——决定右侧三颗开关要不要出现。
-  final MainView mainView;
-
-  /// Distance from the window's right edge to the outline's left edge.
+  /// Distance from the window's right edge to the right column's left edge.
   final double rightInset;
 
   /// 功能栏藏起来时（专注模式）那颗侧栏开关也不画。
   final bool showSidebarToggle;
+
+  /// 右栏的收 / 展按钮：只有它能从顶栏右缘开合整列。
+  final bool showRightToggle;
+  final VoidCallback? onToggleRight;
 
   @override
   State<AppTitleBar> createState() => _AppTitleBarState();
@@ -88,8 +89,9 @@ class _AppTitleBarState extends State<AppTitleBar> with WindowListener {
       child: TitleBarLayout(
         onToggleSidebar: widget.onToggleSidebar,
         showSidebarToggle: widget.showSidebarToggle,
-        mainView: widget.mainView,
         rightInset: widget.rightInset,
+        showRightToggle: widget.showRightToggle,
+        onToggleRight: widget.onToggleRight,
         captionWidth: kCaptionWidth,
         caption: <Widget>[
           _CaptionButton(

@@ -173,6 +173,51 @@ void main() {
 
   });
 
+  group('右栏开合', () {
+    test('显式钉住整列之后，三颗面板开关落下也不收起', () async {
+      final (:settings, :prefs) = await load();
+      // 没存过：按老规矩由「大纲默认开着」推出来。
+      expect(settings.rightSidebarVisible, isTrue);
+      expect(prefs.containsKey('nrs.rightSidebarVisible'), isFalse);
+
+      // 右栏上格要换成文件 / 搜索 / 标签之前，外壳先把整列钉住。
+      settings.rightSidebarVisible = true;
+      expect(prefs.getBool('nrs.rightSidebarVisible'), isTrue);
+
+      settings.clearRightViewFlags();
+      expect(settings.outlineVisible, isFalse);
+      expect(
+        settings.rightSidebarVisible,
+        isTrue,
+        reason: '三颗开关只代表上格停在哪一页，不代表整列开不开',
+      );
+
+      // 收起整列：开关和可见性一起落下。
+      settings.closeRightPanels();
+      expect(settings.rightSidebarVisible, isFalse);
+      expect(prefs.getBool('nrs.rightSidebarVisible'), isFalse);
+
+      // 再从顶栏打开任意一颗：整列跟着回来。
+      settings.outlineVisible = true;
+      expect(settings.outlineVisible, isTrue);
+      expect(settings.rightSidebarVisible, isTrue);
+      expect(prefs.getBool('nrs.rightSidebarVisible'), isTrue);
+    });
+
+    test('再点一次已经亮着的面板开关 = 打开整列，不会因为同值而没反应', () async {
+      final (:settings, :prefs) = await load();
+      // 大纲默认亮着，但整列可能被别的路径合上（比如上格停在文件页后
+      // 整列收起）。这时再点大纲，意思是「把大纲拿回来」。
+      expect(settings.outlineVisible, isTrue);
+      settings.rightSidebarVisible = false;
+      expect(settings.rightSidebarVisible, isFalse);
+
+      settings.outlineVisible = true;
+      expect(settings.rightSidebarVisible, isTrue);
+      expect(prefs.getBool('nrs.rightSidebarVisible'), isTrue);
+    });
+  });
+
   group('最右栏宽度', () {
     test('三块面板共用一份宽度，拖哪一块都是同一个值', () async {
       final (:settings, :prefs) = await load();
