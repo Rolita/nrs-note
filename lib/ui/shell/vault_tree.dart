@@ -328,9 +328,9 @@ class VaultTreeState extends State<VaultTree> {
   void _scrollToFolder(String folder) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients) return;
-      final int index = _rows(widget.notes).indexWhere(
-        (_TreeRow row) => row.folderPath == folder,
-      );
+      final int index = _rows(
+        widget.notes,
+      ).indexWhere((_TreeRow row) => row.folderPath == folder);
       if (index < 0) return;
       final double top = AppSpace.xs + index * AppLayout.rowHeight;
       final double bottom = top + AppLayout.rowHeight;
@@ -1402,9 +1402,7 @@ class VaultTreeState extends State<VaultTree> {
 /// itself, since the payload handed over at drop time is the one from the
 /// start of the drag (see [VaultTreeState._dragPointer]).
 class VaultDragPayload {
-  VaultDragPayload.notes(this.tree)
-    : folder = null,
-      image = null;
+  VaultDragPayload.notes(this.tree) : folder = null, image = null;
 
   VaultDragPayload.folder(this.tree, String this.folder) : image = null;
 
@@ -1573,9 +1571,11 @@ class _FolderRow extends StatelessWidget {
         child: Container(
           height: AppLayout.rowHeight,
           decoration: BoxDecoration(
-            color: dropTarget || selected
+            color: dropTarget
                 ? p.accentSoft
-                : (hovered ? p.surfaceRaised : Colors.transparent),
+                : (selected
+                      ? p.rowSelected
+                      : (hovered ? p.surfaceRaised : Colors.transparent)),
             borderRadius: AppRadius.smAll,
           ),
           child: Row(
@@ -1604,9 +1604,9 @@ class _FolderRow extends StatelessWidget {
                           fontSize: AppText.ui,
                           height: 1.2,
                           fontWeight: FontWeight.w500,
-                          color: dropTarget || selected
-                              ? p.accent
-                              : (hovered ? p.textPrimary : p.textSecondary),
+                          color: dropTarget || selected || hovered
+                              ? p.textPrimary
+                              : p.textSecondary,
                         ),
                       ),
                     ),
@@ -1672,85 +1672,66 @@ class _FileRow extends StatelessWidget {
           height: AppLayout.rowHeight,
           decoration: BoxDecoration(
             color: selected
-                ? p.accentSoft
+                ? p.rowSelected
                 : (hovered ? p.surfaceRaised : Colors.transparent),
             borderRadius: AppRadius.smAll,
           ),
-          // `StackFit.expand` keeps the row full-height even when there are no
-          // indent guides to stretch it, so the label stays vertically centred
-          // instead of sticking to the top of the row.
-          child: Stack(
-            fit: StackFit.expand,
+          // The open note gets a brighter title, but no second marker: chrome
+          // now speaks one selection language — a neutral wash — and an accent
+          // bar here would be the only one left in the shell.
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: <Widget>[
-              // The open note marks itself with a short amber bar rather than
-              // with amber text: in a dense tree, one bright mark per row is
-              // what keeps the list scannable.
-              if (active)
-                Positioned(
-                  left: 0,
-                  top: AppSpace.xs,
-                  bottom: AppSpace.xs,
-                  child: Container(
-                    width: 2,
-                    decoration: BoxDecoration(
-                      color: p.accent,
-                      borderRadius: BorderRadius.circular(AppRadius.xs),
-                    ),
-                  ),
-                ),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: <Widget>[
-                  _IndentGuides(depth: depth),
-                  // Same left edge as a folder name: the folder row spends this
-                  // width on its disclosure arrow.
-                  SizedBox(
-                    width: 19,
-                    child: icon == null
-                        ? null
-                        : Center(
-                            child: Icon(icon, size: 11, color: p.textTertiary),
-                          ),
-                  ),
-                  Expanded(
-                    child:
-                        renameField ??
-                        Tooltip(
-                          message: tooltip,
-                          waitDuration: const Duration(milliseconds: 600),
-                          child: Text(
-                            title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: AppText.ui,
-                              height: 1.2,
-                              fontWeight: selected
-                                  ? FontWeight.w500
-                                  : FontWeight.w400,
-                              color: selected ? p.textPrimary : p.textSecondary,
-                            ),
-                          ),
-                        ),
-                  ),
-                  ?trailing,
-                  if (badge.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(left: AppSpace.xs),
+              _IndentGuides(depth: depth),
+              // Same left edge as a folder name: the folder row spends this
+              // width on its disclosure arrow.
+              SizedBox(
+                width: 19,
+                child: icon == null
+                    ? null
+                    : Center(
+                        child: Icon(icon, size: 11, color: p.textTertiary),
+                      ),
+              ),
+              Expanded(
+                child:
+                    renameField ??
+                    Tooltip(
+                      message: tooltip,
+                      waitDuration: const Duration(milliseconds: 600),
                       child: Text(
-                        badge,
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 9.5,
-                          height: 1.1,
-                          letterSpacing: 0.3,
-                          fontWeight: FontWeight.w500,
-                          color: p.textTertiary,
+                          fontSize: AppText.ui,
+                          height: 1.2,
+                          fontWeight: selected
+                              ? FontWeight.w500
+                              : FontWeight.w400,
+                          color: selected || active
+                              ? p.textPrimary
+                              : p.textSecondary,
                         ),
                       ),
                     ),
-                  const SizedBox(width: AppSpace.xxs),
-                ],
               ),
+              ?trailing,
+              if (badge.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(left: AppSpace.xs),
+                  child: Text(
+                    badge,
+                    style: TextStyle(
+                      fontSize: 9.5,
+                      height: 1.1,
+                      letterSpacing: 0.3,
+                      fontWeight: FontWeight.w500,
+                      color: p.textTertiary,
+                    ),
+                  ),
+                ),
+              const SizedBox(width: AppSpace.xxs),
             ],
           ),
         ),

@@ -1882,7 +1882,8 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       final int newline = v.text.indexOf('\n', start);
       final int end = newline < 0 ? v.text.length : newline;
       final bool isImageLine =
-          end > start && ImageMarkup.parseLine(v.text.substring(start, end)) != null;
+          end > start &&
+          ImageMarkup.parseLine(v.text.substring(start, end)) != null;
       final bool atEdge = key == LogicalKeyboardKey.backspace
           ? caret == end
           : caret == start;
@@ -2637,9 +2638,8 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
   ///
   /// Keyed by line so sliding across one image is free: the buttons only move
   /// when the pointer crosses into another picture or leaves them all.
-  void _refreshImageHover(Offset position) => _setHoverImage(
-    _imageLineAt(position),
-  );
+  void _refreshImageHover(Offset position) =>
+      _setHoverImage(_imageLineAt(position));
 
   void _setHoverImage(int? line) {
     if (line == _hoverImageLine) return;
@@ -3121,7 +3121,12 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     // 图片手柄在选区拖动之前判定：按下只开始改宽，不移动光标、不进入选字。
     // 命中的是 `_ChromeShield`，所以焦点得自己补。
     if (!secondary) {
-      final ({int lineStart, double startWidth, double startDx, double maxWidth})?
+      final ({
+        int lineStart,
+        double startWidth,
+        double startDx,
+        double maxWidth,
+      })?
       handle = _imageHandleAt(event.position);
       if (handle != null) {
         _imageResize = handle;
@@ -3644,12 +3649,15 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     //
     // 浮动图片那一行高度是 0，指针停在图上时按行边界算会落到它下面那一行去；
     // 所以指针只要还压在图上，就一律当「原地」。
-    final ({int from, int to, String text})? own = _sourceLineAt(move.lineStart);
+    final ({int from, int to, String text})? own = _sourceLineAt(
+      move.lineStart,
+    );
     final String text = widget.controller.text;
     final int ownEnd = own == null
         ? -1
         : (own.to < text.length ? own.to + 1 : own.to);
-    final bool onSelf = _imageBoundsOf(move.lineStart)?.contains(position) ?? false;
+    final bool onSelf =
+        _imageBoundsOf(move.lineStart)?.contains(position) ?? false;
     final bool same =
         onSelf || target.offset == move.lineStart || target.offset == ownEnd;
 
@@ -3792,7 +3800,9 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     _history.breakMerge();
     _applyEdit((TextEditingValue current) {
       final String text = current.text;
-      if (resize.lineStart < 0 || resize.lineStart > text.length) return current;
+      if (resize.lineStart < 0 || resize.lineStart > text.length) {
+        return current;
+      }
       final int end = lineEndOf(text, resize.lineStart);
       final String oldLine = text.substring(resize.lineStart, end);
       final ImageMarkup? markup = ImageMarkup.parseLine(oldLine);
@@ -4382,7 +4392,9 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     required int tries,
   }) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _imageSourceLine != lineStart || _imageEdit != null) return;
+      if (!mounted || _imageSourceLine != lineStart || _imageEdit != null) {
+        return;
+      }
       Rect? panel = _imagePanelRect(lineStart);
       if (panel == null) {
         if (tries < 4) {
@@ -4543,7 +4555,9 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
     // 整行清空时把换行一起带走，否则会留下一个空段落。
     final int from = line.from;
-    final int to = next.isEmpty && line.to < text.length ? line.to + 1 : line.to;
+    final int to = next.isEmpty && line.to < text.length
+        ? line.to + 1
+        : line.to;
     final String updated = text.replaceRange(from, to, next);
     final int caret = (from + next.length).clamp(0, updated.length);
     widget.controller.value = TextEditingValue(
@@ -4884,11 +4898,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
     if (_imagePasteRefused(widget.controller.value)) {
       if (mounted) {
-        showSplitNotice(
-          context,
-          '表格或代码块里不能粘贴图片',
-          kind: NoticeKind.error,
-        );
+        showSplitNotice(context, '表格或代码块里不能粘贴图片', kind: NoticeKind.error);
       }
       return false;
     }
@@ -4903,11 +4913,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
 
     // The caret may have moved into a table or a fence while we waited.
     if (_imagePasteRefused(widget.controller.value)) {
-      showSplitNotice(
-        context,
-        '表格或代码块里不能粘贴图片',
-        kind: NoticeKind.error,
-      );
+      showSplitNotice(context, '表格或代码块里不能粘贴图片', kind: NoticeKind.error);
       return false;
     }
 
@@ -5193,154 +5199,162 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     // field's box (left of the table, above it, below its last line), and a
     // `deferToChild` listener only hears about pointers that hit the field
     // itself. That is why a click on the grip did nothing at first.
-    final Widget editor = MouseRegion(
-      cursor: _pointerCursor,
-      onHover: _onPointerHover,
-      onExit: _onPointerExit,
-      child: Listener(
-        key: _fieldKey,
-        behavior: HitTestBehavior.opaque,
-        onPointerDown: _onPointerDown,
-        onPointerMove: _onPointerMove,
-        onPointerUp: _onPointerUp,
-        onPointerCancel: _onPointerCancel,
-        onPointerSignal: _onPointerSignal,
-        child: _ChromeShield(
-          // 图片本体也算「自绘控件」：字段不知道那儿画着一张图，放它过去就会
-          // 把光标落进图片行——那行字是看不见的，光标落进去等于凭空消失。
-          blocks: (Offset position) =>
-              !_overHeader(position) &&
-              (_chromeAt(position) != null ||
-                  _foldButtonAt(position, visibleOnly: true) != null ||
-                  _imageHandleAt(position) != null ||
-                  _imageLineAt(position) != null),
-          child: SingleChildScrollView(
-            controller: widget.scrollController,
-            padding: widget.padding,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: <Widget>[
-                // Inside the scroll view so it leaves with the text, but
-                // outside both shortcut maps — Ctrl+Z with the title
-                // focused must undo the title, not the body.
-                if (widget.header != null)
-                  KeyedSubtree(key: _headerKey, child: widget.header!),
-                Center(
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(maxWidth: widget.maxWidth),
-                    child: Shortcuts(
-                      shortcuts: widget.shortcuts,
-                      child: Actions(
-                        actions: widget.actions,
-                        child: Shortcuts(
-                          shortcuts: editorShortcuts,
-                          child: Actions(
-                            actions: editorActions,
-                            child: Focus(
-                              // Not a tab stop — just a listener this close to the
-                              // field, so table caret keys are decided before the
-                              // platform's line movement (and before Shortcuts).
-                              canRequestFocus: false,
-                              skipTraversal: true,
-                              onKeyEvent: _onTableKey,
-                              child: KeyedSubtree(
-                                // 文档一变，整块输入框重建：撤销栈随之清空。
-                                key: ValueKey<String?>(
-                                  'doc-${widget.documentId}',
-                                ),
-                                child: LineEditableText(
-                                  key: const Key('nrs-editor-field'),
-                                  controller: widget.controller,
-                                  focusNode: widget.focusNode,
-                                  readOnly: widget.readOnly,
-                                  onChanged: widget.onChanged,
-                                  maxLines: null,
-                                  expands: false,
-                                  autofocus: false,
-                                  mouseCursor: fieldCursor,
-                                  cursorColor: p.accent,
-                                  backgroundCursorColor: p.accent,
-                                  // 正文洗色由 `EditorSelectionPainter` 画（行间留缝），
-                                  // 字段自己不画。⛔ 不能靠外层 `DefaultSelectionStyle`
-                                  // 关闭：标题框也在这棵子树里，会被一起透明掉。
-                                  selectionColor: Colors.transparent,
-                                  cursorWidth: 1.8,
-                                  cursorRadius: const Radius.circular(1),
-                                  keyboardType: TextInputType.multiline,
-                                  textInputAction: TextInputAction.newline,
-                                  inputFormatters: <TextInputFormatter>[
-                                    ListContinuationFormatter(),
-                                    // 行数一变就把有序列表的序号接上：删掉 16 那一条，
-                                    // 下面的 17 变回 16；回车插进去的条目也会让后面的
-                                    // 序号依次后移。
-                                    OrderedListRenumberFormatter(
-                                      suspend: () => _navigatingHistory,
-                                    ),
-                                    // Last, so it sees the text every other formatter has
-                                    // already agreed on: a Backspace must never leave the
-                                    // cell the caret is in.
-                                    TableCellBarrierFormatter(
-                                      suspend: () => _navigatingHistory,
-                                      resolve: _resolveRange,
-                                    ),
-                                  ],
-                                  style: style,
-                                  // 选区盒子的形状不再由这两个参数决定：
-                                  // `RenderLineEditable.getBoxesForSelection` 直接转发按行
-                                  // 引擎的 `selectionBands`（横向贴字形、纵向铺满视觉行），
-                                  // 传进来的 `BoxWidthStyle` / `BoxHeightStyle` 会被忽略。
-                                  // 字段的底色是透明的（见上面的 `selectionColor`），
-                                  // 洗色由 `EditorSelectionPainter` 自己画。
-                                  //
-                                  // 行高由按行引擎给（见 `lineHeightFor`）；这个 strut 只
-                                  // 留给继承来的那套单段排版做几何兜底，压到 1px 才不会被
-                                  // 正文字号撑成所有行共用的最小行高。
-                                  strutStyle: const StrutStyle(
-                                    fontSize: 1,
-                                    height: 1,
-                                    leading: 0,
+    //
+    // ⛔ `RepaintBoundary` 必须包在滚动视图**外面**，尺寸才是视口（约 820px）
+    // 而不是整篇（1800 行 ≈ 56000px）。少了它，滚动时那块脏区域会一路扩散到
+    // 最近的合成层边界——整个外壳（左栏文件树、标签条、右栏面板、状态浮片）
+    // 每帧跟着重绘一遍，用户原话「拖滚动条快速拖动也很卡，obsidian 完全没这
+    // 问题」。包上之后滚动只重绘视口这一层。
+    final Widget editor = RepaintBoundary(
+      child: MouseRegion(
+        cursor: _pointerCursor,
+        onHover: _onPointerHover,
+        onExit: _onPointerExit,
+        child: Listener(
+          key: _fieldKey,
+          behavior: HitTestBehavior.opaque,
+          onPointerDown: _onPointerDown,
+          onPointerMove: _onPointerMove,
+          onPointerUp: _onPointerUp,
+          onPointerCancel: _onPointerCancel,
+          onPointerSignal: _onPointerSignal,
+          child: _ChromeShield(
+            // 图片本体也算「自绘控件」：字段不知道那儿画着一张图，放它过去就会
+            // 把光标落进图片行——那行字是看不见的，光标落进去等于凭空消失。
+            blocks: (Offset position) =>
+                !_overHeader(position) &&
+                (_chromeAt(position) != null ||
+                    _foldButtonAt(position, visibleOnly: true) != null ||
+                    _imageHandleAt(position) != null ||
+                    _imageLineAt(position) != null),
+            child: SingleChildScrollView(
+              controller: widget.scrollController,
+              padding: widget.padding,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  // Inside the scroll view so it leaves with the text, but
+                  // outside both shortcut maps — Ctrl+Z with the title
+                  // focused must undo the title, not the body.
+                  if (widget.header != null)
+                    KeyedSubtree(key: _headerKey, child: widget.header!),
+                  Center(
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(maxWidth: widget.maxWidth),
+                      child: Shortcuts(
+                        shortcuts: widget.shortcuts,
+                        child: Actions(
+                          actions: widget.actions,
+                          child: Shortcuts(
+                            shortcuts: editorShortcuts,
+                            child: Actions(
+                              actions: editorActions,
+                              child: Focus(
+                                // Not a tab stop — just a listener this close to the
+                                // field, so table caret keys are decided before the
+                                // platform's line movement (and before Shortcuts).
+                                canRequestFocus: false,
+                                skipTraversal: true,
+                                onKeyEvent: _onTableKey,
+                                child: KeyedSubtree(
+                                  // 文档一变，整块输入框重建：撤销栈随之清空。
+                                  key: ValueKey<String?>(
+                                    'doc-${widget.documentId}',
                                   ),
-                                  // 按行排版：每行按源码种类取样式、行高与 span 树。
-                                  // `lineLayoutKey` 是解析器的语义键（不含源码）：
-                                  // 每敲一个字都会重建 `LiveLineStyle`，渲染层靠这个
-                                  // 键认出「未被编辑的行排版仍然有效」，走编辑增量
-                                  // 而不是整篇重排。
-                                  lineLayoutKey: lineStyle.styleKey,
-                                  // 跨笔记复用：切走的布局挂进池，切回来直接采用。
-                                  layoutPool: _layoutPool,
-                                  layoutCacheDocument: widget.documentId,
-                                  lineStyleFor: lineStyle.styleFor,
-                                  lineHeightFor: lineStyle.heightFor,
-                                  lineSpanFor: lineStyle.spanFor,
-                                  // 行内代码的圆角底片：一行一个 `TextPainter` 没有
-                                  // widget 端帽，铺底由渲染层按这份区间自己画。
-                                  lineFillFor: lineStyle.fillsFor,
-                                  // 代码块卡片的内边距：卡片铺满正文列，代码行由引擎
-                                  // 左右各退 16px，不必再把卡片画到列外。
-                                  lineInsetFor: lineStyle.insetFor,
-                                  // 表格与整行图片不是一行文字：行高、绘制、命中
-                                  // 都由对应的块自己回答，引擎只负责 y 定位。
-                                  lineBlockFor: lineBlocks.blockFor,
-                                  // 选区变了要重排（`# `、`**` 的显隐会改行宽）；拖动期间
-                                  // 冻结在按下时的那一份。
-                                  revealSelection: _revealSelection,
-                                  // 点开的这一行把标记摊进正文，其余行仍然由渲染层把
-                                  // 圆点 / 序号 / 复选框画在左侧槽位里。
-                                  markerRevealLine: _markerReveal?.start,
-                                  // 收起的列表项：子树压成零高，箭头由编辑器叠的
-                                  // `ListFoldPainter` 画在字段外面（顶级项在页边距）。
-                                  foldedLines: _foldedListStarts,
-                                  // 列表标记（圆点 / 序号 / 复选框 / 导轨）由渲染层
-                                  // 画在正文左侧的槽位里，源码里的 `- ` 不再上屏。
-                                  markerStyle: lineStyle.markers,
-                                  searchHighlight: widget.searchHighlight,
-                                  searchHighlightColor:
-                                      widget.searchHighlightColor,
-                                  // 交给继承来的单段排版（`super.performLayout` 与
-                                  // `getWordBoundary` 都读它）的仍是纯源码：装饰树里的
-                                  // U+FFFC 会让那些按整段算的方法错位。行内样式只走
-                                  // `lineSpanFor`，两者互不影响。
-                                  plainTextSpan: true,
+                                  child: LineEditableText(
+                                    key: const Key('nrs-editor-field'),
+                                    controller: widget.controller,
+                                    focusNode: widget.focusNode,
+                                    readOnly: widget.readOnly,
+                                    onChanged: widget.onChanged,
+                                    maxLines: null,
+                                    expands: false,
+                                    autofocus: false,
+                                    mouseCursor: fieldCursor,
+                                    cursorColor: p.accent,
+                                    backgroundCursorColor: p.accent,
+                                    // 正文洗色由 `EditorSelectionPainter` 画（行间留缝），
+                                    // 字段自己不画。⛔ 不能靠外层 `DefaultSelectionStyle`
+                                    // 关闭：标题框也在这棵子树里，会被一起透明掉。
+                                    selectionColor: Colors.transparent,
+                                    cursorWidth: 1.8,
+                                    cursorRadius: const Radius.circular(1),
+                                    keyboardType: TextInputType.multiline,
+                                    textInputAction: TextInputAction.newline,
+                                    inputFormatters: <TextInputFormatter>[
+                                      ListContinuationFormatter(),
+                                      // 行数一变就把有序列表的序号接上：删掉 16 那一条，
+                                      // 下面的 17 变回 16；回车插进去的条目也会让后面的
+                                      // 序号依次后移。
+                                      OrderedListRenumberFormatter(
+                                        suspend: () => _navigatingHistory,
+                                      ),
+                                      // Last, so it sees the text every other formatter has
+                                      // already agreed on: a Backspace must never leave the
+                                      // cell the caret is in.
+                                      TableCellBarrierFormatter(
+                                        suspend: () => _navigatingHistory,
+                                        resolve: _resolveRange,
+                                      ),
+                                    ],
+                                    style: style,
+                                    // 选区盒子的形状不再由这两个参数决定：
+                                    // `RenderLineEditable.getBoxesForSelection` 直接转发按行
+                                    // 引擎的 `selectionBands`（横向贴字形、纵向铺满视觉行），
+                                    // 传进来的 `BoxWidthStyle` / `BoxHeightStyle` 会被忽略。
+                                    // 字段的底色是透明的（见上面的 `selectionColor`），
+                                    // 洗色由 `EditorSelectionPainter` 自己画。
+                                    //
+                                    // 行高由按行引擎给（见 `lineHeightFor`）；这个 strut 只
+                                    // 留给继承来的那套单段排版做几何兜底，压到 1px 才不会被
+                                    // 正文字号撑成所有行共用的最小行高。
+                                    strutStyle: const StrutStyle(
+                                      fontSize: 1,
+                                      height: 1,
+                                      leading: 0,
+                                    ),
+                                    // 按行排版：每行按源码种类取样式、行高与 span 树。
+                                    // `lineLayoutKey` 是解析器的语义键（不含源码）：
+                                    // 每敲一个字都会重建 `LiveLineStyle`，渲染层靠这个
+                                    // 键认出「未被编辑的行排版仍然有效」，走编辑增量
+                                    // 而不是整篇重排。
+                                    lineLayoutKey: lineStyle.styleKey,
+                                    // 跨笔记复用：切走的布局挂进池，切回来直接采用。
+                                    layoutPool: _layoutPool,
+                                    layoutCacheDocument: widget.documentId,
+                                    lineStyleFor: lineStyle.styleFor,
+                                    lineHeightFor: lineStyle.heightFor,
+                                    lineSpanFor: lineStyle.spanFor,
+                                    // 行内代码的圆角底片：一行一个 `TextPainter` 没有
+                                    // widget 端帽，铺底由渲染层按这份区间自己画。
+                                    lineFillFor: lineStyle.fillsFor,
+                                    // 代码块卡片的内边距：卡片铺满正文列，代码行由引擎
+                                    // 左右各退 16px，不必再把卡片画到列外。
+                                    lineInsetFor: lineStyle.insetFor,
+                                    // 表格与整行图片不是一行文字：行高、绘制、命中
+                                    // 都由对应的块自己回答，引擎只负责 y 定位。
+                                    lineBlockFor: lineBlocks.blockFor,
+                                    // 选区变了要重排（`# `、`**` 的显隐会改行宽）；拖动期间
+                                    // 冻结在按下时的那一份。
+                                    revealSelection: _revealSelection,
+                                    // 点开的这一行把标记摊进正文，其余行仍然由渲染层把
+                                    // 圆点 / 序号 / 复选框画在左侧槽位里。
+                                    markerRevealLine: _markerReveal?.start,
+                                    // 收起的列表项：子树压成零高，箭头由编辑器叠的
+                                    // `ListFoldPainter` 画在字段外面（顶级项在页边距）。
+                                    foldedLines: _foldedListStarts,
+                                    // 列表标记（圆点 / 序号 / 复选框 / 导轨）由渲染层
+                                    // 画在正文左侧的槽位里，源码里的 `- ` 不再上屏。
+                                    markerStyle: lineStyle.markers,
+                                    searchHighlight: widget.searchHighlight,
+                                    searchHighlightColor:
+                                        widget.searchHighlightColor,
+                                    // 交给继承来的单段排版（`super.performLayout` 与
+                                    // `getWordBoundary` 都读它）的仍是纯源码：装饰树里的
+                                    // U+FFFC 会让那些按整段算的方法错位。行内样式只走
+                                    // `lineSpanFor`，两者互不影响。
+                                    plainTextSpan: true,
+                                  ),
                                 ),
                               ),
                             ),
@@ -5349,8 +5363,8 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                       ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -5495,7 +5509,9 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
               ),
             ),
           ),
-        if (imageEdit != null && imageText != null && imageFocus != null) ...<Widget>[
+        if (imageEdit != null &&
+            imageText != null &&
+            imageFocus != null) ...<Widget>[
           Positioned.fill(
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
@@ -5976,7 +5992,8 @@ class _ImageActionButtonState extends State<_ImageActionButton> {
 }
 
 /// One open floating cell editor.
-class _CellEdit {  const _CellEdit({
+class _CellEdit {
+  const _CellEdit({
     required this.tableStart,
     required this.row,
     required this.column,

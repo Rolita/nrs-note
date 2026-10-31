@@ -8,7 +8,7 @@ import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../state/settings_controller.dart';
 
-const double _kBarButtonSize = 32;
+const double _kBarButtonSize = 28;
 
 /// 一个窗口按钮的宽度。44 是 Windows 的标题栏度量，落在外壳的 4px 网格上。
 const double kCaptionButtonWidth = 44;
@@ -154,9 +154,9 @@ class TitleBarLayout extends StatelessWidget {
   }
 }
 
-/// A 32×32 icon button, sized for the 40px strip. The right-sidebar toggle asks
-/// for the smaller [kRightSidebarToggleSize] so it sits comfortably next to the
-/// window buttons.
+/// A 28×28 icon button, the one square every icon in the top band uses. The
+/// right-sidebar toggle keeps the same size; its slot is 32 so it leaves a 2px
+/// gap to the column and to the window buttons.
 class _BarButton extends StatefulWidget {
   const _BarButton({
     required this.icon,
@@ -183,7 +183,7 @@ class _BarButtonState extends State<_BarButton> {
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     final Color background = _hovered ? p.surfaceRaised : Colors.transparent;
-    final Color foreground = _hovered ? p.textPrimary : p.textSecondary;
+    final Color foreground = _hovered ? p.textPrimary : p.textTertiary;
 
     return Tooltip(
       message: widget.shortcut == null

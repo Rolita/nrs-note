@@ -181,7 +181,7 @@ class CodeBlockPainter extends CustomPainter {
         return true;
       });
     }
-  }
+    }
 
   @override
   bool shouldRepaint(CodeBlockPainter oldDelegate) {

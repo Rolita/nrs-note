@@ -55,7 +55,12 @@ class OutlinePanel extends StatelessWidget {
           SizedBox(
             height: AppLayout.panelHeaderHeight,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(AppSpace.md, 0, AppSpace.sm, 0),
+              padding: const EdgeInsets.fromLTRB(
+                AppSpace.md,
+                0,
+                AppSpace.sm,
+                0,
+              ),
               child: Row(
                 children: <Widget>[
                   Text(
@@ -82,7 +87,9 @@ class OutlinePanel extends StatelessWidget {
           Expanded(
             child: headings.isEmpty
                 ? Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: AppSpace.lg),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: AppSpace.lg,
+                    ),
                     child: Text(
                       '用 # 写下标题,\n大纲会出现在这里。',
                       style: TextStyle(
@@ -135,19 +142,11 @@ class OutlinePanel extends StatelessWidget {
                                   ),
                                   decoration: BoxDecoration(
                                     color: selected
-                                        ? p.accentSoft
+                                        ? p.rowSelected
                                         : (hovered
                                               ? p.surfaceRaised
                                               : Colors.transparent),
                                     borderRadius: AppRadius.smAll,
-                                    border: selected
-                                        ? Border(
-                                            left: BorderSide(
-                                              color: p.accent,
-                                              width: 2,
-                                            ),
-                                          )
-                                        : null,
                                   ),
                                   child: Text(
                                     h.plainText.isEmpty ? '(空标题)' : h.plainText,
@@ -157,7 +156,7 @@ class OutlinePanel extends StatelessWidget {
                                       fontSize: size,
                                       height: 1.4,
                                       fontWeight: weight,
-                                      color: selected ? p.accent : tone,
+                                      color: selected ? p.textPrimary : tone,
                                     ),
                                   ),
                                 ),

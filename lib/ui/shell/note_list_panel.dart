@@ -373,15 +373,17 @@ class NoteListPanelState extends State<NoteListPanel> {
       onPressed: onPressed,
     );
 
+    // 文件页不再重复计数：左下已经写着「N 篇笔记」，顶上再来一次就是同一句
+    // 话说了两遍。只留四颗动作按钮，右端对齐。
     return _panelHeader(
       p,
-      '文件',
+      null,
       notes,
-      count: '${notes.allNotes.length}',
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
           _SortButton(settings: settings, notes: notes),
+          const SizedBox(width: 6),
           // One button, two faces: it always offers the opposite of what the
           // tree is showing right now.
           action(
@@ -399,7 +401,9 @@ class NoteListPanelState extends State<NoteListPanel> {
               }
             },
           ),
+          const SizedBox(width: 6),
           action(LucideIcons.folderPlus, '新建文件夹', _createFolder),
+          const SizedBox(width: 6),
           action(
             LucideIcons.filePlus2,
             '新建笔记',
@@ -413,7 +417,7 @@ class NoteListPanelState extends State<NoteListPanel> {
 
   Widget _panelHeader(
     AppPalette p,
-    String label,
+    String? label,
     NotesController notes, {
     String? count,
     Widget? trailing,
@@ -430,35 +434,41 @@ class NoteListPanelState extends State<NoteListPanel> {
             // unused half would strand the actions ~55px off the right edge.
             // Flexible inside, because at the panel's minimum width the label
             // must give up its last glyph rather than push the buttons out.
-            Expanded(
-              child: Row(
-                children: <Widget>[
-                  Flexible(
-                    child: Text(
-                      label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: AppText.caption,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.4,
-                        color: p.textTertiary,
+            //
+            // 传 `null` 就是没有标题的那一页（文件页）：只留一个 Spacer 把
+            // 动作推到右缘，不占 32px 的头部名额。
+            if (label != null)
+              Expanded(
+                child: Row(
+                  children: <Widget>[
+                    Flexible(
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: AppText.caption,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.4,
+                          color: p.textTertiary,
+                        ),
                       ),
                     ),
-                  ),
-                  if (count != null) ...<Widget>[
-                    const SizedBox(width: AppSpace.xs + 2),
-                    Text(
-                      count,
-                      style: TextStyle(
-                        fontSize: AppText.caption,
-                        color: p.textTertiary,
+                    if (count != null) ...<Widget>[
+                      const SizedBox(width: AppSpace.xs + 2),
+                      Text(
+                        count,
+                        style: TextStyle(
+                          fontSize: AppText.caption,
+                          color: p.textTertiary,
+                        ),
                       ),
-                    ),
+                    ],
                   ],
-                ],
-              ),
-            ),
+                ),
+              )
+            else
+              const Spacer(),
             ?trailing,
             if (notes.isFiltered) ...<Widget>[
               const SizedBox(width: AppSpace.sm),
@@ -660,12 +670,9 @@ class NoteListPanelState extends State<NoteListPanel> {
               padding: const EdgeInsets.symmetric(horizontal: AppSpace.sm),
               decoration: BoxDecoration(
                 color: selected
-                    ? p.accentSoft
+                    ? p.rowSelected
                     : (hovered ? p.surfaceRaised : Colors.transparent),
                 borderRadius: AppRadius.smAll,
-                border: selected
-                    ? Border(left: BorderSide(color: p.accent, width: 2))
-                    : null,
               ),
               child: Row(
                 children: <Widget>[
@@ -674,7 +681,7 @@ class NoteListPanelState extends State<NoteListPanel> {
                     style: TextStyle(
                       fontSize: AppText.ui,
                       fontWeight: FontWeight.w600,
-                      color: selected ? p.accent : p.textTertiary,
+                      color: p.textTertiary,
                     ),
                   ),
                   const SizedBox(width: AppSpace.sm),
@@ -787,7 +794,7 @@ class _CaseToggle extends StatelessWidget {
             alignment: Alignment.center,
             decoration: BoxDecoration(
               color: active
-                  ? p.accentSoft
+                  ? p.rowSelected
                   : (hovered ? p.surfaceRaised : Colors.transparent),
               borderRadius: AppRadius.smAll,
             ),
@@ -797,7 +804,7 @@ class _CaseToggle extends StatelessWidget {
                 fontSize: 11.5,
                 height: 1,
                 fontWeight: FontWeight.w600,
-                color: active ? p.accent : p.textTertiary,
+                color: active ? p.textPrimary : p.textTertiary,
               ),
             ),
           ),

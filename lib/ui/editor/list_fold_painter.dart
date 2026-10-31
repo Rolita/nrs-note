@@ -112,7 +112,7 @@ class ListFoldPainter extends CustomPainter {
     } finally {
       ellipsis?.dispose();
     }
-  }
+    }
 
   @override
   bool shouldRepaint(ListFoldPainter oldDelegate) {

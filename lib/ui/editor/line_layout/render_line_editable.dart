@@ -236,6 +236,31 @@ class RenderLineEditable extends RenderEditable {
   /// 的宽度、样式、折叠与揭示行，而不是销毁那一刻的配置。
   LineLayoutPoolKey? _layoutPoolKey;
 
+  /// 上一次给继承来的 `_textPainter` 排段落时用的输入。
+  ///
+  /// `RenderEditable` 的段落是**整篇**一个 `TextPainter`：这篇 1867 行 ≈ 80ms。
+  /// 它只服务 `startVerticalCaretMovement` / `getWordBoundary` 这类没被覆盖的
+  /// 方法，正文几何全走按行引擎。所以：
+  ///
+  /// * 首帧排一次，给继承来的那套几何一个合法起点；
+  /// * 之后**不再**在布局期重排——打字每敲一个键都换一次文本，那就是每键
+  ///   80ms 的固定开销（用户原话「连滚动都非常不跟手」）；
+  /// * 真正要用到段落几何的那几个入口（上下方向键、按词移动 / 选择、基线）
+  ///   先调 [_ensureParagraph] 现排一次，排完就又是干净的。
+  ///
+  /// 这一段和「按行引擎」互不干涉：段落永远只是兜底，正文从不读它。
+  String? _paragraphText;
+  double? _paragraphWidth;
+  TextScaler? _paragraphScaler;
+  StrutStyle? _paragraphStrut;
+  TextAlign? _paragraphAlign;
+
+  /// 继承来的段落排过一次没有。
+  bool _paragraphLaidOut = false;
+
+  /// 段落落后于当前文本（文本 / 宽度 / 缩放 / strut / 对齐变了）。
+  bool _paragraphStale = false;
+
   /// 跨文档缓存的命中次数，供测试确认切回来没有重新排版。
   @visibleForTesting
   int debugLayoutPoolHits = 0;
@@ -511,6 +536,13 @@ class RenderLineEditable extends RenderEditable {
   @visibleForTesting
   int debugFullLayouts = 0;
 
+  /// 继承来的「整篇一个段落」重排了几次。
+  ///
+  /// 正常打字**不该**让它涨：段落只给上下方向键、按词移动这类兜底方法用，
+  /// 一涨就是每键 80ms 的固定开销回来了（见 [performLayout]）。
+  @visibleForTesting
+  int debugParagraphLayouts = 0;
+
   /// `super.text` 的样式；没有任何样式时退化成默认 [TextStyle]。
   TextStyle get _baseStyle => text?.style ?? const TextStyle();
 
@@ -586,6 +618,10 @@ class RenderLineEditable extends RenderEditable {
       _layoutKey = null;
     }
     super.text = value;
+    // 整篇段落从此落后于正文。⛔ 必须在这里就记下，不能等下一帧的
+    // `performLayout`——两次事件之间（打字 → 立刻按 ↑）会有人来读段落几何，
+    // 那时它还是「脏的」，读一次就崩。
+    _paragraphStale = true;
   }
 
   @override
@@ -593,6 +629,7 @@ class RenderLineEditable extends RenderEditable {
     if (value != textScaler) {
       _lineLayout?.dispose();
       _lineLayout = null;
+      _paragraphStale = true;
     }
     super.textScaler = value;
   }
@@ -602,6 +639,7 @@ class RenderLineEditable extends RenderEditable {
     if (value != textAlign) {
       _lineLayout?.dispose();
       _lineLayout = null;
+      _paragraphStale = true;
     }
     super.textAlign = value;
   }
@@ -611,6 +649,7 @@ class RenderLineEditable extends RenderEditable {
     if (value != textDirection) {
       _lineLayout?.dispose();
       _lineLayout = null;
+      _paragraphStale = true;
     }
     super.textDirection = value;
   }
@@ -620,6 +659,7 @@ class RenderLineEditable extends RenderEditable {
     if (value != strutStyle) {
       _lineLayout?.dispose();
       _lineLayout = null;
+      _paragraphStale = true;
     }
     super.strutStyle = value;
   }
@@ -629,6 +669,7 @@ class RenderLineEditable extends RenderEditable {
     if (value != textHeightBehavior) {
       _lineLayout?.dispose();
       _lineLayout = null;
+      _paragraphStale = true;
     }
     super.textHeightBehavior = value;
   }
@@ -638,6 +679,7 @@ class RenderLineEditable extends RenderEditable {
     if (value != textWidthBasis) {
       _lineLayout?.dispose();
       _lineLayout = null;
+      _paragraphStale = true;
     }
     super.textWidthBasis = value;
   }
@@ -974,9 +1016,20 @@ class RenderLineEditable extends RenderEditable {
 
   @override
   void performLayout() {
-    // 先让继承来的 `_textPainter` 完成布局：`startVerticalCaretMovement`、
-    // `getWordBoundary`、`selectPositionAt` 等继承方法直接读它。
-    super.performLayout();
+    // 继承来的 `_textPainter` 是把**整篇**当一个段落排的：这篇 1867 行 ≈ 80ms。
+    // 首帧排一次就够——它只给 `startVerticalCaretMovement`、`getWordBoundary`
+    // 这类没被覆盖的方法兜底，正文的几何全部来自按行引擎。之后每敲一个键都
+    // 重排整篇，等于每键白付 80ms（用户原话「打字非常卡顿」「连滚动都不跟手」）。
+    // 真正需要它的入口自己会调 [_ensureParagraph] 现排。
+    if (!_paragraphLaidOut) {
+      super.performLayout();
+      debugParagraphLayouts++;
+      _paragraphLaidOut = true;
+      _rememberParagraphInputs();
+      _paragraphStale = false;
+    } else if (_paragraphInputsChanged()) {
+      _paragraphStale = true;
+    }
 
     final LineDocumentLayout layout = _ensureLineLayout();
     final double width = constraints.hasBoundedWidth
@@ -989,6 +1042,40 @@ class RenderLineEditable extends RenderEditable {
       0.0,
       math.max(0.0, layout.height - size.height),
     );
+  }
+
+  /// 把当前输入记成「段落已经跟上这些」。
+  void _rememberParagraphInputs() {
+    _paragraphText = text?.toPlainText() ?? '';
+    _paragraphWidth = constraints.maxWidth;
+    _paragraphScaler = textScaler;
+    _paragraphStrut = strutStyle;
+    _paragraphAlign = textAlign;
+  }
+
+  /// 段落是不是落后了。
+  bool _paragraphInputsChanged() =>
+      _paragraphText != (text?.toPlainText() ?? '') ||
+      _paragraphWidth != constraints.maxWidth ||
+      _paragraphScaler != textScaler ||
+      _paragraphStrut != strutStyle ||
+      _paragraphAlign != textAlign;
+
+  /// 让继承来的整篇段落跟上当前文本。
+  ///
+  /// ⛔ 不能直接 `super.performLayout()`：那会把 `size`、滚动范围、行内子对象
+  /// 一起按**段落**重算，而我们自己的尺寸来自按行引擎。这里借
+  /// `getBoxesForSelection` 内部那次 `_computeTextMetricsIfNeeded()`——只让
+  /// `_textPainter` 重新排一遍，别的一概不碰。
+  ///
+  /// 调用点都是「用户真的按了上下方向键 / 按词移动」这种低频操作，80ms 只在
+  /// 编辑之后第一次按到它们时付一次；打字路径永远不会走到这里。
+  void _ensureParagraph() {
+    if (!_paragraphStale) return;
+    _paragraphStale = false;
+    _rememberParagraphInputs();
+    debugParagraphLayouts++;
+    super.getBoxesForSelection(const TextSelection.collapsed(offset: 0));
   }
 
   /// 视口滚动偏移；多行时只沿垂直方向滚动，与 SDK 的 `_viewportAxis` 一致。
@@ -2184,6 +2271,76 @@ class RenderLineEditable extends RenderEditable {
     final SourceLine line = layout.lines[caret.lineIndex];
     return TextSelection(baseOffset: line.start, extentOffset: line.end);
   }
+
+  // ---------------------------------------------------------------------------
+  // 还没被按行引擎接管、仍要读整篇段落的入口。
+  //
+  // 段落不再在布局期自动跟上（见 [performLayout]），所以每一个入口都先
+  // [\_ensureParagraph] 现排一次。⛔ 漏掉任何一个，`_textPainter` 就会带着
+  // 「已作废」的段落被读——debug 下断言，release 下空指针。
+  // ---------------------------------------------------------------------------
+
+  @override
+  TextRange getWordBoundary(TextPosition position) {
+    _ensureParagraph();
+    return super.getWordBoundary(position);
+  }
+
+  @override
+  WordBoundary get wordBoundaries {
+    _ensureParagraph();
+    return super.wordBoundaries;
+  }
+
+  @override
+  VerticalCaretMovementRun startVerticalCaretMovement(
+    TextPosition startPosition,
+  ) {
+    _ensureParagraph();
+    return super.startVerticalCaretMovement(startPosition);
+  }
+
+  @override
+  TextPosition getTextPositionAbove(TextPosition position) {
+    _ensureParagraph();
+    return super.getTextPositionAbove(position);
+  }
+
+  @override
+  TextPosition getTextPositionBelow(TextPosition position) {
+    _ensureParagraph();
+    return super.getTextPositionBelow(position);
+  }
+
+  @override
+  void selectWordEdge({required SelectionChangedCause cause}) {
+    _ensureParagraph();
+    super.selectWordEdge(cause: cause);
+  }
+
+  @override
+  void selectWordsInRange({
+    required Offset from,
+    Offset? to,
+    required SelectionChangedCause cause,
+  }) {
+    _ensureParagraph();
+    super.selectWordsInRange(from: from, to: to, cause: cause);
+  }
+
+  @override
+  double computeDistanceToActualBaseline(TextBaseline baseline) {
+    _ensureParagraph();
+    return super.computeDistanceToActualBaseline(baseline);
+  }
+
+  /// 行内没有子对象（正文是纯 `TextSpan`，装饰全部由 [paint] 自绘），
+  /// 而父类这个默认实现会先问 `_textPainter` 要字形——那会逼着整篇段落
+  /// 在每次鼠标移动时重排一遍。直接说「没有子对象」。
+  @override
+  @protected
+  bool hitTestChildren(BoxHitTestResult result, {required Offset position}) =>
+      false;
 
   /// 正在监听的闪烁开关（[showCursor] 通知器）。
   ValueNotifier<bool>? _blink;

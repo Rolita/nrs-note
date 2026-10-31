@@ -23,7 +23,6 @@ class PaneTabStrip extends StatelessWidget {
     this.trailingInset = 0,
     this.onDropTab,
     this.acceptsTab,
-    this.compactIcons = false,
   });
 
   final List<PaneTabData> tabs;
@@ -60,20 +59,11 @@ class PaneTabStrip extends StatelessWidget {
   /// 整条就亮起来，反倒像在暗示「可以放这里」。
   final bool Function(TabDrag tab)? acceptsTab;
 
-  /// 图标页排得更紧：28 的方块、彼此隔 2、左边不空。
-  ///
-  /// 右栏顶上那三颗（大纲 / 表格 / 图片）本来就和窗口按钮挤在同一段里——面板
-  /// 最窄时只剩 88 宽，三颗 28 加两道 2px 缝正好填满。它们从顶栏的开关变成
-  /// 右栏上格的标签页之后，量法不能变：位置、大小、缝宽都照旧，否则面板一开
-  /// 那排图标就整体往右偏一截。侧边栏不传——它没有窗口按钮让位，照旧用 32
-  /// 的方块。
-  final bool compactIcons;
-
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
-    // 侧边栏那一格排的是图标页：它们是一排方块按钮，不是标题，左边从 6 起、
-    // 彼此隔 4（和顶栏那组按钮同一套量法）。右栏那排是紧凑版：从 0 起、隔 2。
+    // 侧边栏那一格排的是图标页：一排 28 的方块按钮，左边从 6 起、彼此隔 2，
+    // 左右两栏同一套量法。编辑区排的是文字页，从 0 起、彼此隔 2。
     final bool iconTabs =
         tabs.isNotEmpty && tabs.every((PaneTabData t) => t.icon != null);
     final Widget strip = Container(
@@ -99,11 +89,9 @@ class PaneTabStrip extends StatelessWidget {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: <Widget>[
-                            if (iconTabs && !compactIcons)
-                              const SizedBox(width: 6),
+                            if (iconTabs) const SizedBox(width: 6),
                             for (int i = 0; i < tabs.length; i++) ...<Widget>[
-                              if (compactIcons && i > 0)
-                                const SizedBox(width: 2),
+                              if (i > 0) const SizedBox(width: 2),
                               Flexible(
                                 child: DraggableTab(
                                   data: tabs[i].drag,
@@ -112,7 +100,6 @@ class PaneTabStrip extends StatelessWidget {
                                     label: tabs[i].label,
                                     tooltip: tabs[i].tooltip,
                                     icon: tabs[i].icon,
-                                    compact: compactIcons,
                                     active: i == index,
                                     focused: focused,
                                     onTap: () => onSelect(i),
@@ -203,11 +190,12 @@ class PaneTabData {
 
 /// 标签条上的一页。
 ///
-/// 编辑区里是「标题 + 2px 下划线」，当前那一页用下划线标出来，而不是填一块
-/// 底色：填色会把标签条变成一排按钮，下划线只说明一件事，还让整条保持平坦。
+/// 编辑区里是文字页：当前那一页和纸面同色、字提亮，不再画强调线；× 出现在
+/// 当前那一页、以及鼠标正指着的那一页上——想关哪页就直接指上去，不必先点进
+/// 去再找 ×。
 ///
-/// 侧边栏里传了 [icon]，画成一颗方块按钮（和顶栏的面板开关同一套量法）：
-/// 一排视图用图标说话，比「文件 ×」这种文字页省地方，也更像一列开关。
+/// 侧边栏里传了 [icon]，画成一颗 28 的方块按钮：选中是一层中性淡底 + 图标
+/// 提亮，和列表行、功能栏用同一支笔。
 class PaneTab extends StatefulWidget {
   const PaneTab({
     super.key,
@@ -217,7 +205,6 @@ class PaneTab extends StatefulWidget {
     required this.onClose,
     this.icon,
     this.tooltip,
-    this.compact = false,
     this.focused = true,
     this.onSecondaryTapDown,
   });
@@ -231,11 +218,8 @@ class PaneTab extends StatefulWidget {
   /// tooltip 上写什么；不传用 [label]。
   final String? tooltip;
 
-  /// 图标页的紧凑版：28 的方块、不占右缝（右栏顶上那三颗）。
-  final bool compact;
-
-  /// 所在格子是不是聚焦的那一格。不聚焦时文字页的下划线退成中性色，
-  /// 图标页的方块退成纸面的颜色。
+  /// 所在格子是不是聚焦的那一格。不聚焦时图标页的方块退成纸面的颜色——
+  /// 两格并排时照样看得出各自停在哪一页，也分得清谁在听键盘。
   final bool focused;
 
   final VoidCallback onTap;
@@ -278,18 +262,23 @@ class _PaneTabState extends State<PaneTab> {
   }
 
   /// 编辑区的文字页。
+  ///
+  /// 36 高、顶角圆 7/7：下沿就是纸面的边，不圆，标签才像从纸里长出来。
+  /// 选中时整页填纸色、字提亮加粗；未选中透明，悬停才浮起一层。不再画下划线
+  /// ——纸色本身就是选择标记。
   Widget _textTab(AppPalette p) {
     final Color background = widget.active
         ? p.surface
-        : (_hovered
-              ? p.surfaceRaised.withValues(alpha: 0.6)
-              : Colors.transparent);
+        : (_hovered ? p.surfaceRaised : Colors.transparent);
+    final Color foreground = widget.active
+        ? p.textPrimary
+        : (_hovered ? p.textSecondary : p.textTertiary);
 
     return AnimatedContainer(
       duration: AppMotion.fast,
       height: AppLayout.paneTabHeight,
-      margin: const EdgeInsets.only(right: 2),
-      constraints: const BoxConstraints(maxWidth: 180),
+      constraints: const BoxConstraints(maxWidth: 196),
+      padding: const EdgeInsets.only(left: 12, right: 10),
       decoration: BoxDecoration(
         color: background,
         // 只有上面两个角是圆的：下沿是纸面的边，圆了就把标签从它所属的
@@ -298,94 +287,57 @@ class _PaneTabState extends State<PaneTab> {
           top: Radius.circular(AppRadius.md),
         ),
       ),
-      child: Stack(
-        alignment: Alignment.centerLeft,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: <Widget>[
-          Padding(
-            padding: const EdgeInsets.only(left: 12, right: 4),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Flexible(
-                  child: Text(
-                    widget.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: AppText.label,
-                      fontFamily: AppFonts.ui,
-                      fontFamilyFallback: AppFonts.uiFallback,
-                      fontWeight: widget.active
-                          ? FontWeight.w600
-                          : FontWeight.w400,
-                      color: widget.active ? p.textPrimary : p.textSecondary,
-                    ),
-                  ),
-                ),
-                // 永远排版、只偶尔可见：用 `Opacity` 藏起来，每一页的宽
-                // 度才不会在指针扫过时跳。`IgnorePointer` 保证看不见的
-                // × 点不中。
-                const SizedBox(width: 4),
-                IgnorePointer(
-                  ignoring: !(widget.active || _hovered),
-                  child: Opacity(
-                    opacity: widget.active || _hovered ? 1 : 0,
-                    child: _TabCloseButton(onPressed: widget.onClose),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Positioned(
-            left: 8,
-            right: 8,
-            bottom: 0,
-            child: AnimatedOpacity(
-              duration: AppMotion.fast,
-              opacity: widget.active ? 1 : 0,
-              child: Container(
-                height: 2,
-                decoration: BoxDecoration(
-                  color: widget.focused ? p.accent : p.outline,
-                  borderRadius: const BorderRadius.vertical(
-                    top: Radius.circular(2),
-                  ),
-                ),
+          Flexible(
+            child: Text(
+              widget.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: AppText.label,
+                fontFamily: AppFonts.ui,
+                fontFamilyFallback: AppFonts.uiFallback,
+                fontWeight: widget.active ? FontWeight.w600 : FontWeight.w400,
+                color: foreground,
               ),
             ),
           ),
+          // × 属于当前页，也属于**正被鼠标指着的那一页**：想关哪一页就直接
+          // 指上去，不用先点进去再找 ×（用户原话：「当我鼠标悬浮上去的时候
+          // 直接就显示 x，让我可以直接关掉」）。不悬浮、也不是当前页时仍然
+          // 一个都不画——标签条上不该排满一排 ×。
+          if (widget.active || _hovered) ...<Widget>[
+            const SizedBox(width: 6),
+            _TabCloseButton(onPressed: widget.onClose),
+          ],
         ],
       ),
     );
   }
 
-  /// 侧边栏的图标页：32 的方块，选中填 `accentSoft`。
+  /// 侧边栏的图标页：28 的方块，选中填中性 `rowSelected`。
   ///
-  /// 还是**一页**：能拖、能分屏、右键能关，只是不再画标题和下划线。没聚焦的
-  /// 那一格退成纸面的颜色——两格并排时，当前视图照样看得见，但谁在听键盘
-  /// 也分得清。
+  /// 还是**一页**：能拖、能分屏、右键能关，只是不画标题。没聚焦的那一格
+  /// 退成纸面的颜色——两格并排时，当前视图照样看得见，但谁在听键盘也分得清。
   Widget _iconTab(AppPalette p) {
     final Color background = widget.active
-        ? (widget.focused ? p.accentSoft : p.surface)
-        : (_hovered
-              ? p.surfaceRaised.withValues(alpha: 0.6)
-              : Colors.transparent);
-    final Color foreground = widget.active
-        ? (widget.focused ? p.accent : p.textPrimary)
-        : (_hovered ? p.textPrimary : p.textSecondary);
+        ? (widget.focused ? p.rowSelected : p.surface)
+        : (_hovered ? p.surfaceRaised : Colors.transparent);
+    final Color foreground = widget.active || _hovered
+        ? p.textPrimary
+        : p.textTertiary;
 
-    // 紧凑版是 28 的方块、底边留 6：在 40 的带子里同样居中，但右缝交给标签条
-    // 画（2px），三颗加起来才刚好是顶栏那组开关的 88 宽。
+    // 底边留 6：28 的方块在 40 的带子里居中（40 - 6 - 28 = 6）。
     return AnimatedContainer(
       duration: AppMotion.fast,
-      width: widget.compact ? 28 : 32,
-      height: widget.compact ? 28 : 32,
-      margin: widget.compact
-          ? const EdgeInsets.only(bottom: 6)
-          : const EdgeInsets.only(right: 4, bottom: 4),
+      width: 28,
+      height: 28,
+      margin: const EdgeInsets.only(bottom: 6),
       decoration: BoxDecoration(
         color: background,
-        borderRadius: AppRadius.mdAll,
+        borderRadius: BorderRadius.circular(6),
       ),
       child: Icon(widget.icon, size: AppIconSize.sm, color: foreground),
     );
@@ -486,8 +438,8 @@ class _TabCloseButtonState extends State<_TabCloseButton> {
           onTap: widget.onPressed,
           behavior: HitTestBehavior.opaque,
           child: Container(
-            width: 18,
-            height: 18,
+            width: 16,
+            height: 16,
             alignment: Alignment.center,
             decoration: BoxDecoration(
               color: _hovered ? p.surfaceSunken : Colors.transparent,
@@ -495,7 +447,7 @@ class _TabCloseButtonState extends State<_TabCloseButton> {
             ),
             child: Icon(
               LucideIcons.x,
-              size: AppIconSize.xs - 2,
+              size: 10,
               color: _hovered ? p.textPrimary : p.textTertiary,
             ),
           ),

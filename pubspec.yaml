@@ -64,6 +64,10 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  # 设计稿里的极光壁纸：壁纸外观把它垫在界面下面（见 AppShell）。
+  assets:
+    - assets/backgrounds/
+
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg

@@ -13,11 +13,10 @@ library;
 import 'dart:math' as math;
 import 'dart:ui' show BoxHeightStyle, BoxWidthStyle;
 
-import 'package:flutter/foundation.dart'
-    show listEquals, visibleForTesting;
+import 'package:flutter/foundation.dart' show listEquals, visibleForTesting;
 import 'package:flutter/painting.dart';
 
-import '../../../core/utils/image_markup.dart' show ImageAlign;
+import '../../../core/utils/image_markup.dart' show ImageAlign, ImageMarkup;
 import 'line_block_view.dart';
 import 'line_layout_model.dart';
 
@@ -154,6 +153,7 @@ class LaidOutLine {
     this.fills = const <LineFillRun>[],
     this.fromCache = false,
     this.hidden = false,
+    this.floatWrap = false,
     this.fold,
     this.folded = false,
     int? paintedFrom,
@@ -186,6 +186,13 @@ class LaidOutLine {
 
   /// 这一行的左右内边距（代码块卡片），坐标从正文列边缘起算。
   final EdgeInsets insets;
+
+  /// 这一行的宽度是被上方某张浮动图片**让出来**的。
+  ///
+  /// 与 [insets] 分开记，是因为代码块卡片也走 [insets]：只按「有没有内边距」
+  /// 判断绕排，会把围栏里每一行都当成绕排行——在代码块里改一个字就退回整篇
+  /// 重排（用户原话「大文件里打字非常卡顿」）。绕排只认这个标记。
+  final bool floatWrap;
 
   /// 这一行的文字（列表行只含正文）。渲染层把它画在 `(gutter, top)`。
   final TextPainter painter;
@@ -467,11 +474,7 @@ class LineDocumentLayout {
   /// 从行首选起的选区还会盖住左侧标记槽位。
   ///
   /// [visible] 给定时只遍历与它纵向相交的行：绘制一帧不必产出屏幕外的矩形。
-  List<Rect> selectionRects(
-    int baseOffset,
-    int extentOffset, {
-    Rect? visible,
-  }) {
+  List<Rect> selectionRects(int baseOffset, int extentOffset, {Rect? visible}) {
     int a = baseOffset.clamp(0, text.length);
     int b = extentOffset.clamp(0, text.length);
     if (a > b) {
@@ -684,8 +687,7 @@ class LineDocumentLayout {
     final Set<int> dirty = <int>{};
     for (int i = first; i <= last; i++) {
       final SourceLine source = laidOut[i].source;
-      if (_revealSignature(source, before) !=
-          _revealSignature(source, after)) {
+      if (_revealSignature(source, before) != _revealSignature(source, after)) {
         dirty.add(i);
       }
     }
@@ -960,8 +962,8 @@ LineDocumentLayout layoutLines({
         ? (measured.block! as ImageBlockChrome).chromeAlign
         : null;
     if (float == null && side != null && height > 0) {
-      final double reserved = (measured.block! as ImageBlockChrome)
-          .chromeFloatWidth;
+      final double reserved =
+          (measured.block! as ImageBlockChrome).chromeFloatWidth;
       if (reserved > 0) {
         float = _FloatRun(
           left: side == ImageAlign.left,
@@ -984,6 +986,7 @@ LineDocumentLayout layoutLines({
         block: measured.block,
         fills: measured.fills,
         fromCache: measured.fromCache,
+        floatWrap: floatInset != EdgeInsets.zero,
         fold: foldByParent[i],
         folded: foldedParents.contains(i),
         paintedFrom: measured.paintedFrom,
@@ -1086,7 +1089,9 @@ _LineMeasured _measureOneLine({
     1.0,
     contentWidth - insets.horizontal - slot.width,
   );
-  final int paintedFrom = markersInline ? source.markerStart : source.paintStart;
+  final int paintedFrom = markersInline
+      ? source.markerStart
+      : source.paintStart;
   final String painted = text.substring(paintedFrom, source.end);
   final InlineSpan? custom = block == null ? spanFor?.call(source) : null;
   final InlineSpan? usable = custom != null && custom.toPlainText() == painted
@@ -1198,14 +1203,21 @@ LineDocumentLayout relayoutLines({
   LineLayoutMetrics metrics = const LineLayoutMetrics(),
   LineLayoutStats? stats,
 }) {
+  // 浮动图片让「这一行有多宽」取决于它上面那张图贴在哪一侧、还有多高。这个
+  // 函数不追踪浮动状态，落在绕排区里的行重建会丢掉那一段内边距，所以只能
+  // 整篇重排。
+  //
+  // ⛔ 挡的必须是**脏行与绕排区相交**这一种情况，不是「文档里有浮动图」：
+  // 一篇 1800 行的文档里只要有一张右对齐的图，后者会让「移动光标」这种只
+  // 脏一两行的操作也变成 300ms 的整篇重排。
+  final Set<int> floatLines = previous.hasFloats
+      ? _floatLines(previous)
+      : const <int>{};
+  final bool intersectsFloat = dirtyLines.any(floatLines.contains);
   if (previous.text != text ||
       previous.width != contentWidth ||
       previous.metrics != metrics ||
-      previous.hasFloats ||
-      // 新文本里出现「靠边浮动」的图片时也只能全量：某一行有多宽取决于它上面
-      // 那张图贴在哪一侧、还有多高，增量重排只按行高平移，绕排会错位。
-      // 认字面量而不是解析图片行：认错了只是多排一次全量，排错了就是错版。
-      text.toLowerCase().contains('align')) {
+      intersectsFloat) {
     return layoutLines(
       text: text,
       baseStyle: baseStyle,
@@ -1282,6 +1294,7 @@ LineDocumentLayout relayoutLines({
       visuals: measured.visuals,
       block: measured.block,
       fills: measured.fills,
+      floatWrap: old.floatWrap,
       fold: old.fold,
       folded: old.folded,
       paintedFrom: measured.paintedFrom,
@@ -1339,10 +1352,9 @@ LineDocumentLayout? relayoutOnEdit({
   TextSelection? revealAfter,
   LineLayoutStats? stats,
 }) {
-  if (previous.width != contentWidth || previous.metrics != metrics) return null;
-  // 浮动图片让「这一行有多宽」取决于它上面那张图贴在哪一侧、还有多高。增量
-  // 重排只按行高平移，绕排会错位，所以有浮动时一律交回全量。
-  if (previous.hasFloats || text.toLowerCase().contains('align')) return null;
+  if (previous.width != contentWidth || previous.metrics != metrics) {
+    return null;
+  }
   if (editStart < 0 || removedLength < 0 || insertedLength < 0) return null;
 
   final int oldLength = previous.text.length;
@@ -1368,6 +1380,27 @@ LineDocumentLayout? relayoutOnEdit({
   if (to > sources.length - 1) to = sources.length - 1;
   if (from > to) from = to;
 
+  // 浮动图片（`<img align=…>`）让「这一行有多宽」取决于它上面那张图贴在哪
+  // 一侧、还有多高。增量重排只按行高平移，绕排会错位——但**只有绕排那几行
+  // 会错**。
+  //
+  // ⛔ 以前这里是「整篇文本里出现 `align` 就交回全量」：一篇文档里只要有一张
+  // 右对齐的图，之后每敲一个字都要整篇重排（1800 行 ≈ 200ms/键），用户原话
+  // 「操作大文件非常卡顿」。真正不能增量的只有两种：
+  //   1. 编辑区间里多出 / 少掉 / 改掉了图片行——它下面几行的宽度会跟着变；
+  //   2. 重建区间与旧布局里那张图**正在绕排**的行相交（见下面的终检）。
+  //
+  // ⛔ 判据是「图片行的原文变没变」，不是「这一段里有没有图片行」：重建区间
+  // 总是往前多带一行，在图片**下面**那一行打字也会把图片行框进来，按「有没有」
+  // 判断就等于「图片附近的正文一律整篇重排」（120ms/键）。
+  final int oldFrom = from < 0 ? 0 : from;
+  final int oldTo = math.max(oldFrom, to - lineDelta);
+  if (!_sameList(
+    _imageSignatures(sources, from, to),
+    _imageSignatures(previous.lines, oldFrom, oldTo),
+  )) {
+    return null;
+  }
   // 表格整段连带：表一旦重测就换了整块行视图，只重建其中几行会让其余行
   // continue 指向已作废的行块。
   bool tableTouched = false;
@@ -1405,9 +1438,21 @@ LineDocumentLayout? relayoutOnEdit({
 
   // 列表结构变化（增删行、层级/序号/标记变化）会改变导轨与槽位，dirty 要
   // 扩到整个列表组；纯正文改字不影响别人的导轨，不必扩张。
-  if (listTouched && (lineDelta != 0 || _structureChanged(previous, sources, from, to))) {
+  if (listTouched &&
+      (lineDelta != 0 || _structureChanged(previous, sources, from, to))) {
     from = _railGroupStart(sources, from);
     to = _railGroupEnd(sources, to);
+  }
+
+  // 浮动图片终检：表格 / 围栏 / 列表组会把重建区间往外扩，扩进来的行如果
+  // 落在绕排区里，重建它们就会丢掉那一段内边距——图片旁边的正文会掉到图片
+  // 下面（用户原话「图片旁边怎么变成空白了」）。所以必须**等区间定稿之后**
+  // 再比一次，只看最终要重建的那几行。
+  final Set<int> floatLines = _floatLines(previous);
+  if (floatLines.isNotEmpty) {
+    for (int i = from; i <= to; i++) {
+      if (floatLines.contains(i)) return null;
+    }
   }
 
   final _FoldPlan folds = _planFolds(sources, foldedLines);
@@ -1496,8 +1541,7 @@ LineDocumentLayout? relayoutOnEdit({
         markerRevealLine == source.start;
     // 落在强制重建区间（整张表 / 整个围栏块）的行即便源码一字未改也不能
     // 换壳复用：它们的测量结果依赖整块上下文。
-    final bool forced =
-        (forceFrom != null && i >= forceFrom && i <= forceTo!);
+    final bool forced = (forceFrom != null && i >= forceFrom && i <= forceTo!);
     if (old != null &&
         !forced &&
         !old.hidden &&
@@ -1537,7 +1581,9 @@ LineDocumentLayout? relayoutOnEdit({
         slot: slot,
         insets: old.insets,
         painter: old.painter,
-        visuals: shift == 0 ? old.visuals : _shiftVisuals(old.visuals, 0, shift),
+        visuals: shift == 0
+            ? old.visuals
+            : _shiftVisuals(old.visuals, 0, shift),
         block: old.block,
         fills: old.fills,
         fromCache: old.fromCache,
@@ -2201,4 +2247,55 @@ double _measure(
   final double width = painter.width;
   painter.dispose();
   return width;
+}
+
+/// 这一行源码是一张图片（整行图片块，可能带 `align` 浮动）。
+bool _isImageLine(SourceLine line) => ImageMarkup.parseLine(line.text) != null;
+
+/// 两个字符串列表逐项相同。
+bool _sameList(List<String> a, List<String> b) {
+  if (a.length != b.length) return false;
+  for (int i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+/// 旧布局里**不能增量重建**的源码行：浮动图片自己那一行，以及被它挤窄的行。
+///
+/// ⛔ 必须把全篇所有这样的行都收进来，不能只认「第一段」——一篇文档前面通常
+/// 还有代码卡片（它也有水平内边距），只认第一段就会在图片那里返回空集，
+/// 于是绕排区里的行被当成普通行重建、丢掉图片让出的宽度：图片旁边整块变空，
+/// 正文掉到图片下面。
+///
+/// 判据是 [LaidOutLine.floatWrap]（渲染期记下的「这一行的宽度是图片让出来
+/// 的」），**不是**「有没有内边距」：代码卡片的内边距长得很像，按内边距判断
+/// 会把围栏里每一行都算成绕排行——在代码块里改一个字就退回整篇重排。
+Set<int> _floatLines(LineDocumentLayout previous) {
+  final Set<int> out = <int>{};
+  for (int i = 0; i < previous.laidOut.length; i++) {
+    final LaidOutLine line = previous.laidOut[i];
+    final LineBlockView? view = line.block;
+    final bool floating =
+        view is ImageBlockChrome &&
+        (view as ImageBlockChrome).chromeAlign != null;
+    if (floating || line.floatWrap) out.add(i);
+  }
+  return out;
+}
+
+/// `[from, to]` 里图片行的**源码**。
+///
+/// 比较「这一段有没有图片行」太粗：在图片**下面**那一行改字也会把图片行框进
+/// 重建区间（区间总是往前多带一行），于是整篇重排。真正会让几何失效的是
+/// 「图片行本身变了」——多了一张、少了一张、`width` / `align` 改了。所以比
+/// 的是这几行的原文。
+List<String> _imageSignatures(List<SourceLine> lines, int from, int to) {
+  final int lo = from < 0 ? 0 : from;
+  final int hi = to >= lines.length ? lines.length - 1 : to;
+  final List<String> out = <String>[];
+  for (int i = lo; i <= hi; i++) {
+    if (_isImageLine(lines[i])) out.add(lines[i].text);
+  }
+  return out;
 }

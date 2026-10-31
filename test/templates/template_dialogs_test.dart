@@ -15,6 +15,10 @@ import 'package:nrs/ui/templates/template_suggester_dialog.dart';
 /// test can tell "still open" from "closed with null".
 class _Probe<T> {
   bool done = false;
+
+  /// 这一页被要求关掉（Esc）。模板页不是弹窗，关不关由外壳说了算。
+  bool closed = false;
+
   T? value;
 
   void complete(T? v) {
@@ -46,12 +50,6 @@ Future<_Probe<T>> _openDialog<T>(
   return probe;
 }
 
-/// Opens a second dialog after the first one closed.
-Future<void> _reopen(WidgetTester tester) async {
-  await tester.tap(find.text('open'));
-  await tester.pumpAndSettle();
-}
-
 Note templateNote(
   String id,
   String title, {
@@ -74,24 +72,47 @@ Future<void> pressCtrl(WidgetTester tester, LogicalKeyboardKey key) async {
 }
 
 void main() {
-  group('模板选择器', () {
+  group('模板页', () {
+    /// 模板页是编辑区里的一页（不再是弹窗）：直接挂上去，动作走回调。
+    Future<_Probe<({TemplatePickerAction action, Note? template})>> openPage(
+      WidgetTester tester, {
+      required List<Note> templates,
+      bool canInsert = true,
+    }) async {
+      final _Probe<({TemplatePickerAction action, Note? template})> probe =
+          _Probe<({TemplatePickerAction action, Note? template})>();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.build(AppPalette.midnight),
+          home: Scaffold(
+            body: TemplatesPage(
+              templates: templates,
+              templatesFolder: '模板',
+              canInsert: canInsert,
+              onAction: (TemplatePickerAction action, Note? template) =>
+                  probe.complete((action: action, template: template)),
+              onClose: () => probe.closed = true,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return probe;
+    }
+
     testWidgets('按文件夹分组，搜索后 Enter 插入选中的模板', (
       WidgetTester tester,
     ) async {
-      final _Probe<TemplatePickerResult> probe = await _openDialog(
-        tester,
-        (BuildContext context) => showTemplatePicker(
-          context,
-          templates: <Note>[
-            templateNote('daily', '日记'),
-            templateNote('meeting', '会议记录', folder: '模板/会议'),
-          ],
-          templatesFolder: '模板',
-          canInsert: true,
-        ),
-      );
+      final _Probe<({TemplatePickerAction action, Note? template})> probe =
+          await openPage(
+            tester,
+            templates: <Note>[
+              templateNote('daily', '日记'),
+              templateNote('meeting', '会议记录', folder: '模板/会议'),
+            ],
+          );
 
-      expect(find.byType(TemplatePickerDialog), findsOneWidget);
+      expect(find.byType(TemplatesPage), findsOneWidget);
       expect(find.text('日记'), findsWidgets);
       expect(find.text('会议记录'), findsWidgets);
       expect(find.text('会议'), findsOneWidget, reason: '子文件夹要成为分组标题');
@@ -109,15 +130,11 @@ void main() {
     });
 
     testWidgets('预览右上角的编辑按钮返回编辑动作', (WidgetTester tester) async {
-      final _Probe<TemplatePickerResult> probe = await _openDialog(
-        tester,
-        (BuildContext context) => showTemplatePicker(
-          context,
-          templates: <Note>[templateNote('daily', '日记')],
-          templatesFolder: '模板',
-          canInsert: true,
-        ),
-      );
+      final _Probe<({TemplatePickerAction action, Note? template})> probe =
+          await openPage(
+            tester,
+            templates: <Note>[templateNote('daily', '日记')],
+          );
 
       await tester.tap(find.byTooltip('编辑这个模板'));
       await tester.pumpAndSettle();
@@ -130,19 +147,15 @@ void main() {
     testWidgets('方向键移动高亮，Ctrl+Enter 走新建笔记', (
       WidgetTester tester,
     ) async {
-      final _Probe<TemplatePickerResult> probe = await _openDialog(
-        tester,
-        (BuildContext context) => showTemplatePicker(
-          context,
-          templates: <Note>[
-            templateNote('a', '甲'),
-            templateNote('b', '乙'),
-            templateNote('c', '丙'),
-          ],
-          templatesFolder: '模板',
-          canInsert: true,
-        ),
-      );
+      final _Probe<({TemplatePickerAction action, Note? template})> probe =
+          await openPage(
+            tester,
+            templates: <Note>[
+              templateNote('a', '甲'),
+              templateNote('b', '乙'),
+              templateNote('c', '丙'),
+            ],
+          );
 
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pump();
@@ -157,15 +170,12 @@ void main() {
     testWidgets('没有打开的笔记时插入被禁用，但新建笔记仍可用', (
       WidgetTester tester,
     ) async {
-      final _Probe<TemplatePickerResult> probe = await _openDialog(
-        tester,
-        (BuildContext context) => showTemplatePicker(
-          context,
-          templates: <Note>[templateNote('a', '甲')],
-          templatesFolder: '模板',
-          canInsert: false,
-        ),
-      );
+      final _Probe<({TemplatePickerAction action, Note? template})> probe =
+          await openPage(
+            tester,
+            templates: <Note>[templateNote('a', '甲')],
+            canInsert: false,
+          );
 
       final TemplateDialogButton insert = tester.widget<TemplateDialogButton>(
         find.widgetWithText(TemplateDialogButton, '插入到当前笔记'),
@@ -187,15 +197,8 @@ void main() {
     testWidgets('空状态给出打开文件夹和新建模板两条路', (
       WidgetTester tester,
     ) async {
-      final _Probe<TemplatePickerResult> probe = await _openDialog(
-        tester,
-        (BuildContext context) => showTemplatePicker(
-          context,
-          templates: const <Note>[],
-          templatesFolder: '模板',
-          canInsert: true,
-        ),
-      );
+      final _Probe<({TemplatePickerAction action, Note? template})> probe =
+          await openPage(tester, templates: const <Note>[]);
 
       expect(find.text('还没有模板'), findsOneWidget);
       expect(find.textContaining('「模板」文件夹'), findsWidgets);
@@ -204,22 +207,15 @@ void main() {
       await tester.pumpAndSettle();
       expect(probe.value?.action, TemplatePickerAction.openFolder);
 
-      await _reopen(tester);
+      // 这一页不再关掉：动作做完它就留在原处，接着点第二条路。
       await tester.tap(find.text('新建模板'));
       await tester.pumpAndSettle();
       expect(probe.value?.action, TemplatePickerAction.newTemplate);
     });
 
     testWidgets('搜不到时说明原因，清空后列表回来', (WidgetTester tester) async {
-      final _Probe<TemplatePickerResult> probe = await _openDialog(
-        tester,
-        (BuildContext context) => showTemplatePicker(
-          context,
-          templates: <Note>[templateNote('a', '甲')],
-          templatesFolder: '模板',
-          canInsert: true,
-        ),
-      );
+      final _Probe<({TemplatePickerAction action, Note? template})> probe =
+          await openPage(tester, templates: <Note>[templateNote('a', '甲')]);
 
       await tester.enterText(find.byType(TextField), '不存在的名字');
       await tester.pumpAndSettle();
@@ -241,23 +237,15 @@ void main() {
       expect(find.text('没有找到模板'), findsNothing);
     });
 
-    testWidgets('Esc 关闭选择器，不返回任何动作', (WidgetTester tester) async {
-      final _Probe<TemplatePickerResult> probe = await _openDialog(
-        tester,
-        (BuildContext context) => showTemplatePicker(
-          context,
-          templates: <Note>[templateNote('a', '甲')],
-          templatesFolder: '模板',
-          canInsert: true,
-        ),
-      );
+    testWidgets('Esc 关掉这一页，不返回任何动作', (WidgetTester tester) async {
+      final _Probe<({TemplatePickerAction action, Note? template})> probe =
+          await openPage(tester, templates: <Note>[templateNote('a', '甲')]);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pumpAndSettle();
 
-      expect(probe.done, isTrue);
-      expect(probe.value, isNull);
-      expect(find.byType(TemplatePickerDialog), findsNothing);
+      expect(probe.closed, isTrue, reason: 'Esc 交给外壳去关这一页');
+      expect(probe.done, isFalse, reason: 'Esc 不是任何一个动作');
     });
   });
 

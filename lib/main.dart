@@ -93,7 +93,17 @@ Future<void> main() async {
 
   // 窗口那串原生调用排在 `runApp` 之后：它们只决定「什么时候看得见」，
   // 不决定「看得见什么」。
-  await setupWindow();
+  await setupWindow(opacity: settings.effectiveWindowOpacity);
+
+  // 设置里改了「窗口不透明度」或换了外观要立刻反映到原生窗口。设置控制器
+  // 每次通知都会走到这里，比一下值就能跳过字号、排序这些不相干的通知。
+  double appliedWindowOpacity = settings.effectiveWindowOpacity;
+  settings.addListener(() {
+    final double next = settings.effectiveWindowOpacity;
+    if (next == appliedWindowOpacity) return;
+    appliedWindowOpacity = next;
+    unawaited(applyWindowOpacity(next));
+  });
 
   // 关闭窗口前把去抖窗口里的最后一次编辑落盘；桌面端拦截关闭事件，
   // 浏览器端为空实现（见 close_guard_web.dart）。标签变化在发生时就已写进

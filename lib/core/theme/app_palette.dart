@@ -5,14 +5,18 @@ import 'package:flutter/material.dart';
 /// Semantic colour tokens for the whole application.
 ///
 /// Instead of sprinkling raw hex values through the widget tree, every surface
-/// and text colour is named by *role*. There is exactly **one** board — 午夜靛,
+/// and text colour is named by *role*. There is exactly **one** board — 石墨,
 /// dark — so a widget never needs to know which palette is active.
 ///
-/// Five clearly separated neutral steps (canvas → sidebar → surface →
-/// surfaceRaised, plus surfaceSunken below the canvas), one accent, and no
-/// decorative tint anywhere else. Neighbouring steps sit at least five levels
-/// apart on purpose — that gap is what lets the four shell regions separate
-/// with a hairline instead of a border and a shadow fighting each other.
+/// Five neutral steps: [surfaceSunken] below everything, [canvas] for the
+/// window, [surface] for paper, [sidebar] for the two side columns and the top
+/// band, and [surfaceRaised] for anything that floats above the paper. The
+/// paper is the *darkest* of the working faces on purpose: long reading should
+/// land on the text, not on the frame around it.
+///
+/// The accent is spent only inside the note body — search hits, quote bars,
+/// list dots. Chrome marks selection with the neutral [rowSelected] wash and
+/// never borrows the accent for text, underlines or bars.
 ///
 /// ⛔ **Team rule: only [AppPaletteContext.palette] decides which palette is in
 /// force.** New code must go through `context.palette`. There is no second
@@ -38,6 +42,7 @@ class AppPalette extends ThemeExtension<AppPalette> {
     required this.accent,
     required this.accentHover,
     required this.accentSoft,
+    required this.rowSelected,
     required this.onAccent,
     required this.success,
     required this.successSoft,
@@ -53,18 +58,19 @@ class AppPalette extends ThemeExtension<AppPalette> {
 
   final Brightness brightness;
 
-  /// Window background, behind every panel. Also the function rail, which reads
-  /// as the deepest step so the sidebar can sit *above* it rather than beside it.
+  /// Window background, behind every panel, and the recessed gap between two
+  /// split editors.
   final Color canvas;
 
-  /// The switchable file / search / tags sidebar, and the document outline.
+  /// The switchable sidebar, the outline column, and the 40px band that runs
+  /// along the top of every pane.
   ///
-  /// One step above [canvas] and one below [surface]: the editor stays the
-  /// brightest surface on screen, which is where the eye should land.
+  /// One step *above* [surface]: the chrome is allowed to be the lighter face,
+  /// while the paper under the text sinks to the darkest working step.
   final Color sidebar;
 
-  /// Main content surface: the editor, and every dialog that reads as a sheet
-  /// of paper.
+  /// Main content surface: the paper under the editor, and every dialog that
+  /// reads as a sheet of paper.
   final Color surface;
 
   /// Cards, chips, popovers, inputs and hovered rows that sit *on top of*
@@ -96,14 +102,20 @@ class AppPalette extends ThemeExtension<AppPalette> {
   final Color textSecondary;
   final Color textTertiary;
 
-  /// Selection, focus, tags, the current row — the colour spent on the thing
-  /// the user is looking at. Near-black in the light board, near-white in the dark one.
+  /// The note body's own colour: search hits, quote bars, list dots, the
+  /// selected table block. Not a chrome colour any more.
   final Color accent;
 
   final Color accentHover;
 
-  /// A quiet wash for a selected row's background.
+  /// The highlighter wash reserved for the note body. Chrome never fills a
+  /// selected row with it — see [rowSelected].
   final Color accentSoft;
+
+  /// The neutral fill behind a selected tab, rail button, list row or outline
+  /// row. One step above [surfaceRaised] (hover), so "here" reads as a slightly
+  /// brighter square of the same grey rather than a borrowed tint.
+  final Color rowSelected;
 
   /// Text and icons sitting *on* a solid [accent] fill.
   final Color onAccent;
@@ -138,30 +150,31 @@ class AppPalette extends ThemeExtension<AppPalette> {
 
   bool get isDark => brightness == Brightness.dark;
 
-  /// 午夜靛 — the only board the app ships.
+  /// 石墨 — the only board the app ships.
   ///
-  /// 深色、偏冷的靛蓝：画布 `#0E0F13`、侧栏 `#131419`、编辑区 `#17181E`、
-  /// 浮层 `#1F2027`、下沉 `#0A0B0E`；强调色是一支偏紫的靛蓝 `#8B94F2`，
-  /// 在近黑的纸面上够亮又不刺眼。
+  /// 纸面沉到 `#151516`（工作面里最暗的一档），侧栏和顶带抬到 `#1E1F21`，
+  /// 画布 `#0F0F10`，浮层 `#28292C`；强调色仍是一支偏紫的靛蓝 `#8B94F2`，
+  /// 但只在正文里出现。外壳的选中用中性 [rowSelected] `#34353A`。
   ///
   /// [selectionEdge] 是 [accent] 降一档亮度（×0.86）的结果：1px 的强调色
   /// 在深色板上读起来是发光而不是描边，压暗一点才收得住。
   static const AppPalette midnight = AppPalette(
     brightness: Brightness.dark,
-    canvas: Color(0xFF0E0F13),
-    sidebar: Color(0xFF131419),
-    surface: Color(0xFF17181E),
-    surfaceRaised: Color(0xFF1F2027),
-    surfaceSunken: Color(0xFF0A0B0E),
-    outline: Color(0xFF2A2C36),
-    outlineSoft: Color(0xFF1E2028),
-    rule: Color(0xFF32343F),
-    textPrimary: Color(0xFFE6E8EF),
-    textSecondary: Color(0xFF9AA0B0),
-    textTertiary: Color(0xFF6A7080),
+    canvas: Color(0xFF0F0F10),
+    sidebar: Color(0xFF1E1F21),
+    surface: Color(0xFF151516),
+    surfaceRaised: Color(0xFF28292C),
+    surfaceSunken: Color(0xFF0B0B0C),
+    outline: Color(0xFF343438),
+    outlineSoft: Color(0xFF232326),
+    rule: Color(0xFF343438),
+    textPrimary: Color(0xFFECEDEF),
+    textSecondary: Color(0xFFA8AAAF),
+    textTertiary: Color(0xFF7D7F85),
     accent: Color(0xFF8B94F2),
     accentHover: Color(0xFFA0A8F7),
-    accentSoft: Color(0xFF23263A),
+    accentSoft: Color(0xFF2C2D42),
+    rowSelected: Color(0xFF34353A),
     onAccent: Color(0xFF10122A),
     success: Color(0xFF5FC79A),
     successSoft: Color(0xFF13251D),
@@ -174,6 +187,47 @@ class AppPalette extends ThemeExtension<AppPalette> {
     shadow: Color(0x66000000),
     overlay: Color(0x99000000),
   );
+
+  /// 壁纸外观用的一版：把「成片的地」压到 [opacity]，露出垫在下面的图。
+  ///
+  /// 只动大块面层（侧栏、纸面、浮层、选中底、柔光底）；[canvas]、文字、
+  /// 图标、描边和内容线保持实色——设计稿里文字是不透明的，画布还要给
+  /// 白板 / 图片 / 空分格当实底。
+  ///
+  /// 这不是第二块色板：仍然是同一块石墨，只是叠了一层透明。切回默认外观
+  /// 时直接用 [midnight] 就行。
+  AppPalette backdrop(double opacity) {
+    Color veil(Color c) => c.withValues(alpha: c.a * opacity);
+    return AppPalette(
+      brightness: brightness,
+      canvas: canvas,
+      sidebar: veil(sidebar),
+      surface: veil(surface),
+      surfaceRaised: veil(surfaceRaised),
+      surfaceSunken: veil(surfaceSunken),
+      outline: outline,
+      outlineSoft: outlineSoft,
+      rule: rule,
+      textPrimary: textPrimary,
+      textSecondary: textSecondary,
+      textTertiary: textTertiary,
+      accent: accent,
+      accentHover: accentHover,
+      accentSoft: veil(accentSoft),
+      rowSelected: veil(rowSelected),
+      onAccent: onAccent,
+      success: success,
+      successSoft: veil(successSoft),
+      warning: warning,
+      warningSoft: veil(warningSoft),
+      danger: danger,
+      dangerSoft: veil(dangerSoft),
+      selection: selection,
+      selectionEdge: selectionEdge,
+      shadow: shadow,
+      overlay: overlay,
+    );
+  }
 
   /// Black or white — whichever reads better on [background].
   ///
@@ -200,8 +254,9 @@ class AppPalette extends ThemeExtension<AppPalette> {
 
   /// WCAG relative luminance. Alpha is ignored: callers pass composited fills.
   static double _relativeLuminance(Color c) {
-    double channel(double v) =>
-        v <= 0.03928 ? v / 12.92 : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
+    double channel(double v) => v <= 0.03928
+        ? v / 12.92
+        : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
     return 0.2126 * channel(c.r) +
         0.7152 * channel(c.g) +
         0.0722 * channel(c.b);
@@ -224,6 +279,7 @@ class AppPalette extends ThemeExtension<AppPalette> {
     accent: accent,
     accentHover: accentHover,
     accentSoft: accentSoft,
+    rowSelected: rowSelected,
     onAccent: onAccent,
     success: success,
     successSoft: successSoft,
@@ -257,6 +313,7 @@ class AppPalette extends ThemeExtension<AppPalette> {
       accent: mix(accent, other.accent),
       accentHover: mix(accentHover, other.accentHover),
       accentSoft: mix(accentSoft, other.accentSoft),
+      rowSelected: mix(rowSelected, other.rowSelected),
       onAccent: mix(onAccent, other.onAccent),
       success: mix(success, other.success),
       successSoft: mix(successSoft, other.successSoft),

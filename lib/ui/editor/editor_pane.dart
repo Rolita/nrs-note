@@ -18,9 +18,14 @@ import '../../state/settings_controller.dart';
 import '../common/app_widgets.dart';
 import 'live_markdown.dart';
 import 'markdown_editor.dart';
+import 'toc_overlay.dart';
 
-/// The centre pane: note header, the live editor and a status bar. The outline
-/// lives beside it as its own region, driven by the cursor line reported here.
+/// 光标所在行（从 0 开始）与列（从 1 开始）。编辑区右下角的状态浮片读它。
+typedef EditorCaret = ({int line, int column});
+
+/// The centre pane: note header, the live editor and the prose. The outline
+/// lives beside it as its own region, driven by the cursor line reported here;
+/// the status readout floats at the bottom-right corner of the editor area.
 class EditorPane extends StatefulWidget {
   const EditorPane({
     super.key,
@@ -29,8 +34,10 @@ class EditorPane extends StatefulWidget {
     this.onOpenSearch,
     this.showSearchHighlights = false,
     this.bodyValue,
+    this.caretValue,
     this.noteId,
     this.readOnly = false,
+    this.outlineLine,
     this.onClosePane,
   });
 
@@ -49,6 +56,12 @@ class EditorPane extends StatefulWidget {
   /// 和冲突检测都只服务那一格，不用把这三套东西复制成多份。
   final bool readOnly;
 
+  /// 右缘大纲刻度跟随的源码行；`null` 就不画刻度。
+  ///
+  /// 只有聚焦的活笔记格会拿到这个值（外壳的 `_cursorLine`）：只读格不跟大纲，
+  /// 也不该在它右缘放一张点了就跳走的目录。
+  final int? outlineLine;
+
   final void Function(Note note) onDelete;
   final ValueChanged<int>? onCursorLineChanged;
 
@@ -65,6 +78,12 @@ class EditorPane extends StatefulWidget {
   /// being read through the state's key, which is not available while the
   /// shell is still building.
   final ValueNotifier<TextEditingValue>? bodyValue;
+
+  /// Where the caret is, published for the floating readout outside the pane.
+  ///
+  /// 只有聚焦的活格子拿到这个值：只读格不发布，分屏时两格不会抢同一个
+  /// notifier；交接之后由外壳把同一个 notifier 交给新的活格子。
+  final ValueNotifier<EditorCaret>? caretValue;
 
   @override
   State<EditorPane> createState() => EditorPaneState();
@@ -125,6 +144,17 @@ class EditorPaneState extends State<EditorPane> {
   }
 
   @override
+  void didUpdateWidget(covariant EditorPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 聚焦格交接时，新的活格子接手同一个 notifier，正文却没有动；补发一次
+    // 当前行列，右下角浮片不会停在上一格的数据上。
+    if (widget.caretValue != null &&
+        widget.caretValue != oldWidget.caretValue) {
+      _publishCaretAfterFrame();
+    }
+  }
+
+  @override
   void dispose() {
     _title.dispose();
     _body.dispose();
@@ -153,11 +183,29 @@ class EditorPaneState extends State<EditorPane> {
         _cursorLine = line;
         _cursorColumn = column;
       });
+      _publishCaret();
       if (lineMoved) {
         _lastCaretMove = DateTime.now();
         _reportOutlineLine(line);
       }
     }
+  }
+
+  /// 把当前行列写给右下角的状态浮片。
+  ///
+  /// 只写不读：`caretValue` 为 null 的只读格不发布，分屏时不会两格抢同一个
+  /// notifier。`_bind` / `_syncBoundBody` 都在 build 里跑，那两处要走
+  /// [_publishCaretAfterFrame]。
+  void _publishCaret() {
+    final ValueNotifier<EditorCaret>? out = widget.caretValue;
+    if (out == null) return;
+    out.value = (line: _cursorLine, column: _cursorColumn);
+  }
+
+  void _publishCaretAfterFrame() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _publishCaret();
+    });
   }
 
   /// 光标所在的源码行（从 0 开始）与列（从 1 开始）。
@@ -240,6 +288,24 @@ class EditorPaneState extends State<EditorPane> {
     applyEdit(insertTemplateText(text, cursorOffset: cursorOffset));
   }
 
+  /// 光标 / 选区。
+  ///
+  /// 模板页占着这一格的时候编辑器不在树上，选区也跟着没了；插模板前先把这一
+  /// 笔记下来（见 `AppShell._handleTemplateAction`），切回来再放回去，模板才
+  /// 落在原来的位置，而不是跑到文末。
+  TextSelection get bodySelection => _body.selection;
+
+  /// 把 [bodySelection] 记下来的那一笔放回去。
+  void restoreSelection(TextSelection selection) {
+    if (!selection.isValid) return;
+    final int length = _body.text.length;
+    final int base = selection.baseOffset.clamp(0, length);
+    final int extent = selection.extentOffset.clamp(0, length);
+    _body.revealSuppressed = false;
+    _body.selection = TextSelection(baseOffset: base, extentOffset: extent);
+    _bodyFocus.requestFocus();
+  }
+
   /// Places the caret after the body was replaced from outside — the
   /// template-new-note flow, whose cursor marker is only known once the note
   /// exists and has rendered.
@@ -271,6 +337,7 @@ class EditorPaneState extends State<EditorPane> {
     _outlineLine = 0;
     _binding = false;
     _publishBodyAfterFrame();
+    _publishCaretAfterFrame();
     if (hadCursor) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) widget.onCursorLineChanged?.call(0);
@@ -324,6 +391,7 @@ class EditorPaneState extends State<EditorPane> {
     final ({int line, int column}) position = _caretPosition(note.body, caret);
     _cursorLine = position.line;
     _cursorColumn = position.column;
+    _publishCaretAfterFrame();
   }
 
   // ------------------------------------------------------------ navigation
@@ -386,6 +454,11 @@ class EditorPaneState extends State<EditorPane> {
 
   /// Jumping from the outline also parks the caret on that heading, so the raw
   /// markers of the block you landed on reveal themselves.
+  ///
+  /// The heading's own text is **selected**, not just pointed at: landing on a
+  /// heading almost always means you are about to retype it, and a bare caret
+  /// would leave you to select the line by hand first. Selecting the whole line
+  /// (markers included) is what makes the very next keystroke replace it.
   void _goToHeading(int line, TextStyle style) {
     final List<String> lines = _body.text.split('\n');
     if (lines.isEmpty) return;
@@ -394,9 +467,16 @@ class EditorPaneState extends State<EditorPane> {
     for (int i = 0; i < target; i++) {
       offset += lines[i].length + 1;
     }
-    _body.selection = TextSelection.collapsed(
-      offset: offset.clamp(0, _body.text.length),
+    final int start = offset.clamp(0, _body.text.length);
+    final int end = (offset + lines[target].length).clamp(
+      start,
+      _body.text.length,
     );
+    _body.selection = start == end
+        ? TextSelection.collapsed(offset: start)
+        : TextSelection(baseOffset: start, extentOffset: end);
+    // 点大纲就是要改这一行：焦点得落在正文上，否则选中了也打不进字。
+    _bodyFocus.requestFocus();
     _jumpToLine(target, style: style, anchor: 0.12);
   }
 
@@ -468,11 +548,27 @@ class EditorPaneState extends State<EditorPane> {
           Expanded(
             child: LayoutBuilder(
               builder: (BuildContext context, BoxConstraints c) {
-                return _workspace(p, note, notes, c.maxWidth);
+                final Widget workspace = _workspace(p, note, notes, c.maxWidth);
+                final int? line = widget.outlineLine;
+                if (line == null) return workspace;
+                // 刻度只铺在正文这一层：顶栏和底栏不属于文档，卡片也不该从
+                // 它们上面展开。正文没标题时 TocOverlay 自己收起。
+                return Stack(
+                  fit: StackFit.expand,
+                  children: <Widget>[
+                    workspace,
+                    TocOverlay(
+                      // 换笔记 / 正文被整段替换时直接重建，首次 build 就扫标题。
+                      key: ValueKey<String>('toc-${note.id}#$_bodyEpoch'),
+                      body: _body.text,
+                      currentLine: line,
+                      onSelect: goToHeading,
+                    ),
+                  ],
+                );
               },
             ),
           ),
-          _statusBar(p, note, notes, settings),
         ],
       ),
     );
@@ -533,6 +629,12 @@ class EditorPaneState extends State<EditorPane> {
       ): const _EditIntent(
         _EditKind.quote,
       ),
+      // Alt+1 任务列表、Alt+2 高亮：写待办和划重点是最常回手的两件事，放在
+      // 左手够得着的位置（Ctrl 那一排留给标题和列表）。
+      const SingleActivator(LogicalKeyboardKey.digit1, alt: true):
+          const _EditIntent(_EditKind.task),
+      const SingleActivator(LogicalKeyboardKey.digit2, alt: true):
+          const _EditIntent(_EditKind.highlight),
     };
   }
 
@@ -575,6 +677,8 @@ class EditorPaneState extends State<EditorPane> {
               applyEdit(applyBlockStyle(BlockStyle.orderedTask));
             case _EditKind.quote:
               applyEdit(applyBlockStyle(BlockStyle.quote));
+            case _EditKind.highlight:
+              applyEdit(wrapSelection('==', '==', placeholder: '高亮'));
             case _EditKind.table:
               applyEdit(insertBlock(kTableSkeleton.trim()));
           }
@@ -601,7 +705,7 @@ class EditorPaneState extends State<EditorPane> {
 
     return Container(
       height: AppLayout.toolbarHeight,
-      padding: const EdgeInsets.symmetric(horizontal: AppSpace.sm),
+      padding: const EdgeInsets.only(left: 10, right: 8),
       decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: p.outlineSoft)),
       ),
@@ -618,26 +722,32 @@ class EditorPaneState extends State<EditorPane> {
               ),
             ),
           ),
-          const SizedBox(width: AppSpace.sm),
+          const SizedBox(width: 2),
           // 分割只走拖拽（把标签拖到格子边上），这里不再画「左右 / 上下
           // 分屏」按钮；只剩「关掉这一格」。放在专注模式左边：它是「这一格
           // 怎么摆」，专注模式是「整个窗口怎么摆」，越靠右的越关乎全局。
-          if (widget.onClosePane != null)
+          if (widget.onClosePane != null) ...<Widget>[
             AppIconButton(
               icon: LucideIcons.x,
               tooltip: '关掉这一格',
-              size: AppLayout.buttonHeight,
-              iconSize: AppIconSize.sm - 2,
+              size: 26,
+              iconSize: 15,
               onPressed: widget.onClosePane,
             ),
+            const SizedBox(width: 2),
+          ],
           AppIconButton(
             icon: LucideIcons.maximize,
             tooltip: '专注模式',
             shortcut: 'Ctrl+Shift+F',
+            size: 26,
+            iconSize: 15,
             active: settings.focusMode,
             onPressed: () => settings.focusMode = !settings.focusMode,
           ),
+          const SizedBox(width: 2),
           _TypographyMenu(settings: settings),
+          const SizedBox(width: 2),
           _MoreMenu(
             note: note,
             notes: notes,
@@ -861,72 +971,7 @@ class EditorPaneState extends State<EditorPane> {
     );
   }
 
-  // ------------------------------------------------------------ status bar
-
-  Widget _statusBar(
-    AppPalette p,
-    Note note,
-    NotesController notes,
-    SettingsController settings,
-  ) {
-    // The status bar is the *only* place the save state is announced: saving is
-    // automatic, so a toast on every write would be a toast per sentence. Only
-    // "已保存" is allowed a colour — the other three are the resting state or the
-    // 300ms wait before the write, and painting that window orange made a
-    // warning banner out of simply typing.
-    final (String label, Color color) = switch (notes.saveState) {
-      SaveState.saving => ('保存中…', p.textTertiary),
-      SaveState.dirty => ('未保存', p.textTertiary),
-      SaveState.saved => ('已保存', p.success),
-      SaveState.idle => ('已同步', p.textTertiary),
-    };
-
-    return Container(
-      height: AppLayout.footerHeight,
-      padding: kEditorChromePadding,
-      decoration: BoxDecoration(
-        border: Border(top: BorderSide(color: p.outlineSoft)),
-      ),
-      child: Row(
-        children: <Widget>[
-          AnimatedContainer(
-            duration: AppMotion.fast,
-            width: 6,
-            height: 6,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 7),
-          Text(
-            label,
-            style: TextStyle(fontSize: AppText.caption, color: p.textTertiary),
-          ),
-          const SizedBox(width: 14),
-          _Stat(
-            text: '行 ${_cursorLine + 1},列 $_cursorColumn',
-            color: p.textTertiary,
-          ),
-          const Spacer(),
-          if (note.taskTotal > 0) ...<Widget>[
-            _Stat(
-              text: '待办 ${note.taskDone}/${note.taskTotal}',
-              color: note.taskDone == note.taskTotal
-                  ? p.success
-                  : p.textTertiary,
-            ),
-            const SizedBox(width: 14),
-          ],
-          _Stat(text: '${note.wordCount} 字', color: p.textTertiary),
-          const SizedBox(width: 14),
-          _Stat(text: '${note.characterCount} 字符', color: p.textTertiary),
-          if (note.readingMinutes > 0) ...<Widget>[
-            const SizedBox(width: 14),
-            _Stat(text: '约 ${note.readingMinutes} 分钟', color: p.textTertiary),
-          ],
-          const SizedBox(width: AppSpace.sm),
-        ],
-      ),
-    );
-  }
+  // ------------------------------------------------------------ status float
 
   Widget _noSelection(AppPalette p, NotesController notes) {
     if (notes.isLoading) {
@@ -958,19 +1003,6 @@ class EditorPaneState extends State<EditorPane> {
   }
 }
 
-class _Stat extends StatelessWidget {
-  const _Stat({required this.text, required this.color});
-
-  final String text;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) => Text(
-    text,
-    style: TextStyle(fontSize: AppText.caption, color: color),
-  );
-}
-
 enum _EditKind {
   bold,
   italic,
@@ -987,6 +1019,7 @@ enum _EditKind {
   task,
   orderedTask,
   quote,
+  highlight,
   table,
 }
 
@@ -1051,10 +1084,7 @@ class _TypographyMenu extends StatelessWidget {
           ),
         ),
       ],
-      child: const Padding(
-        padding: EdgeInsets.symmetric(horizontal: 2),
-        child: _MenuTrigger(icon: LucideIcons.aLargeSmall, tooltip: '正文字号'),
-      ),
+      child: const _MenuTrigger(icon: LucideIcons.aLargeSmall, tooltip: '正文字号'),
     );
   }
 }
@@ -1083,15 +1113,15 @@ class _MenuTriggerState extends State<_MenuTrigger> {
         onExit: (_) => setState(() => _hovered = false),
         child: AnimatedContainer(
           duration: AppMotion.fast,
-          width: 30,
-          height: 30,
+          width: 26,
+          height: 26,
           decoration: BoxDecoration(
             color: _hovered ? p.surfaceRaised : Colors.transparent,
             borderRadius: AppRadius.smAll,
           ),
           child: Icon(
             widget.icon,
-            size: 16.5,
+            size: 15,
             color: _hovered ? p.textPrimary : p.textSecondary,
           ),
         ),
@@ -1143,10 +1173,7 @@ class _MoreMenu extends StatelessWidget {
         const PopupMenuDivider(),
         _entry(p, 'delete', LucideIcons.trash2, '删除笔记', danger: true),
       ],
-      child: const Padding(
-        padding: EdgeInsets.symmetric(horizontal: 2),
-        child: _MenuTrigger(icon: LucideIcons.ellipsis, tooltip: '更多操作'),
-      ),
+      child: const _MenuTrigger(icon: LucideIcons.ellipsis, tooltip: '更多操作'),
     );
   }
 

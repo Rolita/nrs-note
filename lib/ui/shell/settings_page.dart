@@ -13,13 +13,20 @@ import '../../templates/template_service.dart';
 import '../common/app_widgets.dart';
 import '../templates/template_hotkeys_dialog.dart';
 
-/// Preferences, vault status and a keyboard reference in one dialog.
-Future<void> showSettingsDialog(BuildContext context) {
-  return showDialog<void>(
-    context: context,
-    barrierColor: context.palette.overlay,
-    builder: (BuildContext context) => const _SettingsDialog(),
-  );
+/// 设置，作为编辑区里的一页。
+///
+/// 以前是一层 `showDialog`：改字号看不见正文、改侧边栏宽度看不见侧边栏，而且
+/// 每次都要「打开 → 找 → 改 → 关」。现在它就是编辑区的一页，和笔记并排开着，
+/// 改哪项当场就看得见；改完即写偏好（[SettingsController] 每个 setter 自己落
+/// 盘），所以没有「确定 / 取消」，也没有保存按钮。
+///
+/// ⛔ 不要在这里自己存一份设置值：整页 watch `SettingsController`，和别处
+/// （菜单、快捷键、拖分割线）改出来的值必须立刻反映到这一页上。
+class SettingsPage extends StatefulWidget {
+  const SettingsPage({super.key});
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
 }
 
 /// The groups the left navigation can jump to.
@@ -33,14 +40,7 @@ enum _Section {
   about,
 }
 
-class _SettingsDialog extends StatefulWidget {
-  const _SettingsDialog();
-
-  @override
-  State<_SettingsDialog> createState() => _SettingsDialogState();
-}
-
-class _SettingsDialogState extends State<_SettingsDialog> {
+class _SettingsPageState extends State<SettingsPage> {
   final ScrollController _scroll = ScrollController();
 
   /// One anchor per group: the nav is a table of contents, not a page switch.
@@ -75,288 +75,257 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     final SettingsController settings = context.watch<SettingsController>();
     final NotesController notes = context.watch<NotesController>();
 
-    return Dialog(
-      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
-      backgroundColor: Colors.transparent,
-      surfaceTintColor: Colors.transparent,
-      elevation: 0,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 780, maxHeight: 588),
-        child: SizedBox(
-          width: 780,
-          height: 588,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: p.surface,
-              borderRadius: AppRadius.lgAll,
-              border: Border.all(color: p.outline),
-              boxShadow: <BoxShadow>[
-                BoxShadow(
-                  color: p.shadow,
-                  blurRadius: 44,
-                  offset: const Offset(0, 18),
-                ),
-                BoxShadow(
-                  color: p.shadow,
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: AppRadius.lgAll,
+    // 一页，不是一层浮层：没有 Dialog、没有圆角阴影、没有关闭按钮——这一页
+    // 的 × 在标签条上，和别的页一样。铺满它那一格。
+    return ColoredBox(
+      color: p.surface,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          _buildNav(p),
+          Expanded(
+            child: SingleChildScrollView(
+              controller: _scroll,
+              padding: const EdgeInsets.fromLTRB(
+                22,
+                AppSpace.lg,
+                22,
+                AppSpace.xxl,
+              ),
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
-                  _buildHeader(p),
-                  Expanded(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: <Widget>[
-                        _buildNav(p),
-                        Expanded(
-                          child: SingleChildScrollView(
-                            controller: _scroll,
-                            padding: const EdgeInsets.fromLTRB(
-                              22,
-                              AppSpace.lg,
-                              22,
-                              AppSpace.xxl,
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: <Widget>[
-                                _section(
-                                  _Section.appearance,
-                                  title: '外观',
-                                  desc: '整个应用共用一块深色色板（午夜靛），'
-                                      '没有明暗切换，也没有自定义配色。',
-                                  children: <Widget>[
-                                    _SettingRow(
-                                      label: '侧边栏',
-                                      hint: 'Ctrl + \\',
-                                      control: _Switch(
-                                        value: !settings.sidebarCollapsed,
-                                        label: settings.sidebarCollapsed
-                                            ? '已收起'
-                                            : '已展开',
-                                        onChanged: (bool v) =>
-                                            settings.sidebarCollapsed = !v,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                _section(
-                                  _Section.typography,
-                                  title: '排版',
-                                  desc:
-                                      '只影响阅读区域。拖动侧边栏与编辑栏的交界，'
-                                      '这里的宽度数值也会跟着变。',
-                                  children: <Widget>[
-                                    _SettingRow(
-                                      label: '正文字号',
-                                      stretch: true,
-                                      control: _SliderControl(
-                                        value: settings.proseSize,
-                                        min: 13,
-                                        max: 22,
-                                        divisions: 18,
-                                        suffix: 'pt',
-                                        onChanged: (double v) =>
-                                            settings.proseSize = v,
-                                      ),
-                                    ),
-                                    _SettingRow(
-                                      label: '侧边栏宽度',
-                                      stretch: true,
-                                      control: _SliderControl(
-                                        value: settings.listWidth,
-                                        min: AppLayout.listMinWidth,
-                                        max: AppLayout.listMaxWidth,
-                                        divisions: 28,
-                                        suffix: 'px',
-                                        onChanged: (double v) =>
-                                            settings.listWidth = v,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                _section(
-                                  _Section.editor,
-                                  title: '编辑器',
-                                  children: <Widget>[
-                                    _SettingRow(
-                                      label: '显示大纲',
-                                      hint: 'Ctrl + Shift + O',
-                                      control: _Switch(
-                                        value: settings.outlineVisible,
-                                        label: settings.outlineVisible
-                                            ? '开'
-                                            : '关',
-                                        onChanged: (bool v) =>
-                                            settings.outlineVisible = v,
-                                      ),
-                                    ),
-                                    _SettingRow(
-                                      label: '专注模式',
-                                      note: '隐藏功能栏、侧边栏与大纲，只留下文字。',
-                                      control: _Switch(
-                                        value: settings.focusMode,
-                                        label: settings.focusMode ? '开' : '关',
-                                        onChanged: (bool v) =>
-                                            settings.focusMode = v,
-                                      ),
-                                    ),
-                                    _SettingRow(
-                                      label: '默认排序',
-                                      note: '文件列表与搜索结果都按它排列。',
-                                      control: _Dropdown<SortMode>(
-                                        value: settings.sort,
-                                        items: <SortMode, String>{
-                                          for (final SortMode m
-                                              in SortMode.values)
-                                            m: m.label,
-                                        },
-                                        onChanged: (SortMode v) {
-                                          settings.sort = v;
-                                          notes.sortMode = v;
-                                        },
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                _section(
-                                  _Section.templates,
-                                  title: '模板',
-                                  desc: '模板文件夹里的笔记既是模板，也是普通笔记。',
-                                  children: <Widget>[
-                                    _SettingRow(
-                                      label: '模板文件夹',
-                                      stretch: true,
-                                      note:
-                                          '填库里任意文件夹的路径，支持子文件夹'
-                                          '（如 工作/模板），也可从右侧选择；'
-                                          '留空回到「模板」。',
-                                      control: const _TemplatesFolderField(),
-                                    ),
-                                    _SettingRow(
-                                      label: '新建笔记时套用文件夹模板',
-                                      note: '只填空笔记的正文；模板文件夹里的笔记不受影响。',
-                                      control: _Switch(
-                                        value:
-                                            settings.autoApplyFolderTemplates,
-                                        label: settings.autoApplyFolderTemplates
-                                            ? '开'
-                                            : '关',
-                                        onChanged: (bool v) =>
-                                            settings.autoApplyFolderTemplates =
-                                                v,
-                                      ),
-                                    ),
-                                    _SettingRow(
-                                      label: '文件夹规则',
-                                      stretch: true,
-                                      control: const _FolderTemplateRules(),
-                                    ),
-                                    _SettingRow(
-                                      label: '模板快捷键',
-                                      note: settings.templateHotkeys.isEmpty
-                                          ? '为常用模板绑定一个组合键。'
-                                          : '${settings.templateHotkeys.length} 个模板已绑定。',
-                                      control: AppTextButton(
-                                        label: '管理',
-                                        icon: LucideIcons.keyboard,
-                                        onPressed: () =>
-                                            showTemplateHotkeysDialog(context),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                _section(
-                                  _Section.vault,
-                                  title: '笔记库',
-                                  children: <Widget>[_VaultCard(notes: notes)],
-                                ),
-                                _section(
-                                  _Section.shortcuts,
-                                  title: '快捷键',
-                                  children: <Widget>[
-                                    const Padding(
-                                      padding: EdgeInsets.symmetric(
-                                        vertical: AppSpace.sm,
-                                      ),
-                                      child: _ShortcutTable(
-                                        rows: <(String, String)>[
-                                          ('Ctrl + N', '新建笔记'),
-                                          ('Ctrl + S', '立即保存'),
-                                          ('Ctrl + K', '插入链接'),
-                                          ('Ctrl + B / I', '加粗 / 斜体'),
-                                          ('Ctrl + E', '行内代码'),
-                                          ('Ctrl + Shift + E', '代码块'),
-                                          ('Ctrl + 1…3 / 0', '标题级别 / 正文'),
-                                          ('Ctrl + Alt + ↑ ↓', '上一篇 / 下一篇'),
-                                          ('Ctrl + \\\\', '收起或展开侧边栏'),
-                                          ('Ctrl + Shift + O', '显示 / 隐藏大纲'),
-                                          ('Ctrl + Shift + F', '专注模式'),
-                                          ('Ctrl + ,', '打开设置'),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                _section(
-                                  _Section.about,
-                                  title: '关于',
-                                  children: <Widget>[
-                                    const Padding(
-                                      padding: EdgeInsets.symmetric(
-                                        vertical: AppSpace.sm,
-                                      ),
-                                      child: _AboutRow(),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
+                  _section(
+                    _Section.appearance,
+                    title: '外观',
+                    desc:
+                        '两块外观共用一块深色石墨：默认是实色界面；'
+                        '壁纸把设计稿的极光图垫在下面，大块面层透出一成。',
+                    children: <Widget>[
+                      _SettingRow(
+                        label: '侧边栏',
+                        hint: 'Ctrl + \\',
+                        control: _Switch(
+                          value: !settings.sidebarCollapsed,
+                          label: settings.sidebarCollapsed ? '已收起' : '已展开',
+                          onChanged: (bool v) => settings.sidebarCollapsed = !v,
+                        ),
+                      ),
+                      _SettingRow(
+                        label: '外观',
+                        stretch: true,
+                        note: settings.appearance == ShellAppearance.wallpaper
+                            ? '壁纸压在大块面层下面；文字、图标和 1px 缝线保持实色。'
+                            : '实色石墨；窗口不透明度负责透出桌面。',
+                        control: _Segmented<ShellAppearance>(
+                          value: settings.appearance,
+                          keyPrefix: 'appearance',
+                          options: const <ShellAppearance, String>{
+                            ShellAppearance.graphite: '默认',
+                            ShellAppearance.wallpaper: '壁纸',
+                          },
+                          onChanged: (ShellAppearance v) =>
+                              settings.appearance = v,
+                        ),
+                      ),
+                      if (settings.appearance == ShellAppearance.graphite)
+                        _SettingRow(
+                          label: '窗口不透明度',
+                          stretch: true,
+                          note:
+                              '整扇窗一起透出桌面，文字也会跟着变淡；'
+                              '100% 完全不透明，50% 最透。',
+                          control: _SliderControl(
+                            value: settings.windowOpacity * 100,
+                            min: SettingsController.windowOpacityMin * 100,
+                            max: SettingsController.windowOpacityMax * 100,
+                            // 50%–100% 全程 1% 一档：92%、87% 都停得住，
+                            // 不用凑整到 5% 的倍数。
+                            divisions: 50,
+                            suffix: '%',
+                            separator: '',
+                            onChanged: (double v) =>
+                                settings.windowOpacity = v / 100,
+                          ),
+                        )
+                      else
+                        _SettingRow(
+                          label: '面层不透明度',
+                          stretch: true,
+                          note:
+                              '界面压在壁纸上的不透明度；'
+                              '90% 时壁纸透出一成，100% 完全盖住。',
+                          control: _SliderControl(
+                            value: settings.surfaceOpacity * 100,
+                            min: SettingsController.surfaceOpacityMin * 100,
+                            max: SettingsController.surfaceOpacityMax * 100,
+                            // 同样 1% 一档。
+                            divisions: 50,
+                            suffix: '%',
+                            separator: '',
+                            onChanged: (double v) =>
+                                settings.surfaceOpacity = v / 100,
                           ),
                         ),
-                      ],
-                    ),
+                    ],
+                  ),
+                  _section(
+                    _Section.typography,
+                    title: '排版',
+                    desc:
+                        '只影响阅读区域。拖动侧边栏与编辑栏的交界，'
+                        '这里的宽度数值也会跟着变。',
+                    children: <Widget>[
+                      _SettingRow(
+                        label: '正文字号',
+                        stretch: true,
+                        control: _SliderControl(
+                          value: settings.proseSize,
+                          min: 13,
+                          max: 22,
+                          divisions: 18,
+                          suffix: 'pt',
+                          onChanged: (double v) => settings.proseSize = v,
+                        ),
+                      ),
+                      _SettingRow(
+                        label: '侧边栏宽度',
+                        stretch: true,
+                        control: _SliderControl(
+                          value: settings.listWidth,
+                          min: AppLayout.listMinWidth,
+                          max: AppLayout.listMaxWidth,
+                          divisions: 28,
+                          suffix: 'px',
+                          onChanged: (double v) => settings.listWidth = v,
+                        ),
+                      ),
+                    ],
+                  ),
+                  _section(
+                    _Section.editor,
+                    title: '编辑器',
+                    children: <Widget>[
+                      _SettingRow(
+                        label: '显示大纲',
+                        hint: 'Ctrl + Shift + O',
+                        control: _Switch(
+                          value: settings.outlineVisible,
+                          label: settings.outlineVisible ? '开' : '关',
+                          onChanged: (bool v) => settings.outlineVisible = v,
+                        ),
+                      ),
+                      _SettingRow(
+                        label: '专注模式',
+                        note: '隐藏功能栏、侧边栏与大纲，只留下文字。',
+                        control: _Switch(
+                          value: settings.focusMode,
+                          label: settings.focusMode ? '开' : '关',
+                          onChanged: (bool v) => settings.focusMode = v,
+                        ),
+                      ),
+                      _SettingRow(
+                        label: '默认排序',
+                        note: '文件列表与搜索结果都按它排列。',
+                        control: _Dropdown<SortMode>(
+                          value: settings.sort,
+                          items: <SortMode, String>{
+                            for (final SortMode m in SortMode.values)
+                              m: m.label,
+                          },
+                          onChanged: (SortMode v) {
+                            settings.sort = v;
+                            notes.sortMode = v;
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  _section(
+                    _Section.templates,
+                    title: '模板',
+                    desc: '模板文件夹里的笔记既是模板，也是普通笔记。',
+                    children: <Widget>[
+                      _SettingRow(
+                        label: '模板文件夹',
+                        stretch: true,
+                        note:
+                            '填库里任意文件夹的路径，支持子文件夹'
+                            '（如 工作/模板），也可从右侧选择；'
+                            '留空回到「模板」。',
+                        control: const _TemplatesFolderField(),
+                      ),
+                      _SettingRow(
+                        label: '新建笔记时套用文件夹模板',
+                        note: '只填空笔记的正文；模板文件夹里的笔记不受影响。',
+                        control: _Switch(
+                          value: settings.autoApplyFolderTemplates,
+                          label: settings.autoApplyFolderTemplates ? '开' : '关',
+                          onChanged: (bool v) =>
+                              settings.autoApplyFolderTemplates = v,
+                        ),
+                      ),
+                      _SettingRow(
+                        label: '文件夹规则',
+                        stretch: true,
+                        control: const _FolderTemplateRules(),
+                      ),
+                      _SettingRow(
+                        label: '模板快捷键',
+                        note: settings.templateHotkeys.isEmpty
+                            ? '为常用模板绑定一个组合键。'
+                            : '${settings.templateHotkeys.length} 个模板已绑定。',
+                        control: AppTextButton(
+                          label: '管理',
+                          icon: LucideIcons.keyboard,
+                          onPressed: () => showTemplateHotkeysDialog(context),
+                        ),
+                      ),
+                    ],
+                  ),
+                  _section(
+                    _Section.vault,
+                    title: '笔记库',
+                    children: <Widget>[_VaultCard(notes: notes)],
+                  ),
+                  _section(
+                    _Section.shortcuts,
+                    title: '快捷键',
+                    children: <Widget>[
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: AppSpace.sm),
+                        child: _ShortcutTable(
+                          rows: <(String, String)>[
+                            ('Ctrl + N', '新建笔记'),
+                            ('Ctrl + S', '立即保存'),
+                            ('Ctrl + K', '插入链接'),
+                            ('Ctrl + B / I', '加粗 / 斜体'),
+                            ('Ctrl + E', '行内代码'),
+                            ('Ctrl + Shift + E', '代码块'),
+                            ('Ctrl + 1…3 / 0', '标题级别 / 正文'),
+                            ('Ctrl + Alt + ↑ ↓', '上一篇 / 下一篇'),
+                            ('Ctrl + \\\\', '收起或展开侧边栏'),
+                            ('Ctrl + Shift + O', '显示 / 隐藏大纲'),
+                            ('Ctrl + Shift + F', '专注模式'),
+                            ('Ctrl + ,', '打开设置'),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  _section(
+                    _Section.about,
+                    title: '关于',
+                    children: <Widget>[
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: AppSpace.sm),
+                        child: _AboutRow(),
+                      ),
+                    ],
                   ),
                 ],
               ),
             ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildHeader(AppPalette p) {
-    return Container(
-      constraints: const BoxConstraints(minHeight: 46),
-      padding: const EdgeInsets.fromLTRB(18, 0, 10, 0),
-      decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: p.outlineSoft)),
-      ),
-      child: Row(
-        children: <Widget>[
-          Icon(LucideIcons.settings, size: AppIconSize.sm, color: p.accent),
-          const SizedBox(width: 9),
-          Text(
-            '设置',
-            style: TextStyle(
-              fontSize: 13.5,
-              height: 1.35,
-              fontWeight: FontWeight.w600,
-              letterSpacing: -0.1,
-              color: p.textPrimary,
-            ),
-          ),
-          const Spacer(),
-          AppIconButton(
-            icon: LucideIcons.x,
-            tooltip: '关闭',
-            onPressed: () => Navigator.of(context).pop(),
           ),
         ],
       ),
@@ -681,6 +650,7 @@ class _SliderControl extends StatelessWidget {
     required this.divisions,
     required this.suffix,
     required this.onChanged,
+    this.separator = ' ',
   });
 
   final double value;
@@ -688,6 +658,10 @@ class _SliderControl extends StatelessWidget {
   final double max;
   final int divisions;
   final String suffix;
+
+  /// Number and unit are separated by a space for 「16 pt」; a percent sign
+  /// reads better attached (「90%」), so that row passes an empty separator.
+  final String separator;
   final ValueChanged<double> onChanged;
 
   @override
@@ -707,7 +681,7 @@ class _SliderControl extends StatelessWidget {
         SizedBox(
           width: 52,
           child: Text(
-            '${value.toStringAsFixed(0)} $suffix',
+            '${value.toStringAsFixed(0)}$separator$suffix',
             textAlign: TextAlign.right,
             style: TextStyle(
               fontSize: AppText.mono,
@@ -745,6 +719,73 @@ class _Switch extends StatelessWidget {
         const SizedBox(width: AppSpace.sm),
         Switch(value: value, onChanged: onChanged),
       ],
+    );
+  }
+}
+
+class _Segmented<T> extends StatelessWidget {
+  const _Segmented({
+    required this.value,
+    required this.options,
+    required this.onChanged,
+    this.keyPrefix,
+  });
+
+  final T value;
+  final Map<T, String> options;
+  final ValueChanged<T> onChanged;
+
+  /// 给每个选项挂一个 `keyPrefix-label` 的 key，测试点得到；界面上不显示。
+  final String? keyPrefix;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette p = context.palette;
+    return Container(
+      height: AppLayout.fieldHeight,
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: p.surfaceSunken,
+        borderRadius: AppRadius.smAll,
+        border: Border.all(color: p.outlineSoft),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          for (final MapEntry<T, String> option in options.entries)
+            MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: GestureDetector(
+                key: keyPrefix == null
+                    ? null
+                    : ValueKey<String>('$keyPrefix-${option.value}'),
+                behavior: HitTestBehavior.opaque,
+                onTap: () => onChanged(option.key),
+                child: AnimatedContainer(
+                  duration: AppMotion.fast,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: option.key == value
+                        ? p.rowSelected
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    option.value,
+                    style: TextStyle(
+                      fontSize: AppText.caption,
+                      color: option.key == value
+                          ? p.textPrimary
+                          : p.textTertiary,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

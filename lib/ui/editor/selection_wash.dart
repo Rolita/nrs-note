@@ -190,7 +190,7 @@ class EditorSelectionPainter extends CustomPainter {
         drawBand(bandOf(glyph, width: kBlankLineSelectionWidth));
       }
     }
-  }
+    }
 
   @override
   bool shouldRepaint(EditorSelectionPainter oldDelegate) {

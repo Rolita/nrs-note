@@ -14,12 +14,17 @@ import '../common/delete_dialog.dart';
 
 /// The vault's recycle bin: everything deleted, restorable until the user
 /// empties it by hand.
-Future<void> showTrashDialog(BuildContext context) {
-  return showDialog<void>(
-    context: context,
-    barrierColor: context.palette.overlay,
-    builder: (BuildContext context) => const _TrashDialog(),
-  );
+///
+/// 它是编辑区里的一页（不是弹窗）：恢复一篇、再恢复下一篇，不用「关掉 →
+/// 再点开」。× 在标签条上，所以这一页自己不画关闭按钮。
+class TrashPage extends StatefulWidget {
+  const TrashPage({super.key, required this.onClose});
+
+  /// 点标题栏那颗 ×（或按 Esc）：把这一页从树上摘掉。
+  final VoidCallback onClose;
+
+  @override
+  State<TrashPage> createState() => _TrashPageState();
 }
 
 /// Read-only snapshots of one note, with a restore that first saves what is on
@@ -32,18 +37,14 @@ Future<void> showVersionHistoryDialog(BuildContext context, Note note) {
   );
 }
 
-class _TrashDialog extends StatefulWidget {
-  const _TrashDialog();
-
-  @override
-  State<_TrashDialog> createState() => _TrashDialogState();
-}
-
-class _TrashDialogState extends State<_TrashDialog> {
+class _TrashPageState extends State<TrashPage> {
   List<TrashEntry>? _entries;
   _TrashTree _tree = _TrashTree.empty;
   bool _busy = false;
   String? _error;
+
+  /// 这一页自己的焦点：Esc 靠它才落到页里的 `CallbackShortcuts` 上。
+  final FocusNode _pageFocus = FocusNode(debugLabel: 'trash-page');
 
   /// null = 全部条目；空字符串 = 笔记库根目录；其余是文件夹路径。
   String? _selected;
@@ -54,6 +55,17 @@ class _TrashDialogState extends State<_TrashDialog> {
   void initState() {
     super.initState();
     _load();
+    // 外壳切到非正文页时会把焦点收回自己（`AppShell._afterPaneSwitch`），
+    // 那一下在挂载之前，`autofocus` 因此不生效——Esc 就收不到了。挂载完再要。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _pageFocus.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _pageFocus.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -188,68 +200,38 @@ class _TrashDialogState extends State<_TrashDialog> {
 
     return CallbackShortcuts(
       bindings: <ShortcutActivator, VoidCallback>{
-        const SingleActivator(LogicalKeyboardKey.escape): () =>
-            Navigator.of(context).pop(),
+        const SingleActivator(LogicalKeyboardKey.escape): widget.onClose,
       },
-      child: Center(
-        child: Material(
-          type: MaterialType.transparency,
-          child: Padding(
-            padding: const EdgeInsets.all(AppSpace.xl + AppSpace.xs),
-            child: SizedBox(
-              width: 680,
-              height: 460,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: p.surfaceRaised,
-                  borderRadius: AppRadius.xlAll,
-                  border: Border.all(color: p.outline),
-                  boxShadow: <BoxShadow>[
-                    BoxShadow(
-                      color: p.shadow,
-                      blurRadius: 34,
-                      offset: const Offset(0, 12),
-                    ),
-                    BoxShadow(
-                      color: p.shadow,
-                      blurRadius: 3,
-                      offset: const Offset(0, 1),
-                    ),
-                  ],
-                ),
-                child: ClipRRect(
-                  borderRadius: AppRadius.xlAll,
-                  child: Column(
-                    children: <Widget>[
-                      _header(p, entries),
-                      Divider(height: 1, color: p.outlineSoft),
-                      Expanded(
-                        child: entries == null
-                            ? const Center(
-                                child: SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                ),
-                              )
-                            : entries.isEmpty
-                            ? const EmptyState(
-                                icon: LucideIcons.trash2,
-                                title: '回收站是空的',
-                                message: '删除的笔记和文件夹会出现在这里，直到你手动清空。',
-                                compact: true,
-                              )
-                            : _browser(p),
-                      ),
-                      Divider(height: 1, color: p.outlineSoft),
-                      _footer(p, entries),
-                    ],
-                  ),
-                ),
+      child: Focus(
+        focusNode: _pageFocus,
+        autofocus: true,
+        child: ColoredBox(
+          color: p.surface,
+          child: Column(
+            children: <Widget>[
+              _header(p, entries),
+              Divider(height: 1, color: p.outlineSoft),
+              Expanded(
+                child: entries == null
+                    ? const Center(
+                        child: SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      )
+                    : entries.isEmpty
+                    ? const EmptyState(
+                        icon: LucideIcons.trash2,
+                        title: '回收站是空的',
+                        message: '删除的笔记和文件夹会出现在这里，直到你手动清空。',
+                        compact: true,
+                      )
+                    : _browser(p),
               ),
-            ),
+              Divider(height: 1, color: p.outlineSoft),
+              _footer(p, entries),
+            ],
           ),
         ),
       ),
@@ -266,7 +248,7 @@ class _TrashDialogState extends State<_TrashDialog> {
               '${formatRecoverySize(bytes)} · 一直保留，直到你手动清空';
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 13, 12, 11),
+      padding: const EdgeInsets.fromLTRB(18, 13, 18, 11),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
@@ -311,12 +293,6 @@ class _TrashDialogState extends State<_TrashDialog> {
                 ],
               ),
             ),
-          ),
-          const SizedBox(width: AppSpace.sm),
-          AppIconButton(
-            icon: LucideIcons.x,
-            tooltip: '关闭',
-            onPressed: () => Navigator.of(context).pop(),
           ),
         ],
       ),

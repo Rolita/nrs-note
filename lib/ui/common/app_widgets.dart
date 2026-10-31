@@ -66,17 +66,19 @@ class _AppIconButtonState extends State<AppIconButton> {
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     final bool enabled = widget.onPressed != null;
-    final Color accent = widget.activeColor ?? p.accent;
+    final Color activeInk = widget.activeColor ?? p.textPrimary;
 
+    // 打开着的那颗按钮也是一层中性底 + 图标提亮，和标签页、列表行同一种
+    // 选中语言；强调色只在正文里出现（石墨稿的规矩）。
     final Color background = widget.active
-        ? p.accentSoft
+        ? p.rowSelected
         : (_hovered && enabled ? p.surfaceRaised : Colors.transparent);
 
     Color foreground;
     if (widget.tone != null) {
       foreground = widget.tone!;
     } else if (widget.active) {
-      foreground = accent;
+      foreground = activeInk;
     } else if (!enabled) {
       foreground = p.textTertiary.withValues(alpha: 0.45);
     } else if (_hovered) {
@@ -140,7 +142,8 @@ class _AppTextButtonState extends State<AppTextButton> {
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     final bool enabled = widget.onPressed != null;
-    final Color fg = widget.tone ??
+    final Color fg =
+        widget.tone ??
         (widget.active
             ? p.accent
             : (enabled && _hovered ? p.textPrimary : p.textSecondary));
@@ -207,7 +210,9 @@ class TagPill extends StatelessWidget {
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     return HoverBuilder(
-      cursor: onTap == null ? SystemMouseCursors.basic : SystemMouseCursors.click,
+      cursor: onTap == null
+          ? SystemMouseCursors.basic
+          : SystemMouseCursors.click,
       builder: (BuildContext context, bool hovered) {
         final Color bg = selected
             ? p.accentSoft
@@ -365,7 +370,11 @@ class _SegmentState extends State<_Segment> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
-                Icon(widget.icon, size: widget.compact ? AppIconSize.xs : AppIconSize.sm, color: fg),
+                Icon(
+                  widget.icon,
+                  size: widget.compact ? AppIconSize.xs : AppIconSize.sm,
+                  color: fg,
+                ),
                 if (!widget.compact) ...<Widget>[
                   const SizedBox(width: 6),
                   Text(
@@ -389,7 +398,15 @@ class _SegmentState extends State<_Segment> {
 }
 
 /// Draggable divider used to resize the panes.
-class ResizeHandle extends StatefulWidget {
+///
+/// 缝上不画线：左右两边的色差已经说明边界在哪儿，多一条 1px 只是在数像素。
+///
+/// ⛔ 整条（**含顶上 40px 的顶带**）都填 [background]，而 [background] 必须是
+/// 这条缝**属于**的那一栏的底色——左栏给 `sidebar`、右栏也给 `sidebar`。填成
+/// 编辑区的纸色或者画布色，两栏之间就会多出一条比两边都暗的 5px 竖带（用户原
+/// 话：「编辑栏和右侧边栏之间怎么有一条这么粗的黑线？移除它。」）。顶带不用
+/// 单独一档：两侧边栏的顶上本来就是标签条，和栏身同色。
+class ResizeHandle extends StatelessWidget {
   const ResizeHandle({
     super.key,
     required this.onDelta,
@@ -400,60 +417,22 @@ class ResizeHandle extends StatefulWidget {
   /// Called with the horizontal drag delta in logical pixels.
   final ValueChanged<double> onDelta;
 
-  /// The pane colour this strip is carved out of.
-  ///
-  /// The shell paints its own background with the darkest step on screen, and
-  /// the strip is a *gap* between two panes, so leaving it unpainted drew a 5px
-  /// trench at every seam the panes could be dragged on — while the rail, which
-  /// has no strip, met its neighbour flush. Painting the strip as the pane it
-  /// belongs to makes all three seams the same thing: a hairline between two
-  /// surfaces, with nothing else in between.
+  /// The pane colour this strip is carved out of. Painting the strip as the
+  /// pane it belongs to keeps the seam flush instead of drawing a 5px trench.
   final Color background;
 
   final double width;
 
   @override
-  State<ResizeHandle> createState() => _ResizeHandleState();
-}
-
-class _ResizeHandleState extends State<ResizeHandle> {
-  bool _hovered = false;
-  bool _dragging = false;
-
-  @override
   Widget build(BuildContext context) {
-    final AppPalette p = context.palette;
-    final bool lit = _hovered || _dragging;
     return MouseRegion(
       cursor: SystemMouseCursors.resizeColumn,
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onHorizontalDragStart: (_) => setState(() => _dragging = true),
-        onHorizontalDragEnd: (_) => setState(() => _dragging = false),
-        onHorizontalDragUpdate: (DragUpdateDetails d) =>
-            widget.onDelta(d.delta.dx),
+        onHorizontalDragUpdate: (DragUpdateDetails d) => onDelta(d.delta.dx),
         child: SizedBox(
-          width: widget.width,
-          child: ColoredBox(
-            color: widget.background,
-            // The line sits hard against the pane that follows, so the seam it
-            // marks is exactly where the panes meet. Centring it instead left
-            // two pixels of trench on either side and the edge stopped reading
-            // as an edge.
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: AnimatedContainer(
-                duration: AppMotion.fast,
-                width: lit ? 2 : 1,
-                decoration: BoxDecoration(
-                  color: lit ? p.accent.withValues(alpha: 0.8) : p.outline,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-          ),
+          width: width,
+          child: ColoredBox(color: background),
         ),
       ),
     );
@@ -530,11 +509,7 @@ class EmptyState extends StatelessWidget {
                 borderRadius: AppRadius.lgAll,
                 border: Border.all(color: p.outlineSoft),
               ),
-              child: Icon(
-                icon,
-                size: compact ? 17 : 21,
-                color: p.textTertiary,
-              ),
+              child: Icon(icon, size: compact ? 17 : 21, color: p.textTertiary),
             ),
             SizedBox(height: compact ? AppSpace.md : AppSpace.lg),
             Text(

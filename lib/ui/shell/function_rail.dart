@@ -14,13 +14,11 @@ import '../../core/theme/app_tokens.dart';
 /// 文件 / 搜索 / 标签现在都是侧边栏标签条上的页，这里不再替侧边栏切视图：
 /// 功能栏只放全局动作（用户原话：「把标签按钮也移到侧边栏按钮上」）。
 ///
-/// The graph and the canvas live here rather than in the tab strip because
-/// neither is a document: they have no ×, they cannot be closed, and pinning
-/// them to the tabs only stole width from the notes that can.
+/// 图谱、白板、设置都是编辑区里的**一页**（各带一条标签、能分屏、能拖），
+/// 所以这里的三颗按钮只是「打开 / 切过去」的入口，`*Active` 只负责点亮。
 ///
-/// Selection is marked the same way here as in every other column: an
-/// `accentSoft` square with a 2px `accent` bar against its left edge. One
-/// language, learned once.
+/// Selection is marked the same way here as in every other column: a neutral
+/// `rowSelected` square and a brighter glyph. One language, learned once.
 class AppRail extends StatelessWidget {
   const AppRail({
     super.key,
@@ -31,7 +29,9 @@ class AppRail extends StatelessWidget {
     required this.onOpenSettings,
     this.graphActive = false,
     this.canvasActive = false,
-    this.topInset = 0,
+    this.settingsActive = false,
+    this.templatesActive = false,
+    this.trashActive = false,
     required this.sidebarVisible,
   });
 
@@ -48,11 +48,11 @@ class AppRail extends StatelessWidget {
   final bool graphActive;
   final bool canvasActive;
 
-  /// 顶上要给浮在标签条上的那颗「收起侧边栏」让出来的高度。
-  ///
-  /// 标签条现在顶到窗口最上面，那颗开关正好落在功能栏的头顶上——不让开就会
-  /// 盖住第一颗按钮。
-  final double topInset;
+  /// 设置 / 模板 / 回收站此刻就在屏幕上（它们也是编辑区里的页，所以和上面
+  /// 两颗一样要点亮）。
+  final bool settingsActive;
+  final bool templatesActive;
+  final bool trashActive;
 
   /// 左侧边栏此刻开着没有。
   ///
@@ -65,51 +65,72 @@ class AppRail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
-    return Container(
+    return SizedBox(
       width: AppLayout.railWidth,
-      decoration: BoxDecoration(
-        // 和右边那块地同一个色阶：边栏在就跟边栏，边栏收起就跟编辑区。
-        color: sidebarVisible ? p.sidebar : p.surface,
-        border: Border(right: BorderSide(color: p.outlineSoft)),
-      ),
+      // ⛔ 整条栏要拉满 44 宽。`Column` 默认按子项宽度居中：下面的底色块里
+      // 只装着 28 宽的按钮，不 stretch 的话底色就只有 28 宽，两边各露出 8px
+      // 画布，看起来像功能栏没填满。
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          SizedBox(height: topInset > 0 ? topInset : AppSpace.sm),
-          _RailButton(
-            icon: LucideIcons.blocks,
-            tooltip: '插入模板',
-            shortcut: 'Ctrl+P',
-            onPressed: onOpenTemplates,
+          // 窗口顶上那 40px 永远属于顶带——左侧边栏收起后，功能栏下半截
+          // 并进纸面，但最上面这一条仍要和编辑区的标签条接上，不然窗口顶上
+          // 的带子就在功能栏这里断了。
+          SizedBox(
+            width: double.infinity,
+            height: AppLayout.titleBarHeight,
+            child: ColoredBox(color: p.sidebar),
           ),
-          const SizedBox(height: AppSpace.xs),
-          _RailButton(
-            icon: LucideIcons.gitFork,
-            tooltip: '关系图谱',
-            selected: graphActive,
-            onPressed: onOpenGraph,
+          Expanded(
+            child: Container(
+              // 和右边那块地同一个色阶：边栏在就跟边栏，边栏收起就跟编辑区。
+              color: sidebarVisible ? p.sidebar : p.surface,
+              // 顶上 40 + 4 = 44：第一颗按钮和顶带隔开一格。按钮 28、缝 6。
+              padding: const EdgeInsets.only(top: AppSpace.xs),
+              child: Column(
+                children: <Widget>[
+                  _RailButton(
+                    icon: LucideIcons.blocks,
+                    tooltip: '插入模板',
+                    shortcut: 'Ctrl+P',
+                    selected: templatesActive,
+                    onPressed: onOpenTemplates,
+                  ),
+                  const SizedBox(height: 6),
+                  _RailButton(
+                    icon: LucideIcons.gitFork,
+                    tooltip: '关系图谱',
+                    selected: graphActive,
+                    onPressed: onOpenGraph,
+                  ),
+                  const SizedBox(height: 6),
+                  _RailButton(
+                    icon: LucideIcons.squareDashed,
+                    tooltip: '白板',
+                    shortcut: 'Ctrl+Shift+B',
+                    selected: canvasActive,
+                    onPressed: onOpenCanvas,
+                  ),
+                  const Spacer(),
+                  _RailButton(
+                    icon: LucideIcons.trash2,
+                    tooltip: '回收站',
+                    selected: trashActive,
+                    onPressed: onOpenTrash,
+                  ),
+                  const SizedBox(height: 6),
+                  _RailButton(
+                    icon: LucideIcons.settings,
+                    tooltip: '设置',
+                    shortcut: 'Ctrl+,',
+                    selected: settingsActive,
+                    onPressed: onOpenSettings,
+                  ),
+                  const SizedBox(height: AppSpace.sm),
+                ],
+              ),
+            ),
           ),
-          const SizedBox(height: AppSpace.xs),
-          _RailButton(
-            icon: LucideIcons.squareDashed,
-            tooltip: '白板',
-            shortcut: 'Ctrl+Shift+B',
-            selected: canvasActive,
-            onPressed: onOpenCanvas,
-          ),
-          const Spacer(),
-          _RailButton(
-            icon: LucideIcons.trash2,
-            tooltip: '回收站',
-            onPressed: onOpenTrash,
-          ),
-          const SizedBox(height: AppSpace.xs),
-          _RailButton(
-            icon: LucideIcons.settings,
-            tooltip: '设置',
-            shortcut: 'Ctrl+,',
-            onPressed: onOpenSettings,
-          ),
-          const SizedBox(height: AppSpace.sm),
         ],
       ),
     );
@@ -142,11 +163,11 @@ class _RailButtonState extends State<_RailButton> {
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
     final Color background = widget.selected
-        ? p.accentSoft
+        ? p.rowSelected
         : (_hovered ? p.surfaceRaised : Colors.transparent);
-    final Color foreground = widget.selected
-        ? p.accent
-        : (_hovered ? p.textPrimary : p.textSecondary);
+    final Color foreground = widget.selected || _hovered
+        ? p.textPrimary
+        : p.textTertiary;
 
     return Tooltip(
       message: widget.shortcut == null
@@ -162,42 +183,13 @@ class _RailButtonState extends State<_RailButton> {
           behavior: HitTestBehavior.opaque,
           child: AnimatedContainer(
             duration: AppMotion.fast,
-            width: 32,
-            height: 32,
+            width: 28,
+            height: 28,
             decoration: BoxDecoration(
               color: background,
-              borderRadius: AppRadius.mdAll,
+              borderRadius: BorderRadius.circular(6),
             ),
-            child: Stack(
-              children: <Widget>[
-                Center(
-                  child: Icon(
-                    widget.icon,
-                    size: AppIconSize.md,
-                    color: foreground,
-                  ),
-                ),
-                // The bar sits on the button's own left edge rather than the
-                // rail's: 6px away from the pill it belongs to, it would read
-                // as a rule on the window instead of a marker on the item.
-                Positioned(
-                  left: 0,
-                  top: 8,
-                  bottom: 8,
-                  child: AnimatedOpacity(
-                    duration: AppMotion.fast,
-                    opacity: widget.selected ? 1 : 0,
-                    child: Container(
-                      width: 2,
-                      decoration: BoxDecoration(
-                        color: p.accent,
-                        borderRadius: BorderRadius.circular(1),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
+            child: Icon(widget.icon, size: AppIconSize.sm, color: foreground),
           ),
         ),
       ),

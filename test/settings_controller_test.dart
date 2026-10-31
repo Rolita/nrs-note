@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:nrs/core/app_enums.dart';
 import 'package:nrs/core/theme/app_palette.dart';
 import 'package:nrs/core/theme/app_tokens.dart';
 import 'package:nrs/state/settings_controller.dart';
@@ -27,15 +28,18 @@ void main() {
       expect(prefs.getString('nrs.theme'), 'light');
     });
 
-    test('午夜靛是深色板，关键令牌与设计稿一致', () async {
+    test('石墨色板是深色板，关键令牌与视觉稿一致', () async {
       final (:settings, :prefs) = await load();
       final AppPalette p = settings.palette;
       expect(p.brightness, Brightness.dark);
-      expect(p.canvas, const Color(0xFF0E0F13));
-      expect(p.sidebar, const Color(0xFF131419));
-      expect(p.surface, const Color(0xFF17181E));
+      expect(p.canvas, const Color(0xFF0F0F10));
+      expect(p.sidebar, const Color(0xFF1E1F21));
+      expect(p.surface, const Color(0xFF151516));
       expect(p.accent, const Color(0xFF8B94F2));
-      expect(p.textPrimary, const Color(0xFFE6E8EF));
+      expect(p.textPrimary, const Color(0xFFECEDEF));
+      // 选中是一层中性淡底，比悬停再亮一档；强调色只留给正文。
+      expect(p.rowSelected, const Color(0xFF34353A));
+      expect(p.surfaceRaised, const Color(0xFF28292C));
       // 半透明的只有选区 / 阴影 / 遮罩三处，其它必须实色。
       expect(p.selection.a, lessThan(1.0));
       expect(p.shadow.a, lessThan(1.0));
@@ -56,6 +60,78 @@ void main() {
         AppPalette.contrastRatio(p.textSecondary, p.canvas),
         greaterThan(4.5),
       );
+    });
+  });
+
+  group('窗口不透明度', () {
+    test('默认 90%，改过之后读回来', () async {
+      final (:settings, :prefs) = await load();
+      expect(settings.windowOpacity, 0.9);
+
+      settings.windowOpacity = 0.75;
+      expect(settings.windowOpacity, 0.75);
+      expect(prefs.getDouble('nrs.windowOpacity'), 0.75);
+    });
+
+    test('夹在 50%–100% 之间；同值不再通知', () async {
+      final (:settings, :prefs) = await load();
+      int notifications = 0;
+      settings.addListener(() => notifications++);
+
+      // 下限 50%：再往下透到看不清，不给出那个选项。
+      settings.windowOpacity = 0.2;
+      expect(settings.windowOpacity, SettingsController.windowOpacityMin);
+      expect(SettingsController.windowOpacityMin, 0.5);
+      settings.windowOpacity = 2;
+      expect(settings.windowOpacity, SettingsController.windowOpacityMax);
+      expect(notifications, 2);
+
+      settings.windowOpacity = 1;
+      expect(notifications, 2, reason: '同值再设一遍不该通知');
+    });
+  });
+
+  group('外观', () {
+    test('默认实色石墨；切到壁纸会落盘', () async {
+      final (:settings, :prefs) = await load();
+      expect(settings.appearance, ShellAppearance.graphite);
+
+      settings.appearance = ShellAppearance.wallpaper;
+      expect(settings.appearance, ShellAppearance.wallpaper);
+      expect(prefs.getString('nrs.shellAppearance'), 'wallpaper');
+
+      settings.appearance = ShellAppearance.graphite;
+      expect(settings.appearance, ShellAppearance.graphite);
+      expect(prefs.getString('nrs.shellAppearance'), 'graphite');
+    });
+
+    test('面层不透明度默认 90%，夹在 50%–100%', () async {
+      final (:settings, :prefs) = await load();
+      expect(settings.surfaceOpacity, 0.9);
+
+      settings.surfaceOpacity = 0.7;
+      expect(settings.surfaceOpacity, 0.7);
+      expect(prefs.getDouble('nrs.surfaceOpacity'), 0.7);
+
+      settings.surfaceOpacity = 0.2;
+      expect(settings.surfaceOpacity, SettingsController.surfaceOpacityMin);
+      settings.surfaceOpacity = 2;
+      expect(settings.surfaceOpacity, SettingsController.surfaceOpacityMax);
+    });
+
+    test('壁纸外观把原生窗口 alpha 钉在 100%，切回去原值还在', () async {
+      final (:settings, :prefs) = await load();
+      expect(settings.effectiveWindowOpacity, 0.9);
+
+      settings.windowOpacity = 0.75;
+      expect(settings.effectiveWindowOpacity, 0.75);
+
+      settings.appearance = ShellAppearance.wallpaper;
+      expect(settings.effectiveWindowOpacity, 1);
+      expect(settings.windowOpacity, 0.75, reason: '原值留着，切回默认外观还要用');
+
+      settings.appearance = ShellAppearance.graphite;
+      expect(settings.effectiveWindowOpacity, 0.75);
     });
   });
 
@@ -137,7 +213,6 @@ void main() {
       expect(settings.tablePanelVisible, isFalse);
       expect(prefs.getBool('nrs.tablePanelVisible'), isFalse);
     });
-
   });
 
   group('图片面板', () {
@@ -170,7 +245,6 @@ void main() {
       expect(settings.imagePanelVisible, isFalse);
       expect(prefs.getBool('nrs.imagePanelVisible'), isFalse);
     });
-
   });
 
   group('右栏开合', () {

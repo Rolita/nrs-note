@@ -151,8 +151,8 @@ abstract final class AppIconSize {
 abstract final class AppLayout {
   /// Far-left icon rail: buttons only.
   ///
-  /// 44 = 4 + 32 + 4 + 4: a 32px button with room for a hover square and the
-  /// 2px selection bar that sits against its left edge.
+  /// 44 = 8 + 28 + 8: a 28px button centred in the strip, the same square every
+  /// icon in the top band uses.
   static const double railWidth = 44;
 
   /// The switchable file / search / tags sidebar.
@@ -185,6 +185,14 @@ abstract final class AppLayout {
   /// the first tab — starts one strip *after* the sidebar ends.
   static const double resizeHandleWidth = 5;
 
+  /// 两格之间那条缝的宽度（`SplitHost.dividerThickness`）。
+  ///
+  /// ⛔ 只有 1px：缝填的是本栏底色，本来就看不见，再宽就是白白吃掉 5px 的
+  /// 版面（用户原话：「编辑栏和侧边栏分割时还是有 5px 的像素啊，1px 就够了」）。
+  /// 栏间那条能拖宽度的 `ResizeHandle` 仍是 [resizeHandleWidth]——它要够宽才
+  /// 好抓，而且它填的是栏的底色，宽了也看不见。
+  static const double splitSeamWidth = 1;
+
   /// 窗口顶上那条带子：**标签条和顶栏是同一条**。
   ///
   /// 顶栏不再单独占一行——它只剩几颗按钮，浮在标签条上面（见
@@ -200,7 +208,7 @@ abstract final class AppLayout {
 
   /// 标签条上一页的高度。
   ///
-  /// 36 = 40 的带子里留 4px 上沿，加上标签自己的 2px 下划线正好压在纸面的边上。
+  /// 36 = 40 的带子里留 4px 上沿；下沿直接压在纸面的边上，不再画下划线。
   static const double paneTabHeight = 36;
 
   /// Comfortable measure for prose (~72 characters).

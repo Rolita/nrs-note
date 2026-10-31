@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -34,9 +36,13 @@ import 'package:nrs/ui/editor/table_panel.dart';
 import 'package:nrs/ui/graph/graph_view.dart';
 import 'package:nrs/ui/image/image_pane.dart';
 import 'package:nrs/ui/shell/app_shell.dart';
+import 'package:nrs/ui/shell/editor_status_float.dart';
 import 'package:nrs/ui/shell/function_rail.dart';
 import 'package:nrs/ui/shell/note_list_panel.dart';
 import 'package:nrs/ui/shell/pane_tab_strip.dart';
+import 'package:nrs/ui/shell/settings_page.dart';
+import 'package:nrs/ui/shell/split_host.dart';
+import 'package:nrs/ui/shell/tab_group.dart';
 import 'package:nrs/ui/shell/title_bar.dart';
 import 'package:nrs/ui/shell/title_bar_content.dart';
 import 'package:nrs/ui/shell/vault_tree.dart';
@@ -239,6 +245,23 @@ class _VaultStore extends NoteStore {
   }
 }
 
+/// 读盘卡在闸上的 vault。
+///
+/// `main.dart` 里 `runApp` 排在 `bootstrap` 之前，真实启动时首帧的 vault 就是
+/// 空的。用它把这个窗口撑开，验证编辑区存档没被当成「笔记全删了」摘掉。
+class _GatedVaultStore extends _VaultStore {
+  _GatedVaultStore(super.notes);
+
+  /// `complete()` 之后读盘才继续。
+  final Completer<void> gate = Completer<void>();
+
+  @override
+  Future<List<Note>> loadAll() async {
+    await gate.future;
+    return super.loadAll();
+  }
+}
+
 void main() {
   /// 侧边栏顶上那颗「搜索」：就在「文件」右边。
   ///
@@ -254,7 +277,7 @@ void main() {
   Finder treeRow(String title) =>
       find.descendant(of: find.byType(VaultTree), matching: find.text(title));
 
-  /// 一行现在填的是什么颜色。选中就是 `accentSoft`，没选中是透明或悬停色
+  /// 一行现在填的是什么颜色。选中是 `rowSelected`，没选中是透明或悬停色
   /// ——高亮只有这一处，所以量这个就等于量「选中了没有」。
   Color? rowFill(WidgetTester tester, String title) {
     final Finder container = find
@@ -301,6 +324,14 @@ void main() {
 
     /// 额外的偏好初值，比如「上次退出时正看着哪块白板」。
     Map<String, Object> extraPrefs = const <String, Object>{},
+
+    /// 上次退出时排着的标签会话（`main.dart` 在 bootstrap 前喂给控制器）。
+    ///
+    /// 编辑区的树现在也落盘了（`nrs.editorLayout`），但**没存过布局**的那次
+    /// 启动仍然只有会话：树上一个「活的那一份」都没有，标签栏全靠 `_openIds`
+    /// ——这正是「关掉最后一页又冒出一页」的现场，见「关掉最后一个标签」那个
+    /// 用例。
+    List<String>? sessionTabs,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1.0;
@@ -327,6 +358,12 @@ void main() {
       ),
     )..sortMode = settings.sort;
     addTearDown(notes.dispose);
+    if (sessionTabs != null) {
+      notes.restoreSession(
+        tabs: sessionTabs,
+        selected: sessionTabs.isEmpty ? null : sessionTabs.last,
+      );
+    }
     await notes.bootstrap();
 
     // 文件树会读白板清单，外壳也会在白板视图里读当前打开的那份，所以这里
@@ -366,16 +403,14 @@ void main() {
     expect(find.byType(NoteListPanel), findsOneWidget);
     expect(find.byType(OutlinePanel), findsOneWidget);
 
-    // The file panel names itself, and its actions sit as one group at the
-    // header's right edge — 排序、展开 / 收起、新建文件夹、新建笔记, left to
-    // right. 侧边栏顶上那一页现在只是一颗文件夹图标，所以「文件」这两个字
-    // 只出现在面板自己的头部（标题 + 计数）。
+    // 文件页头部不再写「文件 + 计数」——计数在列表底部已经有一次，重复只会
+    // 占掉动作的空间。左上角只剩那排动作，一直右对齐到面板自己的边缘。
     expect(
       find.descendant(
         of: find.byType(NoteListPanel),
         matching: find.text('文件'),
       ),
-      findsOneWidget,
+      findsNothing,
     );
     const List<String> actions = <String>[
       '排序方式',
@@ -412,6 +447,58 @@ void main() {
     expect(templatesRect.top, lessThan(rail.center.dy));
     expect(trash.top, greaterThan(rail.center.dy));
     expect(settingsButton.top, greaterThan(trash.top));
+
+    // 底色铺满整条 44，从顶带下面一直到底：底色块曾经嵌在居中的 Column 里，
+    // 只跟着 28 宽的按钮收缩，两边各漏出 8px 画布，看着像功能栏没填满。
+    final Finder fillFinder = find.descendant(
+      of: find.byType(AppRail),
+      // 底色块用的是 `color:`；按钮的 `AnimatedContainer` 里面包的是
+      // `decoration:`，靠这一点把两颗分开。
+      matching: find.byWidgetPredicate(
+        (Widget w) => w is Container && w.color != null,
+      ),
+    );
+    expect(fillFinder, findsOneWidget);
+    final Rect fill = tester.getRect(fillFinder);
+    expect(fill.left, rail.left);
+    expect(fill.right, rail.right);
+    expect(fill.top, rail.top + AppLayout.titleBarHeight);
+    expect(fill.bottom, rail.bottom);
+  });
+
+  testWidgets('壁纸外观：图垫在面板下面，面层半透明，文字仍是实色', (WidgetTester tester) async {
+    final app = await pumpShell(tester);
+    final Finder wallpaper = find.byKey(
+      const ValueKey<String>('shell-wallpaper'),
+    );
+    expect(wallpaper, findsNothing);
+
+    app.settings.appearance = ShellAppearance.wallpaper;
+    await tester.pumpAndSettle();
+
+    expect(wallpaper, findsOneWidget);
+    expect(tester.widget<Image>(wallpaper).fit, BoxFit.cover);
+
+    AppPalette sheet() => Theme.of(
+      tester.element(find.byType(NoteListPanel).first),
+    ).extension<AppPalette>()!;
+
+    // 大块面层压到 90%：壁纸透出一成；文字、画布和缝线保持实色。
+    expect(sheet().sidebar.a, closeTo(0.9, 0.001));
+    expect(sheet().surface.a, closeTo(0.9, 0.001));
+    expect(sheet().rowSelected.a, closeTo(0.9, 0.001));
+    expect(sheet().textPrimary.a, 1.0);
+    expect(sheet().outline.a, 1.0);
+    expect(sheet().canvas.a, 1.0);
+
+    app.settings.surfaceOpacity = 0.7;
+    await tester.pumpAndSettle();
+    expect(sheet().sidebar.a, closeTo(0.7, 0.001));
+
+    app.settings.appearance = ShellAppearance.graphite;
+    await tester.pumpAndSettle();
+    expect(wallpaper, findsNothing);
+    expect(sheet().sidebar.a, 1.0);
   });
 
   testWidgets(
@@ -520,9 +607,7 @@ void main() {
     expect(app.settings.rightPanelWidth, lessThan(AppLayout.rightPanelWidth));
   });
 
-  testWidgets('侧边栏顶上三颗图标：文件 / 搜索 / 标签，功能栏不再管视图', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('侧边栏顶上三颗图标：文件 / 搜索 / 标签，功能栏不再管视图', (WidgetTester tester) async {
     await pumpShell(tester);
     // 侧边栏顶上是一排图标页：名字挂在 tooltip 上，标签条里没有「文件」这两个字。
     final Finder sideStrip = find.byType(PaneTabStrip).first;
@@ -533,25 +618,16 @@ void main() {
       findsNothing,
     );
     expect(
-      find.descendant(
-        of: sideStrip,
-        matching: find.byIcon(LucideIcons.folder),
-      ),
+      find.descendant(of: sideStrip, matching: find.byIcon(LucideIcons.folder)),
       findsOneWidget,
     );
     // 搜索和标签都不在功能栏上：它们都是侧边栏顶上的图标。
     expect(
-      find.descendant(
-        of: find.byType(AppRail),
-        matching: find.byTooltip('搜索'),
-      ),
+      find.descendant(of: find.byType(AppRail), matching: find.byTooltip('搜索')),
       findsNothing,
     );
     expect(
-      find.descendant(
-        of: find.byType(AppRail),
-        matching: find.byTooltip('标签'),
-      ),
+      find.descendant(of: find.byType(AppRail), matching: find.byTooltip('标签')),
       findsNothing,
     );
     expect(sideTab('标签'), findsOneWidget);
@@ -996,6 +1072,60 @@ void main() {
     expect(inBar('甲'), findsNothing);
   });
 
+  testWidgets('关掉最后一个标签 = 原地留一个空标签页，不会一直冒出新的', (WidgetTester tester) async {
+    // 上次退出时排着两页。编辑区那棵树不落盘，所以启动后树上一个「活的
+    // 那一份」都不多：`_openIds` 里排着甲、乙，屏幕上只有一页（乙）。
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[
+        note('a', '甲', DateTime(2026, 3, 1)),
+        note('b', '乙', DateTime(2026, 2, 1)),
+      ],
+      sessionTabs: <String>['a', 'b'],
+    );
+    expect(app.notes.openIds, <String>['a', 'b']);
+    expect(app.notes.selectedId, 'b');
+
+    /// 某一页上的 ×。key 跟着「这一页显示的那一篇」走，见 `_tabKey`。
+    Finder closeOf(String key) => find.descendant(
+      of: find.byKey(ValueKey<String>(key)),
+      matching: find.byTooltip('关闭这一页'),
+    );
+    // 编辑区的标签条排在左栏各格之后（先序：左栏 → 编辑区 → 右栏）。
+    Finder editorTabs() => find.descendant(
+      of: find.byType(PaneTabStrip).at(1),
+      matching: find.byType(PaneTab),
+    );
+    expect(editorTabs(), findsOneWidget);
+
+    // 关掉这一页：**原地**变成空标签页，而不是把 `_openIds` 里排着的
+    // 「甲」递补进来（那看起来就是关一次冒一个，永远关不完）。
+    await tester.tap(closeOf('note-tab-b'));
+    await tester.pumpAndSettle();
+    expect(app.notes.openIds, isEmpty);
+    expect(app.notes.selectedId, isNull);
+    expect(editorTabs(), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(PaneTabStrip).at(1),
+        matching: find.text('新标签页'),
+      ),
+      findsOneWidget,
+    );
+    // 编辑区回到空状态，没有哪一篇被顺手打开。
+    expect(find.text('选择一篇笔记开始'), findsOneWidget);
+    expect(
+      find.descendant(of: find.byType(EditorPane), matching: find.text('甲')),
+      findsNothing,
+    );
+
+    // 再点一次这个空页上的 ×：还是那一个空页，标签不会变多。
+    await tester.tap(closeOf('note-tab-*'));
+    await tester.pumpAndSettle();
+    expect(editorTabs(), findsOneWidget);
+    expect(app.notes.openIds, isEmpty);
+  });
+
   testWidgets(
     'tabs start at the editor and the outline button at the outline',
     (WidgetTester tester) async {
@@ -1022,12 +1152,13 @@ void main() {
           .first;
       expect(tester.getRect(tab).left, editor.left);
 
-      // The outline toggle shares the outline panel's left edge.
+      // 大纲页是右栏标签条上的第一颗图标：离右栏左缘 6（侧栏标签条统一
+      // 从 6 起，见视觉稿的 `.side-strip`）。
       final Rect outline = tester.getRect(find.byType(OutlinePanel));
       final Rect outlineButton = tester.getRect(
         find.byTooltip('大纲  ·  Ctrl+Shift+O'),
       );
-      expect(outlineButton.left, outline.left);
+      expect(outlineButton.left, outline.left + 6);
     },
   );
 
@@ -2207,7 +2338,7 @@ void main() {
     expect(treeRow('未命名白板'), findsOneWidget);
   });
 
-  testWidgets('Ctrl+P 打开模板选择器，Enter 把模板插进当前笔记', (WidgetTester tester) async {
+  testWidgets('Ctrl+P 打开模板页，Enter 把模板插进当前笔记', (WidgetTester tester) async {
     final Note template = Note(
       id: 'tpl',
       title: '日报模板',
@@ -2221,24 +2352,27 @@ void main() {
       vault: <Note>[note('a', '一篇笔记', DateTime(2026, 1, 2)), template],
     );
 
-    // 功能栏的模板按钮和 Ctrl+P 打开的是同一个选择器。
+    // 功能栏的模板按钮和 Ctrl+P 打开的是同一页（不再是弹窗）。
     await tester.tap(find.byTooltip('插入模板  ·  Ctrl+P'));
     await tester.pumpAndSettle();
-    expect(find.byType(TemplatePickerDialog), findsOneWidget);
+    expect(find.byType(TemplatesPage), findsOneWidget);
+    expect(find.byType(Dialog), findsNothing, reason: '模板不再是盖在窗口上的弹窗');
+    // Esc 关掉这一页：和标签条上那颗 × 是同一条路。
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pumpAndSettle();
-    expect(find.byType(TemplatePickerDialog), findsNothing);
+    expect(find.byType(TemplatesPage), findsNothing);
 
     await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
     await tester.sendKeyEvent(LogicalKeyboardKey.keyP);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
     await tester.pumpAndSettle();
-    expect(find.byType(TemplatePickerDialog), findsOneWidget);
+    expect(find.byType(TemplatesPage), findsOneWidget);
 
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pumpAndSettle();
 
-    expect(find.byType(TemplatePickerDialog), findsNothing);
+    // 插完就翻回正文；模板页还在标签条上（接着插不用再开一次）。
+    expect(find.byType(EditorPane), findsOneWidget);
     expect(app.notes.draft?.body, contains('## 今日进展'));
     expect(app.notes.draft?.body, contains('完成了模板功能'));
 
@@ -2417,6 +2551,136 @@ void main() {
     // 这一笔写入的自动保存还在防抖里（300ms 落笔，之后还有 2s 的收尾计时），
     // 等它走完再结束。
     await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('Alt+1 任务列表、Alt+2 高亮：正文里直接成型', (WidgetTester tester) async {
+    final Note todo = Note(
+      id: 'a',
+      title: '甲',
+      body: '买牛奶\n',
+      createdAt: DateTime(2026, 1, 1),
+      updatedAt: DateTime(2026, 1, 2),
+    );
+    final app = await pumpShell(tester, vault: <Note>[todo]);
+    app.notes.select('a');
+    await tester.pumpAndSettle();
+
+    final LineEditableText field = tester.widget<LineEditableText>(
+      find.byKey(const Key('nrs-editor-field')),
+    );
+    await tester.tap(find.byKey(const Key('nrs-editor-field')));
+    await tester.pumpAndSettle();
+
+    Future<void> pressAlt(LogicalKeyboardKey key) async {
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+      await tester.sendKeyEvent(key);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+      await tester.pumpAndSettle();
+    }
+
+    // 光标停在这一行末尾：Alt+1 把整行变成待办。
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '买牛奶\n',
+        selection: TextSelection.collapsed(offset: 3),
+      ),
+    );
+    await tester.pump();
+    await pressAlt(LogicalKeyboardKey.digit1);
+    expect(app.notes.draft?.body, startsWith('- [ ] 买牛奶'));
+
+    // 选中四个字：Alt+2 给它们套上 `==`。
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '要划重点\n',
+        selection: TextSelection(baseOffset: 0, extentOffset: 4),
+      ),
+    );
+    await tester.pump();
+    await pressAlt(LogicalKeyboardKey.digit2);
+    expect(app.notes.draft?.body, contains('==要划重点=='));
+
+    // 光标闪烁的计时器得收掉，自动保存的防抖也等它走完。
+    field.focusNode.unfocus();
+    await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('鼠标指到哪一页，那一页就长出 ×，不用先点进去', (WidgetTester tester) async {
+    final app = await pumpShell(
+      tester,
+      vault: <Note>[
+        note('a', '甲文', DateTime(2026, 1, 3)),
+        note('b', '乙文', DateTime(2026, 1, 2)),
+      ],
+    );
+    await tester.tap(treeRow('甲文'));
+    await tester.pumpAndSettle();
+    await tester.tap(treeRow('乙文'));
+    await tester.pumpAndSettle();
+
+    // 两页并排，当前停在乙文。
+    final Finder jia = find.byKey(const ValueKey<String>('note-tab-a'));
+    final Finder yi = find.byKey(const ValueKey<String>('note-tab-b'));
+    Finder closeIn(Finder tab) =>
+        find.descendant(of: tab, matching: find.byTooltip('关闭这一页'));
+
+    expect(closeIn(yi), findsOneWidget, reason: '当前页的 × 常驻');
+    expect(closeIn(jia), findsNothing, reason: '不悬浮、也不是当前页：一个 × 都不画');
+
+    final TestGesture mouse = await tester.createGesture(
+      kind: PointerDeviceKind.mouse,
+    );
+    await mouse.addPointer(location: Offset.zero);
+    await mouse.moveTo(tester.getCenter(jia));
+    await tester.pumpAndSettle();
+    expect(closeIn(jia), findsOneWidget, reason: '指上去就该能关，不用先切过去');
+
+    // 直接点那颗 ×：甲文关掉，当前页还是乙文。
+    await tester.tap(closeIn(jia));
+    await tester.pumpAndSettle();
+    expect(app.notes.openIds, <String>['b']);
+    expect(find.byKey(const ValueKey<String>('note-tab-a')), findsNothing);
+
+    await mouse.removePointer();
+  });
+
+  testWidgets('设置是编辑区里的一页：齿轮开一页，Ctrl+, 不重复开，× 能关', (WidgetTester tester) async {
+    await pumpShell(
+      tester,
+      vault: <Note>[note('a', '甲文', DateTime(2026, 1, 2))],
+    );
+
+    await tester.tap(find.byTooltip('设置  ·  Ctrl+,'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SettingsPage), findsOneWidget);
+    expect(find.byType(Dialog), findsNothing, reason: '设置不再是盖在窗口上的弹窗');
+    // 它是一条标签，和笔记并排排着。
+    final Finder strip = find.byType(PaneTabStrip).at(1);
+    expect(
+      find.descendant(of: strip, matching: find.text('设置')),
+      findsOneWidget,
+    );
+
+    // 再按一次 Ctrl+, 只是切过去，不会再开一页。
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.comma);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+    expect(
+      find.descendant(of: strip, matching: find.text('设置')),
+      findsOneWidget,
+    );
+
+    // × 关掉：设置页从树上摘掉，这一格回到笔记。
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey<String>('settings-tab')),
+        matching: find.byTooltip('关闭这一页'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(SettingsPage), findsNothing);
+    expect(find.byType(EditorPane), findsOneWidget);
   });
 
   testWidgets('没打开图谱时标签条里只有笔记，两个入口都在左侧功能栏', (WidgetTester tester) async {
@@ -2784,9 +3048,7 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets('左右分屏：把一页拖到右边缘，两格并排、各看一篇，点哪格哪格能写', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('左右分屏：把一页拖到右边缘，两格并排、各看一篇，点哪格哪格能写', (WidgetTester tester) async {
     await pumpShell(
       tester,
       vault: <Note>[
@@ -2850,9 +3112,7 @@ void main() {
     expect(find.byTooltip('关掉这一格'), findsNothing);
   });
 
-  testWidgets('上下分屏：把一页拖到下边缘，两格上下叠着，分割线能拖', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('上下分屏：把一页拖到下边缘，两格上下叠着，分割线能拖', (WidgetTester tester) async {
     await pumpShell(
       tester,
       vault: <Note>[
@@ -2882,7 +3142,11 @@ void main() {
 
     // 拖分割线：上格变矮，下格变高，总高不变。
     final double total = top.height + bottom.height;
-    final Offset seam = Offset(top.center.dx, top.bottom + 2.5);
+    // 缝只有 `splitSeamWidth`（1px）宽，落点要正正落在它中间。
+    final Offset seam = Offset(
+      top.center.dx,
+      top.bottom + AppLayout.splitSeamWidth / 2,
+    );
     await tester.dragFrom(seam, const Offset(0, -80));
     await tester.pumpAndSettle();
 
@@ -2892,9 +3156,7 @@ void main() {
     expect(top2.height + bottom2.height, closeTo(total, 1));
   });
 
-  testWidgets('侧边栏只能拖拽分割：没有分割 / 关闭按钮，拖到下面多一格', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('侧边栏只能拖拽分割：没有分割 / 关闭按钮，拖到下面多一格', (WidgetTester tester) async {
     await pumpShell(tester);
 
     expect(find.byType(NoteListPanel), findsOneWidget);
@@ -2919,10 +3181,10 @@ void main() {
     expect(lower.top, greaterThanOrEqualTo(upper.bottom));
     expect(upper.left, lower.left);
 
-    // 两格各有一份标题：它们不是同一个 State 被画了两次。拖出来的新格
-    // 只装搬过去的那一页（标签），上面那格还是文件。
+    // 两格各有一份内容：它们不是同一个 State 被画了两次。拖出来的新格
+    // 只装搬过去的那一页（标签），上面那格还是文件树。
     expect(
-      find.descendant(of: panels.at(0), matching: find.text('文件')),
+      find.descendant(of: panels.at(0), matching: find.byType(VaultTree)),
       findsOneWidget,
     );
     expect(
@@ -3160,9 +3422,7 @@ void main() {
     expect(app.notes.openIds.toSet(), <String>{'a', 'b'});
   });
 
-  testWidgets('把分屏那格唯一的一页拖回去：两页并回一条标签条', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('把分屏那格唯一的一页拖回去：两页并回一条标签条', (WidgetTester tester) async {
     await pumpShell(
       tester,
       vault: <Note>[
@@ -3234,8 +3494,10 @@ void main() {
       Offset(pane.right - 12, pane.center.dy),
     );
     expect(find.byType(EditorPane), findsNWidgets(2));
-    expect(tester.widget<EditorPane>(find.byType(EditorPane).at(1)).noteId,
-        isNull);
+    expect(
+      tester.widget<EditorPane>(find.byType(EditorPane).at(1)).noteId,
+      isNull,
+    );
 
     // 关掉右边那格唯一的一页。
     final Finder rightStrip = find.byType(PaneTabStrip).at(2);
@@ -3292,9 +3554,7 @@ void main() {
 
   // -------------------------------------------------- 侧边栏：拖 / 右键分屏
 
-  testWidgets('把侧边栏的标签页拖到上边缘：上面多一格标签，下面还是文件', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('把侧边栏的标签页拖到上边缘：上面多一格标签，下面还是文件', (WidgetTester tester) async {
     await pumpShell(tester);
     expect(find.byType(NoteListPanel), findsOneWidget);
 
@@ -3359,9 +3619,7 @@ void main() {
     expect(tester.widget<NoteListPanel>(panels.at(1)).view, SidebarView.files);
   });
 
-  testWidgets('侧边栏分割后，两格顶上都是图标按钮，没有「文件 ×」文字页', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('侧边栏分割后，两格顶上都是图标按钮，没有「文件 ×」文字页', (WidgetTester tester) async {
     await pumpShell(tester);
     // 拖拽是唯一的分割方式：把标签拖到下边缘，上面留文件 / 搜索。
     final Finder sideStrip = find.byType(PaneTabStrip).first;
@@ -3513,9 +3771,7 @@ void main() {
     );
   });
 
-  testWidgets('侧边栏拖出来的一格再拖回去：并回一格的两颗图标', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('侧边栏拖出来的一格再拖回去：并回一格的两颗图标', (WidgetTester tester) async {
     await pumpShell(tester);
     // 把搜索拖到下面分割：上面只剩文件，下面只有搜索。
     final Finder strip = find.byType(PaneTabStrip).first;
@@ -3556,9 +3812,7 @@ void main() {
     );
   });
 
-  testWidgets('右键侧边栏标签页没有菜单：不能分屏、也不能关页', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('右键侧边栏标签页没有菜单：不能分屏、也不能关页', (WidgetTester tester) async {
     await pumpShell(tester);
     expect(find.byType(NoteListPanel), findsOneWidget);
 
@@ -3614,7 +3868,10 @@ void main() {
     expect(app.settings.outlineVisible, isFalse);
     // 文件树现在在编辑区右边。
     final Rect editor = tester.getRect(find.byType(EditorPane));
-    expect(tester.getRect(panels.at(1)).left, greaterThanOrEqualTo(editor.right));
+    expect(
+      tester.getRect(panels.at(1)).left,
+      greaterThanOrEqualTo(editor.right),
+    );
 
     // 「点当前页 = 收起整列」只属于右栏的面板三颗；文件搬过来后只是普通
     // 一页，点它不该把整列关掉。
@@ -3626,9 +3883,7 @@ void main() {
     expect(app.settings.rightSidebarVisible, isTrue);
   });
 
-  testWidgets('右栏的大纲拖回左栏：两边互通，右栏不再留着它', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('右栏的大纲拖回左栏：两边互通，右栏不再留着它', (WidgetTester tester) async {
     await pumpShell(tester);
     final Finder rightStrip = find.byType(PaneTabStrip).at(2);
     final Finder outlineTab = find.descendant(
@@ -3651,19 +3906,23 @@ void main() {
     final Finder strips = find.byType(PaneTabStrip);
     expect(strips, findsNWidgets(3));
     expect(
-      find.descendant(of: strips.first, matching: find.byTooltip('大纲  ·  Ctrl+Shift+O')),
+      find.descendant(
+        of: strips.first,
+        matching: find.byTooltip('大纲  ·  Ctrl+Shift+O'),
+      ),
       findsOneWidget,
     );
     expect(
-      find.descendant(of: strips.at(2), matching: find.byTooltip('大纲  ·  Ctrl+Shift+O')),
+      find.descendant(
+        of: strips.at(2),
+        matching: find.byTooltip('大纲  ·  Ctrl+Shift+O'),
+      ),
       findsNothing,
       reason: '搬家不是复印：右栏不再留着大纲这一页',
     );
   });
 
-  testWidgets('两侧边栏怎么分、每页住哪一栏，下次启动还是原样', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('两侧边栏怎么分、每页住哪一栏，下次启动还是原样', (WidgetTester tester) async {
     await pumpShell(tester);
 
     // 1) 标签整页搬到右栏上格：左栏不再留着它。
@@ -3742,9 +4001,201 @@ void main() {
     expect(find.byTooltip('上下分割'), findsNothing);
   });
 
-  testWidgets('窗口顶部只有一条带子：标签条和顶栏是同一个矩形', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('编辑区分好的屏会落盘：重启还是两格、比例和每格的页都在', (WidgetTester tester) async {
+    await pumpShell(
+      tester,
+      vault: <Note>[
+        note('a', '甲文', DateTime(2026, 1, 3)),
+        note('b', '乙文', DateTime(2026, 1, 2)),
+        note('c', '丙文', DateTime(2026, 1, 1)),
+      ],
+    );
+    for (final String title in <String>['甲文', '乙文', '丙文']) {
+      await tester.tap(treeRow(title));
+      await tester.pumpAndSettle();
+    }
+
+    // 把丙文拖到编辑区右缘，切出第二格。
+    final Rect pane = tester.getRect(find.byType(EditorPane));
+    await dragTo(
+      tester,
+      tester.getCenter(tabOf('丙文')),
+      Offset(pane.right - 12, pane.center.dy),
+    );
+    expect(find.byType(EditorPane), findsNWidgets(2));
+
+    // 再拖一下分割线，让比例不是默认的 0.5——比例也得记住。
+    final Rect left0 = tester.getRect(find.byType(EditorPane).at(0));
+    await tester.dragFrom(
+      Offset(left0.right + AppLayout.splitSeamWidth / 2, left0.center.dy),
+      const Offset(-120, 0),
+    );
+    await tester.pumpAndSettle();
+    final Rect left1 = tester.getRect(find.byType(EditorPane).at(0));
+    final Rect right1 = tester.getRect(find.byType(EditorPane).at(1));
+    expect(left1.width, lessThan(right1.width), reason: '左边那格被拖窄了');
+
+    // 防抖窗口过去，偏好里应该有这一段。
+    await tester.pump(const Duration(milliseconds: 300));
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    final String? saved = prefs.getString('nrs.editorLayout');
+    expect(saved, isNotNull);
+
+    // 关掉整个壳，只把同一份偏好递回去——不重新拖一遍。
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    final ({
+      SettingsController settings,
+      NotesController notes,
+      CanvasController canvas,
+    })
+    app = await pumpShell(
+      tester,
+      vault: <Note>[
+        note('a', '甲文', DateTime(2026, 1, 3)),
+        note('b', '乙文', DateTime(2026, 1, 2)),
+        note('c', '丙文', DateTime(2026, 1, 1)),
+      ],
+      extraPrefs: <String, Object>{'nrs.editorLayout': saved!},
+    );
+
+    // 还是两格，宽度和关掉之前一致（比例记下来了）。
+    expect(find.byType(EditorPane), findsNWidgets(2));
+    final Rect left2 = tester.getRect(find.byType(EditorPane).at(0));
+    final Rect right2 = tester.getRect(find.byType(EditorPane).at(1));
+    expect(left2.width, closeTo(left1.width, 1));
+    expect(right2.width, closeTo(right1.width, 1));
+
+    // 每格排着的页也回来了：左边甲、乙，右边丙；右边那格还是活的（看丙文）。
+    final Finder leftStrip = find.byType(PaneTabStrip).at(1);
+    final Finder rightStrip = find.byType(PaneTabStrip).at(2);
+    expect(
+      find.descendant(of: leftStrip, matching: find.byType(PaneTab)),
+      findsNWidgets(2),
+    );
+    expect(
+      find.descendant(of: rightStrip, matching: find.byType(PaneTab)),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: rightStrip, matching: find.text('丙文')),
+      findsOneWidget,
+    );
+    // 标签栏跟着树走：Ctrl+Tab 那套会话和屏幕上一致。
+    expect(app.notes.openIds, <String>['a', 'b', 'c']);
+    expect(app.notes.selectedId, 'c');
+  });
+
+  testWidgets('编辑区存档里已经不存在的页会被摘掉，坏存档退回一格', (WidgetTester tester) async {
+    // 存档里排着甲文和一篇早就删掉的笔记；`live` 指向甲文。
+    const String layout =
+        '{"v":1,"focus":"editor-0","live":"a","root":'
+        '{"id":"editor-0","tabs":[{"t":"note","id":"a"},'
+        '{"t":"note","id":"ghost"},{"t":"canvas"}],"index":1}}';
+    await pumpShell(
+      tester,
+      vault: <Note>[note('a', '甲文', DateTime(2026, 1, 3))],
+      extraPrefs: <String, Object>{'nrs.editorLayout': layout},
+    );
+    // 只剩一格：幽灵笔记和白板（这次没开）都被摘掉了。
+    expect(find.byType(EditorPane), findsOneWidget);
+    final Finder strip = find.byType(PaneTabStrip).at(1);
+    expect(
+      find.descendant(of: strip, matching: find.byType(PaneTab)),
+      findsOneWidget,
+    );
+    // 当前页被摘掉了，退回合法的那一页：活的那份显示甲文。
+    expect(
+      find.descendant(of: strip, matching: find.text('甲文')),
+      findsOneWidget,
+    );
+
+    // 坏 JSON：不崩，退回默认的一格一页。
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    await pumpShell(
+      tester,
+      vault: <Note>[note('a', '甲文', DateTime(2026, 1, 3))],
+      extraPrefs: <String, Object>{'nrs.editorLayout': '{oops'},
+    );
+    expect(find.byType(EditorPane), findsOneWidget);
+    expect(find.byType(PaneTabStrip), findsNWidgets(3));
+  });
+
+  testWidgets('启动时 vault 还没读完：编辑区存档先搁着，读完再装回去', (WidgetTester tester) async {
+    // ⛔ `main.dart` 把 `runApp` 排在 `bootstrap` 之前（三份等待要重叠），所以
+    // 首帧的 vault 一定是空的。那时候拿 `noteById` 去核存档，等于把每一页都
+    // 当成已删除：用户分好的屏没了，残树还会被写回偏好。
+    const String layout =
+        '{"v":1,"focus":"editor-2","live":"c","root":'
+        '{"id":"editor-1","axis":"h","ratio":0.4,'
+        '"first":{"id":"editor-0","tabs":[{"t":"note","id":"a"},'
+        '{"t":"note","id":"b"}],"index":0},'
+        '"second":{"id":"editor-2","tabs":[{"t":"note"}],"index":0}}}';
+
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'nrs.sort': SortMode.updatedDesc.name,
+      'nrs.editorLayout': layout,
+    });
+    final SettingsController settings = await SettingsController.load();
+    final _GatedVaultStore store = _GatedVaultStore(<Note>[
+      note('a', '甲文', DateTime(2026, 1, 3)),
+      note('b', '乙文', DateTime(2026, 1, 2)),
+      note('c', '丙文', DateTime(2026, 1, 1)),
+    ]);
+    final NotesController notes = NotesController(store: store)
+      ..sortMode = settings.sort;
+    addTearDown(notes.dispose);
+    // 读盘甩出去但先不放行——首帧就在这个窗口里画出来。
+    final Future<void> booting = notes.bootstrap();
+    final CanvasController canvas = CanvasController(store: _NoCanvasStore());
+    addTearDown(canvas.dispose);
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<SettingsController>.value(value: settings),
+          ChangeNotifierProvider<NotesController>.value(value: notes),
+          ChangeNotifierProvider<CanvasController>.value(value: canvas),
+        ],
+        child: MaterialApp(
+          theme: AppTheme.build(settings.palette),
+          home: const AppShell(),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // 读盘没落地：存档一个字节都没动（没被当成「笔记全删了」写回去）。
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString('nrs.editorLayout'), layout);
+
+    // 放行读盘，这时候才装回去。
+    store.gate.complete();
+    await booting;
+    await tester.pumpAndSettle();
+
+    expect(find.byType(EditorPane), findsNWidgets(2));
+    final Finder leftStrip = find.byType(PaneTabStrip).at(1);
+    final Finder rightStrip = find.byType(PaneTabStrip).at(2);
+    expect(
+      find.descendant(of: leftStrip, matching: find.byType(PaneTab)),
+      findsNWidgets(2),
+    );
+    expect(
+      find.descendant(of: rightStrip, matching: find.text('丙文')),
+      findsOneWidget,
+    );
+    // 分屏本身还在存档里（没被占位的那棵树覆盖掉）。
+    expect(prefs.getString('nrs.editorLayout'), contains('editor-1'));
+  });
+
+  testWidgets('窗口顶部只有一条带子：标签条和顶栏是同一个矩形', (WidgetTester tester) async {
     await pumpShell(tester);
     final Rect bar = tester.getRect(find.byType(AppTitleBar));
     expect(bar.height, AppLayout.titleBarHeight);
@@ -3826,7 +4277,7 @@ void main() {
             )
             .first,
       );
-      return (rail.decoration! as BoxDecoration).color!;
+      return rail.color ?? (rail.decoration! as BoxDecoration).color!;
     }
 
     // 三条标签条（左栏 / 编辑区 / 右栏）都是侧边栏那一档：窗口顶上是一条
@@ -3855,9 +4306,36 @@ void main() {
     expect(railColor(), palette.sidebar);
   });
 
-  testWidgets('标签条末尾不再有新建笔记：那个位置换成右栏的收 / 展按钮', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('编辑区与两侧边栏之间的缝是同色，不画深色竖带', (WidgetTester tester) async {
+    // 右栏默认开着（大纲 / 表格 / 图片那一列）。两条缝都在。
+    await pumpShell(tester);
+    const AppPalette palette = AppPalette.midnight;
+
+    final List<ResizeHandle> handles = tester
+        .widgetList<ResizeHandle>(find.byType(ResizeHandle))
+        .toList();
+    expect(handles, hasLength(2), reason: '左栏一条、右栏一条');
+
+    // 缝从**它贴着的那一栏**身上切下来：两条都该是侧边栏那档。
+    // ⛔ 填成编辑区的纸色（surface）或画布色（canvas），两栏之间就会多出一条
+    // 比两边都暗的 5px 竖带——用户原话：「编辑栏和右侧边栏之间怎么有一条这么
+    // 粗的黑线？移除它。」
+    for (final ResizeHandle h in handles) {
+      expect(h.background, palette.sidebar);
+      expect(h.background, isNot(palette.canvas));
+      expect(h.background, isNot(palette.surface));
+      expect(h.width, AppLayout.resizeHandleWidth);
+    }
+
+    // 缝和它右边的栏连成一片：右栏那几格的底色也是 sidebar，中间没有第三种颜色。
+    final Rect right = tester.getRect(
+      find.byType(SplitHost<TabGroup<SidePage>>).last,
+    );
+    final Rect seam = tester.getRect(find.byWidget(handles.last));
+    expect(seam.right, right.left, reason: '缝紧贴右栏左缘');
+  });
+
+  testWidgets('标签条末尾不再有新建笔记：那个位置换成右栏的收 / 展按钮', (WidgetTester tester) async {
     await pumpShell(tester);
     // 新建笔记只剩侧边栏面板头那一个（tooltip 带快捷键）；标签条末尾那颗
     // 加号已经按用户要求删掉。
@@ -3916,9 +4394,7 @@ void main() {
     expect(find.byTooltip('展开右侧边栏'), findsNothing);
   });
 
-  testWidgets('右栏顶上画的是它自己的页：搬进来的文件跟着收起 / 展开', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('右栏顶上画的是它自己的页：搬进来的文件跟着收起 / 展开', (WidgetTester tester) async {
     await pumpShell(tester);
     // 文件搬进右栏上格：那一排现在是 大纲 / 表格 / 图片 / 文件，当前是文件。
     final Finder leftStrip = find.byType(PaneTabStrip).first;
@@ -3970,17 +4446,15 @@ void main() {
 
   // ------------------------------------------------------- 右栏也能上下分割
 
-  testWidgets('右栏顶上三颗是右栏自己的标签：贴着栏的左缘、28 方块', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('右栏顶上三颗是右栏自己的标签：贴着栏的左缘、28 方块', (WidgetTester tester) async {
     await pumpShell(tester);
     final Rect outline = tester.getRect(find.byType(OutlinePanel));
     final Rect outlineTab = tester.getRect(
       find.byTooltip('大纲  ·  Ctrl+Shift+O'),
     );
     // 同一列、同一高度：这几颗属于右栏，收起时跟着整列一起走，顶栏不会有
-    // 第二份。
-    expect(outlineTab.left, outline.left);
+    // 第二份。左边留 6——两侧栏的标签条共用一套起点（视觉稿 `.side-strip`）。
+    expect(outlineTab.left, outline.left + 6);
     expect(outlineTab.top, 6);
     // 面板仍旧从顶栏那条带子下面开始，没被多出来的一条标签条顶下去。
     expect(outline.top, AppLayout.titleBarHeight);
@@ -4012,9 +4486,7 @@ void main() {
     );
   });
 
-  testWidgets('点右栏当前那颗图标 = 收起右栏，那三颗跟着一起走', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('点右栏当前那颗图标 = 收起右栏，那三颗跟着一起走', (WidgetTester tester) async {
     final app = await pumpShell(tester);
     expect(find.byType(OutlinePanel), findsOneWidget);
     expect(app.settings.outlineVisible, isTrue);
@@ -4092,9 +4564,7 @@ void main() {
     expect(app.settings.tablePanelVisible, isFalse);
   });
 
-  testWidgets('把右栏下格的图标拖回上格标签条：并回一排，分割收回去', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('把右栏下格的图标拖回上格标签条：并回一排，分割收回去', (WidgetTester tester) async {
     await pumpShell(tester);
     final Rect panel = tester.getRect(find.byType(OutlinePanel));
     await dragTo(
@@ -4124,9 +4594,7 @@ void main() {
     expect(find.byType(OutlinePanel), findsNothing);
   });
 
-  testWidgets('右键右栏图标没有菜单：既不能分屏，也没有关闭这一格', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('右键右栏图标没有菜单：既不能分屏，也没有关闭这一格', (WidgetTester tester) async {
     await pumpShell(tester);
     await tester.tap(
       find.byTooltip('大纲  ·  Ctrl+Shift+O'),
@@ -4145,11 +4613,7 @@ void main() {
   testWidgets('右栏的图标拖进编辑区不接：不会分格，也不会换页', (WidgetTester tester) async {
     await pumpShell(tester);
     final Rect editor = tester.getRect(find.byType(EditorPane));
-    await dragTo(
-      tester,
-      tester.getCenter(find.byTooltip('表格')),
-      editor.center,
-    );
+    await dragTo(tester, tester.getCenter(find.byTooltip('表格')), editor.center);
 
     expect(find.byType(OutlinePanel), findsOneWidget);
     expect(find.byType(TablePanel), findsNothing);
@@ -4159,9 +4623,7 @@ void main() {
 
   // ------------------------------------------------- 一格一组标签，可以有多页
 
-  testWidgets('一格能排好几页：点两篇笔记就有两页，点哪页切哪页', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('一格能排好几页：点两篇笔记就有两页，点哪页切哪页', (WidgetTester tester) async {
     final ({
       SettingsController settings,
       NotesController notes,
@@ -4269,6 +4731,99 @@ void main() {
     expect(app.notes.selectedId, 'c');
   });
 
+  testWidgets('分割缝里不画线：编辑区和侧边栏的缝都是本栏底色', (WidgetTester tester) async {
+    const AppPalette palette = AppPalette.midnight;
+    await pumpShell(
+      tester,
+      vault: <Note>[
+        note('a', '甲文', DateTime(2026, 1, 2)),
+        note('b', '乙文', DateTime(2026, 1, 2)),
+        note('c', '丙文', DateTime(2026, 1, 2)),
+      ],
+    );
+    await tester.tap(treeRow('甲文'));
+    await tester.pumpAndSettle();
+    await tester.tap(treeRow('乙文'));
+    await tester.pumpAndSettle();
+    await tester.tap(treeRow('丙文'));
+    await tester.pumpAndSettle();
+
+    /// 缝就是那条带 resize 光标的 MouseRegion（栏间那条缝用的是 resizeColumn，
+    /// 不会撞）。
+    Finder seam(MouseCursor cursor) => find.byWidgetPredicate(
+      (Widget w) => w is MouseRegion && w.cursor == cursor,
+    );
+
+    /// 缝里所有描了色的盒子——除了缝自己那层底，不该再有别的。
+    Finder painted(Finder of, Color color) => find.descendant(
+      of: of,
+      matching: find.byWidgetPredicate(
+        (Widget w) => w is ColoredBox && w.color == color,
+      ),
+    );
+
+    // 编辑区分屏：把丙文拖到编辑区右缘，切出第二格。
+    final Rect pane = tester.getRect(find.byType(EditorPane));
+    await dragTo(
+      tester,
+      tester.getCenter(tabOf('丙文')),
+      Offset(pane.right - 12, pane.center.dy),
+    );
+    expect(find.byType(EditorPane), findsNWidgets(2));
+
+    // ⛔ 竖缝里没有那条 1px 的 outline 线，底色就是纸面；5px 还在，能拖。
+    // 缝的顶上 40 是标签条那一档（两格各有一条标签条），下面才是纸色——所以
+    // 取**最后**那个盒子。
+    final Finder vertical = seam(SystemMouseCursors.resizeLeftRight);
+    expect(vertical, findsOneWidget);
+    expect(painted(vertical, palette.outline), findsNothing);
+    expect(
+      tester
+          .widget<ColoredBox>(
+            find
+                .descendant(of: vertical, matching: find.byType(ColoredBox))
+                .last,
+          )
+          .color,
+      palette.surface,
+    );
+    expect(tester.getSize(vertical).width, AppLayout.splitSeamWidth);
+
+    // 侧边栏上下分割：把「标签」那页拖到左栏底部。
+    await tester.tap(find.byTooltip('标签'));
+    await tester.pumpAndSettle();
+    final Finder sideStrip = find.byType(PaneTabStrip).first;
+    final Finder tagsTab = find.descendant(
+      of: sideStrip,
+      matching: find.byTooltip('标签'),
+    );
+    await tester.tap(
+      find.descendant(of: sideStrip, matching: find.byTooltip('文件')),
+    );
+    await tester.pumpAndSettle();
+    final Rect side = tester.getRect(find.byType(NoteListPanel));
+    await dragTo(
+      tester,
+      tester.getCenter(tagsTab),
+      Offset(side.center.dx, side.bottom - 10),
+    );
+    expect(find.byType(NoteListPanel), findsNWidgets(2));
+
+    // ⛔ 横缝同样不画线，底色是侧边栏那一档。
+    final Finder horizontal = seam(SystemMouseCursors.resizeUpDown);
+    expect(horizontal, findsOneWidget);
+    expect(painted(horizontal, palette.outline), findsNothing);
+    expect(
+      tester
+          .widget<ColoredBox>(
+            find.descendant(of: horizontal, matching: find.byType(ColoredBox)),
+          )
+          .color,
+      palette.sidebar,
+    );
+    expect(tester.getSize(horizontal).height, AppLayout.splitSeamWidth);
+  });
+
   testWidgets('把一页拖到另一格：是搬家，不是复印', (WidgetTester tester) async {
     await pumpShell(
       tester,
@@ -4316,9 +4871,7 @@ void main() {
     );
   });
 
-  testWidgets('侧边栏顶上并排三颗图标：文件 / 搜索 / 标签，点谁切谁', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('侧边栏顶上并排三颗图标：文件 / 搜索 / 标签，点谁切谁', (WidgetTester tester) async {
     await pumpShell(tester);
 
     // 三颗常驻开关一起钉在侧边栏顶上：文件、搜索、标签。三颗都是页，也
@@ -4372,9 +4925,7 @@ void main() {
     expect(sideTab('标签'), findsOneWidget);
   });
 
-  testWidgets('标签页常驻、不能关：右键没有菜单，标签条上也没有 ×', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('标签页常驻、不能关：右键没有菜单，标签条上也没有 ×', (WidgetTester tester) async {
     await pumpShell(tester);
     final Finder sideStrip = find.byType(PaneTabStrip).first;
     Finder sideTab(String label) =>
@@ -4467,4 +5018,190 @@ void main() {
     expect(tester.widget<NoteListPanel>(panels.at(1)).view, SidebarView.tags);
     expect(tester.widget<NoteListPanel>(panels.at(0)).view, SidebarView.files);
   });
+
+  // ------------------------------------------------- 编辑区右下角的状态浮片
+
+  /// 浮片上的一段文字。浮片之外的地方（列表底部、面板标题）也有类似的数字，
+  /// 所以只在这一枚里找。
+  Finder floatText(String text) => find.descendant(
+    of: find.byType(EditorStatusFloat),
+    matching: find.text(text),
+  );
+
+  testWidgets('编辑格底部不再有信息条：状态收成一枚浮片，贴在编辑区右下角', (WidgetTester tester) async {
+    await pumpShell(tester);
+
+    // 旧的 28px 底栏（保存状态 + 行列 + 字数挤在编辑格底部）已经删掉：
+    // 编辑格里不再出现保存状态文字。
+    expect(
+      find.descendant(of: find.byType(EditorPane), matching: find.text('已同步')),
+      findsNothing,
+    );
+
+    final Finder chip = find.byType(EditorStatusFloat);
+    expect(chip, findsOneWidget);
+    // 默认那篇正文是 `# 标题\n\n正文\n`：4 字、5 字符、约 1 分钟，没有待办。
+    expect(floatText('已同步'), findsOneWidget);
+    expect(floatText('行 1, 列 1'), findsOneWidget);
+    expect(floatText('4 字'), findsOneWidget);
+    expect(floatText('5 字符'), findsOneWidget);
+    expect(floatText('约 1 分钟'), findsOneWidget);
+    expect(
+      find.descendant(of: chip, matching: find.textContaining('待办')),
+      findsNothing,
+      reason: '没有待办就整项不出现',
+    );
+
+    // 高 30；距编辑区右缘 14、下缘 12。
+    final Rect rect = tester.getRect(chip);
+    final Rect pane = tester.getRect(find.byType(EditorPane));
+    expect(rect.height, 30);
+    expect(rect.right, pane.right - 14);
+    expect(rect.bottom, pane.bottom - 12);
+  });
+
+  testWidgets('浮片的行列跟着光标走', (WidgetTester tester) async {
+    await pumpShell(tester);
+    final EditorPaneState state = tester.state<EditorPaneState>(
+      find.byType(EditorPane),
+    );
+
+    // 正文 `# 标题\n\n正文\n`：偏移 7 落在第三行的第二个字，偏移 9 是文末。
+    state.placeCaretAt(7);
+    await tester.pumpAndSettle();
+    expect(floatText('行 3, 列 2'), findsOneWidget);
+
+    state.placeCaretAt(9);
+    await tester.pumpAndSettle();
+    expect(floatText('行 4, 列 1'), findsOneWidget);
+  });
+
+  testWidgets('分屏交接：点哪一格，浮片就换成哪一格的数据，位置不动', (WidgetTester tester) async {
+    await pumpShell(
+      tester,
+      vault: <Note>[
+        note('a', '甲', DateTime(2026, 1, 2)),
+        note('b', '乙乙', DateTime(2026, 1, 2)),
+      ],
+    );
+    await tester.tap(treeRow('甲'));
+    await tester.pumpAndSettle();
+    await tester.tap(treeRow('乙乙'));
+    await tester.pumpAndSettle();
+
+    // 把「乙乙」拖到右边缘：右格装它，成为活的那一格。
+    final Rect pane = tester.getRect(find.byType(EditorPane));
+    await dragTo(
+      tester,
+      tester.getCenter(tabOf('乙乙')),
+      Offset(pane.right - 12, pane.center.dy),
+    );
+    final Finder panes = find.byType(EditorPane);
+    expect(panes, findsNWidgets(2));
+    expect(tester.widget<EditorPane>(panes.at(1)).readOnly, isFalse);
+    expect(floatText('4 字'), findsOneWidget, reason: '乙乙：4 个字');
+    expect(floatText('5 字符'), findsOneWidget);
+    final Rect before = tester.getRect(find.byType(EditorStatusFloat));
+
+    // 点左边那格：活的那份交过去，浮片换成甲的数据，矩形纹丝不动。
+    final Rect first = tester.getRect(panes.at(0));
+    await tester.tapAt(first.topLeft + const Offset(12, 8));
+    await tester.pumpAndSettle();
+    expect(tester.widget<EditorPane>(panes.at(0)).readOnly, isFalse);
+    expect(floatText('3 字'), findsOneWidget, reason: '甲：3 个字');
+    expect(floatText('4 字符'), findsOneWidget);
+    expect(tester.getRect(find.byType(EditorStatusFloat)), before);
+  });
+
+  testWidgets('聚焦页不是笔记时，浮片淡出；切回笔记再回来', (WidgetTester tester) async {
+    await pumpShell(tester);
+    expect(find.byType(EditorStatusFloat), findsOneWidget);
+
+    await tester.tap(find.byTooltip('关系图谱'));
+    await tester.pumpAndSettle();
+    expect(find.byType(EditorStatusFloat), findsNothing);
+
+    await tester.tap(tabOf('一篇笔记'));
+    await tester.pumpAndSettle();
+    expect(find.byType(EditorStatusFloat), findsOneWidget);
+    expect(floatText('4 字'), findsOneWidget, reason: '还是那一篇的数据');
+  });
+
+  testWidgets('浮片不接收指针：压在正文上也能落光标', (WidgetTester tester) async {
+    await pumpShell(tester);
+    // 整枚浮片包在 IgnorePointer 里，命中测试根本不会停在它上面。
+    expect(
+      find.ancestor(
+        of: find.byType(EditorStatusFloat),
+        matching: find.byType(IgnorePointer),
+      ),
+      findsWidgets,
+    );
+  });
+
+  testWidgets('浮片按编辑区宽度逐级收项', (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final NotesController notes = NotesController(
+      store: _VaultStore(<Note>[note('a', '标题', DateTime(2026, 1, 1))]),
+    );
+    addTearDown(notes.dispose);
+    await notes.bootstrap();
+    final ValueNotifier<EditorCaret> caret = ValueNotifier<EditorCaret>((
+      line: 0,
+      column: 1,
+    ));
+    addTearDown(caret.dispose);
+
+    Widget harness(double width) =>
+        ChangeNotifierProvider<NotesController>.value(
+          value: notes,
+          child: MaterialApp(
+            theme: AppTheme.build(AppPalette.midnight),
+            home: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: width,
+                height: 60,
+                child: EditorStatusFloat(noteId: null, caret: caret),
+              ),
+            ),
+          ),
+        );
+
+    await tester.pumpWidget(harness(480));
+    await tester.pumpAndSettle();
+    expect(floatText('约 1 分钟'), findsOneWidget);
+    expect(floatText('5 字符'), findsOneWidget);
+
+    // 420–479：收起阅读时间，字符数还在。
+    await tester.pumpWidget(harness(430));
+    await tester.pumpAndSettle();
+    expect(floatText('约 1 分钟'), findsNothing);
+    expect(floatText('5 字符'), findsOneWidget);
+
+    // 300–419：再收起字符数，字数和待办留下。
+    await tester.pumpWidget(harness(320));
+    await tester.pumpAndSettle();
+    expect(floatText('5 字符'), findsNothing);
+    expect(floatText('4 字'), findsOneWidget);
+    expect(floatText('行 1, 列 1'), findsOneWidget);
+
+    // <300：只剩圆点 + 保存状态 + 行列。
+    await tester.pumpWidget(harness(280));
+    await tester.pumpAndSettle();
+    expect(floatText('4 字'), findsNothing);
+    expect(floatText('已同步'), findsOneWidget);
+    expect(floatText('行 1, 列 1'), findsOneWidget);
+  });
+
+  testWidgets('窄窗里浮片真的收项：编辑区宽度传进了 LayoutBuilder', (WidgetTester tester) async {
+    // 980 = 右栏还能站住的最小宽度；44 功能栏 + 288 左栏 + 5 缝 + 252 右栏
+    // + 5 缝之后，编辑区只剩约 386——该收掉阅读时间和字符数。
+    await pumpShell(tester, size: const Size(980, 700));
+    expect(find.byType(EditorStatusFloat), findsOneWidget);
+    expect(floatText('4 字'), findsOneWidget);
+    expect(floatText('5 字符'), findsNothing);
+    expect(floatText('约 1 分钟'), findsNothing);
+  });
+
 }

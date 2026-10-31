@@ -363,6 +363,7 @@ List<MenuNode> buildEditorMenu({
         MenuAction(
           label: '高亮',
           icon: LucideIcons.highlighter,
+          shortcut: 'Alt+2',
           onPressed: () =>
               onApply(wrapSelection('==', '==', placeholder: '高亮')),
         ),
@@ -410,7 +411,7 @@ List<MenuNode> buildEditorMenu({
           BlockStyle.ordered,
           shortcut: 'Ctrl+Shift+7',
         ),
-        style('任务列表', LucideIcons.listTodo, BlockStyle.task),
+        style('任务列表', LucideIcons.listTodo, BlockStyle.task, shortcut: 'Alt+1'),
         const MenuSeparator(),
         for (int level = 1; level <= 6; level++)
           MenuAction(

@@ -871,6 +871,63 @@ class NotesController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 按编辑区那棵树对齐「开着哪些页」：顺序就是标签条的顺序。
+  ///
+  /// 编辑区的分割树会落盘（`nrs.editorLayout`），启动时树先回来，标签栏得跟着
+  /// 它走——否则 `_openIds` 还是上次会话那一份，和屏幕上的标签对不上（Ctrl+Tab
+  /// 会切到看不见的页，「关掉最后一页」也会从里面递补）。
+  ///
+  /// [selected] 是「活的那一页」显示的那一篇；它不在 [ids] 里就退回第一篇。
+  void adoptTabs(List<String> ids, String? selected) {
+    final List<String> next = <String>[];
+    for (final String id in ids) {
+      if (_noteById(id) != null && !next.contains(id)) next.add(id);
+    }
+    final String? want = selected != null && next.contains(selected)
+        ? selected
+        : (next.isEmpty ? null : next.first);
+    if (want == _selectedId && _sameIds(next)) return;
+    _autosave.flush(() => _persistDraft());
+    _openIds
+      ..clear()
+      ..addAll(next);
+    _selectedId = want;
+    _draft = selectedNote;
+    _draftOriginalPath = _draft?.relativePath;
+    _rememberBaseline(_draft);
+    _saveState = _draftHasConflict ? SaveState.dirty : SaveState.idle;
+    notifyListeners();
+  }
+
+  bool _sameIds(List<String> ids) {
+    if (ids.length != _openIds.length) return false;
+    for (int i = 0; i < ids.length; i++) {
+      if (ids[i] != _openIds[i]) return false;
+    }
+    return true;
+  }
+
+  /// 关掉**整个标签栏**，一篇都不留。
+  ///
+  /// 用在「关掉最后一个标签」上：那时不能按 [closeTab] 的规矩把编辑器交给
+  /// 邻居——`_openIds` 里排着的是用户点过的每一篇（每点一次 `select` 就记一
+  /// 笔），交一次就换一篇，看起来就是「关掉一页又冒出一页新的」。用户原话：
+  /// 「我关掉最后一个 tab 后，还是一直出现新的 tab，这是不对的！应该新增一个
+  /// 空标签页，当我关掉最后一个 tab 的时候，就显示空标签页！」
+  ///
+  /// 清空之后 [selectedId] 为 null，编辑区那一格留下的空标签页就会显示空状态，
+  /// 而不是上一篇的内容。
+  void clearTabs() {
+    if (_openIds.isEmpty && _selectedId == null) return;
+    _autosave.flush(() => _persistDraft());
+    _openIds.clear();
+    _selectedId = null;
+    _draft = null;
+    _draftOriginalPath = null;
+    _saveState = SaveState.idle;
+    notifyListeners();
+  }
+
   /// Ctrl+Tab / Ctrl+Shift+Tab: moves between open tabs, wrapping at the ends.
   void selectAdjacentTab(int delta) {
     if (_openIds.length < 2) return;

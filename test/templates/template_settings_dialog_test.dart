@@ -10,7 +10,7 @@ import 'package:nrs/data/storage/note_store.dart';
 import 'package:nrs/state/notes_controller.dart';
 import 'package:nrs/state/settings_controller.dart';
 import 'package:nrs/state/template_settings.dart';
-import 'package:nrs/ui/shell/settings_dialog.dart';
+import 'package:nrs/ui/shell/settings_page.dart';
 import 'package:nrs/ui/templates/template_hotkeys_dialog.dart';
 
 class _Store extends NoteStore {
@@ -94,18 +94,11 @@ Future<({SettingsController settings, NotesController notes})> pumpSettings(
       ],
       child: MaterialApp(
         theme: AppTheme.build(settings.palette),
-        home: Scaffold(
-          body: Builder(
-            builder: (BuildContext context) => TextButton(
-              onPressed: () => showSettingsDialog(context),
-              child: const Text('settings'),
-            ),
-          ),
-        ),
+        // 设置现在是一页，不是一层弹窗：直接把它当成整块内容挂上去。
+        home: const Scaffold(body: SettingsPage()),
       ),
     ),
   );
-  await tester.tap(find.text('settings'));
   await tester.pumpAndSettle();
   return (settings: settings, notes: notes);
 }
@@ -114,8 +107,12 @@ Future<void> scrollTo(WidgetTester tester, Finder target) async {
   await tester.scrollUntilVisible(
     target,
     220,
+    // 设置是一整页了：滚动的是这一页自己的那根滚动条，不再是弹窗里的。
     scrollable: find
-        .descendant(of: find.byType(Dialog), matching: find.byType(Scrollable))
+        .descendant(
+          of: find.byType(SettingsPage),
+          matching: find.byType(Scrollable),
+        )
         .first,
   );
   await tester.pumpAndSettle();
@@ -140,7 +137,7 @@ void main() {
 
     await scrollTo(tester, find.text('模板文件夹'));
     final Finder field = find.descendant(
-      of: find.byType(Dialog),
+      of: find.byType(SettingsPage),
       matching: find.byType(TextField),
     );
     expect(field, findsOneWidget);
@@ -174,7 +171,7 @@ void main() {
     expect(tester.widget<TextField>(field).controller?.text, '项目');
   });
 
-  testWidgets('关闭设置时输入中的路径也会保存', (WidgetTester tester) async {
+  testWidgets('输入中的模板路径在离开输入框时保存', (WidgetTester tester) async {
     final ({SettingsController settings, NotesController notes}) app =
         await pumpSettings(tester);
     final Finder field = find.byKey(
@@ -183,10 +180,12 @@ void main() {
 
     await scrollTo(tester, field);
     await tester.enterText(field, '工作/我的模板');
-    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    // 设置是一页了，没有「关掉」这个动作；改完把焦点移开就落盘——这是
+    // 「改动后直接保存」在这一项上的落点（输入框要等提交，否则每敲一个字都
+    // 会被规范化改写一遍，光标乱跳）。
+    FocusManager.instance.primaryFocus?.unfocus();
     await tester.pumpAndSettle();
 
-    expect(find.byType(Dialog), findsNothing);
     expect(app.settings.templatesFolder, '工作/我的模板');
   });
 

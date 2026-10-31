@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:provider/provider.dart';
 
 import '../../core/theme/app_palette.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../data/models/note.dart';
+import '../../state/notes_controller.dart';
+import '../../state/settings_controller.dart';
+import '../../templates/template_service.dart';
 import '../common/app_widgets.dart';
 import 'template_dialog_frame.dart';
 
-/// What the picker was closed with.
+/// 模板库上能做的五件事。由页面抛给外壳，外壳负责真正去做。
 enum TemplatePickerAction {
   /// Render into the open note at the caret / selection.
   insert,
@@ -26,75 +30,82 @@ enum TemplatePickerAction {
   edit,
 }
 
-@immutable
-class TemplatePickerResult {
-  const TemplatePickerResult(this.action, [this.template]);
-
-  final TemplatePickerAction action;
-
-  /// Set for [TemplatePickerAction.insert], [TemplatePickerAction.newNote] and
-  /// [TemplatePickerAction.edit].
-  final Note? template;
-}
-
-/// Opens the template picker.
+/// 模板库，编辑区里的一页。
 ///
-/// [templates] is already discovered and sorted by [TemplateService]; the
-/// picker only filters and presents it.
-Future<TemplatePickerResult?> showTemplatePicker(
-  BuildContext context, {
-  required List<Note> templates,
-  required String templatesFolder,
-  required bool canInsert,
-}) {
-  final AppPalette p = context.palette;
-  return showDialog<TemplatePickerResult>(
-    context: context,
-    barrierColor: p.overlay,
-    builder: (BuildContext context) => TemplatePickerDialog(
-      templates: templates,
-      templatesFolder: templatesFolder,
-      canInsert: canInsert,
-    ),
-  );
-}
-
-/// 「模板」 — search, arrow keys, Enter to insert, Ctrl+Enter for a new note.
-class TemplatePickerDialog extends StatefulWidget {
-  const TemplatePickerDialog({
+/// 以前是 `showTemplatePicker` 弹窗：插一次模板开一次、关一次。现在它是一页，
+/// 可以一直摆在旁边（甚至分屏和正文并排），插完还留在原处。
+///
+/// 它自己从 provider 里读笔记库和模板目录：新建 / 改名 / 删掉一个模板，这一页
+/// 立刻跟上。⛔ 别改成让外壳把清单传进来——外壳只在错误横幅变化时重建，传进
+/// 来的清单会一直是旧的。
+///
+/// [templates] / [templatesFolder] / [canInsert] 只在测试里给：给了就用给的
+/// 那一份，不去读 provider。
+class TemplatesPage extends StatefulWidget {
+  const TemplatesPage({
     super.key,
-    required this.templates,
-    required this.templatesFolder,
-    required this.canInsert,
+    required this.onAction,
+    required this.onClose,
+    this.templates,
+    this.templatesFolder,
+    this.canInsert,
   });
 
-  final List<Note> templates;
-  final String templatesFolder;
-  final bool canInsert;
+  /// 插入 / 新建 / 打开模板目录 / 新建模板 / 去编辑这一份。
+  final void Function(TemplatePickerAction action, Note? template) onAction;
+
+  /// 关掉这一页（Esc；× 在标签条上）。
+  final VoidCallback onClose;
+
+  /// 测试用的固定清单；null = 从 provider 里现算。
+  final List<Note>? templates;
+  final String? templatesFolder;
+  final bool? canInsert;
 
   @override
-  State<TemplatePickerDialog> createState() => _TemplatePickerDialogState();
+  State<TemplatesPage> createState() => _TemplatesPageState();
 }
 
-class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
+class _TemplatesPageState extends State<TemplatesPage> {
   final TextEditingController _search = TextEditingController();
   final FocusNode _searchFocus = FocusNode(debugLabel: 'template-search');
+  final FocusNode _pageFocus = FocusNode(debugLabel: 'templates-page');
   final Map<String, GlobalKey> _rowKeys = <String, GlobalKey>{};
-  bool _done = false;
   int _selected = 0;
+
+  /// 这一帧看到的模板清单 / 目录 / 能不能插入。
+  ///
+  /// 在 `build` 里刷新、存在字段上：`_move` / `_insert` 是在 build 之外跑的，
+  /// 那时候再去 `context.watch` 会被框架拦下来。
+  List<Note> _templates = const <Note>[];
+  String _folder = '';
+  bool _canInsert = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 这一页开在编辑区里，而外壳切到非正文页时会把焦点收回自己（见
+    // `AppShell._afterPaneSwitch`）。那一下发生在挂载之前，于是 `autofocus`
+    // 被判成「这个作用域里已经有焦点」，白写：↑↓ / Enter / Esc 一个都收不到。
+    // 挂载完再要一次，让这一页自己握住键盘。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _pageFocus.requestFocus();
+    });
+  }
 
   @override
   void dispose() {
     _search.dispose();
     _searchFocus.dispose();
+    _pageFocus.dispose();
     super.dispose();
   }
 
   List<Note> get _results {
     final String q = _search.text.trim().toLowerCase();
-    if (q.isEmpty) return widget.templates;
+    if (q.isEmpty) return _templates;
     return <Note>[
-      for (final Note note in widget.templates)
+      for (final Note note in _templates)
         if (note.title.toLowerCase().contains(q) ||
             note.relativePath.toLowerCase().contains(q))
           note,
@@ -113,15 +124,7 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
   }
 
   void _finish(TemplatePickerAction action, [Note? template]) {
-    if (_done) return;
-    _done = true;
-    Navigator.of(context).pop(TemplatePickerResult(action, template));
-  }
-
-  void _cancel() {
-    if (_done) return;
-    _done = true;
-    Navigator.of(context).pop();
+    widget.onAction(action, template);
   }
 
   void _move(int delta) {
@@ -143,7 +146,7 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
   }
 
   void _insert() {
-    if (!widget.canInsert) return;
+    if (!_canInsert) return;
     final Note? template = _selectedTemplate;
     if (template == null) return;
     _finish(TemplatePickerAction.insert, template);
@@ -158,9 +161,26 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
   @override
   Widget build(BuildContext context) {
     final AppPalette p = context.palette;
+    // 清单在这里现取：给了就用给的（测试），没给就看库——新建一个模板笔记，
+    // 这一页下一帧就跟上了。
+    final List<Note>? given = widget.templates;
+    if (given != null) {
+      _templates = given;
+      _folder = widget.templatesFolder ?? '';
+      _canInsert = widget.canInsert ?? true;
+    } else {
+      final NotesController notes = context.watch<NotesController>();
+      final SettingsController settings = context.watch<SettingsController>();
+      _folder = settings.templatesFolder;
+      _templates = const TemplateService().discoverTemplates(
+        notes.allNotes,
+        _folder,
+      );
+      _canInsert = notes.selectedNote != null;
+    }
     final List<Note> results = _results;
     final Note? selected = _selectedTemplate;
-    final bool hasTemplates = widget.templates.isNotEmpty;
+    final bool hasTemplates = _templates.isNotEmpty;
 
     return CallbackShortcuts(
       bindings: <ShortcutActivator, VoidCallback>{
@@ -169,20 +189,27 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
         const SingleActivator(LogicalKeyboardKey.enter): _insert,
         const SingleActivator(LogicalKeyboardKey.enter, control: true):
             _newNote,
-        const SingleActivator(LogicalKeyboardKey.escape): _cancel,
+        const SingleActivator(LogicalKeyboardKey.escape): widget.onClose,
       },
       // 打开时焦点落在这层，而不是搜索框：方向键 / Enter 仍然可用，
       // 但输入法不会一进来就接管，搜索要用户自己点进输入框。
       child: Focus(
+        focusNode: _pageFocus,
         autofocus: true,
-        child: TemplateDialogFrame(
-          icon: LucideIcons.blocks,
-          title: '模板',
-          onClose: () => Navigator.of(context).pop(),
-          width: 780,
-          maxHeight: 520,
-          body: hasTemplates ? _browser(p, results, selected) : _empty(p),
-          footer: _footer(p, selected),
+        child: ColoredBox(
+          color: p.surface,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Expanded(
+                child: hasTemplates
+                    ? _browser(p, results, selected)
+                    : _empty(p),
+              ),
+              Divider(height: 1, color: p.outlineSoft),
+              _footer(p, selected),
+            ],
+          ),
         ),
       ),
     );
@@ -455,7 +482,7 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
   /// Groups templates by their folder *inside* the templates folder. Root
   /// templates come first; the rest follow by path, matching discovery order.
   List<({String label, List<Note> notes})> _groups(List<Note> notes) {
-    final String root = Note.normalizeFolderPath(widget.templatesFolder);
+    final String root = Note.normalizeFolderPath(_folder);
     final String lowerRoot = root.toLowerCase();
     final Map<String, List<Note>> grouped = <String, List<Note>>{};
     for (final Note note in notes) {
@@ -594,7 +621,7 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
             ),
             const SizedBox(height: 4),
             Text(
-              '在「${widget.templatesFolder}」文件夹里放任意 Markdown 笔记，它就会出现在这里。模板也是普通笔记，可以直接编辑。',
+              '在「$_folder」文件夹里放任意 Markdown 笔记，它就会出现在这里。模板也是普通笔记，可以直接编辑。',
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 11.5,
@@ -723,7 +750,7 @@ class _TemplatePickerDialogState extends State<TemplatePickerDialog> {
           icon: LucideIcons.cornerDownLeft,
           primary: true,
           autofocus: false,
-          onPressed: widget.canInsert && canAct ? _insert : null,
+          onPressed: _canInsert && canAct ? _insert : null,
         ),
       ],
     );

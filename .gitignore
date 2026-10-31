@@ -50,6 +50,8 @@ app.*.map.json
 
 # 临时截图（调试用，不是设计稿）
 .tmp_*
+.probe-*
 
 # 设计稿预览页的打包产物（design/*.html 才是源）
 .trae-html-share-packages/
+design/.shots/

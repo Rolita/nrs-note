@@ -11,6 +11,7 @@ import 'package:nrs/state/canvas_controller.dart';
 import 'package:nrs/state/notes_controller.dart';
 import 'package:nrs/state/settings_controller.dart';
 import 'package:nrs/ui/editor/editor_pane.dart';
+import 'package:nrs/ui/editor/line_layout/line_editable_text.dart';
 import 'package:nrs/ui/editor/line_layout/render_line_editable.dart';
 import 'package:nrs/ui/shell/app_shell.dart';
 
@@ -73,8 +74,7 @@ class _NoCanvasStore implements CanvasStore {
   Future<List<CanvasRef>> list() async => const <CanvasRef>[];
 
   @override
-  Future<String> read(String relativePath) async =>
-      throw UnimplementedError();
+  Future<String> read(String relativePath) async => throw UnimplementedError();
 
   @override
   Future<void> write(String relativePath, String contents) async {}
@@ -90,9 +90,7 @@ class _NoCanvasStore implements CanvasStore {
 }
 
 void main() {
-  testWidgets('大纲跳转后第一帧就画出目标段落，不靠 hover', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('大纲跳转后第一帧就画出目标段落，不靠 hover', (WidgetTester tester) async {
     tester.view.physicalSize = const Size(1400, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -110,7 +108,9 @@ void main() {
 
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final SettingsController settings = await SettingsController.load();
-    final NotesController notes = NotesController(store: _VaultStore(<Note>[note]));
+    final NotesController notes = NotesController(
+      store: _VaultStore(<Note>[note]),
+    );
     addTearDown(notes.dispose);
     await notes.bootstrap();
     notes.select(note.id);
@@ -160,15 +160,76 @@ void main() {
       isTrue,
       reason: '目标行必须落在这一帧的可见区间里（band=$band lineTop=$lineTop）',
     );
-    expect(
-      band.bottom - band.top,
-      greaterThan(0),
-      reason: '可见区间不能是空段',
-    );
+    expect(band.bottom - band.top, greaterThan(0), reason: '可见区间不能是空段');
     expect(field.debugFullLayouts, 0, reason: '跳转不该触发整篇重排');
 
     await tester.pump();
     expect(pane.jumping, isFalse, reason: '跳转收尾必须复位，否则大纲不再跟随');
+  });
+
+  testWidgets('点大纲跳过去：整行标题被选中，直接就能改', (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final String text = longNote();
+    final List<String> lines = text.split('\n');
+    final Note note = Note(
+      id: 'a',
+      title: '长文',
+      body: text,
+      createdAt: DateTime(2026, 1, 1),
+      updatedAt: DateTime(2026, 1, 2),
+    );
+
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final SettingsController settings = await SettingsController.load();
+    final NotesController notes = NotesController(
+      store: _VaultStore(<Note>[note]),
+    );
+    addTearDown(notes.dispose);
+    await notes.bootstrap();
+    notes.select(note.id);
+    final CanvasController canvas = CanvasController(store: _NoCanvasStore());
+    addTearDown(canvas.dispose);
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<SettingsController>.value(value: settings),
+          ChangeNotifierProvider<NotesController>.value(value: notes),
+          ChangeNotifierProvider<CanvasController>.value(value: canvas),
+        ],
+        child: MaterialApp(
+          theme: AppTheme.build(settings.palette),
+          home: const AppShell(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final LineEditableText input = tester.widget<LineEditableText>(
+      find.byKey(const Key('nrs-editor-field')),
+    );
+    final EditorPaneState pane = tester.state<EditorPaneState>(
+      find.byType(EditorPane),
+    );
+
+    final int target = 165;
+    expect(lines[target].startsWith('## '), isTrue);
+    pane.goToHeading(target);
+    await tester.pump();
+
+    // 跳过去不是为了「看一眼」：整行标题（连同 `## `）都得选中，下一个键
+    // 就该把它换掉。只放一个光标的话，用户还得自己先选一遍。
+    final TextSelection selection = input.controller.selection;
+    expect(selection.isCollapsed, isFalse);
+    expect(selection.textInside(input.controller.text), lines[target]);
+    // 选中了也要能直接打字：焦点得在正文上。
+    expect(input.focusNode.hasFocus, isTrue);
+
+    input.focusNode.unfocus();
   });
 
   testWidgets('跳到最后一行时可见区间仍然有效', (WidgetTester tester) async {
@@ -188,7 +249,9 @@ void main() {
 
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final SettingsController settings = await SettingsController.load();
-    final NotesController notes = NotesController(store: _VaultStore(<Note>[note]));
+    final NotesController notes = NotesController(
+      store: _VaultStore(<Note>[note]),
+    );
     addTearDown(notes.dispose);
     await notes.bootstrap();
     notes.select(note.id);

@@ -5,10 +5,11 @@ import 'main_view.dart';
 /// 以前「主区显示什么」是外壳上的一个枚举（[MainView]），全窗口只有一份；
 /// 分块之后每格各有一份，所以它变成了叶子里的值，而不是窗口的状态。
 ///
-/// 四种都进格子：笔记、图谱、白板、图片。后三者的视口 / 相机 / 物理状态
-/// 活在 widget 的 State 里，所以它们从一格搬到另一格、或者暂时没有格子
-/// 装着的时候，靠 `GlobalKey` 在树上换位置把 State 带走（见 `app_shell`
-/// 的停靠区）。⛔ 别改成「没格子就重建」——白板的视角、图谱的相机一转就没了。
+/// 五种都进格子：笔记、图谱、白板、图片、设置 / 模板 / 回收站。图谱 / 白板 /
+/// 图片的视口 / 相机 / 物理状态活在 widget 的 State 里，所以它们从一格搬到
+/// 另一格、或者暂时没有格子装着的时候，靠 `GlobalKey` 在树上换位置把 State
+/// 带走（见 `app_shell` 的停靠区）。⛔ 别改成「没格子就重建」——白板的视角、
+/// 图谱的相机一转就没了。
 sealed class PaneDoc {
   const PaneDoc();
 
@@ -81,4 +82,44 @@ final class ImageDoc extends PaneDoc {
 
   @override
   String get identity => 'image';
+}
+
+/// 设置页。
+///
+/// 以前是盖在窗口上的一层 `showDialog`：改字号看不见正文、改侧边栏宽度看不
+/// 见侧边栏。现在它就是编辑区里的一页，和笔记并排开着，改哪项当场就看得见。
+/// 没有要搬走的 State（不像白板的视角、图谱的相机），所以不需要 GlobalKey
+/// 停靠区。
+final class SettingsDoc extends PaneDoc {
+  const SettingsDoc();
+
+  @override
+  MainView get view => MainView.settings;
+
+  @override
+  String get identity => 'settings';
+}
+
+/// 模板库。和设置一样是「一直开着也不碍事」的一页：插模板、新建模板、去看
+/// 模板目录，都在这一页上做完。
+final class TemplatesDoc extends PaneDoc {
+  const TemplatesDoc();
+
+  @override
+  MainView get view => MainView.templates;
+
+  @override
+  String get identity => 'templates';
+}
+
+/// 回收站。恢复 / 永久删除都在这一页上，不用「打开弹窗 → 操作 → 关掉 → 再
+/// 打开」。
+final class TrashDoc extends PaneDoc {
+  const TrashDoc();
+
+  @override
+  MainView get view => MainView.trash;
+
+  @override
+  String get identity => 'trash';
 }

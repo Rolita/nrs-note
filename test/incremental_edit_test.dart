@@ -144,7 +144,11 @@ class Session {
 
 /// 参照组：用同一份文本与选区完整跑一次 `layoutLines`。
 class Reference {
-  Reference(String text, TextSelection? selection, {Set<int> folded = const <int>{}}) {
+  Reference(
+    String text,
+    TextSelection? selection, {
+    Set<int> folded = const <int>{},
+  }) {
     style = LiveLineStyle(
       base: base,
       palette: palette,
@@ -307,7 +311,9 @@ void main() {
     test('行尾回车拆行', () {
       final Session s = Session('第一段\n第二段\n第三段\n第四段');
       addTearDown(s.dispose);
-      final ({bool ok, LineLayoutStats stats}) r = s.edit('第一段\n\n第二段\n第三段\n第四段');
+      final ({bool ok, LineLayoutStats stats}) r = s.edit(
+        '第一段\n\n第二段\n第三段\n第四段',
+      );
       expect(r.ok, isTrue);
       expect(r.stats.rebuiltLines, lessThanOrEqualTo(3));
       expect(r.stats.reusedLines, greaterThanOrEqualTo(2));
@@ -416,9 +422,7 @@ void main() {
     });
 
     test('围栏内编辑：整块重建，块外行复用', () {
-      final Session s = Session(
-        '前言\n\n```dart\nvoid main() {}\n```\n\n后记\n收尾',
-      );
+      final Session s = Session('前言\n\n```dart\nvoid main() {}\n```\n\n后记\n收尾');
       addTearDown(s.dispose);
       final ({bool ok, LineLayoutStats stats}) r = s.edit(
         '前言\n\n```dart\nvoid main() { print(1); }\n```\n\n后记\n收尾',
@@ -450,17 +454,30 @@ void main() {
     });
 
     test('表格前后插行：表格仍按整表连带', () {
-      final Session s = Session('前言\n\n| 名称 | 说明 |\n| --- | --- |\n| a | 1 |\n\n后记');
+      final Session s = Session(
+        '前言\n\n| 名称 | 说明 |\n| --- | --- |\n| a | 1 |\n\n后记',
+      );
       addTearDown(s.dispose);
       expect(
-        s.edit('前言\n\n| 名称 | 说明 |\n| --- | --- |\n| a | 1 |\n| b | 2 |\n\n后记').ok,
+        s
+            .edit(
+              '前言\n\n| 名称 | 说明 |\n| --- | --- |\n| a | 1 |\n| b | 2 |\n\n后记',
+            )
+            .ok,
         isTrue,
       );
       Reference ref = Reference(s.text, s.selection);
       expectSameLayout(s.layout, ref.layout);
       ref.dispose();
 
-      expect(s.edit('前言\n\n| 名称 | 说明 |\n| --- | --- |\n| a | 1 |\n| b | 2 |\n\n后\n记').ok, isTrue);
+      expect(
+        s
+            .edit(
+              '前言\n\n| 名称 | 说明 |\n| --- | --- |\n| a | 1 |\n| b | 2 |\n\n后\n记',
+            )
+            .ok,
+        isTrue,
+      );
       final Reference ref2 = Reference(s.text, s.selection);
       addTearDown(ref2.dispose);
       expectSameLayout(s.layout, ref2.layout);
@@ -469,10 +486,7 @@ void main() {
     test('折叠状态下编辑父项', () {
       final String text = '- 父项\n  - 子项一\n  - 子项二\n\n尾行';
       final int parentStart = 0;
-      final Session s = Session(
-        text,
-        folded: <int>{parentStart},
-      );
+      final Session s = Session(text, folded: <int>{parentStart});
       addTearDown(() => s.dispose());
       final ({bool ok, LineLayoutStats stats}) r = s.edit(
         '- 父项改\n  - 子项一\n  - 子项二\n\n尾行',
@@ -480,13 +494,39 @@ void main() {
       expect(r.ok, isTrue);
       expect(r.stats.rebuiltLines, 1, reason: '被藏起来的行不测量');
 
-      final Reference ref = Reference(
-        s.text,
-        s.selection,
-        folded: s.folded,
-      );
+      final Reference ref = Reference(s.text, s.selection, folded: s.folded);
       addTearDown(ref.dispose);
       expectSameLayout(s.layout, ref.layout);
+    });
+
+    // 图片行只在**它自己变了**的时候才让增量失效。以前判的是「重建区间里
+    // 有没有图片行」，而区间总是往前多带一行，于是在图片下面那行打字也会
+    // 整篇重排（1800 行 ≈ 120ms/键）。
+    test('在图片下面一行改字：图片没变就仍然走增量', () {
+      final Session s = Session(
+        '前言\n\n<img src="a.png" width="300" align="right">\n正文一行\n尾行',
+      );
+      addTearDown(s.dispose);
+      final ({bool ok, LineLayoutStats stats}) r = s.edit(
+        '前言\n\n<img src="a.png" width="300" align="right">\n正文一行改\n尾行',
+      );
+      expect(r.ok, isTrue, reason: '图片行原文没变，不该退回全量');
+      expect(r.stats.rebuiltLines, lessThanOrEqualTo(2));
+
+      final Reference ref = Reference(s.text, s.selection);
+      addTearDown(ref.dispose);
+      expectSameLayout(s.layout, ref.layout);
+    });
+
+    test('改图片行本身（宽度 / 对齐）：必须退回全量', () {
+      final Session s = Session(
+        '前言\n\n<img src="a.png" width="300" align="right">\n正文',
+      );
+      addTearDown(s.dispose);
+      final ({bool ok, LineLayoutStats stats}) r = s.edit(
+        '前言\n\n<img src="a.png" width="200" align="right">\n正文',
+      );
+      expect(r.ok, isFalse, reason: '图片让出的宽度变了，绕排必须整篇重算');
     });
   });
 
@@ -510,7 +550,10 @@ void main() {
         reason: '宽度变了必须退回全量',
       );
 
-      final ({int start, int removed, int inserted}) diff = diffOf('甲\n乙\n丙', '甲\n乙丙');
+      final ({int start, int removed, int inserted}) diff = diffOf(
+        '甲\n乙\n丙',
+        '甲\n乙丙',
+      );
       expect(
         relayoutOnEdit(
           previous: previous,
@@ -530,7 +573,16 @@ void main() {
       final math.Random rnd = math.Random(20261023);
       final Session s = Session('第一行\n第二行\n\n- 项目\n  续行\n\n尾行');
       addTearDown(s.dispose);
-      const List<String> inserts = <String>['a', '中', '新', '\n', '# ', '- ', '|', ' '];
+      const List<String> inserts = <String>[
+        'a',
+        '中',
+        '新',
+        '\n',
+        '# ',
+        '- ',
+        '|',
+        ' ',
+      ];
       int fallbacks = 0;
 
       for (int step = 0; step < 80; step++) {
@@ -539,7 +591,8 @@ void main() {
         final int op = rnd.nextInt(3);
         String next;
         if (op == 0 || current.isEmpty) {
-          next = current.substring(0, at) +
+          next =
+              current.substring(0, at) +
               inserts[rnd.nextInt(inserts.length)] +
               current.substring(at);
         } else if (op == 1 && at < current.length) {
@@ -597,8 +650,7 @@ void main() {
           .first;
       expect(render.debugFullLayouts, greaterThanOrEqualTo(1));
       final int fullBefore = render.debugFullLayouts;
-      final TextPainter lastPainter =
-          render.lineLayout!.laidOut.last.painter;
+      final TextPainter lastPainter = render.lineLayout!.laidOut.last.painter;
 
       controller.value = const TextEditingValue(
         text: '第一段\n第二段改\n第三段\n第四段',
@@ -615,6 +667,74 @@ void main() {
         identical(lastPainter, render.lineLayout!.laidOut.last.painter),
         isTrue,
       );
+    });
+
+    // 继承来的 `_textPainter` 是把**整篇**当一个段落排的（1800 行 ≈ 80ms）。
+    // 它只给上下方向键、按词移动这类兜底方法用；打字路径必须一次都不碰它，
+    // 否则每敲一个键都白付 80ms——这正是「大文件打字不跟手」的根。
+    testWidgets('打字不重排整篇段落', (WidgetTester tester) async {
+      await tester.binding.setSurfaceSize(const Size(900, 600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final StringBuffer big = StringBuffer();
+      for (int i = 0; i < 200; i++) {
+        big.writeln('## 第 $i 节');
+        big.writeln();
+        big.writeln('正文 **粗体** 与 `代码` 第 $i 段。');
+        big.writeln();
+      }
+      final String text = big.toString();
+      final MarkdownSourceController controller = MarkdownSourceController(
+        text: text,
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.build(AppPalette.midnight),
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 720,
+                height: 500,
+                child: MarkdownEditor(
+                  controller: controller,
+                  focusNode: FocusNode(),
+                  scrollController: ScrollController(),
+                  fontSize: 15.5,
+                  padding: EdgeInsets.zero,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final RenderLineEditable render = tester.allRenderObjects
+          .whereType<RenderLineEditable>()
+          .first;
+      // 首帧排一次，给继承来的几何一个合法起点。
+      expect(render.debugParagraphLayouts, 1);
+      final int paragraphBefore = render.debugParagraphLayouts;
+
+      String current = text;
+      for (int i = 0; i < 8; i++) {
+        current = current.replaceFirst('正文 **粗体**', '正文 **粗体x');
+        controller.value = TextEditingValue(
+          text: current,
+          selection: TextSelection.collapsed(
+            offset: current.indexOf('粗体x') + 3,
+          ),
+        );
+        await tester.pump();
+      }
+
+      expect(
+        render.debugParagraphLayouts,
+        paragraphBefore,
+        reason: '打字一次都不该让整篇段落重排',
+      );
+      expect(render.lineLayout!.text, current, reason: '按行布局仍然是最新的');
     });
   });
 }

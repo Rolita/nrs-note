@@ -24,6 +24,7 @@ class SettingsController extends ChangeNotifier {
   static const String _kRightVisible = 'nrs.rightSidebarVisible';
   static const String _kSideLayout = 'nrs.sideLayout';
   static const String _kRightLayout = 'nrs.rightLayout';
+  static const String _kEditorLayout = 'nrs.editorLayout';
   static const String _kListWidth = 'nrs.listWidth';
   static const String _kRightPanelWidth = 'nrs.rightPanelWidth';
 
@@ -59,6 +60,9 @@ class SettingsController extends ChangeNotifier {
   static const String _kAutoApplyFolderTemplates =
       'nrs.autoApplyFolderTemplates';
   static const String _kTemplateHotkeys = 'nrs.templateHotkeys';
+  static const String _kWindowOpacity = 'nrs.windowOpacity';
+  static const String _kShellAppearance = 'nrs.shellAppearance';
+  static const String _kSurfaceOpacity = 'nrs.surfaceOpacity';
 
   static Future<SettingsController> load() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -75,6 +79,79 @@ class SettingsController extends ChangeNotifier {
   /// 全应用的颜色。返回的是同一个 `const` 实例，所以 `LiveLineStyle` 那种
   /// 「按实例判断主题变没变」的地方天然稳定，不会因为一次重建就重排全文。
   AppPalette get palette => AppPalette.midnight;
+
+  // ----------------------------------------------------------------- window
+
+  /// 整扇窗的不透明度：1.0 完全不透明，0.5 最透——再往下整窗就和看不见
+  /// 没区别，留一半是底线，免得调进去出不来。
+  ///
+  /// 这是**整窗** alpha（原生 `SetLayeredWindowAttributes`），连正文一起变淡；
+  /// Flutter 的 Windows 嵌入层没有逐像素透明，做不到「只透背景」。
+  static const double windowOpacityMin = 0.5;
+  static const double windowOpacityMax = 1.0;
+  static const double windowOpacityDefault = 0.9;
+
+  double get windowOpacity =>
+      (_prefs.getDouble(_kWindowOpacity) ?? windowOpacityDefault).clamp(
+        windowOpacityMin,
+        windowOpacityMax,
+      );
+
+  set windowOpacity(double value) {
+    final double clamped = value.clamp(windowOpacityMin, windowOpacityMax);
+    if ((windowOpacity - clamped).abs() < 0.001) return;
+    _prefs.setDouble(_kWindowOpacity, clamped);
+    notifyListeners();
+  }
+
+  // --------------------------------------------------------------- appearance
+
+  /// 外壳的两套外观：默认的实色石墨，和设计稿里的壁纸面。
+  ///
+  /// 壁纸外观没有第二块色板——还是同一套石墨，只是把大块面层压到
+  /// [surfaceOpacity]，让垫在下面的壁纸透出来。
+  ShellAppearance get appearance {
+    final String? raw = _prefs.getString(_kShellAppearance);
+    return ShellAppearance.values.firstWhere(
+      (ShellAppearance e) => e.name == raw,
+      orElse: () => ShellAppearance.graphite,
+    );
+  }
+
+  set appearance(ShellAppearance value) {
+    if (appearance == value) return;
+    _prefs.setString(_kShellAppearance, value.name);
+    notifyListeners();
+  }
+
+  /// 壁纸外观下，大块面层压在壁纸上的不透明度。
+  ///
+  /// 这是**界内**那层 alpha：1.0 完全盖住壁纸，0.5 透出一半。它和
+  /// [windowOpacity]（原生整窗 alpha）不是一回事，两套外观各用各的。
+  static const double surfaceOpacityMin = 0.5;
+  static const double surfaceOpacityMax = 1.0;
+  static const double surfaceOpacityDefault = 0.9;
+
+  double get surfaceOpacity =>
+      (_prefs.getDouble(_kSurfaceOpacity) ?? surfaceOpacityDefault).clamp(
+        surfaceOpacityMin,
+        surfaceOpacityMax,
+      );
+
+  set surfaceOpacity(double value) {
+    final double clamped = value.clamp(surfaceOpacityMin, surfaceOpacityMax);
+    if ((surfaceOpacity - clamped).abs() < 0.001) return;
+    _prefs.setDouble(_kSurfaceOpacity, clamped);
+    notifyListeners();
+  }
+
+  /// 真正交给原生窗口的 alpha。
+  ///
+  /// 壁纸外观把图垫在窗口里，原生那层必须收干净（1.0）：再让它透出桌面，
+  /// 就会变成「桌面 + 壁纸」两层叠着，跟设计稿不是一回事。切回默认外观时，
+  /// 之前调好的 [windowOpacity] 原样回来。
+  double get effectiveWindowOpacity =>
+      appearance == ShellAppearance.wallpaper ? 1.0 : windowOpacity;
 
   // ------------------------------------------------------------------ sorting
 
@@ -294,6 +371,22 @@ class SettingsController extends ChangeNotifier {
     }
     if (_prefs.getString(_kRightLayout) != right) {
       _prefs.setString(_kRightLayout, right);
+    }
+  }
+
+  // ------------------------------------------------------------ 编辑区布局
+  //
+  // 编辑区那棵树（分了几格、每格排着哪些页、比例多少、哪格是活的）和两侧
+  // 边栏一样是视图状态，关掉再打开得是原样。以前只有侧边栏落盘，用户分好
+  // 的屏重启就没了。
+
+  /// 编辑区布局；`null` = 还没存过（用默认的一格一页）。
+  String? get editorLayout => _prefs.getString(_kEditorLayout);
+
+  /// 值没变就不碰磁盘（拖分割线会连着来几十次）。
+  void saveEditorLayout(String json) {
+    if (_prefs.getString(_kEditorLayout) != json) {
+      _prefs.setString(_kEditorLayout, json);
     }
   }
 

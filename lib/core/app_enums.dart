@@ -15,6 +15,22 @@ enum SortMode {
   final String label;
 }
 
+/// The two looks the shell can wear.
+///
+/// [graphite] is the original solid board. [wallpaper] keeps the same board but
+/// lays the design mock's aurora image underneath it and lets the big surfaces
+/// show that image through — its transparency is a **surface** alpha, not the
+/// native window alpha (see `SettingsController.effectiveWindowOpacity`).
+///
+/// `name` is the stored id: renaming a value is a storage-format change.
+enum ShellAppearance {
+  graphite('默认'),
+  wallpaper('壁纸');
+
+  const ShellAppearance(this.label);
+  final String label;
+}
+
 /// Which pane the left sidebar is showing.
 enum SidebarView {
   files('文件', LucideIcons.folder),

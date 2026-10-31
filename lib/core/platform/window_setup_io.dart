@@ -12,7 +12,10 @@ import 'boot_trace.dart';
 ///
 /// ⛔ 也别在显示之前等「第一帧画完」（`SchedulerBinding.endOfFrame`）：窗口
 /// 还隐藏的时候引擎不保证出帧，实测这一等是 500ms 起步，比不等还慢。
-Future<void> setupWindow() async {
+///
+/// [opacity] 是设置里存下的窗口不透明度（0.6–1.0）；由调用方读偏好后传进来，
+/// 平台层不碰存储。
+Future<void> setupWindow({required double opacity}) async {
   await windowManager.ensureInitialized();
   const WindowOptions options = WindowOptions(
     size: Size(1360, 880),
@@ -27,6 +30,9 @@ Future<void> setupWindow() async {
     skipTaskbar: false,
   );
   await windowManager.waitUntilReadyToShow(options, () async {
+    // 先把 alpha 设好再显示：第一帧起就是用户存下的透明度，不会先实一帧
+    // 再变淡。
+    await applyWindowOpacity(opacity);
     try {
       // 窗口此刻才第一次出现在屏幕上。runner 里那句「第一帧就 Show」已经
       // 去掉（见 windows/runner/flutter_window.cpp）：窗口刚创建时还在
@@ -39,4 +45,18 @@ Future<void> setupWindow() async {
     }
     BootTrace.mark('window shown');
   });
+}
+
+/// 把整扇窗设成 [opacity]——设置里的「窗口不透明度」实时调它。
+///
+/// ⛔ 这是**整个窗口**的 alpha（原生 `SetLayeredWindowAttributes`），不是逐像素
+/// 透明：Flutter 的 Windows 嵌入层没有逐像素透明通道，`Theme` 里再叠一层
+/// 只会把两层 alpha 相乘（0.9 × 0.9 = 0.81），纸面比视觉稿暗一截。所以调色板
+/// 保持原色，透明度只设在窗口上。
+Future<void> applyWindowOpacity(double opacity) async {
+  try {
+    await windowManager.setOpacity(opacity.clamp(0.0, 1.0));
+  } on Object {
+    // 纯观感：设不上就当不透明，别挡住启动或调设置。
+  }
 }

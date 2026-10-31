@@ -50,12 +50,17 @@ import 'tab_drag.dart';
 import 'tab_group.dart';
 import 'split_tree.dart';
 import 'data_safety_dialogs.dart';
+import 'editor_layout.dart';
+import 'editor_status_float.dart';
 import 'function_rail.dart';
 import 'note_list_panel.dart';
-import 'settings_dialog.dart';
+import 'settings_page.dart';
 import 'title_bar.dart';
 import 'title_bar_content.dart';
 import 'vault_tree.dart';
+
+/// 设计稿里的极光壁纸，从 `design/shell-refine.html` 原样取出。
+const String _kShellWallpaper = 'assets/backgrounds/graphite-wallpaper.jpg';
 
 /// Four regions, left to right: the function rail, the switchable sidebar
 /// (files / search / tags), the editor, and the document outline.
@@ -112,6 +117,15 @@ class _AppShellState extends State<AppShell> {
   final ValueNotifier<TextEditingValue> _bodyValue =
       ValueNotifier<TextEditingValue>(const TextEditingValue());
 
+  /// 聚焦格的光标行列，给编辑区右下角的状态浮片读。
+  ///
+  /// 浮片不挂在某一格里：分屏后点哪格，外壳把同一个 notifier 交给新的活格子，
+  /// 浮片内容跟着换、位置不动。只读格拿到的是 `null`，不会两格抢着写。
+  final ValueNotifier<EditorCaret> _caret = ValueNotifier<EditorCaret>((
+    line: 0,
+    column: 1,
+  ));
+
   late final NotesController _notes;
   late final SettingsController _settings;
   late final CanvasController _canvas;
@@ -157,9 +171,10 @@ class _AppShellState extends State<AppShell> {
   /// 搜索可以从左栏搬到右栏，所以不能只看左栏聚焦那格。
   bool get _searchOnScreen {
     bool showsSearch(SplitNode<TabGroup<SidePage>> tree) =>
-        SplitTree.leaves<TabGroup<SidePage>>(
-          tree,
-        ).any((SplitLeaf<TabGroup<SidePage>> l) => l.value.current == SidePage.search);
+        SplitTree.leaves<TabGroup<SidePage>>(tree).any(
+          (SplitLeaf<TabGroup<SidePage>> l) =>
+              l.value.current == SidePage.search,
+        );
     return showsSearch(_sideTree) ||
         (_settings.rightSidebarVisible && showsSearch(_rightTree));
   }
@@ -180,11 +195,10 @@ class _AppShellState extends State<AppShell> {
   /// 一格里装一个标签组（[TabGroup]，至少一页 [PaneDoc]）：一篇笔记、图谱、
   /// 白板或图片。默认只有一格一页；把标签拖到格子边上才会长成两格——
   /// 分割只走拖拽，没有按钮。
-  SplitNode<TabGroup<PaneDoc>> _editorTree =
-      const SplitLeaf<TabGroup<PaneDoc>>(
-        id: 'editor-0',
-        value: TabGroup<PaneDoc>(<PaneDoc>[NoteDoc(null)], 0),
-      );
+  SplitNode<TabGroup<PaneDoc>> _editorTree = const SplitLeaf<TabGroup<PaneDoc>>(
+    id: 'editor-0',
+    value: TabGroup<PaneDoc>(<PaneDoc>[NoteDoc(null)], 0),
+  );
 
   /// 编辑区当前聚焦的那一格：笔记格只有它绑草稿、能写。
   String _editorFocusId = 'editor-0';
@@ -192,12 +206,38 @@ class _AppShellState extends State<AppShell> {
   /// 编辑区新格子的 id 计数器，理由同 [_sideSeq]。
   int _editorSeq = 0;
 
+  /// 上一次落盘时的树 / 聚焦格 / 活页那一篇。
+  ///
+  /// 树是不可变的，改一次换一个实例——比 `identical` 就知道布局有没有变，不用
+  /// 在十几个 setState 点各调一次保存（漏一个就丢一次布局）。
+  SplitNode<TabGroup<PaneDoc>>? _lastSavedEditorTree;
+  String? _lastSavedEditorFocus;
+  String? _lastSavedLiveNote;
+
+  /// 编辑区布局的写盘防抖：拖分割线会连着来几十个 delta。
+  Timer? _editorLayoutTimer;
+
+  /// 读盘还没落地时先搁着的编辑区存档。  ///
+  /// `runApp` 在 `bootstrap` 之前跑，首帧的 vault 是空的；这时候拿 `noteById`
+  /// 去核存档等于把每一页都当已删除。搁到 `isLoading` 变假再装（见
+  /// [_restoreEditorLayout]）。
+  EditorLayout? _pendingEditorLayout;
+
+  /// 离开正文时记下的光标 / 选区。
+  ///
+  /// 设置 / 模板 / 回收站占着格子时，编辑器不在树上，`TextEditingController`
+  /// 连同选区一起没了。模板的「插入到光标处」要把这一笔放回去，否则插到文末。
+  TextSelection? _stashedSelection;
+
   /// 正在写的那一篇。交接「活的格子」时用它把原来那格钉住。
   String? get _liveNoteId => _notes.draft?.id ?? _notes.selectedId;
 
   /// 聚焦那一格的标签组。
   TabGroup<PaneDoc> get _focusGroup =>
-      SplitTree.findLeaf<TabGroup<PaneDoc>>(_editorTree, _editorFocusId)?.value ??
+      SplitTree.findLeaf<TabGroup<PaneDoc>>(
+        _editorTree,
+        _editorFocusId,
+      )?.value ??
       const TabGroup<PaneDoc>(<PaneDoc>[NoteDoc(null)], 0);
 
   /// 聚焦那一格当前那一页。
@@ -213,9 +253,11 @@ class _AppShellState extends State<AppShell> {
   ///
   /// 只看 `current`：一份文档可能只是某格标签组里的一页，没被切到前面——
   /// 那时它没画出来，就该待在停靠区里。
-  bool _hasDoc(String identity) => SplitTree.leaves<TabGroup<PaneDoc>>(
-    _editorTree,
-  ).any((SplitLeaf<TabGroup<PaneDoc>> leaf) => leaf.value.current.identity == identity);
+  bool _hasDoc(String identity) =>
+      SplitTree.leaves<TabGroup<PaneDoc>>(_editorTree).any(
+        (SplitLeaf<TabGroup<PaneDoc>> leaf) =>
+            leaf.value.current.identity == identity,
+      );
 
   /// 图谱被打开过（哪怕现在正停靠在停靠区里）。
   ///
@@ -246,6 +288,27 @@ class _AppShellState extends State<AppShell> {
     _notes = context.read<NotesController>();
     _settings = context.read<SettingsController>();
     _canvas = context.read<CanvasController>();
+    // 编辑区那棵树也落盘：分了几格、每格排着哪些页、比例多少、哪格是活的。
+    //
+    // ⛔ **不能在这里直接恢复**。`main.dart` 把 `runApp` 排在 `bootstrap`
+    // 之前（三份等待要重叠），所以首帧时 vault 还是空的——此刻 `noteById`
+    // 一片 null，照它核一遍就会把用户分好的屏当成「笔记全删了」整棵摘掉，
+    // 再把残树写回存档，那才是真的没了。vault 没读完就先搁着，读完再恢复
+    // （[_restoreEditorLayout]）。
+    final EditorLayout? savedEditor = decodeEditorLayout(
+      _settings.editorLayout,
+    );
+    if (savedEditor != null) {
+      if (_notes.isLoading) {
+        _pendingEditorLayout = savedEditor;
+        _notes.addListener(_restoreEditorLayoutWhenReady);
+      } else {
+        _restoreEditorLayout(savedEditor);
+      }
+    }
+    _lastSavedEditorTree = _editorTree;
+    _lastSavedEditorFocus = _editorFocusId;
+    _lastSavedLiveNote = _liveNoteId;
     // 两侧边栏的布局从偏好里回来：分几格、每格排哪些页、比例多少。
     // 存档坏了就退回默认的一格三页（布局是视图状态，不能挡住开窗）。
     final SideLayout left =
@@ -314,6 +377,10 @@ class _AppShellState extends State<AppShell> {
   @override
   void dispose() {
     _layoutSaveTimer?.cancel();
+    // 最后一次拖分割线可能还在防抖窗口里：关窗 / 换树前补一笔。
+    _editorLayoutTimer?.cancel();
+    _writeEditorLayout();
+    _notes.removeListener(_restoreEditorLayoutWhenReady);
     _canvas.removeListener(_onCanvasChanged);
     _settings.removeListener(_syncRightFromSettings);
     _notes.onBlankNoteCreated = null;
@@ -321,6 +388,7 @@ class _AppShellState extends State<AppShell> {
     _notices.dispose();
     _shellFocus.dispose();
     _bodyValue.dispose();
+    _caret.dispose();
     super.dispose();
   }
 
@@ -440,6 +508,100 @@ class _AppShellState extends State<AppShell> {
   void _afterSideLayoutChange() {
     if (_settings.rightSidebarVisible) _syncRightTopFlag();
     _saveSideLayouts();
+  }
+
+  /// 编辑区那棵树 / 聚焦格 / 活页那一篇变了就排一次落盘。
+  ///
+  /// 在 `build` 开头调：树是不可变的，改一次换一个实例，比 `identical` 就够。
+  /// 不去十几个 `setState` 点各插一句——漏一个就丢一次布局。
+  void _maybeSaveEditorLayout() {
+    // 存档还没装回去（vault 还在读）：这一帧的树是占位的默认值，写出去就把
+    // 用户分好的屏抹了。
+    if (_pendingEditorLayout != null) return;
+    if (identical(_lastSavedEditorTree, _editorTree) &&
+        _lastSavedEditorFocus == _editorFocusId &&
+        _lastSavedLiveNote == _liveNoteId) {
+      return;
+    }
+    _lastSavedEditorTree = _editorTree;
+    _lastSavedEditorFocus = _editorFocusId;
+    _lastSavedLiveNote = _liveNoteId;
+    _editorLayoutTimer?.cancel();
+    _editorLayoutTimer = Timer(
+      const Duration(milliseconds: 250),
+      _writeEditorLayout,
+    );
+  }
+
+  /// 把编辑区布局写进偏好。值没变 [SettingsController] 不会碰磁盘。
+  void _writeEditorLayout() {
+    _editorLayoutTimer?.cancel();
+    _editorLayoutTimer = null;
+    // 存档都还没装回来（读盘没落地就关窗）：这时候的树是占位的默认值，别写。
+    if (_pendingEditorLayout != null) return;
+    _settings.saveEditorLayout(
+      encodeEditorLayout(
+        EditorLayout(
+          root: _editorTree,
+          focusId: _editorFocusId,
+          liveNoteId: _liveNoteId,
+        ),
+      ),
+    );
+  }
+
+  /// 读盘落地了：这时候 `noteById` 才是真的，可以把搁着的存档装回去。
+  ///
+  /// 控制器在异步收尾里 `notifyListeners`，所以这里既不在 build 里，也不该在
+  /// 通知链里直接 `setState`——挪到这一帧之后再做。
+  void _restoreEditorLayoutWhenReady() {
+    if (_notes.isLoading) return;
+    _notes.removeListener(_restoreEditorLayoutWhenReady);
+    final EditorLayout? saved = _pendingEditorLayout;
+    _pendingEditorLayout = null;
+    if (saved == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() => _restoreEditorLayout(saved));
+    });
+  }
+
+  /// 把存档装回编辑区。
+  ///
+  /// 先按「这次真的有什么」摘一遍——笔记可能删了、白板这次没开、图片页没有图
+  /// （图片路径本来就不落盘）；摘空的格子连同分割线一起收掉，全空就退回一格
+  /// 一页。最后交给 `_handOver` 归一化：只有聚焦那格排着「活的那一页」。
+  void _restoreEditorLayout(EditorLayout saved) {
+    final SplitNode<TabGroup<PaneDoc>>? pruned = pruneEditorTree(
+      saved.root,
+      noteExists: (String id) => _notes.noteById(id) != null,
+      singletons: <String>{
+        if (_canvas.hasDocument) 'canvas',
+        if (_imagePath != null) 'image',
+        // 图谱首屏不建，只有它当时就在屏幕上才认这一页。
+        if (hasCurrentDoc(saved.root, 'graph')) 'graph',
+      },
+    );
+    if (pruned == null) return;
+    // 标签栏的 id 要从**归一化之前**的树上取：`_handOver` 会把聚焦那格的
+    // 当前页换成「活的那一页」（没有 id），那篇就不算进标签栏了。
+    final List<String> tabs = noteIdsIn(pruned);
+    _editorFocusId = saved.focusId;
+    _editorTree = _handOver(pruned, saved.focusId, saved.liveNoteId ?? '');
+    _editorSeq = nextEditorSeq(_editorTree);
+    _graphAlive = hasCurrentDoc(_editorTree, 'graph');
+    // 标签栏跟着树走：`_openIds` 不再由上次会话说了算。
+    //
+    // ⛔ 不能在这儿直接调：可能还在 build / 通知链里，`notifyListeners` 会被
+    // Provider 判成「build 期间 markNeedsBuild」。等这一帧之后再对齐。
+    final String? live = saved.liveNoteId;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _notes.adoptTabs(tabs, live);
+      // 标签上写的是「活的那一页」显示的那一篇：选中换了，标签条得重画
+      // （外壳不 watch 选中，平时靠各自的 setState）。
+      setState(() {});
+    });
   }
 
   /// 找哪一格的标签组里有这一页；先看左栏聚焦那格，再按屏幕顺序找两侧。
@@ -650,7 +812,8 @@ class _AppShellState extends State<AppShell> {
       }
 
       if (targetColumn == drag.fromColumn) {
-        if (emptied && SplitTree.leaves<TabGroup<SidePage>>(target).length > 1) {
+        if (emptied &&
+            SplitTree.leaves<TabGroup<SidePage>>(target).length > 1) {
           target =
               SplitTree.remove<TabGroup<SidePage>>(target, drag.fromPane!) ??
               target;
@@ -725,8 +888,9 @@ class _AppShellState extends State<AppShell> {
     final RightView? active = _rightActiveView;
     if (active == null) {
       if (_settings.rightSidebarVisible &&
-          SplitTree.firstLeaf<TabGroup<SidePage>>(_rightTree).value.current
-                  .rightView !=
+          SplitTree.firstLeaf<TabGroup<SidePage>>(
+                _rightTree,
+              ).value.current.rightView !=
               null) {
         _settings.rightSidebarVisible = false;
       }
@@ -785,7 +949,9 @@ class _AppShellState extends State<AppShell> {
     });
     // 点到的是一格正看着某一篇的笔记格：全局选中也跟过去。不跟的话「活的
     // 那一份」会把它换成另一篇，看起来就像点错了格。
-    if (doc is NoteDoc && doc.noteId != null && doc.noteId != _notes.selectedId) {
+    if (doc is NoteDoc &&
+        doc.noteId != null &&
+        doc.noteId != _notes.selectedId) {
       _notes.select(doc.noteId!);
     }
   }
@@ -867,7 +1033,9 @@ class _AppShellState extends State<AppShell> {
       _editorTree = _handOver(
         next,
         focus,
-        kept is NoteDoc ? (kept.noteId ?? _liveNoteId ?? '') : (_liveNoteId ?? ''),
+        kept is NoteDoc
+            ? (kept.noteId ?? _liveNoteId ?? '')
+            : (_liveNoteId ?? ''),
       );
     });
     _editorKeys.remove(paneId);
@@ -930,23 +1098,30 @@ class _AppShellState extends State<AppShell> {
     // 拿别的页顶住的话，看起来就像「关掉一篇，隔壁那篇被搬了过来」——用户
     // 原话：「我关闭了这个 tab 后，应该是自动恢复布局，关掉这个分割，而不是把
     // 第一个编辑栏的 tab 继续放到这个第二个 tab 里」。
-    if (leaf.value.length == 1 && _hasManyPanes) {
-      if (doc is GraphDoc) _graphAlive = false;
-      if (doc is ImageDoc) _imagePath = null;
-      if (doc is CanvasDoc) unawaited(_canvas.close());
-      if (doc is NoteDoc) {
-        final String? id = doc.noteId ?? _liveNoteId;
-        // 这一篇在**别的**格子里还开着的话，会话里就别关它。
-        if (id != null && !_otherPaneHas(paneId, NoteDoc(id))) {
-          _notes.closeTab(id);
+    if (leaf.value.length == 1) {
+      if (_hasManyPanes) {
+        if (doc is GraphDoc) _graphAlive = false;
+        if (doc is ImageDoc) _imagePath = null;
+        if (doc is CanvasDoc) unawaited(_canvas.close());
+        if (doc is NoteDoc) {
+          final String? id = doc.noteId ?? _liveNoteId;
+          // 这一篇在**别的**格子里还开着的话，会话里就别关它。
+          if (id != null && !_otherPaneHas(paneId, NoteDoc(id))) {
+            _notes.closeTab(id);
+          }
         }
+        _closeEditorPane(paneId);
+        return;
       }
-      _closeEditorPane(paneId);
+      _emptyLastTab(paneId, doc);
       return;
     }
     if (doc is GraphDoc) return _closeGraph();
     if (doc is CanvasDoc) return _closeCanvas();
     if (doc is ImageDoc) return _closeImage();
+    if (doc is SettingsDoc) return _closeSettings();
+    if (doc is TemplatesDoc) return _closeTemplates();
+    if (doc is TrashDoc) return _closeTrash();
     final String? id = (doc as NoteDoc).noteId ?? _liveNoteId;
     if (id == null) return;
     final TabGroup<PaneDoc> g = leaf.value.closeAt(
@@ -956,7 +1131,9 @@ class _AppShellState extends State<AppShell> {
           : NoteDoc(_liveNoteId ?? ''),
     );
     final PaneDoc now = g.current;
-    final String nowId = now is NoteDoc ? (now.noteId ?? _liveNoteId ?? '') : '';
+    final String nowId = now is NoteDoc
+        ? (now.noteId ?? _liveNoteId ?? '')
+        : '';
     setState(() {
       _editorTree = _handOver(
         SplitTree.replaceValue<TabGroup<PaneDoc>>(_editorTree, paneId, g),
@@ -967,7 +1144,9 @@ class _AppShellState extends State<AppShell> {
     if (!_otherPaneHas(paneId, NoteDoc(id))) _notes.closeTab(id);
     // 关掉之后这一格换到另一篇笔记上：全局选中也跟过去，否则活的那一页
     // 会被钉成刚关掉的那篇。
-    if (now is NoteDoc && now.noteId != null && now.noteId != _notes.selectedId) {
+    if (now is NoteDoc &&
+        now.noteId != null &&
+        now.noteId != _notes.selectedId) {
       _notes.select(now.noteId!);
     }
   }
@@ -976,11 +1155,38 @@ class _AppShellState extends State<AppShell> {
   bool get _hasManyPanes =>
       SplitTree.leaves<TabGroup<PaneDoc>>(_editorTree).length > 1;
 
+  /// 关掉**整个编辑区最后那一页**：原地留一个空标签页，不递补任何笔记。
+  ///
+  /// ⛔ 这里不能走 `closeAt(at, fallback)`：它留下的那一页还是「活的那一份」，
+  /// 跟着全局选中走。只要 `_openIds` 里还排着点过的笔记，`closeTab` 就会把
+  /// 选中交给邻居——关一次换一篇，看起来就是「关掉一个 tab，又冒出一个新
+  /// tab」，而且永远关不完。所以选中必须一起清掉（[NotesController.clearTabs]），
+  /// 留下的那页才会显示空状态。用户原话：「我关掉最后一个 tab 后，还是一直
+  /// 出现新的 tab，这是不对的！……就显示空标签页！」
+  void _emptyLastTab(String paneId, PaneDoc doc) {
+    if (doc is GraphDoc) _graphAlive = false;
+    if (doc is ImageDoc) _imagePath = null;
+    setState(() {
+      _editorFocusId = paneId;
+      _editorTree = SplitTree.replaceValue<TabGroup<PaneDoc>>(
+        _editorTree,
+        paneId,
+        const TabGroup<PaneDoc>(<PaneDoc>[NoteDoc(null)], 0),
+      );
+    });
+    _notes.clearTabs();
+    // 白板的收尾放最后：`close()` 会通知一次，那时树上已经没有这一页了，
+    // `_onCanvasChanged` 走「没有文档」那条路，顺手把会话里那块清掉，也不会
+    // 再补一页回来。这里不要提前 `_saveCanvasSession()`——那一刻 `path` 还在。
+    if (doc is CanvasDoc) unawaited(_canvas.close());
+  }
+
   /// 除了 [paneId] 之外，还有没有哪一格的标签组里排着 [doc]。
   bool _otherPaneHas(String paneId, PaneDoc doc) =>
-      SplitTree.leaves<TabGroup<PaneDoc>>(
-        _editorTree,
-      ).any((SplitLeaf<TabGroup<PaneDoc>> leaf) => leaf.id != paneId && leaf.value.contains(doc));
+      SplitTree.leaves<TabGroup<PaneDoc>>(_editorTree).any(
+        (SplitLeaf<TabGroup<PaneDoc>> leaf) =>
+            leaf.id != paneId && leaf.value.contains(doc),
+      );
 
   /// 切完页之后那点收尾：专注模式、键盘焦点、白板要一次键盘。
   void _afterPaneSwitch(PaneDoc doc) {
@@ -1036,7 +1242,11 @@ class _AppShellState extends State<AppShell> {
         }
       }
       _editorTree = _handOver(
-        SplitTree.replaceValue<TabGroup<PaneDoc>>(_editorTree, _editorFocusId, g),
+        SplitTree.replaceValue<TabGroup<PaneDoc>>(
+          _editorTree,
+          _editorFocusId,
+          g,
+        ),
         _editorFocusId,
         id ?? _liveNoteId ?? '',
       );
@@ -1067,7 +1277,8 @@ class _AppShellState extends State<AppShell> {
     if (leaf == null) return (tree: tree, emptied: false);
     final int at = leaf.value.tabs.indexWhere(
       (PaneDoc d) => doc is NoteDoc
-          ? d is NoteDoc && (wasLive ? d.isLive : (id != null && d.noteId == id))
+          ? d is NoteDoc &&
+                (wasLive ? d.isLive : (id != null && d.noteId == id))
           : d == doc,
     );
     if (at < 0) return (tree: tree, emptied: false);
@@ -1111,8 +1322,10 @@ class _AppShellState extends State<AppShell> {
     if (!zone.isEdge) {
       // 落在中间 = 这一格收下这一页并切过去。落在自己那一格就是「点它一下」。
       if (from == paneId) {
-        final TabGroup<PaneDoc>? g =
-            SplitTree.findLeaf<TabGroup<PaneDoc>>(_editorTree, paneId)?.value;
+        final TabGroup<PaneDoc>? g = SplitTree.findLeaf<TabGroup<PaneDoc>>(
+          _editorTree,
+          paneId,
+        )?.value;
         final int at = g?.indexOf(doc) ?? -1;
         if (at >= 0) _selectTab(paneId, at);
         return;
@@ -1189,8 +1402,10 @@ class _AppShellState extends State<AppShell> {
     // 同一格、又只有这一页：把它搬到新格、原地再留一份一模一样的，等于什么都
     // 没做——一格总要有一页，分不出第二份来。
     if (from == paneId) {
-      final TabGroup<PaneDoc>? g =
-          SplitTree.findLeaf<TabGroup<PaneDoc>>(_editorTree, paneId)?.value;
+      final TabGroup<PaneDoc>? g = SplitTree.findLeaf<TabGroup<PaneDoc>>(
+        _editorTree,
+        paneId,
+      )?.value;
       if (g == null || g.length <= 1) return;
     }
     final int seq = ++_editorSeq;
@@ -1228,6 +1443,9 @@ class _AppShellState extends State<AppShell> {
     GraphDoc() => '关系图谱',
     CanvasDoc() => _canvas.path == null ? '白板' : canvasTitleOf(_canvas.path!),
     ImageDoc() => _imagePath?.split('/').last ?? '图片',
+    SettingsDoc() => '设置',
+    TemplatesDoc() => '模板',
+    TrashDoc() => '回收站',
   };
 
   /// 标签条上那一页的 key。
@@ -1239,15 +1457,22 @@ class _AppShellState extends State<AppShell> {
   /// 白板 / 图片那两页的 key 是固定的：同一时刻只开着一块，从文件树换一块
   /// 时是**这一页原地换名字**，不是多开一页。
   String _tabKey(PaneDoc doc) => switch (doc) {
-    NoteDoc(:final String? noteId) => 'note-tab-${noteId ?? _liveNoteId ?? '*'}',
+    NoteDoc(:final String? noteId) =>
+      'note-tab-${noteId ?? _liveNoteId ?? '*'}',
     GraphDoc() => 'graph-tab',
     CanvasDoc() => 'canvas-tab',
     ImageDoc() => 'image-tab',
+    SettingsDoc() => 'settings-tab',
+    TemplatesDoc() => 'templates-tab',
+    TrashDoc() => 'trash-tab',
   };
 
   String _noteTabLabel(String? id) {
     final Note? note = id == null ? _notes.selectedNote : _notes.noteById(id);
-    final String title = (note?.title ?? '').trim();
+    // 一篇都没选中 = 刚关掉最后一页留下的那个空标签页，别写成「未命名」——
+    // 那看起来像一篇标题为空的笔记。
+    if (note == null) return id == null ? '新标签页' : '未命名';
+    final String title = note.title.trim();
     return title.isEmpty ? '未命名' : title;
   }
 
@@ -1273,11 +1498,7 @@ class _AppShellState extends State<AppShell> {
                 PaneTabData(
                   key: ValueKey<String>(_tabKey(d)),
                   label: _docLabel(d),
-                  drag: DocDrag(
-                    d,
-                    label: _docLabel(d),
-                    fromPane: leaf.id,
-                  ),
+                  drag: DocDrag(d, label: _docLabel(d), fromPane: leaf.id),
                 ),
             ],
             index: group.index,
@@ -1289,8 +1510,7 @@ class _AppShellState extends State<AppShell> {
             trailingInset: trailingInset,
             // 丢到这一格的标签条上 = 并进这一格（和丢在格子中间一样，
             // 只是多了块更好瞄的地方）。自己这一格拎起来的不收。
-            acceptsTab: (TabDrag t) =>
-                t is DocDrag && t.fromPane != leaf.id,
+            acceptsTab: (TabDrag t) => t is DocDrag && t.fromPane != leaf.id,
             onDropTab: (TabDrag t) {
               if (t is! DocDrag) return;
               _dropTab(leaf.id, DropZone.center, t);
@@ -1305,10 +1525,13 @@ class _AppShellState extends State<AppShell> {
               child: switch (doc) {
                 NoteDoc(:final String? noteId) => EditorPane(
                   key: _editorKeyFor(leaf.id),
-                  // 表格工具和状态栏读的是「正在写的那一份」，只读格不发布。
+                  // 表格工具和状态浮片读的是「正在写的那一份」，只读格不发布。
                   bodyValue: live ? _bodyValue : null,
+                  caretValue: live ? _caret : null,
                   noteId: noteId,
                   readOnly: !live,
+                  // 右缘刻度跟聚焦格的大纲行号走；只读格不画。
+                  outlineLine: live ? _cursorLine : null,
                   showSearchHighlights: _searchOnScreen,
                   onDelete: _confirmDelete,
                   onOpenSearch: () => _selectView(SidebarView.search),
@@ -1320,13 +1543,24 @@ class _AppShellState extends State<AppShell> {
                         }
                       : null,
                   onClosePane:
-                      SplitTree.leaves<TabGroup<PaneDoc>>(_editorTree).length > 1
+                      SplitTree.leaves<TabGroup<PaneDoc>>(_editorTree).length >
+                          1
                       ? () => _closeEditorPane(leaf.id)
                       : null,
                 ),
                 GraphDoc() => _graphBody(),
                 CanvasDoc() => _canvasBody(),
                 ImageDoc() => _imageBody(),
+                SettingsDoc() => const SettingsPage(key: Key('settings-page')),
+                TemplatesDoc() => TemplatesPage(
+                  key: const Key('templates-page'),
+                  onAction: _handleTemplateAction,
+                  onClose: _closeTemplates,
+                ),
+                TrashDoc() => TrashPage(
+                  key: const Key('trash-page'),
+                  onClose: _closeTrash,
+                ),
               },
             ),
           ),
@@ -1346,9 +1580,7 @@ class _AppShellState extends State<AppShell> {
     final bool top =
         !left &&
         SplitTree.firstLeaf<TabGroup<SidePage>>(_rightTree).id == leaf.id;
-    final double width = left
-        ? _settings.listWidth
-        : _settings.rightPanelWidth;
+    final double width = left ? _settings.listWidth : _settings.rightPanelWidth;
     return Listener(
       // 点哪一格，[_showPage] / 模板目录就改哪一格（只有左栏有聚焦这回事）。
       onPointerDown: left
@@ -1384,7 +1616,6 @@ class _AppShellState extends State<AppShell> {
             index: group.index,
             // 右栏没有「聚焦哪一格」这回事：每一格都把当前页亮出来。
             focused: left ? leaf.id == _sideFocusId : true,
-            compactIcons: !left,
             trailingInset: top ? (kIsWeb ? 0 : kCaptionWidth) : 0,
             // 只有贴着窗口顶的那一条是拖窗口的那段；下格顶上再拖窗口就怪了。
             filler: left || top ? titleBarGrip() : null,
@@ -1577,6 +1808,11 @@ class _AppShellState extends State<AppShell> {
   /// 各自看着自己的东西。
   void _selectMainView(MainView view) {
     if (_mainView == view) return;
+    // 离开正文前把光标 / 选区记一笔：设置、模板这些页占着格子的时候编辑器
+    // 不在树上，切回来时选区已经没了。模板「插入到光标处」全靠这一笔。
+    if (_mainView == MainView.note) {
+      _stashedSelection = _editorKey.currentState?.bodySelection;
+    }
     // 白板是一份文件，没有「空白的白板」这种状态：点进来之前得先有一份。
     // 这里只做「还没打开过就新建一块」，已经打开过就直接切过去。
     if (view == MainView.canvas &&
@@ -1592,6 +1828,9 @@ class _AppShellState extends State<AppShell> {
       MainView.graph => const GraphDoc(),
       MainView.canvas => const CanvasDoc(),
       MainView.image => const ImageDoc(),
+      MainView.settings => const SettingsDoc(),
+      MainView.templates => const TemplatesDoc(),
+      MainView.trash => const TrashDoc(),
     };
     // 这一份已经在别的格里了：把焦点交给那一格，别把它搬过来。
     // 「点图谱标签」的意思是「我要看图谱」，不是「把图谱挪到我这儿」。
@@ -1607,6 +1846,12 @@ class _AppShellState extends State<AppShell> {
     }
     _openTabInFocus(doc);
   }
+
+  /// 打开设置页（功能栏那颗齿轮、`Ctrl+,`）。
+  ///
+  /// 设置现在也是编辑区里的一页：开着就切过去，没开着就开在聚焦那一格。
+  /// 以前这里弹一层 `showDialog`——改字号看不见正文，改完还得关掉。
+  void _openSettings() => _selectMainView(MainView.settings);
 
   /// 关掉「白板」页（点 tab 上的 ×）。
   ///
@@ -1647,6 +1892,36 @@ class _AppShellState extends State<AppShell> {
     });
     _shellFocus.requestFocus();
   }
+
+  /// 关掉「设置」页。
+  ///
+  /// 设置没有要放下的文档（不像白板要先落盘），摘掉这一页就完事；下次点齿轮
+  /// 是同一页，停在原来滚动的位置（State 跟着 `GlobalKey` 走）。
+  void _closeSettings() {
+    setState(() {
+      _editorTree = _dropDoc(_editorTree, (PaneDoc d) => d is SettingsDoc);
+    });
+    _shellFocus.requestFocus();
+  }
+
+  /// 关掉「模板」页。它没有要放下的文档，摘掉这一页就完事。
+  void _closeTemplates() {
+    setState(() {
+      _editorTree = _dropDoc(_editorTree, (PaneDoc d) => d is TemplatesDoc);
+    });
+    _shellFocus.requestFocus();
+  }
+
+  /// 关掉「回收站」页。
+  void _closeTrash() {
+    setState(() {
+      _editorTree = _dropDoc(_editorTree, (PaneDoc d) => d is TrashDoc);
+    });
+    _shellFocus.requestFocus();
+  }
+
+  /// 打开回收站（功能栏那颗垃圾桶）。以前是 `showTrashDialog` 弹窗。
+  void _openTrash() => _selectMainView(MainView.trash);
 
   /// 功能栏的白板按钮：新建一块「未命名白板.nrs」并切过去。
   ///
@@ -2046,31 +2321,43 @@ class _AppShellState extends State<AppShell> {
 
   // --------------------------------------------------------------- templates
 
-  Future<void> _openTemplatePicker() async {
-    if (!mounted) return;
-    final String folder = _settings.templatesFolder;
-    final TemplatePickerResult? result = await showTemplatePicker(
-      context,
-      templates: _templates.discoverTemplates(_notes.allNotes, folder),
-      templatesFolder: folder,
-      canInsert: _notes.selectedNote != null,
-    );
-    if (!mounted || result == null) return;
+  /// 打开模板页（功能栏那颗、`Ctrl+P`）。
+  ///
+  /// 以前是 `showTemplatePicker` 弹窗：插一次开一次。现在它是编辑区里的一页，
+  /// 开着就一直开着，插完还留在原处。
+  void _openTemplates() => _selectMainView(MainView.templates);
 
-    switch (result.action) {
+  /// 模板页上做的事。以前是弹窗的返回值，现在走回调——页面不关，做完接着看。
+  Future<void> _handleTemplateAction(
+    TemplatePickerAction action,
+    Note? template,
+  ) async {
+    if (!mounted) return;
+    switch (action) {
       case TemplatePickerAction.insert:
-        final Note? template = result.template;
-        if (template != null) await _insertTemplate(template);
+        if (template == null) return;
+        // 先把正文翻回眼前：模板页占着这一格的时候，编辑器根本没挂在树上，
+        // 光标也就无从谈起。切回去、等这一帧画完，再把光标放回原处。
+        final TextSelection? selection = _stashedSelection;
+        _selectMainView(MainView.note);
+        await WidgetsBinding.instance.endOfFrame;
+        if (!mounted) return;
+        final EditorPaneState? editor = _editorKey.currentState;
+        if (selection != null) editor?.restoreSelection(selection);
+        await _insertTemplate(template);
       case TemplatePickerAction.newNote:
-        final Note? template = result.template;
-        if (template != null) await _createNoteFromTemplate(template);
+        if (template == null) return;
+        await _createNoteFromTemplate(template);
+        if (!mounted) return;
+        _selectMainView(MainView.note);
       case TemplatePickerAction.openFolder:
         await _showTemplatesFolder();
       case TemplatePickerAction.newTemplate:
         await _createTemplateNote();
       case TemplatePickerAction.edit:
-        final Note? template = result.template;
-        if (template != null) _notes.select(template.id);
+        if (template == null) return;
+        _selectMainView(MainView.note);
+        _notes.select(template.id);
     }
   }
 
@@ -2245,9 +2532,9 @@ class _AppShellState extends State<AppShell> {
           const SingleActivator(LogicalKeyboardKey.keyN, control: true):
               _createNote,
           const SingleActivator(LogicalKeyboardKey.keyP, control: true):
-              _openTemplatePicker,
-          const SingleActivator(LogicalKeyboardKey.comma, control: true): () =>
-              showSettingsDialog(context),
+              _openTemplates,
+          const SingleActivator(LogicalKeyboardKey.comma, control: true):
+              _openSettings,
           const SingleActivator(
             LogicalKeyboardKey.keyB,
             control: true,
@@ -2323,7 +2610,9 @@ class _AppShellState extends State<AppShell> {
 
   @override
   Widget build(BuildContext context) {
-    final AppPalette p = context.palette;
+    // 布局变没变在这一帧顺手看一眼，变了就排一次落盘（见 [_maybeSaveEditorLayout]）。
+    _maybeSaveEditorLayout();
+    final AppPalette base = context.palette;
     // 外壳只需要错误横幅；正文、选中等变化交给各自的面板订阅。
     // 以前这里 watch 整个控制器，用户每敲一个字都会重建整棵外壳。
     final String? error = context.select<NotesController, String?>(
@@ -2331,6 +2620,12 @@ class _AppShellState extends State<AppShell> {
     );
     final SettingsController settings = context.watch<SettingsController>();
     final bool zen = settings.focusMode;
+    // 壁纸外观：还是同一块石墨，只是把大块面层压到用户调的不透明度；
+    // 文字、图标和 1px 缝线不在这一版里变淡（见 `AppPalette.backdrop`）。
+    final bool wallpaper = settings.appearance == ShellAppearance.wallpaper;
+    final AppPalette p = wallpaper
+        ? base.backdrop(settings.surfaceOpacity)
+        : base;
 
     return NoticeScope(
       controller: _notices,
@@ -2347,12 +2642,16 @@ class _AppShellState extends State<AppShell> {
             // narrow window) as well as on both drag handles.
             body: LayoutBuilder(
               builder: (BuildContext context, BoxConstraints c) {
-                // 图谱和图片要整块画布：右侧那一栏（大纲 / 表格 / 图片列表）
-                // 在它们里收起来，退出来自动回来——所以这里只做「不显示」，
-                // 不去改 `settings.*Visible`。改设置会写盘，而且「关掉再打开」
-                // 会把用户原来的选择弄丢。
+                // 图谱、图片和设置要整块画布：右侧那一栏（大纲 / 表格 /
+                // 图片列表）在它们里收起来，退出来自动回来——所以这里只做
+                // 「不显示」，不去改 `settings.*Visible`。改设置会写盘，而且
+                // 「关掉再打开」会把用户原来的选择弄丢。
                 final bool panelAllowed =
-                    _mainView != MainView.graph && _mainView != MainView.image;
+                    _mainView != MainView.graph &&
+                    _mainView != MainView.image &&
+                    _mainView != MainView.settings &&
+                    _mainView != MainView.templates &&
+                    _mainView != MainView.trash;
                 // 右栏开不开由单独的偏好说（`rightSidebarVisible`）。以前是
                 // 「三颗面板开关里有一颗亮着 = 开着」，但右栏现在也可能停着
                 // 文件 / 搜索 / 标签——那三颗开关只代表右栏的面板页，决定不了
@@ -2394,212 +2693,264 @@ class _AppShellState extends State<AppShell> {
                 // 浮在它上面。以前这里是 `Column[顶栏 40, 正文]`，标签条又被塞
                 // 进每一格的顶上，于是窗口上方压了两条横带、上面那条还是空的
                 // ——用户原话：「让 tab 还是在顶部栏显示啊。为什么往下移了？」
-                return Stack(
-                  clipBehavior: Clip.none,
-                  fit: StackFit.expand,
-                  children: <Widget>[
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: <Widget>[
-                        // The rail keeps only the global actions. 文件 / 搜索 /
-                        // 标签 已经和右栏的大纲 / 表格 / 图片 一样，是侧边栏
-                        // 自己的标签页，不再占这一列。
-                        if (!zen)
-                          AppRail(
-                            // 标签条顶到窗口最上面之后，那颗「收起侧边栏」
-                            // 正好落在功能栏头顶上——让开这一条，别盖住它。
-                            topInset: AppLayout.titleBarHeight,
-                            // 功能栏跟着右边那块地走：边栏在就是侧边栏色，
-                            // 收起就并进编辑区的纸面。
-                            sidebarVisible: !settings.sidebarCollapsed,
-                            onOpenTemplates: _openTemplatePicker,
-                            onOpenGraph: () =>
-                                _selectMainView(MainView.graph),
-                            onOpenCanvas: _newCanvasBoard,
-                            onOpenTrash: () => showTrashDialog(context),
-                            onOpenSettings: () =>
-                                showSettingsDialog(context),
-                            graphActive: _mainView == MainView.graph,
-                            canvasActive: _mainView == MainView.canvas,
+                return Theme(
+                  data: Theme.of(
+                    context,
+                  ).copyWith(extensions: <ThemeExtension<dynamic>>[p]),
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    fit: StackFit.expand,
+                    children: <Widget>[
+                      // 壁纸外观：图垫在所有面板下面，面板的面层已经是半透明的。
+                      // 它不接指针，只当背景。
+                      if (wallpaper)
+                        Positioned.fill(
+                          child: Image.asset(
+                            _kShellWallpaper,
+                            key: const ValueKey<String>('shell-wallpaper'),
+                            fit: BoxFit.cover,
+                            alignment: Alignment.center,
+                            filterQuality: FilterQuality.medium,
                           ),
-                        // The panes each get a handle on the edge that faces the
-                        // editor, and each handle is carved out of the pane it
-                        // follows, so its hairline lands on the seam and the
-                        // boundary reads the same everywhere.
-                        if (!zen &&
-                            !settings.sidebarCollapsed) ...<Widget>[
-                          SizedBox(
-                            width: settings.listWidth,
-                            // 侧边栏和编辑区共用同一个分割组件；两侧边栏又
-                            // 共用同一种页，所以叶子只按栏别画。
-                            child: SplitHost<TabGroup<SidePage>>(
-                              root: _sideTree,
-                              dividerThickness: 5,
-                              onRatioChanged:
-                                  (
-                                    SplitBranch<TabGroup<SidePage>> branch,
-                                    double ratio,
-                                  ) {
-                                    setState(() {
-                                      _sideTree = SplitTree
-                                          .setRatio<TabGroup<SidePage>>(
-                                            _sideTree,
-                                            branch.id,
-                                            ratio,
-                                          );
-                                    });
-                                    // 拖动会连着来几十个 delta，合并写盘。
-                                    _scheduleSideLayoutSave();
-                                  },
-                              leafBuilder:
-                                  (
-                                    BuildContext context,
-                                    SplitLeaf<TabGroup<SidePage>> leaf,
-                                  ) => _sidePane(SideColumn.left, leaf),
+                        ),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: <Widget>[
+                          // The rail keeps only the global actions. 文件 / 搜索 /
+                          // 标签 已经和右栏的大纲 / 表格 / 图片 一样，是侧边栏
+                          // 自己的标签页，不再占这一列。
+                          if (!zen)
+                            AppRail(
+                              // 功能栏跟着右边那块地走：边栏在就是侧边栏色，
+                              // 收起就并进编辑区的纸面；顶上 40 永远是顶带色。
+                              sidebarVisible: !settings.sidebarCollapsed,
+                              onOpenTemplates: _openTemplates,
+                              onOpenGraph: () =>
+                                  _selectMainView(MainView.graph),
+                              onOpenCanvas: _newCanvasBoard,
+                              onOpenTrash: _openTrash,
+                              onOpenSettings: _openSettings,
+                              graphActive: _mainView == MainView.graph,
+                              canvasActive: _mainView == MainView.canvas,
+                              settingsActive: _mainView == MainView.settings,
+                              templatesActive: _mainView == MainView.templates,
+                              trashActive: _mainView == MainView.trash,
                             ),
-                          ),
-                          ResizeHandle(
-                            background: p.sidebar,
-                            onDelta: (double d) => settings.listWidth =
-                                settings.listWidth + d,
-                          ),
-                        ],
-                        Expanded(
-                          child: Stack(
-                            fit: StackFit.expand,
-                            children: <Widget>[
-                              // 格子树。每一格的 State（撤销栈、光标、
-                              // 滚动位置）都活在树上，所以切走再回来
-                              // 还是原样——这也是为什么整棵树一直挂着，
-                              // 而不是按当前视图重建。
-                              SplitHost<TabGroup<PaneDoc>>(
-                                root: _editorTree,
-                                dividerThickness:
-                                    AppLayout.resizeHandleWidth,
+                          // The panes each get a handle on the edge that faces the
+                          // editor, and each handle is carved out of the pane it
+                          // follows, so its hairline lands on the seam and the
+                          // boundary reads the same everywhere.
+                          if (!zen && !settings.sidebarCollapsed) ...<Widget>[
+                            SizedBox(
+                              width: settings.listWidth,
+                              // 侧边栏和编辑区共用同一个分割组件；两侧边栏又
+                              // 共用同一种页，所以叶子只按栏别画。
+                              child: SplitHost<TabGroup<SidePage>>(
+                                root: _sideTree,
+                                dividerThickness: AppLayout.splitSeamWidth,
+                                // 缝跟着侧边栏的底色：两格之间不画线。
+                                dividerColor: p.sidebar,
                                 onRatioChanged:
                                     (
-                                      SplitBranch<TabGroup<PaneDoc>>
-                                      branch,
+                                      SplitBranch<TabGroup<SidePage>> branch,
                                       double ratio,
                                     ) {
                                       setState(() {
-                                        _editorTree = SplitTree
-                                            .setRatio<TabGroup<PaneDoc>>(
-                                              _editorTree,
-                                              branch.id,
-                                              ratio,
-                                            );
+                                        _sideTree =
+                                            SplitTree.setRatio<
+                                              TabGroup<SidePage>
+                                            >(_sideTree, branch.id, ratio);
                                       });
+                                      // 拖动会连着来几十个 delta，合并写盘。
+                                      _scheduleSideLayoutSave();
                                     },
                                 leafBuilder:
                                     (
                                       BuildContext context,
-                                      SplitLeaf<TabGroup<PaneDoc>> leaf,
-                                    ) => _editorPane(
-                                      leaf,
-                                      trailingInset:
-                                          rightEdgePanes.contains(leaf.id)
-                                          ? stripTrailingInset
-                                          : 0,
-                                    ),
+                                      SplitLeaf<TabGroup<SidePage>> leaf,
+                                    ) => _sidePane(SideColumn.left, leaf),
                               ),
-                              // 停靠区：这三份文档全局只有一份，眼下
-                              // 没有格子装着它们（被笔记顶掉了、或者
-                              // 压根没开）时挂在这儿。`Offstage` 只跳过
-                              // 排版，State 还在；配合各自的 GlobalKey，
-                              // 同一帧内搬回格子里，视角和相机都跟着走。
-                              if (_graphAlive && !_hasDoc('graph'))
-                                _park(_graphBody()),
-                              if (_canvas.hasDocument &&
-                                  !_hasDoc('canvas'))
-                                _park(_canvasBody()),
-                              if (_imagePath != null && !_hasDoc('image'))
-                                _park(_imageBody()),
-                            ],
-                          ),
-                        ),
-                        if (showRight) ...<Widget>[
-                          // The handle sits left of the right column, so
-                          // dragging it rightwards narrows the column.
-                          ResizeHandle(
-                            background: p.surface,
-                            onDelta: (double d) =>
-                                settings.rightPanelWidth =
-                                    settings.rightPanelWidth - d,
-                          ),
-                          // 右栏自己也是一棵分割树，叶子和左栏一样装
-                          // [SidePage]——所以「文件」能拖到这边，「大纲」也
-                          // 能拖到左边。整列从窗口最上面开始：上格的标签条
-                          // 正好占着顶栏那 40px，不用再给顶栏垫一条空白。
-                          SizedBox(
-                            width: settings.rightPanelWidth,
-                            child: SplitHost<TabGroup<SidePage>>(
-                              root: _rightTree,
-                              dividerThickness: 5,
-                              onRatioChanged:
-                                  (
-                                    SplitBranch<TabGroup<SidePage>> branch,
-                                    double ratio,
-                                  ) {
-                                    setState(() {
-                                      _rightTree = SplitTree
-                                          .setRatio<TabGroup<SidePage>>(
-                                            _rightTree,
-                                            branch.id,
-                                            ratio,
-                                          );
-                                    });
-                                    _scheduleSideLayoutSave();
-                                  },
-                              leafBuilder:
-                                  (
-                                    BuildContext context,
-                                    SplitLeaf<TabGroup<SidePage>> leaf,
-                                  ) => _sidePane(SideColumn.right, leaf),
+                            ),
+                            ResizeHandle(
+                              background: p.sidebar,
+                              onDelta: (double d) =>
+                                  settings.listWidth = settings.listWidth + d,
+                            ),
+                          ],
+                          Expanded(
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: <Widget>[
+                                // 格子树。每一格的 State（撤销栈、光标、
+                                // 滚动位置）都活在树上，所以切走再回来
+                                // 还是原样——这也是为什么整棵树一直挂着，
+                                // 而不是按当前视图重建。
+                                SplitHost<TabGroup<PaneDoc>>(
+                                  root: _editorTree,
+                                  dividerThickness: AppLayout.splitSeamWidth,
+                                  onRatioChanged:
+                                      (
+                                        SplitBranch<TabGroup<PaneDoc>> branch,
+                                        double ratio,
+                                      ) {
+                                        setState(() {
+                                          _editorTree =
+                                              SplitTree.setRatio<
+                                                TabGroup<PaneDoc>
+                                              >(_editorTree, branch.id, ratio);
+                                        });
+                                      },
+                                  leafBuilder:
+                                      (
+                                        BuildContext context,
+                                        SplitLeaf<TabGroup<PaneDoc>> leaf,
+                                      ) => _editorPane(
+                                        leaf,
+                                        trailingInset:
+                                            rightEdgePanes.contains(leaf.id)
+                                            ? stripTrailingInset
+                                            : 0,
+                                      ),
+                                ),
+                                // 停靠区：这三份文档全局只有一份，眼下
+                                // 没有格子装着它们（被笔记顶掉了、或者
+                                // 压根没开）时挂在这儿。`Offstage` 只跳过
+                                // 排版，State 还在；配合各自的 GlobalKey，
+                                // 同一帧内搬回格子里，视角和相机都跟着走。
+                                if (_graphAlive && !_hasDoc('graph'))
+                                  _park(_graphBody()),
+                                if (_canvas.hasDocument && !_hasDoc('canvas'))
+                                  _park(_canvasBody()),
+                                if (_imagePath != null && !_hasDoc('image'))
+                                  _park(_imageBody()),
+                                // 状态浮片：编辑区右下角，压在所有格子和停靠区
+                                // 上面。位置不跟格走；非笔记页淡出，免得「看着
+                                // 图谱却显示某篇笔记的字数」。
+                                //
+                                // ⛔ 不用 `Positioned(right:, bottom:)`：只给
+                                // 两个定位边时 Stack 交给子树的宽度是无限的，
+                                // 浮片里的 LayoutBuilder 永远读到 ∞，窄窗收项
+                                // 那三档就再也不会触发。铺满 + Align 才能把
+                                // 编辑区宽度原样传下去。
+                                Positioned.fill(
+                                  child: Align(
+                                    alignment: Alignment.bottomRight,
+                                    child: Padding(
+                                      padding: const EdgeInsets.only(
+                                        right: 14,
+                                        bottom: 12,
+                                      ),
+                                      child: IgnorePointer(
+                                        child: AnimatedSwitcher(
+                                          duration: AppMotion.fast,
+                                          child: switch (_focusDoc) {
+                                            NoteDoc(:final String? noteId) =>
+                                              EditorStatusFloat(
+                                                key: const ValueKey<String>(
+                                                  'editor-status-float',
+                                                ),
+                                                noteId: noteId,
+                                                caret: _caret,
+                                              ),
+                                            _ => const SizedBox.shrink(),
+                                          },
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
+                          if (showRight) ...<Widget>[
+                            // The handle sits left of the right column, so
+                            // dragging it rightwards narrows the column.
+                            //
+                            // ⛔ 和左栏那条同一个口径：缝从**它右边那一栏**身上
+                            // 切下来，整条（连顶上 40px）都是右栏的底色，于是缝
+                            // 和右栏连成一片，只剩编辑区与右栏之间那道正常的
+                            // 色差。⛔ 别再填 `p.surface` / `p.canvas`——那会在
+                            // 两栏之间画出一条比两边都暗的竖带。用户原话：「编辑
+                            // 栏和右侧边栏之间怎么有一条这么粗的黑线？移除它。」
+                            ResizeHandle(
+                              background: p.sidebar,
+                              onDelta: (double d) => settings.rightPanelWidth =
+                                  settings.rightPanelWidth - d,
+                            ),
+                            // 右栏自己也是一棵分割树，叶子和左栏一样装
+                            // [SidePage]——所以「文件」能拖到这边，「大纲」也
+                            // 能拖到左边。整列从窗口最上面开始：上格的标签条
+                            // 正好占着顶栏那 40px，不用再给顶栏垫一条空白。
+                            SizedBox(
+                              width: settings.rightPanelWidth,
+                              child: SplitHost<TabGroup<SidePage>>(
+                                root: _rightTree,
+                                dividerThickness: AppLayout.splitSeamWidth,
+                                // 同上：缝填右栏的底色，两格之间不画线。
+                                dividerColor: p.sidebar,
+                                onRatioChanged:
+                                    (
+                                      SplitBranch<TabGroup<SidePage>> branch,
+                                      double ratio,
+                                    ) {
+                                      setState(() {
+                                        _rightTree =
+                                            SplitTree.setRatio<
+                                              TabGroup<SidePage>
+                                            >(_rightTree, branch.id, ratio);
+                                      });
+                                      _scheduleSideLayoutSave();
+                                    },
+                                leafBuilder:
+                                    (
+                                      BuildContext context,
+                                      SplitLeaf<TabGroup<SidePage>> leaf,
+                                    ) => _sidePane(SideColumn.right, leaf),
+                              ),
+                            ),
+                          ],
                         ],
-                      ],
-                    ),
-                    // The notice lives in the window's top-right corner,
-                    // where the eye already is after a toolbar action.
-                    // It may overlap the outline; the countdown is short
-                    // and it is the one piece of chrome allowed to float.
-                    // 它在标签条下面——标签条现在就是窗口最上面那条带子。
-                    Positioned(
-                      top: AppLayout.titleBarHeight + AppSpace.xs,
-                      left: 10,
-                      right: 10,
-                      child: Align(
-                        alignment: Alignment.topRight,
-                        child: NoticeHost(controller: _notices),
                       ),
-                    ),
-                    // 出错时那条横幅也压在正文顶上，不另占一行：顶栏和标签条
-                    // 已经是同一条带子，再插一条就把标签推下去了。
-                    if (error != null)
+                      // The notice lives in the window's top-right corner,
+                      // where the eye already is after a toolbar action.
+                      // It may overlap the outline; the countdown is short
+                      // and it is the one piece of chrome allowed to float.
+                      // 它在标签条下面——标签条现在就是窗口最上面那条带子。
                       Positioned(
-                        top: AppLayout.titleBarHeight,
+                        top: AppLayout.titleBarHeight + AppSpace.xs,
+                        left: 10,
+                        right: 10,
+                        child: Align(
+                          alignment: Alignment.topRight,
+                          child: NoticeHost(controller: _notices),
+                        ),
+                      ),
+                      // 出错时那条横幅也压在正文顶上，不另占一行：顶栏和标签条
+                      // 已经是同一条带子，再插一条就把标签推下去了。
+                      if (error != null)
+                        Positioned(
+                          top: AppLayout.titleBarHeight,
+                          left: 0,
+                          right: 0,
+                          child: _ErrorBanner(message: error),
+                        ),
+                      // 顶栏：只剩几颗浮在标签条上面的按钮。中间留空，鼠标穿过去
+                      // 就是下面的标签条——它没有自己的底色，也没有命中区域。
+                      Positioned(
+                        top: 0,
                         left: 0,
                         right: 0,
-                        child: _ErrorBanner(message: error),
+                        height: AppLayout.titleBarHeight,
+                        child: AppTitleBar(
+                          onToggleSidebar: _toggleSidebar,
+                          showSidebarToggle: !zen,
+                          rightInset: rightInset,
+                          showRightToggle: showRightToggle,
+                          onToggleRight: _toggleRightSidebar,
+                        ),
                       ),
-                    // 顶栏：只剩几颗浮在标签条上面的按钮。中间留空，鼠标穿过去
-                    // 就是下面的标签条——它没有自己的底色，也没有命中区域。
-                    Positioned(
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      height: AppLayout.titleBarHeight,
-                      child: AppTitleBar(
-                        onToggleSidebar: _toggleSidebar,
-                        showSidebarToggle: !zen,
-                        rightInset: rightInset,
-                        showRightToggle: showRightToggle,
-                        onToggleRight: _toggleRightSidebar,
-                      ),
-                    ),
-                  ],
+                    ],
+                  ),
                 );
               },
             ),
